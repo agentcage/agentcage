@@ -1,0 +1,1 @@
+Both port-spec shapes: HOST:GUEST binds loopback, BIND:HOST:GUEST does not.

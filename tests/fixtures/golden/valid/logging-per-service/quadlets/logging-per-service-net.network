@@ -1,0 +1,4 @@
+[Network]
+NetworkName=logging-per-service-net
+Internal=true
+Subnet=10.89.69.0/24

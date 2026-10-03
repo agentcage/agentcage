@@ -1,0 +1,7 @@
+domains:
+  allow:
+  - api.example.com
+  passthrough:
+  - api.example.com
+  - chat.example.net
+agentcage_version: 0.0.0-golden

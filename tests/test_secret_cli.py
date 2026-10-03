@@ -259,3 +259,194 @@ class TestSecretRm:
             result = _runner().invoke(main, ["secret", "rm", "myapp", "API_KEY"])
             assert result.exit_code != 0
             assert "does not exist" in result.output
+
+
+class TestPodmanRouting:
+    """`_podman_for_cage` decides which store a cage's secrets live in,
+    which means asking Lima whether the guest is up."""
+
+    @patch("agentcage.cli.state")
+    def test_a_host_without_lima_routes_to_the_host_store(self, mock_state):
+        """`secret rm` and `cage backup` route by isolation now, so they
+        reach this on a vm cage — and a Mac with Lima uninstalled used to
+        get a FileNotFoundError traceback rather than an answer."""
+        from agentcage.cli import _podman_for_cage
+        from agentcage.podman import Podman
+
+        cfg = MagicMock()
+        cfg.isolation = "vm"
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = cfg
+
+        with patch("subprocess.run", side_effect=FileNotFoundError(
+                2, "No such file or directory", "limactl")):
+            podman = _podman_for_cage("rsvm")
+
+        assert type(podman) is Podman
+
+
+class TestSecretRmAtRest:
+    """`secret rm` has to remove the value *at rest*, not just the two
+    places the container backend keeps it.
+
+    The keychain delete used to be gated on ``_is_apple_container``, but
+    a **vm** cage on a Mac resolves to the keychain too — so `secret rm`
+    removed the guest podman copy and the ``.cred``, reported
+    ``Secret 'rsvm.API_KEY' removed.``, and left the value. Measured on
+    real hardware: the next `cage restart` brought it straight back.
+    """
+
+    @staticmethod
+    def _vm_config():
+        cfg = MagicMock()
+        cfg.isolation = "vm"
+        cfg.name = "rsvm"
+        cfg.secret_injection = []
+        cfg.container.podman_secrets = []
+        return cfg
+
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_rm_deletes_from_the_at_rest_store(
+        self, mock_state, MockPodman, MockLima, tmp_path,
+    ):
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
+        podman = MockPodman.return_value
+        podman.secret_exists.return_value = True
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = self._vm_config()
+        mock_state.deployment_dir.return_value = tmp_path
+
+        store = MagicMock()
+        store.name = "keychain"
+        store.runtime_decrypts = False
+        store.names.return_value = ["API_KEY"]
+        with patch("agentcage.secret_store.resolve_store", return_value=store), \
+             patch("agentcage.cli._apply_secret_live_or_restart"):
+            result = _runner().invoke(main, ["secret", "rm", "rsvm", "API_KEY"])
+
+        assert result.exit_code == 0, result.output
+        store.delete.assert_called_once_with(
+            "rsvm", "API_KEY", state_dir=tmp_path,
+        )
+
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_rm_finds_a_secret_that_exists_only_at_rest(
+        self, mock_state, MockPodman, MockLima, tmp_path,
+    ):
+        """A vm cage that has never been started has no runtime copy at
+        all. `secret rm` used to call that "does not exist" while the
+        keychain held the value — so there was no way to remove it."""
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
+        podman = MockPodman.return_value
+        podman.secret_exists.return_value = False
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = self._vm_config()
+        mock_state.deployment_dir.return_value = tmp_path
+
+        store = MagicMock()
+        store.name = "keychain"
+        store.runtime_decrypts = False
+        store.names.return_value = ["API_KEY"]
+        with patch("agentcage.secret_store.resolve_store", return_value=store), \
+             patch("agentcage.cli._apply_secret_live_or_restart"):
+            result = _runner().invoke(main, ["secret", "rm", "rsvm", "API_KEY"])
+
+        assert result.exit_code == 0, result.output
+        assert "removed" in result.output
+        store.delete.assert_called_once()
+
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_rm_still_refuses_a_key_that_is_nowhere(
+        self, mock_state, MockPodman, MockLima, tmp_path,
+    ):
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
+        podman = MockPodman.return_value
+        podman.secret_exists.return_value = False
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = self._vm_config()
+        mock_state.deployment_dir.return_value = tmp_path
+
+        store = MagicMock()
+        store.runtime_decrypts = False
+        store.names.return_value = ["OTHER_KEY"]
+        with patch("agentcage.secret_store.resolve_store", return_value=store):
+            result = _runner().invoke(main, ["secret", "rm", "rsvm", "API_KEY"])
+
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+        store.delete.assert_not_called()
+
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_a_store_that_will_not_delete_warns_rather_than_failing(
+        self, mock_state, MockPodman, MockLima, tmp_path,
+    ):
+        """The runtime copies are already gone by then, so the secret has
+        stopped being injected either way. The operator still has to be
+        told, because the next start would otherwise restore it."""
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
+        from agentcage.secret_store import SecretStoreError
+
+        podman = MockPodman.return_value
+        podman.secret_exists.return_value = True
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = self._vm_config()
+        mock_state.deployment_dir.return_value = tmp_path
+
+        store = MagicMock()
+        store.name = "keychain"
+        store.runtime_decrypts = False
+        store.names.return_value = ["API_KEY"]
+        store.delete.side_effect = SecretStoreError("keychain is locked")
+        with patch("agentcage.secret_store.resolve_store", return_value=store), \
+             patch("agentcage.cli._apply_secret_live_or_restart"):
+            result = _runner().invoke(main, ["secret", "rm", "rsvm", "API_KEY"])
+
+        assert result.exit_code == 0, result.output
+        assert "could not remove" in result.output
+        assert "keychain is locked" in result.output
+
+    @LINUX_ONLY
+    @REQUIRES_PODMAN
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_a_container_cage_resolves_no_extra_store(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        """The container backend's runtime copy *is* the value, so there
+        is nothing extra to delete — and nothing extra to resolve, which
+        matters because resolving a keychain store runs a write probe."""
+        podman = MockPodman.return_value
+        podman.secret_exists.return_value = True
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_container_config()
+        mock_state.deployment_dir.return_value = tmp_path
+
+        store = MagicMock()
+        store.runtime_decrypts = True
+        with patch("agentcage.secret_store.resolve_store", return_value=store), \
+             patch("agentcage.cli._apply_secret_live_or_restart"):
+            result = _runner().invoke(main, ["secret", "rm", "myapp", "API_KEY"])
+
+        assert result.exit_code == 0, result.output
+        store.delete.assert_not_called()
+        store.names.assert_not_called()

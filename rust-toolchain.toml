@@ -1,0 +1,19 @@
+# Pin the toolchain *shape*, not an exact version.
+#
+# `channel = "stable"` rather than a number: agentcage has no MSRV-
+# sensitive dependency tree yet, and pinning an exact release would mean
+# a bot PR every six weeks plus a toolchain download for every
+# contributor whose rustup already has stable. The floor that actually
+# matters -- edition 2024 -- is declared as `rust-version = "1.85"` in
+# the root Cargo.toml, where `cargo` enforces it.
+#
+# What this file *does* buy is the components: CI and a contributor's
+# machine both get clippy and rustfmt without a separate install step,
+# and `cargo fmt` behaves the same in both places.
+#
+# If a future dependency forces an exact version, pin it here and say
+# which dependency in the commit.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

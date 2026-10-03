@@ -1,0 +1,6 @@
+Usage: agentcage scaffold edit [OPTIONS] NAME
+
+  Open a user scaffold in $EDITOR.
+
+Options:
+  --help  Show this message and exit.

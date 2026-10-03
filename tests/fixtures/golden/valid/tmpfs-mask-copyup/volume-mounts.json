@@ -1,0 +1,50 @@
+{
+  "mask_copyup_entries": [
+    [
+      "/workspace/.claude",
+      "${HOME}/project/.claude",
+      "${HOME}/project"
+    ]
+  ],
+  "mask_mountpoint_dirs": [
+    [
+      "${HOME}/project",
+      [
+        "${HOME}/project/.claude"
+      ]
+    ]
+  ],
+  "mount_targets": [
+    [
+      "/workspace",
+      "${HOME}/project"
+    ]
+  ],
+  "tmpfs": [
+    {
+      "enclosing_mount": [
+        "/workspace",
+        "${HOME}/project"
+      ],
+      "options": [
+        "rw",
+        "tmpcopyup"
+      ],
+      "spec": "/workspace/.claude:rw,tmpcopyup",
+      "target": "/workspace/.claude",
+      "wants_copyup": true
+    }
+  ],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "rw"
+      ],
+      "raw_options": "rw",
+      "source": "${HOME}/project",
+      "spec": "${HOME}/project:/workspace:rw",
+      "target": "/workspace"
+    }
+  ]
+}

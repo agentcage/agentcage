@@ -1,0 +1,205 @@
+{
+  "fixture": "timings",
+  "module": "agentcage._timing",
+  "summary": "The phase table behind the hidden --timings flags, the AGENTCAGE_TIMING=1 stderr echo, and the JSONL record both implementations have to read back. Nothing here is styled, so the two modes agree -- which is itself worth pinning.",
+  "run_file_name_format": "%Y%m%dT%H%M%S-<pid>.jsonl (UTC)",
+  "max_files_per_cage": 20,
+  "cases": [
+    {
+      "id": "summary-typical",
+      "why": "a real cage-create shape: the label column is at its 24-column floor and the percentages are floored, not rounded",
+      "kind": "echo",
+      "fn": "print_summary",
+      "call": "print_summary('bench')  # records=typical",
+      "records": [
+        {
+          "label": "lima.create",
+          "ms": 41230.0,
+          "ts": 1.0
+        },
+        {
+          "label": "build.egress",
+          "ms": 18880.5,
+          "ts": 2.0
+        },
+        {
+          "label": "deploy",
+          "ms": 3410.25,
+          "ts": 3.0
+        }
+      ],
+      "color": {
+        "out": "\nPhase                           ms       %\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlima.create                  41230     65%\nbuild.egress                 18880     30%\ndeploy                        3410      5%\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal                        63521    100%   (63.5s)\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "\nPhase                           ms       %\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlima.create                  41230     65%\nbuild.egress                 18880     30%\ndeploy                        3410      5%\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal                        63521    100%   (63.5s)\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "summary-long-label",
+      "why": "one label longer than 22 pushes the column to len+2 and widens the rule with it",
+      "kind": "echo",
+      "fn": "print_summary",
+      "call": "print_summary('bench')  # records=long-label",
+      "records": [
+        {
+          "label": "lima.provision.podman.network",
+          "ms": 900.0,
+          "ts": 1.0
+        },
+        {
+          "label": "x",
+          "ms": 100.0,
+          "ts": 2.0
+        }
+      ],
+      "color": {
+        "out": "\nPhase                                  ms       %\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlima.provision.podman.network         900     90%\nx                                     100     10%\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal                                1000    100%   (1.0s)\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "\nPhase                                  ms       %\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlima.provision.podman.network         900     90%\nx                                     100     10%\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal                                1000    100%   (1.0s)\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "summary-zero-total",
+      "why": "a total of zero is replaced by 1.0 before the division, so this prints 0% and not a ZeroDivisionError",
+      "kind": "echo",
+      "fn": "print_summary",
+      "call": "print_summary('bench')  # records=zero-total",
+      "records": [
+        {
+          "label": "instant",
+          "ms": 0.0,
+          "ts": 1.0
+        }
+      ],
+      "color": {
+        "out": "\nPhase                           ms       %\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\ninstant                          0      0%\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal                            1    100%   (0.0s)\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "\nPhase                           ms       %\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\ninstant                          0      0%\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal                            1    100%   (0.0s)\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "summary-rounding",
+      "why": "two exact .5 values: Python's format rounds half to even, so 0.5 prints 0 and 1.5 prints 2",
+      "kind": "echo",
+      "fn": "print_summary",
+      "call": "print_summary('bench')  # records=rounding",
+      "records": [
+        {
+          "label": "half.up",
+          "ms": 0.5,
+          "ts": 1.0
+        },
+        {
+          "label": "half.down",
+          "ms": 1.5,
+          "ts": 2.0
+        },
+        {
+          "label": "third",
+          "ms": 33.333,
+          "ts": 3.0
+        }
+      ],
+      "color": {
+        "out": "\nPhase                           ms       %\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nhalf.up                          0      1%\nhalf.down                        2      4%\nthird                           33     94%\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal                           35    100%   (0.0s)\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "\nPhase                           ms       %\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nhalf.up                          0      1%\nhalf.down                        2      4%\nthird                           33     94%\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal                           35    100%   (0.0s)\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "summary-no-data",
+      "why": "the note goes to stderr, and nothing goes to stdout",
+      "kind": "echo",
+      "fn": "print_summary",
+      "call": "print_summary('bench')  # no records",
+      "records": [],
+      "color": {
+        "out": "",
+        "err": "(no timing data for this run)\n"
+      },
+      "plain": {
+        "out": "",
+        "err": "(no timing data for this run)\n"
+      }
+    },
+    {
+      "id": "phase-echo",
+      "why": "AGENTCAGE_TIMING=1 echoes one line per phase, to stderr, with the milliseconds rounded to an integer",
+      "kind": "echo",
+      "fn": "phase_echo",
+      "call": "with Phase('build.egress'): ...  # 1234.5678ms",
+      "label": "build.egress",
+      "elapsed_ms": 1234.5678,
+      "color": {
+        "out": "",
+        "err": "[timing] build.egress: 1235ms\n"
+      },
+      "plain": {
+        "out": "",
+        "err": "[timing] build.egress: 1235ms\n"
+      }
+    },
+    {
+      "id": "phase-echo-sub-millisecond",
+      "why": "a phase faster than a millisecond still prints a line",
+      "kind": "echo",
+      "fn": "phase_echo",
+      "call": "with Phase('build.egress'): ...  # 0.4ms",
+      "label": "build.egress",
+      "elapsed_ms": 0.4,
+      "color": {
+        "out": "",
+        "err": "[timing] build.egress: 0ms\n"
+      },
+      "plain": {
+        "out": "",
+        "err": "[timing] build.egress: 0ms\n"
+      }
+    },
+    {
+      "id": "record-typical",
+      "why": "the on-disk record: three keys in insertion order, ms rounded to two places",
+      "kind": "jsonl",
+      "fn": "ledger_line",
+      "call": "_append('bench', 'build.egress', 1234.5678)",
+      "label": "build.egress",
+      "elapsed_ms": 1234.5678,
+      "ts": 1758283200.5,
+      "line": "{\"label\": \"build.egress\", \"ms\": 1234.57, \"ts\": 1758283200.5}\n"
+    },
+    {
+      "id": "record-trailing-zero",
+      "why": "a float that is exactly representable still prints as a float, not an int -- json.dumps(3410.5) and json.dumps(1.0)",
+      "kind": "jsonl",
+      "fn": "ledger_line",
+      "call": "_append('bench', 'deploy', 3410.5)",
+      "label": "deploy",
+      "elapsed_ms": 3410.5,
+      "ts": 1758283201.0,
+      "line": "{\"label\": \"deploy\", \"ms\": 3410.5, \"ts\": 1758283201.0}\n"
+    },
+    {
+      "id": "record-sub-millisecond",
+      "why": "round(ms, 2) can collapse to 0.0",
+      "kind": "jsonl",
+      "fn": "ledger_line",
+      "call": "_append('bench', 'noop', 0.004)",
+      "label": "noop",
+      "elapsed_ms": 0.004,
+      "ts": 1758283202.25,
+      "line": "{\"label\": \"noop\", \"ms\": 0.0, \"ts\": 1758283202.25}\n"
+    }
+  ]
+}

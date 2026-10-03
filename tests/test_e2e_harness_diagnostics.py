@@ -149,8 +149,10 @@ class TestRunShMacOSContainerGuard:
         assert "1|2|3|4|5|6|8) BLOCKED+=" in text
         assert "|7|" not in text
         # The guard block must precede the stale-cage sweep, which is the
-        # first thing that talks to a backend.
-        assert text.index("BLOCKED+=") < text.index("agentcage cage list")
+        # first thing that talks to a backend. The sweep goes through
+        # "$AGENTCAGE" (the overridable CLI-under-test), not a bare
+        # `agentcage` off PATH.
+        assert text.index("BLOCKED+=") < text.index('"$AGENTCAGE" cage list')
 
 
 class TestCreateCageFailureDiagnostics:

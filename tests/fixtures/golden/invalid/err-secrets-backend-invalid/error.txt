@@ -1,0 +1,1 @@
+ValueError: invalid secrets.backend: 'vault'. Valid: auto, keychain, plaintext, systemd-creds

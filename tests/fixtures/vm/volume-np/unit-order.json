@@ -1,0 +1,8 @@
+[
+  "lima.yaml",
+  "quadlets/vm-np-net.network",
+  "quadlets/vm-np-certs.volume",
+  "quadlets/vm-np-public-certs.volume",
+  "quadlets/vm-np-egress.container",
+  "quadlets/vm-np-cage.container"
+]

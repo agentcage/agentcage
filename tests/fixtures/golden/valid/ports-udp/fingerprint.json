@@ -1,0 +1,11 @@
+{
+  "components": {
+    "cage_yaml": "5d92e04efd92079a7937583bfdf27ff57f733460ff37f3357b58c83a67a38dc6",
+    "image_digests": "9d1e4448fd473489a1c3f104a0df5f710b9cfd0334898134fde4c1595b37d578",
+    "resolved_config": "c82e63d863e20253bf9fc96ce5ed88679986a7d41cf5d5205f70afc2aa301814",
+    "scaffold_version": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "units": "a99ef9dc01c50c37af4205b166d57fcb64c113e8f73e476b22258265dad1a3f7"
+  },
+  "fingerprint": "b69a5ea8cd56774748012bf9757345c16ef2e92e8f280c75946eaeab749142c5",
+  "version": 1
+}

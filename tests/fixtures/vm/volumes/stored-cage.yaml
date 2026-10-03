@@ -1,0 +1,11 @@
+name: vm-volumes
+isolation: vm
+container:
+  image: docker.io/library/alpine:3.20
+  volumes:
+  - "${HOME}/project:/workspace:ro"
+  - "${HOME}/data:/data:rw"
+  - "${HOME}/project:/second:ro"
+  - "${HOME}/.local/share/agentcage:/state:ro"
+  - "${HOME}/not-there:/missing:rw"
+  - "${HOME}/dotfile.conf:/etc/dotfile.conf:ro"

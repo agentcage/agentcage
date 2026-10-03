@@ -1,0 +1,1 @@
+ValueError: agents.watcher.api_key is required — the watcher agent needs its own API key, an egress-only secret using the source: scheme (e.g. 'systemd-creds:WATCHER_LLM_KEY' or 'env:WATCHER_LLM_KEY'). Reusing the decider's key is fine: name the same env var.

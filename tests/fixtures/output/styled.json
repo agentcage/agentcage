@@ -1,0 +1,339 @@
+{
+  "fixture": "styled",
+  "module": "agentcage.output",
+  "summary": "Every helper in output.py, recorded on a stream that claims to be a tty and on one that does not. click.style always emits the escapes; click.echo strips them again when the destination is not a terminal, and agentcage sets no ctx.color and reads no NO_COLOR, so that is the whole colour rule.",
+  "cases": [
+    {
+      "id": "dim-ascii",
+      "why": "the dim wrapper, which every border and label goes through",
+      "kind": "value",
+      "fn": "dim",
+      "args": [
+        "borderline"
+      ],
+      "call": "dim('borderline')",
+      "value": "\u001b[2mborderline\u001b[0m",
+      "unstyled": "borderline"
+    },
+    {
+      "id": "dim-empty",
+      "why": "an empty string still gets the escapes: click.style does not special-case it, and a port that does would drift",
+      "kind": "value",
+      "fn": "dim",
+      "args": [
+        ""
+      ],
+      "call": "dim('')",
+      "value": "\u001b[2m\u001b[0m",
+      "unstyled": ""
+    },
+    {
+      "id": "dim-non-ascii",
+      "why": "the padding a port computes must be in characters, not bytes",
+      "kind": "value",
+      "fn": "dim",
+      "args": [
+        "caf\u00e9 \u2713"
+      ],
+      "call": "dim('caf\u00e9 \u2713')",
+      "value": "\u001b[2mcaf\u00e9 \u2713\u001b[0m",
+      "unstyled": "caf\u00e9 \u2713"
+    },
+    {
+      "id": "green",
+      "why": "the ok colour",
+      "kind": "value",
+      "fn": "green",
+      "args": [
+        "ok"
+      ],
+      "call": "green('ok')",
+      "value": "\u001b[32mok\u001b[0m",
+      "unstyled": "ok"
+    },
+    {
+      "id": "red",
+      "why": "the failure colour",
+      "kind": "value",
+      "fn": "red",
+      "args": [
+        "no"
+      ],
+      "call": "red('no')",
+      "value": "\u001b[31mno\u001b[0m",
+      "unstyled": "no"
+    },
+    {
+      "id": "nested-dim-of-green",
+      "why": "run.py composes these (``step_done(dim(name))``), so the escapes nest and the inner reset is NOT the outer one",
+      "kind": "value",
+      "fn": "dim",
+      "args": [
+        "\u001b[32mok\u001b[0m"
+      ],
+      "call": "dim('\\x1b[32mok\\x1b[0m')",
+      "value": "\u001b[2m\u001b[32mok\u001b[0m\u001b[0m",
+      "unstyled": "ok"
+    },
+    {
+      "id": "banner-text-short",
+      "why": "the shortest plausible version: the 44-column floor wins",
+      "kind": "value",
+      "fn": "banner_text",
+      "args": [
+        "0.0.0"
+      ],
+      "call": "banner_text('0.0.0')",
+      "value": "\u001b[2m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\u001b[0m\n\u001b[2m\u2502\u001b[0m\u001b[1m \u273b agentcage v0.0.0 \u001b[0m                        \u001b[2m\u2502\u001b[0m\n\u001b[2m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u001b[0m\n",
+      "unstyled": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 \u273b agentcage v0.0.0                         \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n"
+    },
+    {
+      "id": "banner-text-release",
+      "why": "the shipped version shape",
+      "kind": "value",
+      "fn": "banner_text",
+      "args": [
+        "0.40.1"
+      ],
+      "call": "banner_text('0.40.1')",
+      "value": "\u001b[2m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\u001b[0m\n\u001b[2m\u2502\u001b[0m\u001b[1m \u273b agentcage v0.40.1 \u001b[0m                       \u001b[2m\u2502\u001b[0m\n\u001b[2m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u001b[0m\n",
+      "unstyled": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 \u273b agentcage v0.40.1                        \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n"
+    },
+    {
+      "id": "banner-text-at-the-floor",
+      "why": "title is exactly 42 characters, so max(len(title) + 2, 44) is a tie: the floor still applies and the padding is 2",
+      "kind": "value",
+      "fn": "banner_text",
+      "args": [
+        "0.40.1-aaaaaaaaaaaaaaaaaaaa"
+      ],
+      "call": "banner_text('0.40.1-aaaaaaaaaaaaaaaaaaaa')",
+      "value": "\u001b[2m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\u001b[0m\n\u001b[2m\u2502\u001b[0m\u001b[1m \u273b agentcage v0.40.1-aaaaaaaaaaaaaaaaaaaa \u001b[0m  \u001b[2m\u2502\u001b[0m\n\u001b[2m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u001b[0m\n",
+      "unstyled": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 \u273b agentcage v0.40.1-aaaaaaaaaaaaaaaaaaaa   \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n"
+    },
+    {
+      "id": "banner-text-over-the-floor",
+      "why": "one character more -- the first width that beats the floor. The border grows with the title and the padding stays 2, which is what a port that hard-codes 44 gets wrong",
+      "kind": "value",
+      "fn": "banner_text",
+      "args": [
+        "0.40.1-aaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "call": "banner_text('0.40.1-aaaaaaaaaaaaaaaaaaaaa')",
+      "value": "\u001b[2m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\u001b[0m\n\u001b[2m\u2502\u001b[0m\u001b[1m \u273b agentcage v0.40.1-aaaaaaaaaaaaaaaaaaaaa \u001b[0m  \u001b[2m\u2502\u001b[0m\n\u001b[2m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u001b[0m\n",
+      "unstyled": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 \u273b agentcage v0.40.1-aaaaaaaaaaaaaaaaaaaaa   \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n"
+    },
+    {
+      "id": "banner-text-dev",
+      "why": "a uv/hatch dev version, which is what a contributor sees",
+      "kind": "value",
+      "fn": "banner_text",
+      "args": [
+        "0.41.0.dev3+g1a2b3c4.d20260919"
+      ],
+      "call": "banner_text('0.41.0.dev3+g1a2b3c4.d20260919')",
+      "value": "\u001b[2m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\u001b[0m\n\u001b[2m\u2502\u001b[0m\u001b[1m \u273b agentcage v0.41.0.dev3+g1a2b3c4.d20260919 \u001b[0m  \u001b[2m\u2502\u001b[0m\n\u001b[2m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u001b[0m\n",
+      "unstyled": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 \u273b agentcage v0.41.0.dev3+g1a2b3c4.d20260919   \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n"
+    },
+    {
+      "id": "banner",
+      "why": "banner() is banner_text() through click.echo, which adds the trailing newline on top of the blank line banner_text already ends with",
+      "kind": "echo",
+      "fn": "banner",
+      "args": [
+        "0.40.1"
+      ],
+      "call": "banner('0.40.1')",
+      "color": {
+        "out": "\u001b[2m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\u001b[0m\n\u001b[2m\u2502\u001b[0m\u001b[1m \u273b agentcage v0.40.1 \u001b[0m                       \u001b[2m\u2502\u001b[0m\n\u001b[2m\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u001b[0m\n\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 \u273b agentcage v0.40.1                        \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "step-done",
+      "why": "the green tick line, on stdout",
+      "kind": "echo",
+      "fn": "step_done",
+      "args": [
+        "Cage ready"
+      ],
+      "call": "step_done('Cage ready')",
+      "color": {
+        "out": "  \u001b[32m\u2713\u001b[0m Cage ready\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "  \u2713 Cage ready\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "step-done-nested",
+      "why": "run.py's real call shape: a styled argument inside a styled line",
+      "kind": "echo",
+      "fn": "step_done",
+      "args": [
+        "\u001b[2mweb\u001b[0m"
+      ],
+      "call": "step_done('\\x1b[2mweb\\x1b[0m')",
+      "color": {
+        "out": "  \u001b[32m\u2713\u001b[0m \u001b[2mweb\u001b[0m\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "  \u2713 web\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "step-done-empty",
+      "why": "an empty message keeps the two leading spaces and the trailing one",
+      "kind": "echo",
+      "fn": "step_done",
+      "args": [
+        ""
+      ],
+      "call": "step_done('')",
+      "color": {
+        "out": "  \u001b[32m\u2713\u001b[0m \n",
+        "err": ""
+      },
+      "plain": {
+        "out": "  \u2713 \n",
+        "err": ""
+      }
+    },
+    {
+      "id": "step-fail",
+      "why": "the red cross line, and it goes to STDERR -- so on ``agentcage run > log`` it stays coloured while the tick lines do not",
+      "kind": "echo",
+      "fn": "step_fail",
+      "args": [
+        "Build failed"
+      ],
+      "call": "step_fail('Build failed')",
+      "color": {
+        "out": "",
+        "err": "  \u001b[31m\u2717\u001b[0m Build failed\n"
+      },
+      "plain": {
+        "out": "",
+        "err": "  \u2717 Build failed\n"
+      }
+    },
+    {
+      "id": "step-fail-non-ascii",
+      "why": "a message with a multi-byte character",
+      "kind": "echo",
+      "fn": "step_fail",
+      "args": [
+        "cage \u2718 gone"
+      ],
+      "call": "step_fail('cage \u2718 gone')",
+      "color": {
+        "out": "",
+        "err": "  \u001b[31m\u2717\u001b[0m cage \u2718 gone\n"
+      },
+      "plain": {
+        "out": "",
+        "err": "  \u2717 cage \u2718 gone\n"
+      }
+    },
+    {
+      "id": "info-short-label",
+      "why": "the label is ljust(9), so a short label is padded INSIDE the dim escapes",
+      "kind": "echo",
+      "fn": "info",
+      "args": [
+        "Name",
+        "web"
+      ],
+      "call": "info('Name', 'web')",
+      "color": {
+        "out": "  \u001b[2mName     \u001b[0mweb\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "  Name     web\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "info-exact-label",
+      "why": "a label of exactly 9 characters: no padding, and no separator either",
+      "kind": "echo",
+      "fn": "info",
+      "args": [
+        "Endpoints",
+        "none"
+      ],
+      "call": "info('Endpoints', 'none')",
+      "color": {
+        "out": "  \u001b[2mEndpoints\u001b[0mnone\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "  Endpointsnone\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "info-long-label",
+      "why": "ljust does not truncate, so a longer label runs into the value with no space at all",
+      "kind": "echo",
+      "fn": "info",
+      "args": [
+        "Provisioned",
+        "yes"
+      ],
+      "call": "info('Provisioned', 'yes')",
+      "color": {
+        "out": "  \u001b[2mProvisioned\u001b[0myes\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "  Provisionedyes\n",
+        "err": ""
+      }
+    },
+    {
+      "id": "info-empty-value",
+      "why": "the padding is still emitted",
+      "kind": "echo",
+      "fn": "info",
+      "args": [
+        "Name",
+        ""
+      ],
+      "call": "info('Name', '')",
+      "color": {
+        "out": "  \u001b[2mName     \u001b[0m\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "  Name     \n",
+        "err": ""
+      }
+    },
+    {
+      "id": "separator",
+      "why": "the 44-column rule, which is the banner's width floor and not a coincidence",
+      "kind": "echo",
+      "fn": "separator",
+      "args": [],
+      "call": "separator()",
+      "color": {
+        "out": "\u001b[2m\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m\n",
+        "err": ""
+      },
+      "plain": {
+        "out": "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n",
+        "err": ""
+      }
+    }
+  ]
+}

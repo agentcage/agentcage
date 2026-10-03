@@ -116,6 +116,47 @@ def _trees_differ(a: Path, b: Path) -> bool:
     return False
 
 
+def staged_asset_sources(
+    containerfile: Path, scaffold: str | None,
+) -> list[tuple[Path, Path]]:
+    """``(build-context-relative path, canonical source)`` for each asset
+    :func:`stage_scaffold_assets` would write beside *containerfile*.
+
+    The three conditions in the module docstring that gate *every*
+    canonical asset — a scaffold build, an asset agentcage actually ships,
+    and a ``COPY`` of it in a context that does not ship its own — live
+    here once. :func:`stage_scaffold_brief` and
+    :func:`stage_scaffold_skill` consult this rather than re-deriving
+    them, and so does ``cli.init``'s pre-flight conflict check, which has
+    to know what staging *would* write before it writes anything.
+
+    Says nothing about whether the destination is already current: that is
+    per-asset (a byte compare for the brief, a tree compare for the
+    skill) and belongs to the caller.
+    """
+    out: list[tuple[Path, Path]] = []
+    if not scaffold:
+        return out
+    for rel, source, shipped in (
+        (Path("AGENTS.md"), CANONICAL_BRIEF, CANONICAL_BRIEF.is_file()),
+        (SKILL_CONTEXT_PATH, CANONICAL_SKILL_DIR,
+         (CANONICAL_SKILL_DIR / "SKILL.md").is_file()),
+    ):
+        if not shipped:
+            continue
+        if not _copy_references(containerfile, rel.as_posix()):
+            continue
+        if _context_ships(containerfile, rel):
+            continue
+        out.append((rel, source))
+    return out
+
+
+def _would_stage(containerfile: Path, rel: Path, scaffold: str | None) -> bool:
+    """Whether :func:`staged_asset_sources` names *rel*."""
+    return any(r == rel for r, _ in staged_asset_sources(containerfile, scaffold))
+
+
 def stage_scaffold_brief(
     containerfile: Path, dest_dir: Path, scaffold: str | None,
 ) -> bool:
@@ -128,12 +169,8 @@ def stage_scaffold_brief(
     overridden. A directory or symlink squatting on the staged name is
     replaced: the staged copy is agentcage's own file.
     """
-    if not scaffold or not CANONICAL_BRIEF.is_file():
-        return False
-    if not _copy_references(containerfile, "AGENTS.md"):
-        return False
     rel = Path("AGENTS.md")
-    if _context_ships(containerfile, rel):
+    if not _would_stage(containerfile, rel, scaffold):
         return False
     dest = Path(dest_dir) / rel
     if dest.is_symlink() or (dest.exists() and not dest.is_file()):
@@ -157,11 +194,7 @@ def stage_scaffold_skill(
     tree). A file or symlink squatting on the staged directory (or on its
     ``skills/`` parent) is replaced. Returns True if anything was written.
     """
-    if not scaffold or not (CANONICAL_SKILL_DIR / "SKILL.md").is_file():
-        return False
-    if not _copy_references(containerfile, SKILL_CONTEXT_PATH.as_posix()):
-        return False
-    if _context_ships(containerfile, SKILL_CONTEXT_PATH):
+    if not _would_stage(containerfile, SKILL_CONTEXT_PATH, scaffold):
         return False
     dest = Path(dest_dir) / SKILL_CONTEXT_PATH
     if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
@@ -176,6 +209,22 @@ def stage_scaffold_skill(
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(CANONICAL_SKILL_DIR, dest)
     return True
+
+
+def staged_asset_differs(source: Path, dest: Path) -> bool:
+    """Whether *dest* is something other than a current copy of *source*.
+
+    True when *dest* does not exist at all, so callers that want "exists
+    and disagrees" must test existence themselves. Byte-deep for a file
+    and recursive for a directory, which is what the two stagers' own
+    "nothing to refresh" tests do — the same comparison, asked before the
+    write instead of during it.
+    """
+    if dest.is_symlink():
+        return True
+    if source.is_dir():
+        return not dest.is_dir() or _trees_differ(source, dest)
+    return not dest.is_file() or not filecmp.cmp(source, dest, shallow=False)
 
 
 def stage_scaffold_assets(

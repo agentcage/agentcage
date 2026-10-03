@@ -629,3 +629,36 @@ class TestDnsAudit:
         assert "evil.com" in row
         assert "blocked" in row
         assert "53" in row
+
+
+def test_color_only_adds_escapes_it_does_not_move_columns():
+    """Colour must add SGR escapes and change nothing else.
+
+    ``format_table_row`` rebuilds the entire row inside its colour branch,
+    so a column width edited in one branch and not the other silently
+    misaligns the output. That is exactly what happened: DIRECTION was
+    padded to 4 in the colour branch and to 10 in the header and the plain
+    branch, shifting every column from METHOD onward by a different amount
+    depending on whether the direction read OUTBOUND, INBOUND or empty.
+    Colour is the default, so it was what ``cage audit`` normally printed.
+
+    Stripping the escapes from a coloured row must give the plain row back.
+    """
+    import re
+
+    from agentcage.audit import AuditEntry, format_table_row
+
+    strip = lambda s: re.sub(r"\x1b\[[0-9;]*m", "", s)
+
+    for raw in (
+        {"decision": "allowed", "method": "GET", "direction": "outbound",
+         "host": "a.example.com", "ts": "2024-01-01T00:00:00+00:00"},
+        {"decision": "blocked", "method": "POST", "direction": "inbound",
+         "host": "b.example.com", "ts": "2024-01-01T00:00:00+00:00"},
+        {"decision": "flagged", "method": "HEAD", "direction": "",
+         "host": "c.example.com", "ts": "2024-01-01T00:00:00+00:00"},
+    ):
+        entry = AuditEntry.from_dict(raw)
+        assert strip(format_table_row(entry, color=True)) == format_table_row(
+            entry, color=False
+        ), f"colour moved a column for {raw['direction']!r}"

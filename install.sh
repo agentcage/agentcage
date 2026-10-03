@@ -136,24 +136,33 @@ has_podman() {
     command -v podman >/dev/null 2>&1
 }
 
-# Check for Python >= 3.12 and set PYTHON_BIN
-has_python() {
-    for py in python3.13 python3.12 python3; do
-        if command -v "$py" >/dev/null 2>&1; then
-            ver=$("$py" -c 'import sys; print("{}.{}".format(sys.version_info.major, sys.version_info.minor))' 2>/dev/null) || continue
-            major=$(echo "$ver" | cut -d. -f1)
-            minor=$(echo "$ver" | cut -d. -f2)
-            if [ "$major" -ge 3 ] && [ "$minor" -ge 12 ]; then
-                PYTHON_BIN="$py"
-                return 0
-            fi
-        fi
-    done
-    return 1
+# The release asset's target triple for this machine.
+#
+# Linux is built against musl and linked statically — the workspace has
+# no C dependencies, so that costs nothing and removes the glibc version
+# coupling that decides whether a binary built on CI runs on the
+# operator's distro.
+detect_target() {
+    arch=$(uname -m)
+    case "$OS:$arch" in
+        linux:x86_64|linux:amd64)   TARGET=x86_64-unknown-linux-musl ;;
+        linux:aarch64|linux:arm64)  TARGET=aarch64-unknown-linux-musl ;;
+        macos:arm64)                TARGET=aarch64-apple-darwin ;;
+        macos:x86_64)               TARGET=x86_64-apple-darwin ;;
+        *) err "no agentcage binary for $OS/$arch — build from source: https://github.com/agentcage/agentcage#building" ;;
+    esac
 }
 
-has_uv() {
-    command -v uv >/dev/null 2>&1
+# sha256 of a file, on either platform. Linux has sha256sum, macOS has
+# shasum; neither has both.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    else
+        err "need 'sha256sum' or 'shasum' to verify the download"
+    fi
 }
 
 has_agentcage() {
@@ -269,105 +278,92 @@ install_podman() {
 }
 
 # ---------------------------------------------------------------------------
-# Install: Python
-# ---------------------------------------------------------------------------
-
-install_python() {
-    if has_python; then
-        info "Python >= 3.12 found ($PYTHON_BIN)"
-        return
-    fi
-
-    info "Installing Python..."
-    case "$DISTRO" in
-        arch)     run_pkg pacman -S --noconfirm --needed python ;;
-        debian)   run_pkg apt-get update -qq && run_pkg apt-get install -y -qq python3 ;;
-        fedora)   run_pkg dnf install -y -q python3 ;;
-        rhel)
-            # Try python3.12 package first (EPEL/AppStream), fall back to python3
-            if ! run_pkg dnf install -y -q python3.12 2>/dev/null; then
-                run_pkg dnf install -y -q python3
-            fi
-            ;;
-        opensuse)
-            if ! run_pkg zypper install -y python312 2>/dev/null; then
-                run_pkg zypper install -y python3
-            fi
-            ;;
-        macos)    brew install python ;;
-    esac
-
-    if ! has_python; then
-        err "Python >= 3.12 installation failed (installed version may be too old)"
-    fi
-    info "Python >= 3.12 installed ($PYTHON_BIN)"
-}
-
-# ---------------------------------------------------------------------------
-# Install: uv
-# ---------------------------------------------------------------------------
-
-install_uv() {
-    if has_uv; then
-        info "uv is already installed ($(uv --version))"
-        return
-    fi
-
-    info "Installing uv..."
-    installed_via_pkg=false
-
-    case "$DISTRO" in
-        arch)
-            run_pkg pacman -S --noconfirm --needed uv
-            installed_via_pkg=true
-            ;;
-        fedora)
-            if run_pkg dnf install -y -q uv 2>/dev/null; then
-                installed_via_pkg=true
-            fi
-            ;;
-        macos)
-            brew install uv
-            installed_via_pkg=true
-            ;;
-    esac
-
-    if [ "$installed_via_pkg" = false ] || ! has_uv; then
-        info "Installing uv via official installer..."
-        need_cmd curl
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        # Add common install locations to PATH for this session
-        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-    fi
-
-    if ! has_uv; then
-        err "uv installation failed"
-    fi
-    info "uv installed ($(uv --version))"
-}
-
-# ---------------------------------------------------------------------------
 # Install: agentcage
 # ---------------------------------------------------------------------------
+#
+# agentcage is a single static binary. There is no interpreter and no
+# package manager in this path: the host CLI stopped being Python at the
+# Rust cutover, and the only Python left in the product ships inside the
+# egress container image, where the image installs it.
+
+AGENTCAGE_REPO="${AGENTCAGE_REPO:-agentcage/agentcage}"
+
+# The version to install: $AGENTCAGE_VERSION, or the latest release.
+#
+# Resolved through the redirect on /releases/latest rather than the JSON
+# API, because the API is rate-limited per IP (60/hour unauthenticated)
+# and a shared NAT or a CI runner reaches that without trying.
+resolve_version() {
+    if [ -n "${AGENTCAGE_VERSION:-}" ]; then
+        VERSION="${AGENTCAGE_VERSION#v}"
+        return
+    fi
+    info "Resolving the latest release..."
+    location=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+        "https://github.com/$AGENTCAGE_REPO/releases/latest" 2>/dev/null) \
+        || err "could not reach github.com to resolve the latest release"
+    VERSION="${location##*/tag/v}"
+    case "$VERSION" in
+        "$location"|"") err "could not parse a version out of '$location'" ;;
+    esac
+}
 
 install_agentcage() {
-    if has_agentcage; then
-        info "agentcage is already installed, upgrading..."
-        uv tool install --upgrade agentcage
-    else
-        info "Installing agentcage..."
-        uv tool install agentcage
-    fi
+    need_cmd curl
+    need_cmd tar
+    detect_target
+    resolve_version
 
-    # Ensure uv tool bin dir is on PATH for this session
-    if [ -d "$HOME/.local/bin" ]; then
-        export PATH="$HOME/.local/bin:$PATH"
-    fi
+    bindir="${AGENTCAGE_BIN_DIR:-$HOME/.local/bin}"
+    asset="agentcage-$VERSION-$TARGET.tar.gz"
+    # Overridable for a private mirror, an air-gapped install, or a test
+    # against a local directory (curl reads file:// too). Resolving
+    # "latest" needs github, so a custom base also needs
+    # $AGENTCAGE_VERSION.
+    base="${AGENTCAGE_DOWNLOAD_BASE:-https://github.com/$AGENTCAGE_REPO/releases/download/v$VERSION}"
 
+    tmp=$(mktemp -d)
+    # `trap ... 0` rather than EXIT: POSIX sh, and the script may not
+    # reach the end.
+    trap 'rm -rf "$tmp"' 0
+
+    info "Downloading agentcage $VERSION ($TARGET)..."
+    curl -fsSL -o "$tmp/$asset" "$base/$asset" \
+        || err "download failed: $base/$asset"
+
+    # The checksum is published beside the tarball and is not optional.
+    # A truncated or tampered download that still untars would otherwise
+    # install a binary nobody built.
+    curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256" \
+        || err "no checksum published for $asset — refusing to install unverified"
+    expected=$(cut -d' ' -f1 < "$tmp/$asset.sha256")
+    actual=$(sha256_of "$tmp/$asset")
+    if [ "$expected" != "$actual" ]; then
+        err "checksum mismatch for $asset
+  expected: $expected
+  actual:   $actual
+This is either a corrupted download or a tampered release. Not installing."
+    fi
+    info "Checksum verified"
+
+    tar -C "$tmp" -xzf "$tmp/$asset" \
+        || err "could not unpack $asset"
+    unpacked="$tmp/agentcage-$VERSION-$TARGET/agentcage"
+    [ -f "$unpacked" ] || err "$asset does not contain an agentcage binary"
+
+    mkdir -p "$bindir"
+    # Install by rename, so a running agentcage is never a half-written
+    # file: the rename is atomic within one filesystem, and $tmp is
+    # moved into place rather than copied over the target.
+    cp "$unpacked" "$bindir/.agentcage.new"
+    chmod 755 "$bindir/.agentcage.new"
+    mv -f "$bindir/.agentcage.new" "$bindir/agentcage"
+
+    export PATH="$bindir:$PATH"
     if ! has_agentcage; then
-        err "agentcage installation failed"
+        err "agentcage was installed to $bindir but is not on PATH"
     fi
-    info "agentcage installed ($(agentcage --version))"
+    info "agentcage installed to $bindir ($("$bindir/agentcage" --version))"
 }
 
 # ---------------------------------------------------------------------------
@@ -520,7 +516,10 @@ parse_args() {
                 cat <<'HELP'
 agentcage installer
 
-Installs agentcage and all prerequisites (Podman, Python 3.12+, uv).
+Installs the agentcage binary and its prerequisite, Podman. agentcage is
+a single static executable -- no interpreter, no package manager, no
+virtualenv. The download's published sha256 is verified before anything
+is installed.
 
 On macOS 26+ Apple Silicon also installs Apple's 'container' CLI (the
 default isolation backend on that platform). On older macOS / Intel Macs
@@ -534,6 +533,16 @@ Options:
   --with-lima   Also install Lima (required for isolation: vm mode).
                 Auto-set on macOS hosts where apple-container is unavailable.
   --help, -h    Show this help message
+
+Environment:
+  AGENTCAGE_VERSION   Install this version instead of the latest release.
+  AGENTCAGE_BIN_DIR   Where to put the binary (default: ~/.local/bin).
+  AGENTCAGE_REPO      Source repository (default: agentcage/agentcage).
+  AGENTCAGE_DOWNLOAD_BASE
+                      Where the release assets live, for a private
+                      mirror or an air-gapped install. Needs
+                      AGENTCAGE_VERSION too, since resolving
+                      'latest' still asks github.
 HELP
                 exit 0
                 ;;
@@ -572,8 +581,6 @@ main() {
     fi
 
     install_podman
-    install_python
-    install_uv
     install_agentcage
 
     setup_podman_machine

@@ -1,0 +1,2 @@
+container.read_only: silently has no effect on apple-container (read-only rootfs — apple-container's rootfs is always RW, so `read_only: true` cannot be enforced). See issue #120 for the parity plan.
+ports.tcp.passthrough entry 22 is not in ports.tcp.allow and will be added automatically to the effective allow list

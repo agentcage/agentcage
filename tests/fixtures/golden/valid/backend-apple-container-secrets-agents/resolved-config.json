@@ -1,0 +1,197 @@
+{
+  "agents": {
+    "decider": {
+      "api_key": "env:FAKE_DECIDER_KEY",
+      "base_url": "",
+      "context": "",
+      "enable": true,
+      "host": "agentcage.local",
+      "max_tokens": 8192,
+      "model": "claude-x",
+      "provider": "anthropic",
+      "rate_limit_burst": 5,
+      "rate_limit_rps": 1.0,
+      "timeout_seconds": 15.0
+    },
+    "watcher": {
+      "api_key": "systemd-creds:FAKE_WATCHER_KEY",
+      "auto_revoke": true,
+      "base_url": "",
+      "context": "",
+      "dedup_samples": true,
+      "enable": true,
+      "interval_seconds": 900.0,
+      "max_digest_tokens": 8000,
+      "max_flows": 200,
+      "max_tokens": 8192,
+      "model": "gpt-x",
+      "provider": "openai",
+      "timeout_seconds": 30.0,
+      "window_seconds": 3600.0
+    }
+  },
+  "apple_container_autostart": false,
+  "capture": {
+    "domains": [],
+    "enable_har": false,
+    "exclude_domains": [],
+    "max_body_size": 10485760,
+    "max_file_size": 134217728,
+    "min_action": "all"
+  },
+  "container": {
+    "add_capabilities": [],
+    "build": {
+      "args": {},
+      "containerfile": ""
+    },
+    "command": [
+      "node",
+      "/app/agent.js"
+    ],
+    "cpus": "",
+    "drop_capabilities": [
+      "ALL"
+    ],
+    "env": {},
+    "image": "docker.io/library/node:22-slim",
+    "memory": "",
+    "named_volumes": {},
+    "nested_containers": false,
+    "no_new_privileges": true,
+    "podman_secrets": [],
+    "ports": [],
+    "read_only": true,
+    "restart": "on-failure",
+    "restart_sec": 10,
+    "security_label_disable": true,
+    "timeout_start_sec": 120,
+    "timeout_stop_sec": 30,
+    "tmpfs": [],
+    "user": "1000:1000",
+    "userns": "",
+    "volumes": []
+  },
+  "dns_servers": [
+    "192.0.2.53"
+  ],
+  "domains": {
+    "allow": [
+      "api.example.com",
+      "cdn.example.com"
+    ],
+    "block": [],
+    "expires": {
+      "cdn.example.com": "2030-01-01T00:00:00Z"
+    },
+    "mode": "allowlist",
+    "passthrough": []
+  },
+  "exec_aliases": {},
+  "help": "",
+  "inspectors": [],
+  "isolation": "apple-container",
+  "lifecycle": "service",
+  "logging": {
+    "allowed_requests": false,
+    "cage": "",
+    "dns": "",
+    "dns_queries": false,
+    "level": "info",
+    "proxy": "",
+    "proxy_connections": false
+  },
+  "name": "backend-apple-container-secrets-agents",
+  "ports": {
+    "icmp": {
+      "allow": false
+    },
+    "tcp": {
+      "allow": [
+        80,
+        443
+      ],
+      "passthrough": []
+    },
+    "udp": {
+      "allow": []
+    }
+  },
+  "protocol_relays": [
+    {
+      "auth": {
+        "password_source": "env:FAKE_IMAP_PASS",
+        "type": "",
+        "user_source": "env:FAKE_IMAP_USER"
+      },
+      "listen": "0.0.0.0:1143",
+      "name": "mail",
+      "policy": {
+        "bypass_inspectors_for_allowlisted": [
+          "secrets",
+          "entropy",
+          "content-type"
+        ],
+        "conn_rate_limit": "30/min",
+        "folder_allowlist": [],
+        "folder_denylist": [],
+        "idle_timeout_seconds": 0,
+        "max_message_bytes": 5242880,
+        "max_recipients": 10,
+        "readonly": false,
+        "recipient_allowlist": {
+          "addresses": [],
+          "domains": []
+        },
+        "send_rate_limit": "20/hour",
+        "sender_allowlist": [],
+        "write_mode": ""
+      },
+      "type": "imap",
+      "upstream": {
+        "ca_file": "",
+        "ca_pem": "",
+        "host": "imap.example.com",
+        "port": 993,
+        "tls": true,
+        "tls_servername": ""
+      }
+    }
+  ],
+  "scaffold": "",
+  "secret_injection": [
+    {
+      "env": "ANTHROPIC_API_KEY",
+      "inject_body": false,
+      "inject_headers": [],
+      "inject_to": [
+        "api.example.com"
+      ],
+      "placeholder": "sk-ant-FAKE-0001",
+      "source": "env:GOLDEN_SET_VAR",
+      "transform": "",
+      "transform_config": {}
+    },
+    {
+      "env": "OPENAI_API_KEY",
+      "inject_body": false,
+      "inject_headers": [],
+      "inject_to": [
+        "api.example.com"
+      ],
+      "placeholder": "sk-openai-FAKE-0002",
+      "source": "env:GOLDEN_SET_VAR",
+      "transform": "",
+      "transform_config": {}
+    }
+  ],
+  "secrets": {
+    "allow_plaintext": true,
+    "backend": "plaintext",
+    "scope": "auto"
+  },
+  "vm": {
+    "mem_mb": 4096,
+    "vcpus": 4
+  }
+}

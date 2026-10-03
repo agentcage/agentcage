@@ -1,0 +1,6 @@
+Usage: agentcage scaffold export [OPTIONS] NAME DEST
+
+  Export a scaffold to a directory.
+
+Options:
+  --help  Show this message and exit.

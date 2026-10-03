@@ -1,0 +1,13 @@
+name: err-domain-syntax-expires-key
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - a.example.com
+  expires:
+    not/a/domain: '2030-01-01T00:00:00Z'
+dns_servers:
+- 192.0.2.53

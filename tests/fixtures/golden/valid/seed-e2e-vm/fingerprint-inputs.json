@@ -1,0 +1,9 @@
+{
+  "cage_yaml": "stored-cage.yaml",
+  "image_digests": {
+    "localhost/basic-agent:latest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "resolved_config": "resolved-config.json",
+  "scaffold_version": "",
+  "units": "quadlets/* (filename -> file contents; {} when absent)"
+}

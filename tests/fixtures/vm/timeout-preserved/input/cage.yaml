@@ -1,0 +1,5 @@
+name: vm-timeout-high
+isolation: vm
+container:
+  image: docker.io/library/alpine:3.20
+  timeout_start_sec: 600

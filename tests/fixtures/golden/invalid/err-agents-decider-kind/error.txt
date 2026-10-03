@@ -1,0 +1,1 @@
+ValueError: agents.decider.kind is no longer supported; omit kind

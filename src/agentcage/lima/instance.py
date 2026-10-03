@@ -106,17 +106,29 @@ class LimaInstance:
         return json.loads(result.stdout.strip())
 
     def is_running(self) -> bool:
-        """Return True if the Lima instance status is 'Running'."""
+        """Return True if the Lima instance status is 'Running'.
+
+        A missing ``limactl`` (``FileNotFoundError``) answers False like
+        any other way of not having a guest to talk to. Callers use this
+        to decide whether the VM can be *reached* -- on a host without
+        Lima it cannot, and every caller already handles that answer.
+        ``VmBackend.has_resources`` has always treated it that way; this
+        used to escape as a traceback from any command that merely asks
+        where a vm cage's secrets live, such as ``secret rm``.
+        """
         try:
             data = self._list_json()
             return data.get("status") == "Running"
-        except (subprocess.CalledProcessError, json.JSONDecodeError):
+        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
             return False
 
     def exists(self) -> bool:
-        """Return True if the Lima instance exists (any status)."""
+        """Return True if the Lima instance exists (any status).
+
+        Missing ``limactl`` answers False -- see :meth:`is_running`.
+        """
         try:
             self._list_json()
             return True
-        except (subprocess.CalledProcessError, json.JSONDecodeError):
+        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
             return False

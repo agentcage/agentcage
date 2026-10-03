@@ -1,0 +1,1 @@
+ValueError: agents.decider.provider must be 'anthropic', 'openai', or 'openrouter' (got 'Anthropic')

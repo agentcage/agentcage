@@ -1,10 +1,15 @@
-"""The breaking agents schema: strict input, canonical output, no migration."""
+"""The breaking agents schema: strict input, canonical output, no migration.
+
+Boundary note (RUST-PORT-PLAN.md §2.4): this is the host half — validation and
+canonicalisation. The addon that reads the canonical block back stays Python
+and lives in ``tests/test_agents_config_proxy.py``; both halves assert against
+the one sample in ``tests/cross_language/vectors.py``.
+"""
 
 from copy import deepcopy
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -12,28 +17,12 @@ import yaml
 from agentcage.config import load_config, validate_agents_raw, validate_config
 
 
-CLIENT = {
-    "provider": "openrouter", "model": "m", "api_key": "env:TESTKEY",
-    "timeout_seconds": 45, "max_tokens": 16384,
-    "base_url": "https://models.example.com",
-}
-CONFIG = {
-    "name": "test", "isolation": "container", "dns_servers": ["1.1.1.1"],
-    "container": {"image": "node:22-slim"},
-    "domains": {"allow": ["example.com"]},
-    "agents": {
-        "decider": {
-            "enable": True, "host": "custom.test", "context": "CI cage\n",
-            "rate_limit": {"requests_per_second": 0, "burst": 0}, **CLIENT,
-        },
-        "watcher": {
-            "enable": True, "interval_seconds": 900, "window_seconds": 7200,
-            "max_flows": 150, "auto_revoke": False, "dedup_samples": False,
-            "max_digest_tokens": 8000, "context": "Audit CI traffic\n",
-            **CLIENT, "api_key": "env:WATCHKEY",
-        },
-    },
-}
+# The canonical `agents` block lives in the shared fixture module: the host
+# writes this shape and the addon reads it back, so both halves of this
+# file's split must assert against one sample (RUST-PORT-PLAN.md §2.2).
+from tests.cross_language.vectors import (
+    AGENTS_CLIENT as CLIENT, CANONICAL_AGENTS_CONFIG as CONFIG,
+)
 
 
 def test_validation_never_rewrites_input(tmp_path):
@@ -201,36 +190,6 @@ def test_host_never_grant_uses_custom_control_host():
     from agentcage.cli import _host_never_grant
     assert "custom.test" in _host_never_grant(CONFIG)
     assert "agentcage.local" in _host_never_grant({})
-
-
-def test_addon_constructs_both_agents_from_canonical_keys(tmp_path, monkeypatch):
-    from agentcage.data.proxy.addon import Agentcage
-    from inspectors.domain import DomainInspector
-    monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
-    monkeypatch.setenv("TESTKEY", "test-key")
-    monkeypatch.setenv("WATCHKEY", "watch-key")
-    addon = Agentcage()
-    addon.cfg = deepcopy(CONFIG)
-    dom = DomainInspector()
-    dom.configure(CONFIG["domains"])
-    addon.inspectors = [dom]
-    addon._policy_sweeper = addon._watcher_task = addon._watcher_ring = None
-    addon.domain_requests = addon.traffic_watcher = None
-    addon._running = False
-    addon._audit_write = MagicMock()
-    addon._init_domain_requests()
-    assert addon.domain_requests is not None
-    assert addon.domain_requests.host == "custom.test"
-    assert addon.domain_requests._llm_model == CLIENT["model"]
-    addon._init_watcher()
-    assert addon.traffic_watcher is not None
-    assert addon.traffic_watcher._provider == CLIENT["provider"]
-    assert addon.traffic_watcher._secret == "watch-key"
-    addon.cfg["agents"] = {}
-    addon._init_domain_requests()
-    addon._init_watcher()
-    assert addon.domain_requests is None
-    assert addon.traffic_watcher is None
 
 
 @pytest.mark.parametrize("action", ["cancel", "unchanged", "save", "paste-legacy"])

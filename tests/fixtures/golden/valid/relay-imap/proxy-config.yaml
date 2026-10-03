@@ -1,0 +1,26 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 0.0.0.0:1143
+  upstream:
+    host: imap.example.com
+    port: 993
+    tls: true
+  auth:
+    type: imap-login
+    user_source: env:GOLDEN_SET_VAR
+    password_source: systemd-creds:FAKE_IMAP_PASSWORD
+  policy:
+    readonly: true
+    folder_allowlist:
+    - INBOX
+    - Archive
+    folder_denylist:
+    - Trash
+    idle_timeout_seconds: 1800
+    conn_rate_limit: 10/min
+agentcage_version: 0.0.0-golden

@@ -103,7 +103,28 @@ container:
 - **`volumes`** *(list[string], default: [])*: Host directory bind mounts in `source:target[:flags]` format (e.g. `".:/workspace:rw"`). Mounts to `/workspace` automatically have `.git/hooks` and `.claude/` masked via tmpfs overlays.
 - **`named_volumes`** *(map[string, string], default: {})*: Persistent Podman named volumes mapped to container mount paths.
 - **`tmpfs`** *(list[string], default: [])*: Tmpfs mounts in `target[:options]` format (e.g. `"/tmp:rw,noexec,nosuid,size=512m"`).
-- **`env`** *(map[string, string], default: {})*: Static environment variables injected into the container. *Never place real secrets here; use `secret_injection`.*
+- **`env`** *(map[string, string], default: {})*: Environment variables injected into the container. *Never place real secrets here; use `secret_injection`.*
+
+  **Values are expanded against the host's environment** at deploy time,
+  with `os.path.expandvars` semantics: `$NAME` and `${NAME}` are replaced
+  by the host process's value for `NAME`, and a name the host does not
+  define is left alone. The expansion has been there since 0.1.0 and both
+  backends do it, but it was never written down, so two consequences are
+  worth stating plainly:
+
+  - A value that merely *contains* a dollar sign followed by a name the
+    host exports is rewritten. There is no escape: `$$` stays `$$`, and
+    `$NAME` for a name the host does not define stays `$NAME`, so a
+    literal `${PATH}` cannot be delivered to the cage through this field.
+  - A `cage.yaml` you did not write can read your shell's environment.
+    `env: { X: "${OPENAI_API_KEY}" }` copies that key into the cage and
+    into the generated unit file on disk. Read the `env:` block of any
+    config you did not author, the same way you would read its `volumes:`.
+
+  `secret_injection` is the supported way to give a cage a real
+  credential: the value reaches the egress proxy and is substituted into
+  the outbound request, so it never enters the workload's environment at
+  all.
 - **`ports`** *(list[string], default: [])*: Inbound host ports to publish (e.g. `["127.0.0.1:8080:8080"]`). Traffic passes through an inbound reverse proxy.
 - **`nested_containers`** *(boolean, default: false)*: Enables nested rootless Podman execution inside the cage.
 - **`restart`** *(string, default: "on-failure")*: Systemd container restart policy (`always`, `on-failure`, `no`).

@@ -1,0 +1,1 @@
+ValueError: agents.watcher.api_key must use the 'source:NAME' scheme (e.g. 'env:NAME' or 'systemd-creds:NAME') — got 'BARE_KEY_NAME'

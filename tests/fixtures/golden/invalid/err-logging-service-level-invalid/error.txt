@@ -1,0 +1,1 @@
+ValueError: logging.dns must be one of ('debug', 'info', 'warning', 'error', 'critical') or empty (got: 'verbose')

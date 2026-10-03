@@ -1,0 +1,1 @@
+ValueError: agents.decider requires domains allowlist mode (a grant only widens an allowlist; in blocklist mode everything not blocked is already reachable).

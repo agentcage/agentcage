@@ -1,0 +1,28 @@
+name: relay-imap-plaintext-upstream
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 127.0.0.1:1143
+  upstream:
+    host: imap.internal.example
+    port: 143
+    tls: false
+  auth: {}
+ports:
+  tcp:
+    allow:
+    - 80
+    - 443
+    passthrough:
+    - 1143

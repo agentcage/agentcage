@@ -1,0 +1,7 @@
+domains:
+  allow:
+  - api.example.com
+  - tmp.example.org
+  expires:
+    TMP.EXAMPLE.ORG.: '2030-01-01T00:00:00+00:00'
+agentcage_version: 0.0.0-golden

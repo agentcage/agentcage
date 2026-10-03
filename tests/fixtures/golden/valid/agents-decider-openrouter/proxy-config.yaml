@@ -1,0 +1,12 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+agents:
+  decider:
+    enable: true
+    provider: openrouter
+    model: vendor/model-fake
+    api_key: systemd-creds:FAKE_DECIDER_KEY
+    base_url: https://openrouter.example.com/api/v1
+agentcage_version: 0.0.0-golden

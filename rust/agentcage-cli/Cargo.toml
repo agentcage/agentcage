@@ -1,0 +1,194 @@
+[package]
+name = "agentcage-cli"
+description = "The agentcage command-line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The installed binary is `agentcage`, matching the Python entry point it
+# will eventually replace (PR F2). The crate is named `agentcage-cli` so
+# it does not collide with the `agentcage` name on crates.io or with the
+# library crates beside it.
+[[bin]]
+name = "agentcage"
+path = "src/main.rs"
+
+# The binary's own modules, exposed as a library.
+#
+# Not a second place for code to live: `main.rs` is still the program.
+# This exists because a Rust integration test is a separate crate and
+# cannot reach into a `[[bin]]`, and PR D4's modules are precisely the
+# ones that have to be checked against something outside the process --
+# the styling fixtures under `tests/fixtures/output/`, generated from
+# the Python, and a pty for the terminal-restore test.
+[lib]
+name = "agentcage_cli"
+path = "src/lib.rs"
+
+[dependencies]
+agentcage-core = { path = "../agentcage-core" }
+agentcage-assets = { path = "../agentcage-assets" }
+
+# The subprocess seam (PR D1). PR D3's secret stores are nothing but
+# decisions about which command to build -- `systemd-creds encrypt`,
+# `podman secret create`, `security add-generic-password` -- so they are
+# written against `CommandRunner` and tested against `FakeRunner`.
+agentcage-exec = { path = "../agentcage-exec" }
+
+# The on-disk state (PR D2). `cage har` is the first ported command body
+# that has to find a file a *previous* deploy wrote, and where that file
+# lives is not one rule: a container or vm cage keeps its capture under
+# `$XDG_DATA_HOME`, an apple-container cage under a `~`-rooted path that
+# ignores `XDG_CONFIG_HOME` entirely. `Paths` is where that is written
+# down, and a command that rebuilt those paths itself would be one more
+# place to get it wrong.
+agentcage-state = { path = "../agentcage-state" }
+
+# The termios work (PR D4), and the plan names it: `terminal.py`
+# snapshots the controlling terminal with `tcgetattr` and puts it back
+# with `tcsetattr(TCSADRAIN)`, and it writes its escape sequence with a
+# raw `write(2)` because the descriptor may be stdin, which `std` will
+# not write to.
+#
+# Features are pared to what is reached:
+#
+#   * `term`    -- tcgetattr / tcsetattr / cfmakeraw.
+#   * `process` -- execvp, for the non-interactive hand-off that keeps
+#                  the Python's `os.execvp` semantics.
+#   * `fs`      -- write(2)/read(2)/pipe(2) on a borrowed descriptor.
+#
+# Note what is NOT here: no TUI crate. `crossterm` would bring its own
+# escape sequences, its own set of modes to reset and its own
+# restoration policy, and the requirement is the opposite of sensible
+# defaults -- the bytes have to be the bytes the Python wrote, in that
+# order, including a Kitty keyboard-protocol pop that no general-purpose
+# crate emits.
+nix = { version = "0.31", default-features = false, features = [
+    "term",
+    "process",
+    # `fs`: write(2)/read(2)/pipe(2), and `statvfs` for PR D15's disk
+    # check -- `shutil.disk_usage(...).free` is `f_bavail * f_frsize`,
+    # and `std` exposes no filesystem statistics at all.
+    "fs",
+    # `socket`: PR D15's port probe. `std::net::TcpListener::bind` sets
+    # `SO_REUSEADDR` on Unix and the Python's raw socket does not, so a
+    # port in TIME_WAIT would read as free through `std` and as busy
+    # through the Python -- a diagnostic disagreeing with itself.
+    "socket",
+    # `net`: `SockaddrIn`, which `socket` alone does not export.
+    "net",
+    # `user`: `geteuid`, for PR D3. `secret_resolver.detect_default_scope`
+    # asks "is the invoker root?" before it probes the per-user systemd
+    # key, because root's per-user key is not the operator's and a
+    # credential encrypted with it could not be decrypted by the unit
+    # that needs it. `std` has no euid API.
+    "user",
+] }
+
+# SIGINT, and the reason it is a second dependency rather than more of
+# `nix`.
+#
+# Ctrl-C reaches every process in the terminal's foreground group, so it
+# reaches the CLI as well as the session inside the cage. With the
+# default disposition the CLI dies on the spot -- which skips the
+# destructor that restores the terminal, i.e. exactly the case this PR
+# exists to handle. The Python installs a no-op handler for the duration
+# and restores the previous one after.
+#
+# Installing or restoring a disposition means `sigaction`, which `nix`
+# exposes as an `unsafe fn`, and `[workspace.lints.rust] unsafe_code =
+# "forbid"` cannot be overridden by a crate-level `allow`. signal-hook's
+# `flag` module is the safe equivalent: its actions are async-signal-
+# safe by construction, so the registration functions are safe fns.
+# `register_conditional_default` in particular gives the Python's
+# semantics exactly -- a no-op while a session is running, the default
+# action the rest of the time -- without a restore step to get wrong.
+#
+# `default-features = false` drops the `iterator` module (a background
+# thread and a mio dependency); the flag API needs none of it.
+signal-hook = { version = "0.3", default-features = false }
+
+# The timing ledger (PR D4). `_timing.py` appends one JSON object per
+# phase and reads them back for `--timings`; the records are written by
+# one version of agentcage and read by another, so the reader ignores
+# unknown keys and defaults missing ones rather than failing a
+# diagnostic. Already in the tree via `agentcage-core`.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The command tree (PR D5). `cli.py` is 5,632 lines of click and this is
+# what replaces it.
+#
+# `wrap_help` is the one non-default feature, and it is not cosmetic:
+# click wraps its help to the terminal width, and several of these help
+# strings are long enough to matter (`cage logs --since` is 150
+# characters, `secret set --declare` is 180). Without it clap wraps at a
+# fixed 100 columns and an 80-column terminal gets ragged output the
+# Python never produced. It costs one small dependency, `terminal_size`.
+#
+# Not enabled: `derive` (the tree is built with the builder API -- see
+# `src/cli/mod.rs` for why: 19 of the aliases are hidden clones of
+# commands that live under a *different* parent, which the derive macro
+# has no way to express), `env`, `unicode`, `suggestions`' extras.
+clap = { version = "4", features = ["wrap_help"] }
+
+# Shell completions. click provides these through the
+# `_AGENTCAGE_COMPLETE` environment protocol with no command at all;
+# clap has no stable equivalent, so the scripts are generated instead.
+# See `src/cli/completions.rs` for what that changes for a user who
+# already configured the click protocol.
+clap_complete = "4"
+
+# ── `cage backup` / `cage restore` (PR D11) ──────────────────
+#
+# The backup format is a gzipped tar with a `manifest.json`
+# (`cli.py:3209`), and PR A7 committed a tarball the *Python* produced
+# that `cage restore` has to read. PR D2 pinned its contract by shelling
+# to the system `tar` and said outright that the decoder is this PR's
+# dependency to add.
+#
+# `tar` is the only maintained pure-Rust implementation of the format,
+# and `default-features = false` drops `xattr`: nothing in a backup
+# carries extended attributes, and a crate that could set them on
+# extraction is a capability this path has no use for. `filetime`
+# remains (it is not optional), but no mtime is ever restored — see
+# `archive::extract_into`, which writes every member itself rather than
+# calling the crate's `unpack`, precisely so that what lands on disk is
+# decided here.
+tar = { version = "0.4", default-features = false }
+
+# gzip, in Rust. The default `rust_backend` feature selects
+# `miniz_oxide`; `zlib`/`libz-sys` would add a C toolchain requirement
+# to a project that builds for four targets. Deterministic output is a
+# requirement of this PR (`archive::write_gz`), and a fixed backend at a
+# fixed level is what makes it one.
+flate2 = { version = "1", default-features = false, features = [
+    "rust_backend",
+] }
+
+[dev-dependencies]
+# The `poll` the terminal-restore test reads the pty master with.
+# `openpty` itself is already under `term`. Same crate as above; Cargo
+# unifies the features, so this adds nothing to the shipped binary.
+nix = { version = "0.31", default-features = false, features = [
+    "term",
+    "process",
+    "fs",
+    "poll",
+] }
+serde_json = "1"
+
+
+[lints]
+workspace = true
+
+# Test-only, and deliberately not runtime dependencies.
+#
+# `serde_json` reads the generated CLI-surface fixture, which is the
+# oracle the whole port is checked against (`src/cli/conformance.rs`).
+# `agentcage-core` is here as well as above because `tests/binary.rs` is
+# a separate crate: it runs the built binary as a subprocess and needs
+# `VERSION` to assert the `--version` line against.

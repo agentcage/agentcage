@@ -1,0 +1,4 @@
+[Network]
+NetworkName=lifecycle-service-net
+Internal=true
+Subnet=10.89.110.0/24

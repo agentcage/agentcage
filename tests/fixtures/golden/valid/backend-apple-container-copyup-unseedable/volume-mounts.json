@@ -1,0 +1,45 @@
+{
+  "mask_copyup_entries": [
+    [
+      "/var/lib/state/secrets",
+      "",
+      ""
+    ]
+  ],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/var/lib/state",
+      ""
+    ]
+  ],
+  "tmpfs": [
+    {
+      "enclosing_mount": [
+        "/var/lib/state",
+        ""
+      ],
+      "options": [
+        "rw",
+        "tmpcopyup"
+      ],
+      "spec": "/var/lib/state/secrets:rw,tmpcopyup",
+      "target": "/var/lib/state/secrets",
+      "wants_copyup": true
+    },
+    {
+      "enclosing_mount": [
+        "",
+        ""
+      ],
+      "options": [
+        "rw",
+        "tmpcopyup"
+      ],
+      "spec": "/plain/image/dir:rw,tmpcopyup",
+      "target": "/plain/image/dir",
+      "wants_copyup": true
+    }
+  ],
+  "volumes": []
+}

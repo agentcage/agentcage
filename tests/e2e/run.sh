@@ -13,6 +13,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
+# The CLI under test — see the matching definition in lib.sh. run.sh does
+# not source lib.sh, so it needs its own; exporting here also means the
+# phase scripts (which lib.sh re-derives it in, with `:-`) inherit the
+# runner's choice rather than silently falling back to PATH.
+export AGENTCAGE="${AGENTCAGE:-agentcage}"
+
 # ── parse args ───────────────────────────────────────────────────────
 PHASES=()
 if [ $# -eq 0 ]; then
@@ -49,6 +55,7 @@ else
         echo ""
         echo "Environment:"
         echo "  E2E_PORT_BASE    Port base for test cages (default: 19080)"
+        echo "  AGENTCAGE        CLI binary under test (default: agentcage)"
         exit 0
         ;;
       *)
@@ -106,11 +113,11 @@ echo "========================"
 echo ""
 
 # Check for stale e2e cages
-STALE=$(agentcage cage list 2>/dev/null | grep -E "^e2e-" | awk '{print $1}' || true)
+STALE=$("$AGENTCAGE" cage list 2>/dev/null | grep -E "^e2e-" | awk '{print $1}' || true)
 if [ -n "$STALE" ]; then
   echo "Cleaning up stale e2e cages..."
   for cage in $STALE; do
-    agentcage cage destroy "$cage" -y >/dev/null 2>&1 || true
+    "$AGENTCAGE" cage destroy "$cage" -y >/dev/null 2>&1 || true
   done
 fi
 
@@ -120,7 +127,7 @@ cleanup_all() {
   echo "Final cleanup..."
   for name in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened e2e-vm e2e-openclaw; do
     podman rm -f "${name}-mock" >/dev/null 2>&1 || true
-    agentcage cage destroy "$name" -y >/dev/null 2>&1 || true
+    "$AGENTCAGE" cage destroy "$name" -y >/dev/null 2>&1 || true
   done
   # Phase 8 uses user-named volumes that aren't cleaned by cage destroy
   podman volume rm -f e2e-openclaw-workspace e2e-openclaw-state >/dev/null 2>&1 || true
@@ -211,6 +218,15 @@ run_and_tally() {
   _tally_output "$phase" "$rc" "$elapsed" "$output"
 }
 
+# A phase fail-fast skipped. Recorded rather than omitted: a summary
+# that simply leaves the row out reads as "everything ran and 1 assertion
+# failed", when in fact a whole phase never started.
+note_skipped_phase() {
+  # Kept short: the summary box pads to 36 columns and does not truncate,
+  # so a longer string pushes the right border out of alignment.
+  PHASE_RESULTS+=("Phase $1: SKIPPED (earlier failure)")
+}
+
 # Tally results from a background phase's temp file
 tally_bg_phase() {
   local phase="$1"
@@ -262,7 +278,7 @@ if HAS_PHASE 4 && [ "$SUITE_FAILED" = false ]; then
 fi
 
 # Destroy the shared basic cage after the sequential chain
-agentcage cage destroy basic -y >/dev/null 2>&1 || true
+"$AGENTCAGE" cage destroy basic -y >/dev/null 2>&1 || true
 
 if [ "$SUITE_FAILED" = true ]; then
   echo ""
@@ -277,15 +293,16 @@ fi
 BG_PIDS=()
 BG_PHASES=()
 
-if [ "$SUITE_FAILED" = false ]; then
-  for phase in 3 5 6; do
-    if HAS_PHASE "$phase"; then
-      run_phase "$phase" &
-      BG_PIDS+=($!)
-      BG_PHASES+=("$phase")
-    fi
-  done
-fi
+for phase in 3 5 6; do
+  HAS_PHASE "$phase" || continue
+  if [ "$SUITE_FAILED" = false ]; then
+    run_phase "$phase" &
+    BG_PIDS+=($!)
+    BG_PHASES+=("$phase")
+  else
+    note_skipped_phase "$phase"
+  fi
+done
 
 # ── wait for parallel phases and collect results ───────────────────
 for i in "${!BG_PIDS[@]}"; do
@@ -294,15 +311,23 @@ for i in "${!BG_PIDS[@]}"; do
 done
 
 # ── phase 7 (VM) runs after parallel phases ───────────────────────
-if HAS_PHASE 7 && [ "$SUITE_FAILED" = false ]; then
-  run_and_tally 7
+if HAS_PHASE 7; then
+  if [ "$SUITE_FAILED" = false ]; then
+    run_and_tally 7
+  else
+    note_skipped_phase 7
+  fi
 fi
 
 # ── phase 8 (openclaw) runs sequentially after VM ─────────────────
 # Heavy cage (4 GiB even after CI trim); keep out of the parallel block
 # so it doesn't contend with other phases for Podman resources.
-if HAS_PHASE 8 && [ "$SUITE_FAILED" = false ]; then
-  run_and_tally 8
+if HAS_PHASE 8; then
+  if [ "$SUITE_FAILED" = false ]; then
+    run_and_tally 8
+  else
+    note_skipped_phase 8
+  fi
 fi
 
 # ── summary ──────────────────────────────────────────────────────────

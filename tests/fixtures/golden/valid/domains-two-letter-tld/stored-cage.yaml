@@ -1,0 +1,12 @@
+name: domains-two-letter-tld
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.io
+  - docs.example.co.uk
+dns_servers:
+- 192.0.2.53

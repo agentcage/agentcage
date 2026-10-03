@@ -1,0 +1,1 @@
+ValueError: agents.watcher.context is too long (5000 chars, max 4096) — trim it or move details into a shorter summary

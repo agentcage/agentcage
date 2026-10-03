@@ -1,0 +1,4 @@
+[Network]
+NetworkName=lifecycle-interactive-net
+Internal=true
+Subnet=10.89.90.0/24

@@ -7,8 +7,9 @@ laptop, a macOS host, or a minimal/sandboxed environment they are absent and
 the test fails with a ``FileNotFoundError`` (or a spurious prerequisite issue)
 for reasons unrelated to what it asserts.
 
-Gate such tests on the dependency actually being present so the suite skips
-gracefully instead of failing where the dependency is missing.
+Gate such tests on the dependency actually being *usable* so the suite skips
+gracefully instead of failing where the dependency is missing. "Usable" rather
+than "installed" is deliberate: see :func:`_podman_is_usable`.
 """
 
 from __future__ import annotations
@@ -19,9 +20,41 @@ import subprocess
 
 import pytest
 
+
+def _podman_is_usable() -> bool:
+    """Whether `podman` is installed **and can reach a running service**.
+
+    The binary existing is not the same thing, and the difference is a
+    macOS laptop: Homebrew's `podman` is a client for a Linux VM, so
+    `shutil.which` finds it while every call fails with "Cannot connect
+    to Podman ... try `podman machine init`". A marker that only checked
+    `which` therefore did not fire, the test ran, and it failed on the
+    connection rather than skipping — which is the thing this module's
+    docstring says it exists to prevent.
+
+    `podman info` is the probe because it is the cheapest call that
+    needs the service rather than just the client; `podman version`
+    answers from the client alone and would not tell these two cases
+    apart.
+    """
+    if shutil.which("podman") is None:
+        return False
+    try:
+        return (
+            subprocess.run(
+                ["podman", "info"],
+                capture_output=True,
+                timeout=30,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 REQUIRES_PODMAN = pytest.mark.skipif(
-    shutil.which("podman") is None,
-    reason="needs the host `podman` binary (present on Linux CI)",
+    not _podman_is_usable(),
+    reason="needs a usable host `podman` (installed and connected; present on Linux CI)",
 )
 
 REQUIRES_KVM = pytest.mark.skipif(

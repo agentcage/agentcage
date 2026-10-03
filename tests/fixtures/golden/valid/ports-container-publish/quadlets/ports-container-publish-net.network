@@ -1,0 +1,4 @@
+[Network]
+NetworkName=ports-container-publish-net
+Internal=true
+Subnet=10.89.196.0/24

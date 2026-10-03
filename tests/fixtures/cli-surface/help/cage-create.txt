@@ -1,0 +1,17 @@
+Usage: agentcage cage create [OPTIONS] [CONFIG_POS]
+
+  Build images, generate quadlets, install, and start a new cage.
+
+  The config may be given positionally (`agentcage create ./cage.yaml`) or with
+  -c (`agentcage create -c ./cage.yaml`).
+
+Options:
+  -c, --config PATH      Path to the cage config (cage.yaml). May also be given
+                         positionally.
+  -s, --set-secret TEXT  Set a secret (KEY=VALUE or KEY to prompt). Repeatable.
+  --no-cache             Force a full image rebuild (ignore podman's layer
+                         cache).
+  --pull                 Force re-pull of the base image from the registry.
+  --time                 Echo per-phase wall times and print a summary on
+                         completion.
+  --help                 Show this message and exit.

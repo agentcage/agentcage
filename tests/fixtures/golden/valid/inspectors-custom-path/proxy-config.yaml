@@ -1,0 +1,8 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+inspectors:
+- name: house-rules
+  path: /etc/agentcage/inspectors/house_rules.py
+agentcage_version: 0.0.0-golden

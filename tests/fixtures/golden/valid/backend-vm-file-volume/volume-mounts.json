@@ -1,0 +1,23 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/etc/app.conf",
+      "${HOME}/dotfile.conf"
+    ]
+  ],
+  "tmpfs": [],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "ro"
+      ],
+      "raw_options": "ro",
+      "source": "${HOME}/dotfile.conf",
+      "spec": "${HOME}/dotfile.conf:/etc/app.conf:ro",
+      "target": "/etc/app.conf"
+    }
+  ]
+}

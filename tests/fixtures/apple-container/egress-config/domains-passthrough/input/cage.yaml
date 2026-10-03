@@ -1,0 +1,15 @@
+name: apple-passthrough
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+isolation: apple-container
+domains:
+  allow:
+  - api.example.com
+  passthrough:
+  - tunnel.example.net
+dns_servers:
+- 192.0.2.53
+- 192.0.2.54

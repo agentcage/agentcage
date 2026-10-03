@@ -1,0 +1,6 @@
+Usage: agentcage cage verify [OPTIONS] NAME
+
+  Check that a cage is healthy.
+
+Options:
+  --help  Show this message and exit.

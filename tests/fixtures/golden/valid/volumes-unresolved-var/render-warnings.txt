@@ -1,0 +1,1 @@
+warning: skipping volume '${GOLDEN_UNSET_VAR}/x' (unresolved variable)

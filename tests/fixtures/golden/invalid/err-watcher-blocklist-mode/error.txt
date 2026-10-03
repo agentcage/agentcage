@@ -1,0 +1,1 @@
+ValueError: agents.watcher does not support domains blocklist mode (there the static baseline IS the block list, so the watcher's digest and its baseline recommendations invert — a recommended removal would widen egress, not narrow it).

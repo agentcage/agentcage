@@ -1,0 +1,10 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+secret_injection:
+- env: LEGACY_KEY
+  placeholder: '{{LEGACY_KEY}}'
+  inject_to:
+  - api.example.com
+agentcage_version: 0.0.0-golden

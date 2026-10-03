@@ -1,0 +1,257 @@
+{
+  "contract": "scaffold_inspectors",
+  "summary": "The host renders cage.yaml; the egress addon reads it back and decides which inspectors to load. Split into the two halves that meet at the file: what the host renders, and what that config loads.",
+  "implementations": {
+    "host": "agentcage.init.render_config -> the inspector-relevant keys of the rendered cage.yaml",
+    "proxy": "addon.Agentcage._load_builtin_inspectors + _load_custom_inspectors over that config"
+  },
+  "fields": {
+    "scaffold": "the scaffold name, or null for the blank default",
+    "inspector_config": "the slice of the rendered cage.yaml that drives inspector loading: domains, secrets, max_request_body, entropy, content_type, inspectors. The HOST side is asserted against this.",
+    "loaded_inspectors": "the inspector names, IN ORDER, that the addon loads from that config. The PROXY side is asserted against this."
+  },
+  "notes": [
+    "Neither side needs the other: the host proves it renders the recorded config, the proxy proves that config loads the recorded inspectors. After the port the Rust suite takes the first half and pytest keeps the second.",
+    "Order matters: inspectors run as a chain, so a reordering is a behaviour change even when the set is identical."
+  ],
+  "cases": [
+    {
+      "id": "default",
+      "why": "the blank default scaffold \u2014 no inspectors: block at all, so everything loaded comes from the legacy-key mapping",
+      "scaffold": null,
+      "inspector_config": {
+        "domains": {
+          "allow": [
+            "example.com"
+          ]
+        }
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    },
+    {
+      "id": "arch",
+      "why": "a distro scaffold",
+      "scaffold": "arch",
+      "inspector_config": {
+        "domains": {
+          "allow": [
+            "pkgbuild.com",
+            "archlinux.org"
+          ]
+        },
+        "inspectors": [
+          {
+            "name": "content-type"
+          }
+        ]
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    },
+    {
+      "id": "busybox",
+      "why": "the minimal scaffold: an EMPTY domains.allow, which must still load the domain inspector",
+      "scaffold": "busybox",
+      "inspector_config": {
+        "domains": {
+          "allow": []
+        },
+        "inspectors": [
+          {
+            "name": "content-type"
+          }
+        ]
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    },
+    {
+      "id": "claude-code",
+      "why": "an agent scaffold",
+      "scaffold": "claude-code",
+      "inspector_config": {
+        "domains": {
+          "allow": [
+            "anthropic.com",
+            "claude.com"
+          ]
+        },
+        "inspectors": [
+          {
+            "name": "content-type"
+          }
+        ]
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    },
+    {
+      "id": "codex",
+      "why": "an agent scaffold",
+      "scaffold": "codex",
+      "inspector_config": {
+        "domains": {
+          "allow": [
+            "openai.com"
+          ]
+        },
+        "inspectors": [
+          {
+            "name": "content-type"
+          }
+        ]
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    },
+    {
+      "id": "debian",
+      "why": "a distro scaffold",
+      "scaffold": "debian",
+      "inspector_config": {
+        "domains": {
+          "allow": [
+            "deb.debian.org",
+            "security.debian.org"
+          ]
+        },
+        "inspectors": [
+          {
+            "name": "content-type"
+          }
+        ]
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    },
+    {
+      "id": "openclaw",
+      "why": "the scaffold PR A6's conformance test used: loads content-type, domain and secrets, and must NOT load entropy (scaffolds no longer opt into it)",
+      "scaffold": "openclaw",
+      "inspector_config": {
+        "domains": {
+          "allow": [
+            "anthropic.com",
+            "npmjs.org",
+            "npmjs.com",
+            "pypi.org",
+            "files.pythonhosted.org",
+            "nodejs.org",
+            "cdn.jsdelivr.net",
+            "unpkg.com",
+            "esm.sh",
+            "github.com",
+            "githubusercontent.com",
+            "docker.io",
+            "docker.com",
+            "ghcr.io",
+            "pkg-containers.githubusercontent.com",
+            "r2.cloudflarestorage.com",
+            "cdn.playwright.dev",
+            "playwright.download.prss.microsoft.com",
+            "storage.googleapis.com",
+            "debian.org",
+            "dl-cdn.alpinelinux.org"
+          ]
+        },
+        "inspectors": [
+          {
+            "name": "content-type"
+          },
+          {
+            "name": "secrets",
+            "config": {
+              "allow_to_domains": {
+                "azure_jwt": [
+                  "docker.io",
+                  "registry-1.docker.io",
+                  "auth.docker.io"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    },
+    {
+      "id": "pi",
+      "why": "an agent scaffold",
+      "scaffold": "pi",
+      "inspector_config": {
+        "domains": {
+          "allow": [
+            "anthropic.com",
+            "claude.com",
+            "pi.dev"
+          ]
+        },
+        "inspectors": [
+          {
+            "name": "content-type"
+          }
+        ]
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    },
+    {
+      "id": "ubuntu",
+      "why": "a distro scaffold",
+      "scaffold": "ubuntu",
+      "inspector_config": {
+        "domains": {
+          "allow": [
+            "archive.ubuntu.com",
+            "security.ubuntu.com"
+          ]
+        },
+        "inspectors": [
+          {
+            "name": "content-type"
+          }
+        ]
+      },
+      "loaded_inspectors": [
+        "domain",
+        "secrets",
+        "body-size",
+        "content-type"
+      ]
+    }
+  ]
+}

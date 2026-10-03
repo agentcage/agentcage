@@ -1,0 +1,18 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+protocol_relays:
+- name: out
+  type: smtp
+  listen: 0.0.0.0:1587
+  upstream:
+    host: smtp.example.com
+    port: 587
+  auth: {}
+  policy:
+    recipient_allowlist:
+    - ops@example.com
+    - sec@example.com
+    bypass_inspectors_for_allowlisted: []
+agentcage_version: 0.0.0-golden

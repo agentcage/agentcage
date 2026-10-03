@@ -1,0 +1,4 @@
+[Network]
+NetworkName=backend-vm-file-volume-net
+Internal=true
+Subnet=10.89.230.0/24

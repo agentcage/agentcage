@@ -1,0 +1,1 @@
+agents.watcher.max_digest_tokens is 0, so the digest is unbounded: at 96 scans/day this cage's model spend has no ceiling. Set a token budget unless you are deliberately uncapping it.

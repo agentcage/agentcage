@@ -763,30 +763,49 @@ class VmBackend:
         ]
         _exec_build(inst, build_cmd, what=f"build of {config.container.image}")
 
+    def push_quadlets(self, name: str, inst: LimaInstance) -> None:
+        """Copy the staged quadlets into the guest.
+
+        ``install_units`` writes them to a *host* staging directory;
+        this is what makes them real. Split out of ``_deploy_cage`` so
+        that ``cli._refresh_units`` can call it, which matters for one
+        case in particular: convergence after ``secret rm`` drops a
+        now-dangling ``Secret=<cage>.<KEY>`` line, and a converged unit
+        that stays on the host leaves the *running* guest naming a store
+        entry that no longer exists. The next in-guest start — a ``cage
+        restart``, or systemd's own crash recovery — then dies with
+        podman exit 125 and takes the cage down. Measured on real
+        hardware.
+        """
+        quadlet_dir = self.unit_dir() / "quadlets"
+        if not quadlet_dir.is_dir():
+            return
+        # Use ~ to get the correct home dir; Lima maps the host user
+        # into the guest.
+        inst.exec(["bash", "-c", "mkdir -p ~/.config/containers/systemd"])
+        vm_quadlet_dir = inst.exec(
+            ["bash", "-c", "echo ~/.config/containers/systemd"]
+        ).stdout.strip()
+        for qfile in sorted(quadlet_dir.iterdir()):
+            if not qfile.is_file():
+                continue
+            # Write the file inside the VM via base64 to avoid heredoc
+            # injection (content could contain the delimiter).
+            encoded = base64.b64encode(qfile.read_text().encode()).decode()
+            inst.exec([
+                "bash", "-c",
+                f"echo '{encoded}' | base64 -d > "
+                f"{shlex.quote(vm_quadlet_dir)}/{shlex.quote(qfile.name)}",
+            ])
+
     def _deploy_cage(self, name: str, inst: LimaInstance, config: Config | None = None) -> None:
         """Deploy quadlet files and start services inside the Lima VM."""
         quadlet_dir = self.unit_dir() / "quadlets"
         if not quadlet_dir.exists():
             return
 
-        # Install quadlets inside the VM (use ~ to get the correct home dir,
-        # Lima maps the host user into the guest)
         with Phase("deploy.quadlets", cage=name):
-            inst.exec(["bash", "-c", "mkdir -p ~/.config/containers/systemd"])
-            vm_quadlet_dir = inst.exec(
-                ["bash", "-c", "echo ~/.config/containers/systemd"]
-            ).stdout.strip()
-
-            for qfile in quadlet_dir.iterdir():
-                if qfile.is_file():
-                    content = qfile.read_text()
-                    # Write quadlet file inside VM via base64 to avoid
-                    # heredoc injection (content could contain the delimiter)
-                    encoded = base64.b64encode(content.encode()).decode()
-                    inst.exec([
-                        "bash", "-c",
-                        f"echo '{encoded}' | base64 -d > {shlex.quote(vm_quadlet_dir)}/{shlex.quote(qfile.name)}",
-                    ])
+            self.push_quadlets(name, inst)
 
         # Mirror proxy-config.yaml + dns-allowlist.conf into a VM-local
         # path. Quadlets bind-mount this VM-local copy (NOT the host path
@@ -1157,9 +1176,84 @@ class VmBackend:
         self.stop(name)
         self.start(name)
 
+    def _host_podman(self):
+        """Host podman, as a seam.
+
+        ``_bridge_secrets`` reaches for ``subprocess.run(["podman", …])``
+        directly; this returns the wrapper instead, so the one caller
+        that has to *remove* things can be unit-tested without a podman
+        on the machine running the tests.
+        """
+        from agentcage.podman import Podman
+        return Podman()
+
+    def _forget_secrets(self, name: str) -> list[str]:
+        """Delete this cage's secrets from everywhere this backend put them.
+
+        ``destroy_resources`` used to accept ``keep_secrets`` and ignore
+        it, so ``cage_destroy``'s promise — "Scoped secrets will also be
+        removed." — was false here, and ``--keep-secrets`` was a no-op.
+        Two copies survived a destroy:
+
+        * **The host staging store.** A vm cage's secrets are set on the
+          host and mirrored into the guest by ``_bridge_secrets`` at
+          deploy. The container backend removes its ``<name>.*`` podman
+          secrets; this backend never did, so the host copies outlived
+          the cage. (The *guest* copies go with the Lima instance, and
+          the ``.cred`` blobs go with the state directory.)
+        * **The at-rest store, when it is not one of those.** On a macOS
+          host a vm cage resolves to the login keychain, which nothing
+          here touched — observed on a real destroy: the item was still
+          under ``agentcage / <cage>.<KEY>`` afterwards, with nothing
+          left on disk to say it was there.
+
+        Best-effort throughout, for the same reason the apple backend's
+        namesake is: a cage that cannot be destroyed because its secrets
+        will not delete is worse than a leftover the operator can see.
+        """
+        from agentcage import state as _state
+        from agentcage.secret_store import (
+            SecretStoreError, at_rest_names, at_rest_store,
+        )
+
+        removed: list[str] = []
+
+        # --- the host staging store ---
+        try:
+            host = self._host_podman()
+            for entry in host.secret_list(prefix=f"{name}."):
+                sname = entry.get("Name", "")
+                if sname and host.secret_remove(sname):
+                    removed.append(f"secret:{sname}")
+        except (OSError, ValueError, SecretStoreError):
+            pass
+
+        # --- the at-rest store, when the runtime is not what holds it ---
+        sd = _state.deployment_dir(name)
+        try:
+            cfg = _state.load_deployment_config(name)
+        except Exception:
+            return removed
+        store = at_rest_store(cfg)
+        if store is None:
+            return removed
+        for key in at_rest_names(store, name, state_dir=sd):
+            try:
+                store.delete(name, key, state_dir=sd)
+            except (SecretStoreError, OSError):
+                continue
+            removed.append(f"secret:{name}.{key}")
+        return removed
+
     def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:
         removed: list[str] = []
         inst = self._instance(name)
+        # Secrets BEFORE the instance goes, and before the caller's
+        # state_dir rmtree: the keychain store's index of which keys
+        # exist is a file in the deployment dir, so reading it
+        # afterwards finds nothing to delete.
+        if not keep_secrets:
+            removed.extend(self._forget_secrets(name))
         if inst.exists():
             inst.delete()
             removed.append(f"lima-instance:{inst.name}")

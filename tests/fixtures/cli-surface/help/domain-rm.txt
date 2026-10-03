@@ -1,0 +1,7 @@
+Usage: agentcage domain rm [OPTIONS] NAME DOMAIN_NAME
+
+  Remove a domain from a cage's filter list.
+
+Options:
+  --passthrough  Remove only from passthrough list (keep in allow/block).
+  --help         Show this message and exit.

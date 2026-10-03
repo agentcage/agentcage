@@ -1,0 +1,7 @@
+# rustfmt defaults, declared rather than implied.
+#
+# `cargo fmt --all --check` is a CI gate, so the configuration it runs
+# under should be in the repo instead of being whatever the contributor's
+# toolchain defaults to. Only stable options belong here: a nightly-only
+# key makes `cargo fmt` warn on every run for everyone on stable.
+edition = "2024"

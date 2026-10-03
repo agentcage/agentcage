@@ -1,0 +1,4 @@
+[Network]
+NetworkName=domains-allow-empty-net
+Internal=true
+Subnet=10.89.132.0/24

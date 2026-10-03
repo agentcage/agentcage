@@ -1,0 +1,15 @@
+name: volumes-named
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  named_volumes:
+    state: /var/lib/state:rw
+    cache: /var/cache:ro
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

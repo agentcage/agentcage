@@ -1,0 +1,107 @@
+domains:
+  mode: allowlist
+  allow:
+  - api.anthropic.com
+  - github.com
+  - '*.githubusercontent.com'
+  - registry.npmjs.org
+  - openrouter.ai
+  block:
+  - telemetry.example.com
+  passthrough:
+  - pinned-api.example.com
+  expires:
+    temp-download.example.com: '2026-09-08T18:00:00Z'
+secrets:
+  backend: systemd-creds
+  scope: user
+  allow_plaintext: false
+secret_injection:
+- env: ANTHROPIC_API_KEY
+  placeholder: agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  inject_to:
+  - api.anthropic.com
+  inject_headers:
+  - x-api-key
+  inject_body: false
+  source: systemd-creds:ANTHROPIC_API_KEY
+- env: GITHUB_TOKEN
+  placeholder: agentcage:secret:GITHUB_TOKEN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  inject_to:
+  - github.com
+  - '*.githubusercontent.com'
+  inject_headers:
+  - authorization
+  inject_body: false
+  source: env:FIXTURE_GITHUB_TOKEN
+- env: IMAP_PASSWORD
+  inject_to:
+  - imap.example.com
+  inject_body: true
+  placeholder: agentcage:secret:IMAP_PASSWORD:0f1e2d3c4b5a69788796a5b4c3d2e1f0
+agents:
+  decider:
+    enable: true
+    provider: openrouter
+    model: z-ai/glm-5.3
+    api_key: systemd-creds:OPENROUTER_API_KEY
+    context: 'Fixture cage. Approve official package registries only.
+
+      '
+    rate_limit_rps: 2.0
+    rate_limit_burst: 5
+  watcher:
+    enable: true
+    provider: openrouter
+    model: z-ai/glm-5.3
+    api_key: systemd-creds:OPENROUTER_API_KEY
+    interval_seconds: 300
+    window_seconds: 600
+    max_flows: 100
+    auto_revoke: true
+    dedup_samples: true
+    max_digest_tokens: 8000
+    context: 'Fixture cage. Flag encoded source code in request bodies.
+
+      '
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 0.0.0.0:1143
+  upstream:
+    host: imap.example.com
+    port: 993
+    tls: true
+    tls_servername: imap.example.com
+    ca_pem: '-----BEGIN CERTIFICATE-----
+
+      TEST-NOT-A-REAL-CERTIFICATE-0001
+
+      -----END CERTIFICATE-----
+
+      '
+  policy:
+    write_mode: organise
+    folder_allowlist:
+    - INBOX
+    - Archive
+    folder_denylist:
+    - Trash
+  auth:
+    user: agent@example.com
+    password_source: systemd-creds:IMAP_PASSWORD
+capture:
+  enable_har: true
+  max_body_size: 1048576
+  max_file_size: 104857600
+  min_action: allowed
+  domains: []
+  exclude_domains:
+  - registry.npmjs.org
+logging:
+  level: info
+  dns_queries: true
+  proxy_connections: true
+  allowed_requests: false
+max_request_body: 10485760
+agentcage_version: 0.40.2

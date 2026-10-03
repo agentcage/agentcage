@@ -34,7 +34,9 @@ from agentcage.config import load_config, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
 from agentcage import state, systemd, terminal
-from agentcage.scaffold_brief import stage_scaffold_assets
+from agentcage.scaffold_brief import (
+    stage_scaffold_assets, staged_asset_differs, staged_asset_sources,
+)
 from agentcage.lima.instance import LimaInstance
 from agentcage.services import (
     expected_secrets as _expected_secrets,
@@ -708,7 +710,8 @@ def _check_restore_build_context(manifest: dict, config_src: Path) -> None:
 
 
 def _stage_build_context(src_dir: Path, dest_dir: Path,
-                         *, clobber: bool = True) -> None:
+                         *, clobber: bool = True,
+                         clobber_names: frozenset[str] = frozenset()) -> None:
     """Copy a Containerfile's sibling build inputs into a cage's state dir.
 
     Stages both files *and* directories so a later ``cage update`` (without
@@ -720,13 +723,22 @@ def _stage_build_context(src_dir: Path, dest_dir: Path,
     cage.yaml-style configs and ``.j2`` templates are skipped; build noise
     (``__pycache__``, ``.git``, ``node_modules``, ...) is filtered out of
     copied directories. With *clobber* false, entries already present in
-    *dest_dir* are left untouched.
+    *dest_dir* are left untouched — except for any named in
+    *clobber_names*, which are overwritten either way.
+
+    That exemption exists for ``init --force``. ``init`` stages into the
+    operator's own directory, so it cannot clobber wholesale (a project's
+    ``README.md`` is not ours to replace), but the entries the image is
+    built from have to be the scaffold's or the config we wrote beside
+    them is a lie. ``init`` refuses on those unless forced, and when it is
+    forced they must actually be replaced — see
+    :func:`_scaffold_stage_conflicts`.
     """
     for f in src_dir.iterdir():
         if f.suffix in _BUILD_CONTEXT_SKIP_SUFFIXES:
             continue
         dest = dest_dir / f.name
-        if not clobber and dest.exists():
+        if not clobber and dest.exists() and f.name not in clobber_names:
             continue
         if f.is_dir():
             shutil.copytree(
@@ -734,6 +746,86 @@ def _stage_build_context(src_dir: Path, dest_dir: Path,
             )
         elif f.is_file():
             shutil.copy2(str(f), str(dest))
+
+
+def _scaffold_build_inputs(src_cf: Path) -> list[str]:
+    """Entries beside *src_cf* whose bytes decide what the image *is*.
+
+    The Containerfile itself, plus every sibling :func:`_stage_build_context`
+    would stage that the Containerfile actually ``COPY``s — reusing
+    ``scaffold_brief._copy_references`` so there is one definition of what
+    a build-context reference is, rather than a second, subtly different
+    parse of ``COPY``.
+
+    Everything else a scaffold dir holds is deliberately *not* here. A
+    scaffold's ``README.md`` is staged for the operator to read; the build
+    never opens it, so an operator's own README is theirs to keep and is
+    not a conflict.
+
+    Regular files only. A ``COPY``ed sibling *directory* is a build input
+    too, but :func:`_stage_build_context` copies directories through
+    ``_BUILD_CONTEXT_IGNORE``, so a staged copy legitimately lacks the
+    ``node_modules`` or ``__pycache__`` its source has and would compare
+    as different forever — a refusal with no way out but ``--force``.
+    Detecting that honestly needs the ignore filter replicated in the
+    comparison; no scaffold ships a ``COPY``ed directory (the canonical
+    ``skills/agentcage`` is staged from its own source, below), so the
+    narrower rule costs nothing real and cannot cry wolf.
+    """
+    from agentcage.scaffold_brief import _copy_references
+
+    names = [src_cf.name]
+    for entry in sorted(src_cf.parent.iterdir()):
+        if entry.name == src_cf.name or not entry.is_file():
+            continue
+        if entry.suffix in _BUILD_CONTEXT_SKIP_SUFFIXES:
+            continue
+        if _copy_references(src_cf, entry.name):
+            names.append(entry.name)
+    return names
+
+
+def _scaffold_stage_conflicts(src_cf: Path, dest_dir: Path,
+                              scaffold: str) -> list[str]:
+    """Paths in *dest_dir* that ``init`` must not quietly stage over.
+
+    ``init`` stages a scaffold's build context into the operator's working
+    directory, not into a cage's private state dir, and both of the
+    policies that are right for a state dir are wrong there:
+
+    * :func:`_stage_build_context` is called with ``clobber=False``, which
+      silently *keeps* what is already present. For the Containerfile that
+      is a trap. The config ``init`` writes says
+      ``image: localhost/agentcage-scaffold-<name>`` and
+      ``containerfile: Containerfile``, so ``cage create`` then builds the
+      operator's unrelated Containerfile and tags the result with the
+      scaffold's name. The wrapper's ``FROM`` picks that up and the first
+      symptom is a build failure deep inside the wrapper (``useradd: not
+      found`` for a scaffold that has ``useradd``) with nothing pointing
+      back at the cause — or, if the stale base happens to have the tools,
+      no symptom at all and a cage running an image its own name denies.
+    * :func:`stage_scaffold_assets` always refreshes a stale copy, which
+      silently *overwrites* a project's own ``AGENTS.md`` — a file many
+      repos keep at the root, this one included.
+
+    Both get the same answer: name the conflict and refuse, exactly as
+    ``init`` already treats an existing ``cage.yaml``, with the documented
+    ``--force`` as the single override. The scaffold owns its build
+    inputs; an operator must never be left holding a config and a
+    Containerfile that disagree.
+
+    Returns the conflicting build-context-relative paths, sorted.
+    """
+    conflicts: set[str] = set()
+    for name in _scaffold_build_inputs(src_cf):
+        dest = dest_dir / name
+        if dest.exists() and staged_asset_differs(src_cf.parent / name, dest):
+            conflicts.add(name)
+    for rel, source in staged_asset_sources(src_cf, scaffold):
+        dest = dest_dir / rel
+        if dest.exists() and staged_asset_differs(source, dest):
+            conflicts.add(rel.as_posix())
+    return sorted(conflicts)
 
 
 def _restart_cage(name: str, cfg=None):
@@ -939,7 +1031,7 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
         click.echo("error: missing argument 'NAME'", err=True)
         sys.exit(1)
 
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {name!r})",
@@ -960,27 +1052,62 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
         click.echo(f"error: {dest} already exists (use --force to overwrite)", err=True)
         sys.exit(1)
 
+    from agentcage.init import load_scaffold_meta, run_scaffold_setup, resolve_scaffold
+
+    meta = load_scaffold_meta(scaffold) if scaffold else None
+    scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
+
+    # Every Containerfile this run would stage beside the config.
+    staged_cfs: list[Path] = []
+    if scaffold and meta and scaffold_dir is not None:
+        for entry in meta.get("build", []):
+            if "containerfile" in entry:
+                src_cf = scaffold_dir / entry["containerfile"]
+                if src_cf.is_file():
+                    staged_cfs.append(src_cf)
+
+    # The staging conflict check runs HERE, before the config is written
+    # and before run_scaffold_setup builds anything. Refusing after either
+    # would leave precisely the half-applied state this exists to prevent:
+    # a cage.yaml naming the scaffold's image next to a Containerfile that
+    # is not the scaffold's. See _scaffold_stage_conflicts.
+    if not force and scaffold:
+        conflicts = sorted({
+            path
+            for src_cf in staged_cfs
+            for path in _scaffold_stage_conflicts(src_cf, dest.parent, scaffold)
+        })
+        if conflicts:
+            click.echo(
+                f"error: {dest.parent} already has files that differ from "
+                f"scaffold {scaffold!r}: {', '.join(conflicts)}\n"
+                f"  cage.yaml names the scaffold's image, but `cage create` "
+                f"would build these instead — the cage would not be the "
+                f"image its name claims. Move them aside, or pass --force "
+                f"to overwrite them.",
+                err=True,
+            )
+            sys.exit(1)
+
     content = render_config(name, image=image, isolation=isolation, scaffold=scaffold, port=port)
     dest.write_text(content)
     click.echo(f"Created {dest}")
 
-    from agentcage.init import load_scaffold_meta, run_scaffold_setup, resolve_scaffold
-
-    meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
         run_scaffold_setup(scaffold, name, str(dest), isolation=isolation)
-        # Copy Containerfile and sibling build context files from scaffold
-        scaffold_dir_path = resolve_scaffold(scaffold)
-        if scaffold_dir_path is not None:
-            for entry in meta.get("build", []):
-                if "containerfile" in entry:
-                    src_cf = scaffold_dir_path / entry["containerfile"]
-                    if src_cf.is_file():
-                        _stage_build_context(
-                            src_cf.parent, dest.parent, clobber=False,
-                        )
-                        stage_scaffold_assets(src_cf, dest.parent, scaffold)
-    scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
+        # Copy Containerfile and sibling build context files from scaffold.
+        # clobber stays False so an operator's unrelated files (a project
+        # README) survive, but --force must actually replace the build
+        # inputs it was given permission to replace — a refusal that then
+        # kept the stale file would be the original bug with a prompt.
+        for src_cf in staged_cfs:
+            _stage_build_context(
+                src_cf.parent, dest.parent, clobber=False,
+                clobber_names=frozenset(
+                    _scaffold_build_inputs(src_cf) if force else ()
+                ),
+            )
+            stage_scaffold_assets(src_cf, dest.parent, scaffold)
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
         for i, step in enumerate(meta["next_steps"], 1):
@@ -1309,10 +1436,21 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
         _build_and_deploy(cfg, config_host_path, name, podman, used_octets=used_octets,
                            no_cache=no_cache, pull=pull)
     except Exception:
-        # Stop partially-started services but preserve state for debugging
+        # Stop partially-started services but preserve state for debugging.
+        #
+        # Not on the vm backend. ``VmBackend.stop`` stops the cage's two
+        # units and then powers the Lima guest off — which is what ``cage
+        # stop`` means for a vm cage, but it is the opposite of
+        # "preserve state for debugging" here: the guest IS the state.
+        # Every one of the four recovery commands printed below needs it
+        # up (``cage logs`` and ``cage update`` shell into it; even
+        # ``cage destroy`` has to boot it again to remove the instance),
+        # and the units the teardown would stop are inside it and go
+        # down with it anyway.
         backend = get_backend(cfg)
         try:
-            backend.stop(name)
+            if cfg.isolation != "vm":
+                backend.stop(name)
         except Exception:
             pass
         click.echo()
@@ -2990,7 +3128,7 @@ def _normalize_since(since: str) -> str:
 
     Accepts ``1h``, ``30m``, ``7d`` or ISO dates (passed through).
     """
-    m = re.match(r"^(\d+)([hHmMdD])$", since)
+    m = re.match(r"^(\d+)([hHmMdD])\Z", since)
     if not m:
         return since  # assume ISO date, pass through
     val, unit = int(m.group(1)), m.group(2).lower()
@@ -3302,8 +3440,14 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         click.echo("      enable_har: true", err=True)
         sys.exit(1)
 
-    # Warn about sensitive outbound data
-    if view == "outbound" and not json_lines:
+    # Warn about sensitive outbound data.
+    #
+    # The warning goes to stderr, so it cannot corrupt piped stdout --
+    # which means there was never a reason to suppress it for
+    # --json-lines. That suppression silently dropped the warning from
+    # the one output mode people pipe into other tools, while the bytes
+    # being piped still carried the injected API keys.
+    if view == "outbound":
         click.echo(
             "WARNING: --view outbound includes real secrets (API keys, tokens). "
             "Treat the output as sensitive.",
@@ -3311,7 +3455,21 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         )
 
     # Build filter
-    since_dt = parse_since(since) if since else None
+    #
+    # An unparseable --since is an error, not "no filter". Falling through
+    # to None silently exported the whole capture, which is the opposite of
+    # what a narrowing flag should do when it is wrong; `cage audit` has
+    # always refused the same input explicitly.
+    since_dt = None
+    if since:
+        since_dt = parse_since(since)
+        if since_dt is None:
+            click.echo(
+                f"error: could not parse --since '{since}' "
+                f"(use 1h, 30m, 7d, or an ISO date)",
+                err=True,
+            )
+            sys.exit(1)
     filt = CaptureFilter(
         decisions=list(decisions),
         directions=list(directions),
@@ -3489,7 +3647,7 @@ def _cage_restore_apple_container(
     from agentcage.backends.apple_container import AppleContainerBackend
 
     target_name = new_name or manifest["cage_name"]
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', target_name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', target_name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {target_name!r})",
@@ -3638,12 +3796,34 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
         has_build_context = _stage_backup_config(src_dir, config_dir)
 
         # ── Secrets ──
+        #
+        # Two sources, because the podman store is not always where the
+        # value lives. When ``runtime_decrypts`` is False the podman
+        # entry is a *copy*, written at deploy time and never refreshed
+        # by `secret set` — so a backup read from it could carry a value
+        # two edits old. Measured on a vm cage on a Mac: three copies,
+        # two values, and the tarball got the stale one. The at-rest
+        # store is authoritative where it exists; the podman copy covers
+        # the keys it does not know about.
+        from agentcage.secret_store import (
+            SecretStoreError, at_rest_names, at_rest_store,
+        )
         expected = _expected_secrets(cfg)
         secrets_in_store = podman.secret_list(prefix=f"{name}.")
         secret_keys = [
             s["Name"].removeprefix(f"{name}.")
             for s in secrets_in_store
         ]
+        sd = state.deployment_dir(name)
+        # Resolved only when the values are actually wanted: resolving a
+        # keychain store runs its write probe, which writes a throwaway
+        # item to the operator's real login keychain — not something a
+        # backup that archives no values has any business doing.
+        at_rest = at_rest_store(cfg, podman=podman) if include_secrets else None
+        if at_rest is not None:
+            for key in at_rest_names(at_rest, name, state_dir=sd):
+                if key not in secret_keys:
+                    secret_keys.append(key)
         if include_secrets:
             click.echo(
                 "WARNING: Including secrets in backup. "
@@ -3653,10 +3833,24 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
             if secret_keys:
                 secrets_dir = staging_path / "secrets"
                 secrets_dir.mkdir()
-                for s in secrets_in_store:
-                    full_name = s["Name"]
-                    key = full_name.removeprefix(f"{name}.")
-                    value = podman.secret_read(full_name)
+                for key in secret_keys:
+                    full_name = f"{name}.{key}"
+                    value = None
+                    if at_rest is not None:
+                        try:
+                            value = at_rest.get(name, key, state_dir=sd)
+                        except SecretStoreError:
+                            value = None
+                    if value is None:
+                        try:
+                            value = podman.secret_read(full_name)
+                        except Exception as e:
+                            click.echo(
+                                f"warning: could not read secret "
+                                f"'{key}': {e}",
+                                err=True,
+                            )
+                            continue
                     (secrets_dir / key).write_text(value)
         else:
             click.echo(
@@ -3760,7 +3954,7 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
 
     target_name = new_name or manifest["cage_name"]
 
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', target_name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', target_name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {target_name!r})",
@@ -4197,6 +4391,25 @@ def _refresh_units(name: str, cfg) -> None:
     ):
         return
     backend.install_units(units, quiet=True)
+    # And on `vm`, one more hop. `install_units` stages the quadlets on
+    # the *host*; the guest's copies are refreshed by a deploy, so a
+    # converged unit used to sit on the host while the running guest
+    # kept the old one. Tolerable for an *added* `Secret=` line (the
+    # value is staged live anyway) and not tolerable for a *removed*
+    # one: the guest's quadlet then names a store entry that no longer
+    # exists and the next in-guest start dies with podman exit 125,
+    # taking the cage with it. Best-effort — a guest that cannot be
+    # reached is a reason to do less, not to report that the secret was
+    # not stored.
+    if cfg.isolation == "vm":
+        try:
+            from agentcage.lima.instance import LimaInstance
+            backend.push_quadlets(name, LimaInstance(name))
+        except Exception as e:
+            click.echo(
+                f"warning: could not push converged units into the guest: {e}",
+                err=True,
+            )
 
 
 def _apply_secret_live_or_restart(name: str, key: str, value: str) -> None:
@@ -4292,15 +4505,47 @@ def secret_rm(name: str, key: str):
     # start, and a secret set live on a running cage (zero-restart) may
     # not have a store entry yet at all.
     cred_file = state.deployment_dir(name) / "creds" / f"{key}.cred"
+    sd = state.deployment_dir(name)
     had_cred = cred_file.is_file()
     had_store = podman.secret_exists(full_name)
-    if not had_cred and not had_store:
+
+    # ...and remove the value *at rest* when the runtime is not what
+    # holds it. The two removals above are the container backend's two
+    # places; a store whose ``runtime_decrypts`` is False keeps the
+    # value somewhere neither of them touches. A vm cage on a Mac
+    # resolves to the keychain, so `secret rm` used to report success
+    # and leave the value there — and the next start put it straight
+    # back. Same reason the apple branch above needs its own delete;
+    # this is that branch's rule applied by store rather than by
+    # isolation.
+    from agentcage.secret_store import (
+        SecretStoreError, at_rest_names, at_rest_store,
+    )
+    at_rest = at_rest_store(cfg, podman=podman)
+    had_at_rest = at_rest is not None and key in at_rest_names(
+        at_rest, name, state_dir=sd,
+    )
+
+    if not had_cred and not had_store and not had_at_rest:
         click.echo(f"error: secret '{full_name}' does not exist", err=True)
         sys.exit(1)
     if had_store:
         podman.secret_remove(full_name)
     if had_cred:
         cred_file.unlink()
+    if had_at_rest:
+        try:
+            at_rest.delete(name, key, state_dir=sd)
+        except SecretStoreError as e:
+            # Reported, not fatal: the runtime copies are already gone,
+            # so the secret has stopped being injected either way. The
+            # operator needs to know the at-rest copy survived, because
+            # the next start would otherwise restore it silently.
+            click.echo(
+                f"warning: could not remove '{full_name}' from the "
+                f"{at_rest.name} store: {e}",
+                err=True,
+            )
     click.echo(f"Secret '{full_name}' removed.")
 
     # Empty value = tombstone: the injector skips the rule instead of
@@ -4916,14 +5161,23 @@ def _host_never_grant(raw: dict) -> set[str]:
 
     Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
     ``_is_never_grant`` (data/proxy/policy_api.py): the built-in suffix set
-    ``{internal, local, localhost}`` plus the control host from
-    ``agents.decider.host`` (default ``agentcage.local``). The reconcile runs
-    on the HOST (``grants sync`` / the implicit ``domain list`` reconcile)
-    and cannot import the addon (which lives in the egress image), so this
-    is a deliberate mirror kept in sync with
+    ``{internal, local, localhost, metadata.goog}`` plus the control host
+    from ``agents.decider.host`` (default ``agentcage.local``). The reconcile
+    runs on the HOST (``grants sync`` / the implicit ``domain list``
+    reconcile) and cannot import the addon (which lives in the egress
+    image), so this is a deliberate mirror kept in sync with
     ``config._AUTO_NEVER_GRANT`` / ``DeciderAgentConfig.host``. Suffix-matched
     so ``internal`` covers ``*.internal`` (e.g. ``metadata.google.internal``)
     and ``local`` covers the default control host's TLD family.
+
+    ``metadata.goog`` is GCP's *public* metadata alias — the one cloud
+    metadata name that does not end in ``.internal``; AWS and Azure address
+    theirs by IP, which the syntax check already rejects. It has been in
+    ``_AUTO_NEVER_GRANT`` and in the addon all along; only this docstring
+    said three. The three copies are pinned against each other by
+    ``tests/fixtures/contracts/shared_constants.json``, which is what would
+    actually catch a drift — a stale docstring is not load-bearing, but it
+    is the first thing someone reads before editing the set.
     """
     from agentcage.config import _AUTO_NEVER_GRANT
     out = {str(h).lower().rstrip(".") for h in _AUTO_NEVER_GRANT}

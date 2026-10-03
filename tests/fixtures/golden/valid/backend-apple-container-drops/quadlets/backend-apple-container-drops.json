@@ -1,0 +1,37 @@
+{
+  "allow_icmp": false,
+  "allow_udp_ports": [],
+  "autostart": false,
+  "cpus": "4",
+  "decider_api_key_source": "",
+  "decider_enabled": false,
+  "dns_servers": [
+    "192.0.2.53"
+  ],
+  "env": {},
+  "has_expiring_domains": false,
+  "inspected_tcp_ports": [
+    80,
+    443
+  ],
+  "lifecycle": "service",
+  "memory": "4096m",
+  "name": "backend-apple-container-drops",
+  "passthrough_tcp_ports": [],
+  "relay_secret_envs": [],
+  "secret_env_placeholders": {},
+  "secret_envs": [],
+  "secrets_allow_plaintext": false,
+  "secrets_backend": "auto",
+  "tmpfs": [
+    "/tmp:rw,noexec,nosuid,size=64M",
+    "/workspace/.git/hooks:rw,noexec,tmpcopyup",
+    "/workspace/.claude:rw,nosuid"
+  ],
+  "user_image": "docker.io/library/node:22-slim",
+  "volumes": [
+    "{{HOME}}/workspace:/workspace:rw"
+  ],
+  "watcher_api_key_source": "",
+  "watcher_enabled": false
+}

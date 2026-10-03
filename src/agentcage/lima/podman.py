@@ -32,6 +32,28 @@ class VmPodman:
         result = self._inst.exec(["podman", "image", "inspect", image])
         return json.loads(result.stdout)[0]
 
+    def container_inspect(self, name: str) -> dict:
+        """Inspect a container in the guest using Podman's JSON format.
+
+        This method was missing, and its absence made the VM live-secret
+        path unreachable: ``services.cage_has_live_secret_channel``
+        builds a ``VmPodman`` for an ``isolation: vm`` cage and calls
+        ``container_inspect`` on it, so every call raised
+        ``AttributeError`` into that function's bare ``except
+        Exception`` and returned False. The consequence was not an error
+        anyone saw — it was that ``secret set`` and ``secret rm`` on a
+        *running* vm cage always took the restart path, costing the
+        workload its process state, while the zero-restart branch
+        written for them (``stage_secret_value``'s vm arm and the
+        ``push_config_files`` follow-up) never ran at all.
+
+        Spelled ``podman container inspect`` rather than the host
+        method's bare ``podman inspect``: the bare form also matches
+        images, and the one thing this is asked about is a container.
+        """
+        result = self._inst.exec(["podman", "container", "inspect", name])
+        return json.loads(result.stdout)[0]
+
     def secret_list(self, prefix: str = "") -> list[dict]:
         r = self._inst.exec(
             ["podman", "secret", "ls", "--noheading", "--format", "{{.Name}}"],

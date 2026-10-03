@@ -1,0 +1,199 @@
+[
+  {
+    "line": "{\"ts\":\"2024-01-01T00:00:00+00:00\",\"direction\":\"outbound\",\"method\":\"GET\",\"host\":\"api.example.com\",\"url\":\"https://api.example.com/v1/data\",\"decision\":\"allowed\",\"reason\":\"\",\"inspectors\":[],\"port\":443,\"path\":\"/v1/data\",\"source\":\"10.89.7.2\",\"secrets_injected\":[\"FAKE_API_KEY\"],\"secrets_redacted\":[]}",
+    "parsed": {
+      "decision": "allowed",
+      "direction": "outbound",
+      "host": "api.example.com",
+      "inspectors": [],
+      "method": "GET",
+      "path": "/v1/data",
+      "port": 443,
+      "reason": "",
+      "secrets_injected": [
+        "FAKE_API_KEY"
+      ],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-01-01T00:00:00+00:00",
+      "url": "https://api.example.com/v1/data"
+    }
+  },
+  {
+    "line": "{\"ts\":\"2024-01-01T00:01:00+00:00\",\"direction\":\"outbound\",\"method\":\"post\",\"host\":\"upload.example.net\",\"url\":\"https://upload.example.net/put\",\"decision\":\"flagged\",\"reason\":\"high entropy\",\"inspectors\":[{\"name\":\"entropy\",\"severity\":\"warning\"}],\"port\":443,\"path\":\"/put\",\"source\":\"10.89.7.2\",\"secrets_injected\":[],\"secrets_redacted\":[\"FAKE_API_KEY\"]}",
+    "parsed": {
+      "decision": "flagged",
+      "direction": "outbound",
+      "host": "upload.example.net",
+      "inspectors": [
+        {
+          "name": "entropy",
+          "severity": "warning"
+        }
+      ],
+      "method": "post",
+      "path": "/put",
+      "port": 443,
+      "reason": "high entropy",
+      "secrets_injected": [],
+      "secrets_redacted": [
+        "FAKE_API_KEY"
+      ],
+      "source": "10.89.7.2",
+      "ts": "2024-01-01T00:01:00+00:00",
+      "url": "https://upload.example.net/put"
+    }
+  },
+  {
+    "line": "{\"ts\":\"2024-01-01T00:02:00+00:00\",\"direction\":\"outbound\",\"method\":\"POST\",\"host\":\"evil.example.org\",\"url\":\"https://evil.example.org/exfil\",\"decision\":\"blocked\",\"reason\":\"domain not allowed\",\"inspectors\":[{\"name\":\"domain\",\"severity\":\"error\"},{\"name\":\"secrets\",\"severity\":\"critical\"}],\"port\":443,\"path\":\"/exfil\",\"source\":\"10.89.7.2\",\"secrets_injected\":[],\"secrets_redacted\":[]}",
+    "parsed": {
+      "decision": "blocked",
+      "direction": "outbound",
+      "host": "evil.example.org",
+      "inspectors": [
+        {
+          "name": "domain",
+          "severity": "error"
+        },
+        {
+          "name": "secrets",
+          "severity": "critical"
+        }
+      ],
+      "method": "POST",
+      "path": "/exfil",
+      "port": 443,
+      "reason": "domain not allowed",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-01-01T00:02:00+00:00",
+      "url": "https://evil.example.org/exfil"
+    }
+  },
+  {
+    "line": "[proxy:warning] {\"ts\":\"2024-01-01T00:03:00+00:00\",\"direction\":\"outbound\",\"method\":\"GET\",\"host\":\"evil.example.org\",\"url\":\"https://evil.example.org/beacon\",\"decision\":\"blocked\",\"reason\":\"domain not allowed\",\"inspectors\":[{\"name\":\"domain\",\"severity\":\"error\"}],\"port\":443,\"path\":\"/beacon\",\"source\":\"10.89.7.2\",\"secrets_injected\":[],\"secrets_redacted\":[]}",
+    "parsed": {
+      "decision": "blocked",
+      "direction": "outbound",
+      "host": "evil.example.org",
+      "inspectors": [
+        {
+          "name": "domain",
+          "severity": "error"
+        }
+      ],
+      "method": "GET",
+      "path": "/beacon",
+      "port": 443,
+      "reason": "domain not allowed",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-01-01T00:03:00+00:00",
+      "url": "https://evil.example.org/beacon"
+    }
+  },
+  {
+    "line": "[dns:info] {\"ts\":\"2024-01-01T00:04:00+00:00\",\"direction\":\"inbound\",\"method\":\"PUT\",\"host\":\"127.0.0.1\",\"url\":\"http://127.0.0.1:3000/hook\",\"decision\":\"allowed\",\"reason\":\"\",\"inspectors\":[],\"port\":3000,\"path\":\"/hook\",\"source\":\"127.0.0.1\",\"secrets_injected\":[],\"secrets_redacted\":[]}",
+    "parsed": {
+      "decision": "allowed",
+      "direction": "inbound",
+      "host": "127.0.0.1",
+      "inspectors": [],
+      "method": "PUT",
+      "path": "/hook",
+      "port": 3000,
+      "reason": "",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "127.0.0.1",
+      "ts": "2024-01-01T00:04:00+00:00",
+      "url": "http://127.0.0.1:3000/hook"
+    }
+  },
+  {
+    "line": "this is not json at all",
+    "parsed": null
+  },
+  {
+    "line": "{\"ts\":\"2024-01-01T00:05:00+00:00\",\"no_decision_key\":true,\"method\":\"GET\"}",
+    "parsed": null
+  },
+  {
+    "line": "{\"ts\":\"2024-01-01T00:06:00+00:00\",\"decision\":\"allowed\",\"host\":\"api.example.com\"}",
+    "parsed": null
+  },
+  {
+    "line": "",
+    "parsed": null
+  },
+  {
+    "line": "{\"ts\":\"2024-06-01T12:00:00+00:00\",\"direction\":\"outbound\",\"method\":\"HEAD\",\"host\":\"cdn.example.com\",\"url\":\"https://cdn.example.com/a.bin\",\"decision\":\"allowed\",\"reason\":\"\",\"inspectors\":[{\"name\":\"content-type\",\"severity\":\"info\"},{\"name\":\"watcher\",\"severity\":\"high\"}],\"port\":443,\"path\":\"/a.bin\",\"source\":\"10.89.7.2\",\"secrets_injected\":[],\"secrets_redacted\":[]}",
+    "parsed": {
+      "decision": "allowed",
+      "direction": "outbound",
+      "host": "cdn.example.com",
+      "inspectors": [
+        {
+          "name": "content-type",
+          "severity": "info"
+        },
+        {
+          "name": "watcher",
+          "severity": "high"
+        }
+      ],
+      "method": "HEAD",
+      "path": "/a.bin",
+      "port": 443,
+      "reason": "",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-06-01T12:00:00+00:00",
+      "url": "https://cdn.example.com/a.bin"
+    }
+  },
+  {
+    "line": "{\"ts\":\"not-a-timestamp\",\"direction\":\"outbound\",\"method\":\"GET\",\"host\":\"legacy.example.com\",\"url\":\"https://legacy.example.com/\",\"decision\":\"allowed\",\"reason\":\"\",\"inspectors\":[],\"port\":80,\"path\":\"/\",\"source\":\"10.89.7.2\",\"secrets_injected\":[],\"secrets_redacted\":[]}",
+    "parsed": {
+      "decision": "allowed",
+      "direction": "outbound",
+      "host": "legacy.example.com",
+      "inspectors": [],
+      "method": "GET",
+      "path": "/",
+      "port": 80,
+      "reason": "",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "not-a-timestamp",
+      "url": "https://legacy.example.com/"
+    }
+  },
+  {
+    "line": "{\"ts\":\"2024-02-02T08:30:00\",\"direction\":\"outbound\",\"method\":\"DELETE\",\"host\":\"api.example.com\",\"url\":\"https://api.example.com/v1/item/9\",\"decision\":\"flagged\",\"reason\":\"watcher finding\",\"inspectors\":[{\"name\":\"watcher\",\"severity\":\"medium\"}],\"port\":443,\"path\":\"/v1/item/9\",\"source\":\"10.89.7.2\",\"secrets_injected\":[],\"secrets_redacted\":[]}",
+    "parsed": {
+      "decision": "flagged",
+      "direction": "outbound",
+      "host": "api.example.com",
+      "inspectors": [
+        {
+          "name": "watcher",
+          "severity": "medium"
+        }
+      ],
+      "method": "DELETE",
+      "path": "/v1/item/9",
+      "port": 443,
+      "reason": "watcher finding",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-02-02T08:30:00",
+      "url": "https://api.example.com/v1/item/9"
+    }
+  }
+]

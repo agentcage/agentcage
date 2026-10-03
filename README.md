@@ -159,13 +159,14 @@ Using the official one-line installer:
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-Or install via Python package managers (`uv` or `pip`):
+Or download the binary for your platform from the
+[latest release](https://github.com/agentcage/agentcage/releases/latest)
+and verify it against the `.sha256` published beside it — see
+[the install guide](docs/get-started/install.md).
 
-```bash
-uv tool install agentcage
-# or
-pip install agentcage
-```
+agentcage is a single static binary. It is no longer a Python package:
+`pip install agentcage` and `uv tool install agentcage` are not install
+paths any more, and the `pyproject.toml` here is dev/test-only.
 
 Verify your host environment:
 

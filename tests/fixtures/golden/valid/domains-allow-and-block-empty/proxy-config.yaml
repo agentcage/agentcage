@@ -1,0 +1,5 @@
+domains:
+  allow:
+  - api.example.com
+  block: []
+agentcage_version: 0.0.0-golden

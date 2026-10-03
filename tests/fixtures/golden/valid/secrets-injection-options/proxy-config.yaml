@@ -1,0 +1,15 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+secret_injection:
+- env: BODY_KEY
+  placeholder: agentcage:secret:BODY_KEY:11111111111111111111111111111111
+  inject_to:
+  - api.example.com
+  source: env:GOLDEN_SET_VAR
+  inject_body: true
+  inject_headers:
+  - ' x-honeycomb-team '
+  - X-Custom-Auth
+agentcage_version: 0.0.0-golden

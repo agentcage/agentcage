@@ -1,0 +1,16 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/var/lib/state",
+      ""
+    ],
+    [
+      "/var/cache",
+      ""
+    ]
+  ],
+  "tmpfs": [],
+  "volumes": []
+}

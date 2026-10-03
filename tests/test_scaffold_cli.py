@@ -60,6 +60,115 @@ class TestInitWithScaffold:
         assert result.exit_code != 0
 
 
+class TestInitScaffoldStagingConflicts:
+    """``init`` must not leave a config and a Containerfile that disagree.
+
+    ``init --scaffold X`` writes a config naming
+    ``localhost/agentcage-scaffold-X`` and ``containerfile: Containerfile``,
+    then stages the scaffold's build context beside it with
+    ``clobber=False``. An existing foreign Containerfile therefore used to
+    survive, and ``cage create`` would build *it* under the scaffold's tag
+    — surfacing as an unrelated failure in the wrapper build, or as no
+    failure at all and a cage running the wrong image.
+
+    ``--isolation vm`` throughout, so ``run_scaffold_setup`` skips the host
+    podman build loop; the refusal itself happens before that anyway.
+    """
+
+    BUSYBOX = "FROM docker.io/library/busybox:latest\n"
+
+    def _scaffold_containerfile(self, scaffold: str) -> str:
+        from agentcage.init import resolve_scaffold
+        return (resolve_scaffold(scaffold) / "Containerfile").read_text()
+
+    def _init(self, tmp_path, *extra, scaffold="claude-code"):
+        return _runner().invoke(main, [
+            "init", "probe", "--scaffold", scaffold,
+            "--isolation", "vm", "-o", str(tmp_path / "cage.yaml"),
+            *extra,
+        ])
+
+    def test_foreign_containerfile_is_not_silently_kept(self, tmp_path):
+        """The bug, mechanically: a Containerfile that is not the
+        scaffold's must not survive unremarked."""
+        (tmp_path / "Containerfile").write_text(self.BUSYBOX)
+
+        result = self._init(tmp_path)
+
+        assert result.exit_code != 0
+        assert "Containerfile" in result.output
+        assert "--force" in result.output
+        # Untouched, and no config written beside it: a refusal that had
+        # already written the config would be the same trap.
+        assert (tmp_path / "Containerfile").read_text() == self.BUSYBOX
+        assert not (tmp_path / "cage.yaml").exists()
+
+    def test_a_projects_own_agents_md_is_not_silently_overwritten(self, tmp_path):
+        """The same hole in the other direction. ``stage_scaffold_assets``
+        refreshes unconditionally, so a repo that keeps its own root
+        ``AGENTS.md`` (this one does) had it replaced with the canonical
+        sandbox brief and was told nothing."""
+        (tmp_path / "AGENTS.md").write_text("# my project brief\n")
+
+        result = self._init(tmp_path)
+
+        assert result.exit_code != 0
+        assert "AGENTS.md" in result.output
+        assert (tmp_path / "AGENTS.md").read_text() == "# my project brief\n"
+
+    def test_a_copyed_sibling_is_a_build_input_too(self, tmp_path):
+        """openclaw's Containerfile ``COPY``s ``entrypoint.sh``, so a
+        foreign one decides what the cage runs just as surely as the
+        Containerfile does."""
+        (tmp_path / "entrypoint.sh").write_text("#!/bin/sh\necho pwned\n")
+
+        result = self._init(tmp_path, scaffold="openclaw")
+
+        assert result.exit_code != 0
+        assert "entrypoint.sh" in result.output
+
+    def test_a_projects_readme_is_not_a_conflict(self, tmp_path):
+        """A scaffold's ``README.md`` is staged for the operator to read;
+        the build never opens it. Refusing on it would break ``init`` in
+        every existing project, so it stays the operator's and stays
+        quiet."""
+        (tmp_path / "README.md").write_text("# my readme\n")
+
+        result = self._init(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "README.md").read_text() == "# my readme\n"
+        assert (tmp_path / "cage.yaml").exists()
+
+    def test_force_actually_replaces_the_build_inputs(self, tmp_path):
+        """``--force`` is already documented as "Overwrite existing file".
+        A force that refused nothing but then kept the stale Containerfile
+        would be the original bug with a prompt in front of it."""
+        (tmp_path / "Containerfile").write_text(self.BUSYBOX)
+        (tmp_path / "README.md").write_text("# my readme\n")
+
+        result = self._init(tmp_path, "--force")
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "Containerfile").read_text() == \
+            self._scaffold_containerfile("claude-code")
+        # Still scoped to build inputs: --force is not licence to replace
+        # a project README nothing ever warned about.
+        assert (tmp_path / "README.md").read_text() == "# my readme\n"
+
+    def test_rerunning_over_its_own_staging_does_not_refuse(self, tmp_path):
+        """Idempotence. The second run sees its own staged Containerfile
+        and brief, which match the scaffold's, so there is no conflict —
+        otherwise the check would make ``init`` a one-shot."""
+        first = self._init(tmp_path)
+        assert first.exit_code == 0, first.output
+        (tmp_path / "cage.yaml").unlink()
+
+        second = self._init(tmp_path)
+
+        assert second.exit_code == 0, second.output
+
+
 class TestCageListColumns:
     """Test that cage list shows the expected columns."""
 

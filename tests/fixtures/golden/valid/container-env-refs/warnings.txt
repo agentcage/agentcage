@@ -1,0 +1,2 @@
+env var reference ${GOLDEN_UNSET_VAR} is unset (key: UNSET)
+env var reference ${GOLDEN_UNSET_VAR} is unset (key: MIXED)

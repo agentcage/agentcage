@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 1: Container Mode — Lifecycle & Core Security
 source "$(dirname "$0")/lib.sh"
-preflight_check agentcage podman curl
+preflight_check "$AGENTCAGE" podman curl
 phase_header 1 "Container Mode — Lifecycle & Core Security"
 
 CAGE="basic"
@@ -54,7 +54,7 @@ assert_http 200 "$BASE/check-secret" "1.4" "Secret leak flagged (default)" \
 _flag_deadline=$((SECONDS + 10))
 _flag_found=""
 while [ "$SECONDS" -lt "$_flag_deadline" ]; do
-  if agentcage cage audit "$CAGE" -d flagged --json-lines -n 20 2>/dev/null \
+  if "$AGENTCAGE" cage audit "$CAGE" -d flagged --json-lines -n 20 2>/dev/null \
       | grep -q anthropic_key; then
     _flag_found=1
     break
@@ -74,13 +74,13 @@ assert_http 200 "$BASE/check-secret" "1.5" "Clean POST allowed" \
 
 # Verify / show / list
 assert_output_contains "1.6" "Verify command" "passed" \
-  agentcage cage verify "$CAGE"
+  "$AGENTCAGE" cage verify "$CAGE"
 
 assert_output_contains "1.7" "Show command" "running" \
-  agentcage cage show "$CAGE"
+  "$AGENTCAGE" cage show "$CAGE"
 
 assert_output_contains "1.8" "List command" "$CAGE" \
-  agentcage cage list
+  "$AGENTCAGE" cage list
 
 # Keep cage running for phase 2 / 4 if run together
 if [ "${E2E_KEEP_BASIC:-}" = "1" ]; then

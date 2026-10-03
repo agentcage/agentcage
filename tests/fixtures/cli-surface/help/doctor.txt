@@ -1,0 +1,6 @@
+Usage: agentcage doctor [OPTIONS]
+
+  Check system health and diagnose common issues.
+
+Options:
+  --help  Show this message and exit.

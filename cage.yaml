@@ -1,0 +1,78 @@
+# agentcage configuration for nonexistent-cage-xyz
+# Full reference: https://github.com/agentcage/agentcage/blob/master/docs/reference/configuration.md
+#
+# Quick start:
+#   1. Set container.image and container.command below
+#   2. Add domains your agent needs to the allowlist
+#   3. Run:  agentcage cage create -c cage.yaml
+
+name: nonexistent-cage-xyz
+
+container:
+  image: "node:22-slim"
+  # command: ["node", "/app/agent.js"]
+
+  # Host directories mounted into the cage (read-only recommended)
+  # volumes:
+  #   - "${HOME}/my-project:/workspace:ro"
+
+  # Podman named volumes for persistent state
+  # named_volumes:
+  #   my-data: "/data:rw"
+
+  # Writable directories on the read-only root filesystem
+  # tmpfs:
+  #   - "/tmp:rw,noexec,nosuid,size=64M"
+
+  # Ports exposed to the host (BIND:HOST_PORT:CONTAINER_PORT)
+  # ports:
+  #   - "127.0.0.1:3000:3000"
+
+  # Environment variables
+  # env:
+  #   MY_VAR: "value"
+
+  # Podman secrets injected as environment variables directly into the cage.
+  # Create first:  agentcage secret set nonexistent-cage-xyz MY_SECRET
+  # podman_secrets:
+  #   - MY_SECRET
+
+  # Resource limits
+  # memory: "4g"
+  # cpus: "2.0"
+
+# ── Domain filtering ──
+# Restrict which hosts the cage can reach.
+# Subdomains are matched automatically (e.g. "github.com" also allows
+# "api.github.com").
+domains:
+  allow:
+    - example.com
+    # - github.com
+    # - githubusercontent.com
+    # - npmjs.org
+    # - pypi.org
+
+  # Domains that bypass TLS interception (for protocols that break
+  # under MITM, like WhatsApp/Noise Protocol or gRPC with cert pinning).
+  # These are still subject to DNS filtering.
+  # passthrough:
+  #   - whatsapp.com
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Placeholders are generated decoy tokens, unique per cage — entropy keeps
+# real outbound content from ever colliding with one.
+# Create each secret first:  agentcage secret set nonexistent-cage-xyz MY_API_KEY
+# secret_injection:
+#   - env: MY_API_KEY
+#     placeholder: "agentcage:secret:MY_API_KEY:ec5e6d5be7fb0ef68ac1310620fa4414"
+#     inject_to:
+#       - api.example.com
+
+# ── Logging ──
+# logging:
+#   level: info              # debug | info | warning | error | critical
+#   allowed_requests: false  # log every allowed request
+#   dns_queries: false       # log DNS queries
+#   proxy_connections: false  # log all proxy connections

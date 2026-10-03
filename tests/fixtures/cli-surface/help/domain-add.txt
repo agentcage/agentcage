@@ -1,0 +1,18 @@
+Usage: agentcage domain add [OPTIONS] NAME DOMAIN_NAMES...
+
+  Add one or more domains to a cage's filter list.
+
+  Multiple domains may be passed; the cage is reloaded at most once. With
+  ``--expires-in`` the entry is time-limited (allowlist mode only): it works
+  until its TTL elapses, then the proxy blocks it at L7 and the next reconcile
+  (``cage grants <name> sync``, which also runs implicitly from the CLI paths
+  that read a cage) prunes it from the allowlist + dnsmasq. Permanent by
+  default.
+
+Options:
+  --passthrough      Also add to TLS passthrough list (no MITM interception).
+  --expires-in TEXT  Time-limit the entry: e.g. 30m, 1h, 2d (or a bare number of
+                     seconds). After it expires the domain is blocked at the
+                     proxy and pruned from the allowlist. Useful for a one-off
+                     task like `npm install`. Only valid in allowlist mode.
+  --help             Show this message and exit.

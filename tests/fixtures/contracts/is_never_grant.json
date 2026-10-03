@@ -1,0 +1,734 @@
+{
+  "contract": "is_never_grant",
+  "summary": "Must this domain NEVER be granted, whatever the decider says? Two arms: a label-boundary suffix walk over the never-grant set, and the encoded-private-IP guard (the case suffix matching structurally cannot see).",
+  "implementations": {
+    "host": "agentcage.cli._is_never_grant(domain, never) (src/agentcage/cli.py)",
+    "proxy": "policy_api.PolicyApi._is_never_grant(domain), reading self._never_grant (src/agentcage/data/proxy/policy_api.py)"
+  },
+  "fields": {
+    "input": "the candidate domain",
+    "never_grant": "the effective never-grant set for this case. The host builds it in cli._host_never_grant, the proxy in PolicyApi._effective_never_grant; both are config._AUTO_NEVER_GRANT plus the decider control host plus the operator's list.",
+    "expected": "true when the domain must never be granted"
+  },
+  "notes": [
+    "The default set below is the built-in floor (config._AUTO_NEVER_GRANT = internal, local, localhost, metadata.goog) unioned with the default control host agentcage.local.",
+    "Matching is on LABEL boundaries, not string suffixes: 'notinternal.com' is not blocked by 'internal'."
+  ],
+  "cases": [
+    {
+      "id": "internal-exact",
+      "why": "the bare suffix itself",
+      "input": "internal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "internal-suffix",
+      "why": "the canonical cloud metadata name",
+      "input": "metadata.google.internal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "internal-deep",
+      "why": "any depth under the suffix",
+      "input": "a.b.c.d.internal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "local-exact",
+      "why": "the bare suffix",
+      "input": "local",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "local-suffix",
+      "why": "an mDNS name",
+      "input": "printer.local",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "localhost-exact",
+      "why": "the bare suffix",
+      "input": "localhost",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "localhost-suffix",
+      "why": "the RFC 6761 subdomain form",
+      "input": "api.localhost",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "control-host",
+      "why": "the decider control host can never be granted to the cage",
+      "input": "agentcage.local",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "metadata-goog",
+      "why": "GCP's PUBLIC metadata alias \u2014 the only cloud metadata name that does not end in .internal",
+      "input": "metadata.goog",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "metadata-goog-sub",
+      "why": "a subdomain of it",
+      "input": "v1.metadata.goog",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "near-evil-metadata",
+      "why": "an attacker-shaped label prefixing the real name. Still blocked \u2014 the walk matches on LABEL boundaries, and 'internal' is a suffix here",
+      "input": "evil-metadata.google.internal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "near-internal-substring",
+      "why": "'internal' as a substring of a longer label must NOT match",
+      "input": "notinternal.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-internal-prefix",
+      "why": "'internal' as a PREFIX label is not a suffix",
+      "input": "internal.evil.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-internal-hyphen",
+      "why": "hyphen-joined, one label",
+      "input": "my-internal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-internal-concat",
+      "why": "concatenated into one label",
+      "input": "xinternal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-localhost-substring",
+      "why": "must not match",
+      "input": "notlocalhost",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-localhost-prefix",
+      "why": "localhost as the leftmost label",
+      "input": "localhost.evil.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-localhost-suffix-label",
+      "why": "localhost as the RIGHTMOST label under another name",
+      "input": "evil.localhost",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "near-metadata-goog-concat",
+      "why": "one label, not a suffix match",
+      "input": "xmetadata.goog",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-metadata-goog-tld",
+      "why": "'goog' alone is not in the set",
+      "input": "something.goog",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-metadata-google",
+      "why": "the real TLD, not the metadata alias",
+      "input": "metadata.google.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-local-substring",
+      "why": "'local' inside a label",
+      "input": "nonlocal.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-local-hyphen",
+      "why": "hyphen-joined",
+      "input": "my-local.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-control-host-prefix",
+      "why": "a name that merely starts the same way",
+      "input": "agentcage.localdomain",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "near-control-host-concat",
+      "why": "one label",
+      "input": "notagentcage.local",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "case-upper",
+      "why": "uppercase must not evade the walk",
+      "input": "METADATA.GOOG",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "case-mixed",
+      "why": "mixed case",
+      "input": "Metadata.Google.Internal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "trailing-dot",
+      "why": "the FQDN spelling is stripped before matching",
+      "input": "metadata.goog.",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "trailing-dot-upper",
+      "why": "both at once",
+      "input": "INTERNAL.",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "trailing-dots-multiple",
+      "why": "rstrip removes every trailing dot",
+      "input": "metadata.goog...",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "empty",
+      "why": "the empty string",
+      "input": "",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "dot-only",
+      "why": "strips to empty",
+      "input": ".",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "leading-dot",
+      "why": "an empty leftmost label",
+      "input": ".internal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "empty-never-set",
+      "why": "nothing is ever-never-granted; only the encoded-IP guard can fire",
+      "input": "metadata.google.internal",
+      "never_grant": [],
+      "expected": false
+    },
+    {
+      "id": "empty-never-set-encoded",
+      "why": "the encoded-IP guard fires even with an empty suffix set \u2014 it is structural, not name-based",
+      "input": "169-254-169-254.nip.io",
+      "never_grant": [],
+      "expected": true
+    },
+    {
+      "id": "encoded-metadata",
+      "why": "a valid PUBLIC name carrying no never-grant suffix that nonetheless reaches the metadata endpoint",
+      "input": "169-254-169-254.nip.io",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "encoded-metadata-dotted",
+      "why": "the dotted spelling",
+      "input": "169.254.169.254.nip.io",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "encoded-loopback",
+      "why": "loopback through a public name",
+      "input": "127-0-0-1.nip.io",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "encoded-rfc1918",
+      "why": "RFC1918 through a public name",
+      "input": "10-0-0-1.sslip.io",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "encoded-rfc1918-traefik",
+      "why": "a different clone service",
+      "input": "192-168-1-1.traefik.me",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "encoded-docker-bridge",
+      "why": "the docker bridge",
+      "input": "172.17.0.1.xip.io",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "encoded-cgnat",
+      "why": "CGNAT through an arbitrary zone \u2014 the guard is service-independent",
+      "input": "100-64-0-1.example.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": true
+    },
+    {
+      "id": "encoded-public",
+      "why": "encodes a PUBLIC address; over-blocking a legitimate host is its own bug",
+      "input": "93-184-216-34.nip.io",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "encoded-digit-name",
+      "why": "starts with digits, encodes nothing",
+      "input": "10-years.example.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "encoded-too-few",
+      "why": "too few octets",
+      "input": "1-2-3.example.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "encoded-not-an-address",
+      "why": "not a valid address at all",
+      "input": "999-999-999-999.nip.io",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "allowed-npm",
+      "why": "a name the allowlist sees daily",
+      "input": "registry.npmjs.org",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "allowed-github",
+      "why": "another",
+      "input": "raw.githubusercontent.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "allowed-codecov",
+      "why": "another",
+      "input": "codecov.io",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "expected": false
+    },
+    {
+      "id": "operator-exact",
+      "why": "an operator's own never_grant entry",
+      "input": "corp.example.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog",
+        "corp.example.com",
+        "vault.example.net"
+      ],
+      "expected": true
+    },
+    {
+      "id": "operator-suffix",
+      "why": "and everything under it",
+      "input": "git.corp.example.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog",
+        "corp.example.com",
+        "vault.example.net"
+      ],
+      "expected": true
+    },
+    {
+      "id": "operator-sibling",
+      "why": "a sibling name outside the entry",
+      "input": "notcorp.example.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog",
+        "corp.example.com",
+        "vault.example.net"
+      ],
+      "expected": false
+    },
+    {
+      "id": "operator-parent",
+      "why": "the PARENT of an operator entry is not covered \u2014 suffix matching goes one way",
+      "input": "example.com",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog",
+        "corp.example.com",
+        "vault.example.net"
+      ],
+      "expected": false
+    },
+    {
+      "id": "operator-second",
+      "why": "the second operator entry",
+      "input": "vault.example.net",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog",
+        "corp.example.com",
+        "vault.example.net"
+      ],
+      "expected": true
+    },
+    {
+      "id": "operator-builtin-still-applies",
+      "why": "operator entries are unioned with, not substituted for, the built-in floor",
+      "input": "metadata.google.internal",
+      "never_grant": [
+        "agentcage.local",
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog",
+        "corp.example.com",
+        "vault.example.net"
+      ],
+      "expected": true
+    }
+  ]
+}

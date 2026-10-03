@@ -1,0 +1,32 @@
+name: relay-smtp-recipient-shorthand
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+protocol_relays:
+- name: out
+  type: smtp
+  listen: 0.0.0.0:1587
+  upstream:
+    host: smtp.example.com
+    port: 587
+  auth: {}
+  policy:
+    recipient_allowlist:
+    - ops@example.com
+    - sec@example.com
+    bypass_inspectors_for_allowlisted: []
+ports:
+  tcp:
+    allow:
+    - 80
+    - 443
+    passthrough:
+    - 1587

@@ -1,0 +1,18 @@
+name: secrets-source-env
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+secret_injection:
+- env: FAKE_API_KEY
+  placeholder: agentcage:secret:FAKE_API_KEY:00000000000000000000000000000000
+  inject_to:
+  - api.example.com
+  source: env:GOLDEN_SET_VAR

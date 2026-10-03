@@ -1,0 +1,19 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+inspectors:
+- name: domain
+- name: secrets
+  config:
+    action: block
+- name: body-size
+  config:
+    max_bytes: 1048576
+- name: entropy
+  config:
+    threshold: 4.5
+- name: content-type
+  config:
+    action: flag
+agentcage_version: 0.0.0-golden
