@@ -1102,7 +1102,7 @@ though 62 pre-existing ones remain and are not this sweep's business.
 | # | State |
 | :-- | :-- |
 | F1 | Workflow written: four targets (x86_64/aarch64 × linux-musl/darwin), signing and notarization **gated on the secrets existing**, so a fork or a pre-enrollment repository still produces a working unsigned binary and says so in the log. The acceptance check — a notarized binary on a clean Mac — needs an Apple Developer ID and a Mac. Linux is statically linked: the workspace has no C dependencies at all, so it costs nothing and removes the glibc coupling. |
-| F2 | **Done.** No `[project.scripts]`; `python -m agentcage` and `tests/e2e/python-cli` keep the oracle runnable. Acceptance measured in both directions on one deployment. `phase_apple.sh` still needs a Mac. |
+| F2 | **Done, all three clauses measured.** No `[project.scripts]`; `python -m agentcage` and `tests/e2e/python-cli` keep the oracle runnable. Acceptance measured in both directions on one deployment, `phase_apple.sh` is green on real hardware (see Track E), and the in-place upgrade is measured below. |
 | F3 | `install.sh` **done** — downloads the platform tarball and refuses to install unless the published sha256 matches; both paths tested against a local mirror. Homebrew and AUR ship as *generated* artifacts (`scripts/gen-packaging.py`), because both pin a version and four checksums; the tap and AUR repositories do not exist yet. Fresh-VM install tests need those releases to exist. |
 | F4 | **Done.** Guards in `scripts/check-invariants.py`, run in CI; `Containerfile.helper` deleted. The final PyPI shim is not published — `Private :: Do Not Upload` plus no publish step means the last real release stays the last one, which is the same outcome with nothing extra to maintain. |
 | F5 | **Done** for `README.md`, `docs/get-started/install.md` and `CONTRIBUTING.md` — the three that told users to install a Python package. The rest of `docs/**` describes behaviour, not installation, and reads correctly either way. |
@@ -1119,9 +1119,33 @@ product call; nothing in the port depends on the answer.
 Rust binary — 111 assertions across all eight phases, one skipped (`8.10
 nested podman`, which the host cannot provide), phase 7 included at 33/33
 against real Lima and KVM. The same suite is green on the Python CLI at the
-same commit, so the two agree phase for phase. What F2 still needs is the
-in-place upgrade check and `phase_apple.sh`, and the parts of it that are
-release engineering rather than verification.
+same commit, so the two agree phase for phase.
+
+**And the third: the in-place upgrade, measured 2026-10-03.** This was the
+last unmet acceptance clause in the port. A cage was deployed by the *last
+Python release* — a worktree at tag `v0.40.2`, its own venv, the real
+`agentcage` entry point — as an `isolation: vm` cage on an Apple Silicon
+Mac, and then handed to the Rust binary. In order:
+
+| Step | Result |
+| :-- | :-- |
+| `cage create` + start, Python v0.40.2 | Lima guest up, egress built as `agentcage-egress:0.40.2`, running 2/2 |
+| `cage status`, **both** binaries | Byte-identical, both reporting `Version: 0.40.2` — the state-compatibility half, read off a deployment neither Rust test nor fixture had ever seen |
+| `cage update`, Rust v0.50.0 | Upgraded in place: egress rebuilt at `0.50.0`, `Updated cage 'f2up'`, and a `fingerprint.json` written where `create` had left none |
+| `cage update`, Rust, again | `cage 'f2up' already up to date (use --force to rebuild anyway)` — **the clause** |
+| `cage status` after | `Version: 0.50.0`, running 2/2 |
+| Egress still enforcing | Allowed domain `200 OK`; a domain outside the allowlist `403 Forbidden` |
+
+The last row matters more than it looks. "Upgraded in place" is only worth
+anything if the cage still *contains* the agent afterwards, and a version
+bump that silently dropped the allowlist would pass every other row here.
+
+One thing the run confirmed rather than discovered: `cage create` leaves no
+fingerprint, so the first `cage update` always rebuilds (#417). The rebuild
+above is that, plus the genuine `0.40.2` → `0.50.0` egress tag move.
+
+What F2 still needs is only the parts that are release engineering rather
+than verification.
 
 **F4's CI half is done ahead of the rest.** The §2.4 invariant guards that
 were missing are wired: the contract, state-compat, output and vm fixture
@@ -1135,6 +1159,31 @@ claim was stale, not a disagreement.)
 F1 is first in this track and should be attempted during Phase 0 as a throwaway
 spike — Apple Developer enrollment has lead time, and discovering that in the
 final week would be avoidable self-harm.
+
+**That warning came true.** F1 was not spiked in Phase 0, and enrollment is
+now the long pole: every other acceptance check in the port is measured, and
+the two that are not — a notarized binary opening on a clean Mac, and a
+fresh-VM install — are both waiting on credentials and repositories that do
+not exist yet. Tracked as #413 and #414.
+
+### What is left, and where it is tracked
+
+Verification is complete. Everything below is either release engineering or
+a product decision the port surfaced and deliberately did not take.
+
+| | Issue |
+| :-- | :-- |
+| Notarized macOS binary — blocked on Apple Developer enrollment | #413 |
+| Homebrew tap and AUR repositories do not exist | #414 |
+| `container.timeout_start_sec`: the 600 default is unreachable | #415 |
+| `container.env` expands `$VARS` with no warning for undeclared keys | #416 |
+| `cage create` writes no fingerprint, so the first update always rebuilds | #417 |
+| `KeychainStore` should use `SecItemAdd`, not shell out to `security(1)` | #418 |
+| `cage backup` silently skips named volumes on the vm backend | #419 |
+| Golden corpus: `resolved-config.json` is pre-fill, the fingerprint post-fill | #420 |
+| 62 unresolved rustdoc intra-doc links | #421 |
+| openclaw scaffold pins `:latest` rather than a digest | #422 |
+| `cage destroy` leaves the per-cage data dir behind without saying so | #423 |
 
 ### Sequencing notes
 
