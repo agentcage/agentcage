@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agentcage_core::apple::{self, SERVICE_NAMES};
+use agentcage_core::apple;
 use agentcage_core::config::Config;
 use agentcage_core::quadlets::Quadlets;
 use agentcage_exec::tools::apple::{AppleContainer, container_networks, container_state};
@@ -121,12 +121,6 @@ impl<'a> AppleBackend<'a> {
     #[must_use]
     pub fn version(&self) -> &'a str {
         self.version
-    }
-
-    /// `service_names` — `cage` and `egress`.
-    #[must_use]
-    pub fn service_names(&self) -> [&'static str; 2] {
-        SERVICE_NAMES
     }
 
     // ── layout ───────────────────────────────────────────────

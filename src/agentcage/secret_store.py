@@ -133,10 +133,6 @@ class PlaintextStore(SecretStore):
         return self._podman.secret_read(full)
 
 
-def _security_interaction_blocked(stderr: str) -> bool:
-    return "interaction is not allowed" in (stderr or "").lower()
-
-
 class KeychainStore(SecretStore):
     """macOS: store secrets in a keychain, encrypted at rest.
 

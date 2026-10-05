@@ -74,6 +74,24 @@ have not changed, only its name.
   restarts the cage, as the Python does. `vm` is still refused on both — it
   has never been ported there either.
 
+### Removed
+
+- **Dead code, swept from both implementations.** Nothing user-visible: every
+  symbol below was defined, sometimes unit tested, and called by nothing.
+  `_security_interaction_blocked` (and its Rust twin `interaction_blocked`)
+  is the one worth naming — a predicate for the keychain's "interaction is
+  not allowed" stderr that no decision ever consulted. It read like a guard
+  someone would wire in later, and wiring it in would have *narrowed* the
+  fall-through, turning a headless Mac that fails for any other reason into a
+  hard failure instead of a System-keychain attempt. The behaviour is now
+  held by a test rather than tempted by an unused helper.
+
+  Also gone: `Podman.run_and_remove` and `Podman.volume_create` (both sides —
+  `cage restore` never needed the latter, because the deploy that runs first
+  creates the named volumes), `_level_grep_pattern` and
+  `collect_image_artifacts` on the Python, and eleven Rust-only items with no
+  Python counterpart.
+
 ### Fixed
 
 - **`secret rm` and `cage destroy` now remove a vm cage's secret for real on

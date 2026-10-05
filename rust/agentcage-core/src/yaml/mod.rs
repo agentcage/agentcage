@@ -211,15 +211,6 @@ pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
     serde_norway::from_value(load(text)?)
 }
 
-/// [`from_str`], with a name to put in error messages.
-///
-/// # Errors
-///
-/// As [`from_str`].
-pub fn from_str_named<T: DeserializeOwned>(source: &str, text: &str) -> Result<T, Error> {
-    serde_norway::from_value(load_named(source, text)?)
-}
-
 /// Render a [`Value`] as YAML that PyYAML reads back unchanged.
 ///
 /// Block style, two-space indent, sequences at their key's indentation:

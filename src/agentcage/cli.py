@@ -2769,19 +2769,6 @@ def _logs_container(name, services, lines, no_follow, min_level=None, since=None
             proc.terminate()
 
 
-def _level_grep_pattern(services: tuple, min_level: str | None) -> str:
-    """Build a grep -E pattern matching [service:level] tags."""
-    levels_at_or_above = ("debug", "info", "warning", "error", "critical")
-    if min_level:
-        min_ord = _LEVEL_ORDER.get(min_level, 1)
-        levels_at_or_above = tuple(
-            l for l, o in _LEVEL_ORDER.items() if o >= min_ord
-        )
-    lvl_alt = "|".join(levels_at_or_above)
-    svc_alt = "|".join(services)
-    return rf"\[({svc_alt}):({lvl_alt})\]"
-
-
 def _logs_vm(name, services, lines, no_follow, min_level=None, since=None):
     """Show logs from inside the Lima VM via limactl shell."""
     inst = LimaInstance(name)

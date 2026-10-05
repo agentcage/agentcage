@@ -51,7 +51,7 @@
 //! | `subprocess.run(cmd, check=True)`             | [`Output::check`] -- the runner never treats a non-zero exit as an error |
 //! | `subprocess.run(cmd, input=value)`            | [`Command::stdin_secret`] / [`Command::stdin_text`] |
 //! | `subprocess.run(cmd, stdin=f)`                | [`Command::stdin_file`] |
-//! | `subprocess.run(cmd, stdout=f)`               | [`Command::stdout_file`] |
+//! | `subprocess.run(cmd, stdout=f)`               | [`Command::stdout`] with [`Sink::Write`] |
 //! | `subprocess.run(cmd, stderr=subprocess.STDOUT)` | [`Command::merge_stderr`] |
 //! | `subprocess.run(cmd, timeout=30)`             | [`Command::timeout`] |
 //! | `subprocess.run(cmd, start_new_session=True)` | [`Command::new_process_group`] |

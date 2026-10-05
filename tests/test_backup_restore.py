@@ -130,16 +130,6 @@ class TestPodmanVolume:
         assert "export" in cmd
         assert "test-vol" in cmd
 
-    @patch("agentcage.podman.subprocess.run")
-    def test_volume_create(self, mock_run):
-        from agentcage.podman import Podman
-        Podman().volume_create("new-vol")
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        assert "volume" in cmd
-        assert "create" in cmd
-        assert "new-vol" in cmd
-
     @patch("builtins.open", create=True)
     @patch("agentcage.podman.subprocess.run")
     def test_volume_import(self, mock_run, mock_open):

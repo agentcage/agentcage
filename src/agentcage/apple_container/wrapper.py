@@ -21,7 +21,6 @@ from __future__ import annotations
 import shlex
 import shutil
 from pathlib import Path
-from typing import Iterable
 
 from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
@@ -257,13 +256,3 @@ def build_wrapper(
             capture_output=False,  # stream output to user
         )
     return image
-
-
-def collect_image_artifacts(cage_name: str) -> Iterable[str]:
-    """Return image references owned by *cage_name* (for cleanup).
-
-    The shared agentcage-egress image is NOT yielded here — destroying
-    one cage must not delete an image used by sibling cages. The egress
-    image is host-wide; its lifecycle is tied to the agentcage version.
-    """
-    yield wrapped_image_name(cage_name)

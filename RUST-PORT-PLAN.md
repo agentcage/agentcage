@@ -433,7 +433,7 @@ fixture and the port moving together. The rest stand.
 | C2 | `name` and `container.image` are matched with `$`, not `\Z` — the same anchor bug as the decider host. `name: "my-cage\n"` validates, and that name becomes a systemd unit name, a podman object name and a state directory. Verified end to end | **Fixed** in the anchor sweep. Reachable from a config, not just argv: a *clipped* block scalar — `|` **or** `>` — produces exactly that value |
 | **D1** | **`KeychainStore.set` put a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Fixed** on both sides — the command line now travels on `security -i`'s stdin and the kernel's argv is `security -i`. Settled by round trip against a real keychain; see below |
 | E2b | **The Rust port built the System-keychain argv scrambled** — the keychain path landed *before* the value and `-U`, so the path would be stored as the password. The Python appends it last. Only reachable on a headless Mac, the one configuration nobody could test | **Fixed** in E2b |
-| E2b | `_security_interaction_blocked` is **dead code**: defined at `secret_store.py:136` and never called. The fall-through treats every non-zero exit alike, so the stderr text is never consulted | Open; pinned, deliberately not wired in — doing so would *narrow* the fall-through and turn a headless Mac failing for any other reason into a hard failure |
+| E2b | `_security_interaction_blocked` is **dead code**: defined at `secret_store.py:136` and never called. The fall-through treats every non-zero exit alike, so the stderr text is never consulted | **Removed**, both sides. Wiring it in was always the wrong fix — it would *narrow* the fall-through and turn a headless Mac failing for any other reason into a hard failure. Keeping an unused predicate around only invited someone to wire it in later. The behaviour it tempted you to change is held by a test instead (`the_fall_through_ignores_what_the_stderr_actually_says`) |
 | E8 | **Nothing removed a vm cage's secret *at rest* on macOS.** Two commands, one root cause. `secret rm`'s keychain delete was gated on `_is_apple_container(cfg)` (`cli.py:4431`), but a *vm* cage on a Mac also resolves to the keychain store — so the non-apple branch removed the guest podman copy and the `.cred`, reported `Secret 'rsvm.API_KEY' removed.`, and left the value. And `VmBackend.destroy_resources` ignored `keep_secrets` entirely. Measured on an Apple Silicon Mac: after `secret rm` reported success, a plain `cage restart` brought the secret back with its keychain value; after `cage destroy`, the keychain item was still there | **Fixed** in E9, both sides |
 | E8 | **`cage backup --include-secrets` archived a stale value.** The archive was read from the *runtime* store, and `secret set` updates the at-rest store and the live staging file without refreshing it. Measured: three copies, two values — keychain `vm2`, staged file `vm2`, guest podman `vm1` — and the tarball carried `vm1` | **Fixed** in E9, both sides |
 | D3 | `container.env` values are `expandvars`-expanded into `Environment="K=V"` in the unit file and thence into `podman run --env`. The declared-secret case is already mitigated (`config.py:1101` strips keys that also have a `secret_injection` rule, and its comment names this exact hazard) — the gap is an **undeclared** `env: {TOKEN: "$TOKEN"}`, which is silent | Open; **documented** in `docs/reference/configuration.md`, which had called the field "static" and mentioned no expansion. Still a policy call: it is deliberate (the apple backend mirrors it on purpose) and has shipped since 0.1.0 |
@@ -828,7 +828,7 @@ Mac and can run in parallel with Track D as soon as Track C lands.
 | :-- | :-- | :-- | :-- |
 | E1 | `vm` backend, generation half: `generate_units`, `push_config_files`, Lima YAML rendering, argv builders, secret-bridging logic | Corpus diff + argv assertions on Linux CI (mirrors `test_vm_backend.py` / `test_lima_*.py`) | none |
 | E2 | `apple-container`, generation half A: image naming, `_egress_content_hash` wiring, `_render_egress_config`, `_user_volume_argv`, `_tmpfs_targets`, `_tmpfs_copyup_seeds` | Fixture diff; mirrors `test_apple_container*.py`, which runs on Linux by patching `platform.system()` | none |
-| E2b | `KeychainStore`: `security(1)` argv, `_security_interaction_blocked` detection, the `sudo -n` System-keychain probe | argv assertions with the recording fake; stderr fixtures for the interaction-blocked case | none |
+| E2b | `KeychainStore`: `security(1)` argv, the stderr fall-through, the `sudo -n` System-keychain probe | argv assertions with the recording fake; stderr fixtures for the interaction-blocked case | none |
 | E3 | `apple-container`, generation half B: `generate_units`, launchd plist rendering, `exec_argv` / `logs_argv` / `audit_argv` | Golden unit + plist diff vs Python | none |
 | E4 | `vm` backend, execution half: `_deploy_cage`, readiness waits, in-guest build | **e2e phase 7** | Lima host |
 | E5 | `apple-container`, execution half: `start`/`stop`, `_stage_secrets`, mask mountpoint record/cleanup, `_wait_supervisor_ready` | **`phase_apple.sh`**, manual — the same gate this code has today | Apple Silicon, macOS 26+ |
@@ -1038,6 +1038,54 @@ never read back, because that resolves with no scheme. `cage create -s`
 would have stored a secret where nothing could find it. Both call sites
 now derive it from `config.isolation`, matching the Python's
 `_store_secret(None, cfg, …)`.
+
+### The dead-code sweep
+
+Swept both implementations mechanically — every function and `pub`
+item, counted against every reference in the tree, with doc comments
+excluded so a mention in prose did not read as a use. Two passes,
+because the first one lied in both directions: Click callbacks look
+unreferenced (the decorator calls them) and a crude `#[cfg(test)]` cut
+hid `cli/mod.rs`'s dispatch table, which made every `scaffold::*_main`
+look dead. Everything below was confirmed by hand.
+
+**Removed from both sides, because it was dead on both.**
+
+| Symbol | Why it was there |
+| :-- | :-- |
+| `_security_interaction_blocked` / `interaction_blocked` | A predicate for the "interaction is not allowed" stderr, defined, unit tested, and called by nothing. §2.9 had it as an open decision; deleting it *is* the decision, and the Rust's doc comment had drifted into claiming it "drives the fall-through from the login keychain to the System keychain", which it never did |
+| `Podman.run_and_remove` | `podman run --rm` with bind mounts, plus the Rust's `VolumeMount` builder that existed only to feed it |
+| `Podman.volume_create` | `cage restore` never needs it: `_build_and_deploy` runs first and the deploy creates the named volumes, so `volume_import` always finds them |
+
+**Removed from the Rust only, where the Python has no counterpart:**
+`AnyBackend::as_container`, `Paths::ensure_cage_data_dir`,
+`Command::env_is_cleared`, `Command::stdout_file`, `yaml::from_str_named`,
+`FixedValidationHost::macos_arm64`, `placeholder_of`,
+`CagePodman::guest_instance`, `run::setup_options`, and
+`service_names` on both `VmBackend` and `AppleBackend`.
+
+**Removed from the Python only:** `_level_grep_pattern` and
+`collect_image_artifacts`.
+
+Three of those are worth naming, because "unused" can mean "a call site
+was never ported" and that is a bug, not dead weight:
+
+* `ensure_cage_data_dir` looks like a gap — Python's `state.cage_data_dir`
+  **creates** the directory and the Rust accessor does not. It is not one:
+  `append_policy_audit` does its own `create_dir_all`, with a comment
+  saying why, and every other consumer goes through an `ensure_*` sibling.
+* `service_names` is live in the Python (`backend.service_names(name)`)
+  and dead in the Rust — because the Rust reaches the same list through a
+  `SERVICE_NAMES` const used at 20 sites. The methods were wrappers over
+  the const, not a missing abstraction.
+* `env_is_cleared` was the only reader of `Command::env_cleared` *outside*
+  the runner, which made it look like deleting it would strand the field.
+  The real runner reads it directly; the accessor was for tests that were
+  never written.
+
+Rust 1075 → 1072 tests: the three deleted were the ones that existed only
+to exercise deleted code. `cargo doc` is quieter by one unresolved link,
+though 62 pre-existing ones remain and are not this sweep's business.
 
 ### Track F — Cutover
 

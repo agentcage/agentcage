@@ -492,21 +492,19 @@ fn the_system_keychain_carries_the_path_last_in_every_command() {
 
 /// The interaction-blocked stderr, and the thing it does *not* do.
 ///
-/// `secret_store.py:136` defines `_security_interaction_blocked` --
-/// "interaction is not allowed", lowercased -- and then **never calls
-/// it**. `_writable` returns `False` on any non-zero exit, and
-/// `_target` falls through on `False`. So the stderr text is not
-/// consulted anywhere, and the fall-through is identical whether the
-/// login keychain is locked, `security` is missing a flag, or the item
-/// already exists.
+/// `_writable` returns `False` on any non-zero exit and `_target`
+/// falls through on `False`, so the stderr text is not consulted
+/// anywhere: the fall-through is identical whether the login keychain
+/// is locked, `security` is missing a flag, or the item already
+/// exists.
 ///
-/// That is worth pinning rather than fixing, because the helper reads
-/// like a guard someone would later wire in -- and wiring it in would
-/// *narrow* the fall-through, turning a headless Mac that fails for any
-/// other reason into a hard failure instead of a System-keychain
-/// attempt. The Rust keeps the predicate available
-/// ([`agentcage_exec::tools::security::interaction_blocked`], unit
-/// tested there) and keeps it out of the decision, exactly as shipped.
+/// Both sides used to carry a predicate for that stderr --
+/// `secret_store.py::_security_interaction_blocked` and an
+/// `interaction_blocked` beside it in Rust -- defined, unit tested,
+/// and called by nothing. Wiring either one in would have *narrowed*
+/// the fall-through, turning a headless Mac that fails for any other
+/// reason into a hard failure instead of a System-keychain attempt.
+/// Both are deleted; this test is what actually holds the behaviour.
 #[test]
 fn the_fall_through_ignores_what_the_stderr_actually_says() {
     const STDERRS: [&str; 3] = [

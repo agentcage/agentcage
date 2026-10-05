@@ -90,19 +90,6 @@ impl<'a> AnyBackend<'a> {
         })
     }
 
-    /// The container backend, when this is one.
-    ///
-    /// For the handful of call sites that genuinely need podman on the
-    /// host — the log-driver probe, the live secret channel — and that
-    /// have nothing to do on the other arm.
-    #[must_use]
-    pub fn as_container(&self) -> Option<&ContainerBackend<'a>> {
-        match self {
-            Self::Container(backend) => Some(backend),
-            _ => None,
-        }
-    }
-
     /// The vm backend, when this is one.
     #[must_use]
     pub fn as_vm(&self) -> Option<&VmBackend<'a>> {

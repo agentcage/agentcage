@@ -645,8 +645,9 @@ impl<'a> Security<'a> {
     /// # Errors
     ///
     /// [`ExecError::Failed`] when `security` refuses -- typically
-    /// because the keychain is locked, which
-    /// [`interaction_blocked`] identifies.
+    /// because the keychain is locked. The caller does not read the
+    /// stderr text to find out: every non-zero exit falls through
+    /// alike, which is what the Python does.
     pub fn add(
         &self,
         target: &KeychainTarget,
@@ -727,23 +728,12 @@ impl<'a> Security<'a> {
     }
 }
 
-/// Whether `security` refused because no GUI session could be prompted.
-///
-/// `secret_store.py::_security_interaction_blocked`. The distinction
-/// drives the fall-through from the login keychain to the System
-/// keychain, so it is the difference between a headless Mac working and
-/// a headless Mac failing closed.
-#[must_use]
-pub fn interaction_blocked(stderr: &str) -> bool {
-    stderr.to_lowercase().contains("interaction is not allowed")
-}
-
 #[cfg(test)]
 mod tests {
     use super::SYSTEM_KEYCHAIN;
     use super::{
         AddPassword, InteractiveRefusal, KeychainTarget, MAX_INTERACTIVE_LINE, PasswordChannel,
-        SHIPPED_PASSWORD_CHANNEL, Security, interaction_blocked,
+        SHIPPED_PASSWORD_CHANNEL, Security,
     };
     use crate::command::Stdin;
 
@@ -1052,15 +1042,5 @@ mod tests {
     #[test]
     fn the_account_name_is_cage_dot_key() {
         assert_eq!(Security::account("myapp", "API_KEY"), "myapp.API_KEY");
-    }
-
-    #[test]
-    fn interaction_blocked_is_case_insensitive() {
-        assert!(interaction_blocked(
-            "SecKeychainItemCreateFromContent: User interaction is not allowed."
-        ));
-        assert!(interaction_blocked("INTERACTION IS NOT ALLOWED"));
-        assert!(!interaction_blocked("The specified item already exists."));
-        assert!(!interaction_blocked(""));
     }
 }

@@ -249,12 +249,6 @@ impl<'a> VmBackend<'a> {
         VmPodman::new(self.runner, name)
     }
 
-    /// `VmBackend.service_names`.
-    #[must_use]
-    pub fn service_names(&self) -> [&'static str; 2] {
-        SERVICE_NAMES
-    }
-
     /// The version this backend tags images and stamps units with.
     #[must_use]
     pub fn version(&self) -> &'a str {

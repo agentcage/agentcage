@@ -214,12 +214,6 @@ impl Command {
         self
     }
 
-    /// Write the child's stdout to `path`, truncating it.
-    #[must_use]
-    pub fn stdout_file(self, path: impl Into<PathBuf>) -> Self {
-        self.stdout(Sink::Write(path.into()))
-    }
-
     /// Discard the child's stdout.
     #[must_use]
     pub fn stdout_null(self) -> Self {
@@ -385,12 +379,6 @@ impl Command {
     #[must_use]
     pub fn env_changes(&self) -> &BTreeMap<String, Option<String>> {
         &self.env
-    }
-
-    /// Whether the child starts from an empty environment.
-    #[must_use]
-    pub fn env_is_cleared(&self) -> bool {
-        self.env_cleared
     }
 
     /// The child's working directory, when it differs from agentcage's.

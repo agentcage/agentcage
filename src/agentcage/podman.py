@@ -117,24 +117,6 @@ class Podman:
         else:
             subprocess.run(cmd, check=True)
 
-    def run_and_remove(
-        self,
-        image: str,
-        command: list[str],
-        volumes: dict[str, dict[str, str]] | None = None,
-    ) -> None:
-        cmd = [*_podman_cmd(), "run", "--rm"]
-        for host_path, opts in (volumes or {}).items():
-            bind = opts.get("bind", host_path)
-            mode = opts.get("mode", "")
-            mount = f"{host_path}:{bind}"
-            if mode:
-                mount += f":{mode}"
-            cmd.extend(["-v", mount])
-        cmd.append(image)
-        cmd.extend(command)
-        subprocess.run(cmd, check=True)
-
     def container_running(self, name: str) -> bool:
         r = subprocess.run(
             [*_podman_cmd(), "inspect", "--format", "{{.State.Status}}", name],
@@ -177,12 +159,6 @@ class Podman:
                 [*_podman_cmd(), "volume", "export", name],
                 stdout=f, check=True,
             )
-
-    def volume_create(self, name: str) -> None:
-        subprocess.run(
-            [*_podman_cmd(), "volume", "create", name],
-            capture_output=True, check=True,
-        )
 
     def volume_import(self, name: str, tar_path: str) -> None:
         """Import a tar archive into a Podman volume."""

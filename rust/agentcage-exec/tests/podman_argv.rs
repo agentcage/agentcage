@@ -20,14 +20,14 @@
 //!
 //! # Coverage
 //!
-//! `podman.py` has **21 invocation sites**. All 21 are pinned here, plus
+//! `podman.py` has **19 invocation sites**. All 19 are pinned here, plus
 //! the three `_podman_cmd` cases and the two secret-parsing helpers.
-//! `test_podman.py` covers 16 of the 21 methods across 31 test
-//! functions; the five it never invokes -- `run_and_remove`,
-//! `volume_export`, `volume_create`, `volume_import`, `image_inspect`,
-//! `container_exec`, `pull` -- are pinned here for the first time.
+//! `test_podman.py` covers 14 of the 19 methods across 36 test
+//! functions; the five it never invokes -- `container_exec`,
+//! `volume_export`, `volume_import`, `pull`, `image_inspect` -- are
+//! pinned here for the first time.
 
-use agentcage_exec::tools::podman::{BuildOptions, Podman, VolumeMount, secret_env_names};
+use agentcage_exec::tools::podman::{BuildOptions, Podman, secret_env_names};
 use agentcage_exec::{Command, Elevation, FakeRunner, Reply, Sink, Stdin};
 
 /// A podman wrapper over a fresh fake, with no `runuser` prefix.
@@ -345,43 +345,6 @@ fn build_raises_on_failure_and_quiet_changes_the_stdio() {
 }
 
 // ---------------------------------------------------------------------
-// run_and_remove  --  not covered by test_podman.py
-// ---------------------------------------------------------------------
-
-/// `podman run --rm [-v host:bind[:mode]]... <image> <command...>`.
-#[test]
-fn run_and_remove_builds_its_mounts_in_order() {
-    let fake = FakeRunner::new();
-    fake.push(Reply::status(0));
-    podman(&fake)
-        .run_and_remove(
-            "alpine",
-            &["sh".to_string(), "-c".to_string(), "true".to_string()],
-            &[
-                VolumeMount::new("/host/a"),
-                VolumeMount::new("/host/b").bind("/in/b").mode("ro"),
-            ],
-        )
-        .unwrap();
-    fake.assert_call(
-        0,
-        &[
-            "podman",
-            "run",
-            "--rm",
-            "-v",
-            "/host/a:/host/a",
-            "-v",
-            "/host/b:/in/b:ro",
-            "alpine",
-            "sh",
-            "-c",
-            "true",
-        ],
-    );
-}
-
-// ---------------------------------------------------------------------
 // container_running / container_inspect  --  TestContainerRunning,
 // TestContainerInspect
 // ---------------------------------------------------------------------
@@ -493,30 +456,28 @@ fn removals_and_existence_checks_report_the_status() {
     fake.assert_drained();
 }
 
-/// Not covered by `test_podman.py`. `volume create` captures and checks;
-/// `volume export` redirects stdout to the backup file; `volume import`
-/// feeds the archive in on stdin with a trailing `-`.
+/// Not covered by `test_podman.py`. `volume export` redirects stdout to
+/// the backup file; `volume import` feeds the archive in on stdin with a
+/// trailing `-`.
 #[test]
 fn volume_backup_and_restore_wire_their_streams_to_files() {
     let fake = FakeRunner::new();
-    fake.push_all([Reply::status(0), Reply::status(0), Reply::status(0)]);
+    fake.push_all([Reply::status(0), Reply::status(0)]);
     let p = podman(&fake);
-    p.volume_create("myvol").unwrap();
     p.volume_export("myvol", "/backup/myvol.tar").unwrap();
     p.volume_import("myvol", "/backup/myvol.tar").unwrap();
 
     fake.assert_argv(&[
-        &["podman", "volume", "create", "myvol"],
         &["podman", "volume", "export", "myvol"],
         &["podman", "volume", "import", "myvol", "-"],
     ]);
     assert_eq!(
-        fake.call(1).command.stdout_spec(),
+        fake.call(0).command.stdout_spec(),
         &Sink::Write("/backup/myvol.tar".into()),
         "the tar stream must not pass through agentcage"
     );
     assert_eq!(
-        fake.call(2).command.stdin_spec(),
+        fake.call(1).command.stdin_spec(),
         &Stdin::File("/backup/myvol.tar".into())
     );
 }

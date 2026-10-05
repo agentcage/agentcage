@@ -133,16 +133,6 @@ impl FixedValidationHost {
             environment: BTreeSet::new(),
         }
     }
-
-    /// The Apple Silicon answer, with an empty environment.
-    #[must_use]
-    pub fn macos_arm64() -> Self {
-        Self {
-            system: "Darwin".to_owned(),
-            machine: "arm64".to_owned(),
-            environment: BTreeSet::new(),
-        }
-    }
 }
 
 impl ValidationHost for FixedValidationHost {

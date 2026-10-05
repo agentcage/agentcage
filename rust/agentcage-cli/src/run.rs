@@ -49,7 +49,7 @@ use agentcage_core::quadlets::QuadletHost;
 use agentcage_exec::{Command, CommandRunner};
 use agentcage_state::Paths;
 
-use crate::scaffold::{RenderRequest, Scaffolds, SetupOptions, TempDir};
+use crate::scaffold::{RenderRequest, Scaffolds, TempDir};
 
 /// `run._ADJECTIVES`.
 const ADJECTIVES: [&str; 50] = [
@@ -416,17 +416,6 @@ impl StagedConfig {
     #[must_use]
     pub fn path(&self) -> PathBuf {
         self.dir.path().join("cage.yaml")
-    }
-}
-
-/// `SetupOptions` for the host build loop, given a cage's isolation.
-#[must_use]
-pub fn setup_options(isolation: &str, quiet: bool, no_cache: bool, pull: bool) -> SetupOptions<'_> {
-    SetupOptions {
-        isolation: Some(isolation),
-        quiet,
-        no_cache,
-        pull,
     }
 }
 

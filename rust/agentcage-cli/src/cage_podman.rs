@@ -83,20 +83,6 @@ impl<'a> CagePodman<'a> {
         matches!(self, Self::Guest(_))
     }
 
-    /// The Lima instance behind a guest handle.
-    ///
-    /// For the one caller that needs more than a podman verb: staging a
-    /// secret into a running vm cage runs `podman unshare` *in the
-    /// guest* with the value on stdin, which is a `limactl shell`, not
-    /// a podman call.
-    #[must_use]
-    pub fn guest_instance(&self) -> Option<&LimaInstance<'a>> {
-        match self {
-            Self::Host(_) => None,
-            Self::Guest(p) => Some(p.instance()),
-        }
-    }
-
     /// `podman inspect <name>` for a container, in whichever store.
     ///
     /// # Errors

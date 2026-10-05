@@ -49,7 +49,7 @@
 use std::collections::HashMap;
 
 use crate::python::str_of;
-use crate::yaml::{Mapping, Value};
+use crate::yaml::Value;
 
 use super::types::PLACEHOLDER_PREFIX;
 
@@ -203,16 +203,6 @@ pub fn injection_rules_mut(document: &mut Value) -> &mut [Value] {
         Value::Sequence(items) => items.as_mut_slice(),
         _ => &mut [],
     }
-}
-
-/// The `placeholder:` a rule carries, or `""`.
-///
-/// Small enough to inline, kept as a function because both the validator
-/// and the CLI's `secret rotate-placeholders` ask the same question of a
-/// raw rule.
-#[must_use]
-pub fn placeholder_of(rule: &Mapping) -> String {
-    rule.get("placeholder").map_or_else(String::new, str_of)
 }
 
 #[cfg(test)]

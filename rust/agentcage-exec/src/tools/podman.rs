@@ -22,57 +22,6 @@ use crate::outcome::{ExecError, Output};
 use crate::runner::CommandRunner;
 use crate::tools::Elevation;
 
-/// A bind mount for [`Podman::run_and_remove`].
-///
-/// The Python takes `dict[host_path, {"bind": ..., "mode": ...}]` and
-/// relies on `dict` order; this is a list because the order is part of
-/// the argv and should be visible as such.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VolumeMount {
-    /// The host path.
-    pub host: String,
-    /// The path inside the container. Defaults to [`VolumeMount::host`].
-    pub bind: Option<String>,
-    /// Mount options (`ro`, `z`, ...). Omitted when empty.
-    pub mode: Option<String>,
-}
-
-impl VolumeMount {
-    /// A mount at the same path inside the container, with no options.
-    #[must_use]
-    pub fn new(host: impl Into<String>) -> Self {
-        Self {
-            host: host.into(),
-            bind: None,
-            mode: None,
-        }
-    }
-
-    /// Mount at a different path inside the container.
-    #[must_use]
-    pub fn bind(mut self, path: impl Into<String>) -> Self {
-        self.bind = Some(path.into());
-        self
-    }
-
-    /// Add mount options.
-    #[must_use]
-    pub fn mode(mut self, mode: impl Into<String>) -> Self {
-        self.mode = Some(mode.into());
-        self
-    }
-
-    /// The `-v` value: `host[:bind][:mode]`.
-    #[must_use]
-    pub fn spec(&self) -> String {
-        let bind = self.bind.as_deref().unwrap_or(&self.host);
-        match self.mode.as_deref().filter(|m| !m.is_empty()) {
-            Some(mode) => format!("{}:{bind}:{mode}", self.host),
-            None => format!("{}:{bind}", self.host),
-        }
-    }
-}
-
 /// Arguments to [`Podman::build_image`].
 ///
 /// A struct rather than eight positional parameters because the Python's
@@ -265,26 +214,6 @@ impl<'a> Podman<'a> {
 
     // ── containers ───────────────────────────────────────────
 
-    /// `podman run --rm [-v ...] <image> <command...>`.
-    ///
-    /// # Errors
-    ///
-    /// [`ExecError::Failed`] on a non-zero exit.
-    pub fn run_and_remove(
-        &self,
-        image: &str,
-        command: &[String],
-        volumes: &[VolumeMount],
-    ) -> Result<(), ExecError> {
-        let mut cmd = self.cmd(["run", "--rm"]);
-        for volume in volumes {
-            cmd = cmd.args(["-v".to_string(), volume.spec()]);
-        }
-        cmd = cmd.arg(image).args(command.iter().cloned());
-        self.runner.run(&cmd)?.check("podman")?;
-        Ok(())
-    }
-
     /// `podman inspect --format {{.State.Status}} <name>`, compared to
     /// `running`.
     ///
@@ -361,18 +290,6 @@ impl<'a> Podman<'a> {
     /// Only if podman itself could not be run.
     pub fn volume_exists(&self, name: &str) -> Result<bool, ExecError> {
         self.ran_ok(&self.cmd(["volume", "exists", name]))
-    }
-
-    /// `podman volume create <name>`.
-    ///
-    /// # Errors
-    ///
-    /// [`ExecError::Failed`] on a non-zero exit.
-    pub fn volume_create(&self, name: &str) -> Result<(), ExecError> {
-        self.runner
-            .run(&self.cmd(["volume", "create", name]).captured())?
-            .check("podman")?;
-        Ok(())
     }
 
     /// `podman volume export <name> > <output_path>`.
@@ -696,20 +613,8 @@ pub fn secret_env_names<L: SecretLister + ?Sized>(
 
 #[cfg(test)]
 mod tests {
-    use super::{VolumeMount, filter_secrets_by_prefix, parse_secret_list};
+    use super::{filter_secrets_by_prefix, parse_secret_list};
     use crate::outcome::Output;
-
-    #[test]
-    fn mount_specs_match_the_python() {
-        assert_eq!(VolumeMount::new("/h").spec(), "/h:/h");
-        assert_eq!(VolumeMount::new("/h").bind("/c").spec(), "/h:/c");
-        assert_eq!(
-            VolumeMount::new("/h").bind("/c").mode("ro").spec(),
-            "/h:/c:ro"
-        );
-        // An empty mode is dropped, as `if mode:` does.
-        assert_eq!(VolumeMount::new("/h").mode("").spec(), "/h:/h");
-    }
 
     #[test]
     fn prefix_filtering_keeps_everything_when_the_prefix_is_empty() {

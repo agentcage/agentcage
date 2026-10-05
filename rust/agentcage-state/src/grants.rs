@@ -73,17 +73,6 @@ impl Paths {
         Ok(dir)
     }
 
-    /// `state.cage_data_dir`, created.
-    ///
-    /// # Errors
-    ///
-    /// [`StateError::Io`] if the directory cannot be created.
-    pub fn ensure_cage_data_dir(&self, name: &str) -> Result<std::path::PathBuf> {
-        let dir = self.cage_data_dir(name);
-        fs::create_dir_all(&dir).map_err(|e| StateError::io(&dir, "create directory", e))?;
-        Ok(dir)
-    }
-
     /// `state.capture_dir`, created.
     ///
     /// # Errors
