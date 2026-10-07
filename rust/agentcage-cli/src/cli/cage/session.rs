@@ -131,6 +131,9 @@ fn shell_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
     if config.isolation == "vm" {
         return Ok(shell_vm(ctx, &name, &service, as_root));
     }
+    if config.isolation != "container" {
+        return shell_backend(ctx, &config.isolation, &name, &service, as_root);
+    }
 
     // `cage shell` has no stopped-cage pre-flight in `cli.py` — only
     // `cage exec` grew one — and adding one here would be a behaviour
@@ -212,6 +215,45 @@ fn shell_vm(ctx: &Ctx, name: &str, service: &str, as_root: bool) -> ExitCode {
     argv.push(container);
     argv.push(shell.to_owned());
     status(terminal::run_interactive(&argv))
+}
+
+/// `cage shell` on a backend that owns its own exec argv
+/// (apple-container): the same bash-then-sh probe and session as the
+/// podman path, but built by the backend, as `cage exec` does, rather
+/// than a hard-coded `podman exec` there is no podman to answer.
+fn shell_backend(
+    ctx: &Ctx,
+    isolation: &str,
+    name: &str,
+    service: &str,
+    as_root: bool,
+) -> Result<ExitCode, ExitCode> {
+    let backend = ctx.backend_for(isolation);
+    let argv_for = |command: &[&str], interactive: bool| {
+        let command: Vec<String> = command.iter().map(|part| (*part).to_owned()).collect();
+        backend
+            .exec_argv(name, service, &command, interactive, as_root)
+            .map_err(|error| {
+                eprintln!("error: {error}");
+                ExitCode::from(EXIT_FAILURE)
+            })
+    };
+
+    let mut shell = "/bin/sh";
+    for candidate in ["/bin/bash", "/bin/sh"] {
+        let argv = argv_for(&["test", "-x", candidate], false)?;
+        let (program, rest) = argv.split_first().expect("argv is never empty");
+        let probe = agentcage_exec::Command::new(program.clone())
+            .args(rest.iter().cloned())
+            .captured();
+        if ctx.runner.run(&probe).is_ok_and(|out| out.success()) {
+            shell = candidate;
+            break;
+        }
+    }
+
+    let argv = argv_for(&[shell], terminal::is_interactive())?;
+    Ok(status(terminal::run_interactive(&argv)))
 }
 
 /// `/bin/bash` if the container has it, `/bin/sh` otherwise.
