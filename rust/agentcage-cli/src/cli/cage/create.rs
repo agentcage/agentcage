@@ -71,9 +71,10 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         .iter()
         .map(|spec| spec.split_once('=').map_or(spec.as_str(), |(key, _)| key))
         .collect();
-    let missing: Vec<String> = if config.isolation == "container"
-        || agentcage_exec::command::which_on_path("podman").is_some()
-    {
+    // Only the container backend keeps secrets on host podman; asking
+    // it about a vm or apple-container cage reports every key missing
+    // (see `cage update`).
+    let missing: Vec<String> = if config.isolation == "container" {
         services::check_secrets(&podman, &ctx.paths, &name, &config, &env)
             .into_iter()
             .filter(|key| !being_set.contains(&key.as_str()))

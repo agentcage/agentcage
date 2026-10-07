@@ -982,7 +982,9 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             return Err(ExitCode::from(EXIT_FAILURE));
         }
         println!("Destroying existing cage '{target}'...");
-        let backend = ctx.backend();
+        // The existing cage's own backend, not the tarball's: restoring
+        // over an apple-container cage must tear it down through Apple.
+        let backend = ctx.backend_of(&target);
         backend.stop(&target);
         if let Err(error) = backend.destroy_resources(&target, false) {
             eprintln!("warning: {error}");
