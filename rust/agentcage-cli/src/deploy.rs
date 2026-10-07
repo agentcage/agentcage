@@ -166,7 +166,12 @@ fn parse_arg(line: &str) -> Option<(String, Option<String>)> {
 /// `re.match(r"\s*FROM\s+(?:--\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?", line, re.I)`.
 fn parse_from(line: &str) -> Option<(String, Option<String>)> {
     let trimmed = line.trim_start();
-    if trimmed.len() < 4 || !trimmed[..4].eq_ignore_ascii_case("FROM") {
+    // `get`, not `[..4]`: a comment like `# ───` puts a multi-byte char
+    // across byte 4, and slicing there panics.
+    if !trimmed
+        .get(..4)
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("FROM"))
+    {
         return None;
     }
     let rest = &trimmed[4..];
@@ -583,6 +588,22 @@ mod tests {
         let refs = containerfile_image_refs(&config, dir.path(), &[]);
         let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
         assert_eq!(refs, ["alpine:3", "node:22-slim"]);
+    }
+
+    #[test]
+    fn a_multibyte_char_across_byte_four_is_not_a_from_line() {
+        let dir = agentcage_state::TestDir::new("cfutf8");
+        std::fs::write(
+            dir.path().join("Containerfile"),
+            "# \u{2500}\u{2500}\u{2500} base \u{2500}\u{2500}\u{2500}\nFROM alpine:3\n",
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.container.build.containerfile = "Containerfile".to_owned();
+        let refs = containerfile_image_refs(&config, dir.path(), &[]);
+        let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
+        assert_eq!(refs, ["alpine:3"]);
     }
 
     #[test]

@@ -304,19 +304,24 @@ fn start_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
-    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-    let env = agentcage_cli::secrets::SystemEnv;
-    let host = agentcage_cli::secrets::SecretHost::detect(ctx.runner.as_ref(), &env);
-    if let Err(error) = host.resolve_and_populate(
-        &podman,
-        &config,
-        name,
-        &ctx.paths.deployment_dir(name),
-        &std::collections::BTreeSet::new(),
-        true,
-    ) {
-        eprintln!("error: {}", error.message());
-        return Err(ExitCode::from(EXIT_FAILURE));
+    // Container mode only, as in `cage create` and `run`: the vm and
+    // apple-container backends materialize their own secrets at start,
+    // and on a macOS host there is no podman store to populate.
+    if config.isolation == "container" {
+        let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+        let env = agentcage_cli::secrets::SystemEnv;
+        let host = agentcage_cli::secrets::SecretHost::detect(ctx.runner.as_ref(), &env);
+        if let Err(error) = host.resolve_and_populate(
+            &podman,
+            &config,
+            name,
+            &ctx.paths.deployment_dir(name),
+            &std::collections::BTreeSet::new(),
+            true,
+        ) {
+            eprintln!("error: {}", error.message());
+            return Err(ExitCode::from(EXIT_FAILURE));
+        }
     }
 
     ctx.paths
