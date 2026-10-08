@@ -1,0 +1,2 @@
+{"ts": "2026-03-14T15:09:26+00:00", "kind": "policy_grant_applied", "domain": "files.pythonhosted.org", "actor": "fixture", "reason": "pip install requested by the decider"}
+{"ts": "2026-03-14T15:09:26+00:00", "kind": "policy_grant_removed", "domain": "stale.example.com", "actor": "fixture", "reason": "expired"}

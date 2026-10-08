@@ -1,0 +1,1 @@
+ValueError: agents.watcher.interval_seconds must be >= 60 (got 30.0) — one LLM scan per interval, and a faster cadence would be a hot loop

@@ -173,12 +173,20 @@ def check_containers(update: bool) -> tuple[int, int]:
     total_updates = 0
     total_current = 0
 
-    for cf in (
-        "src/agentcage/data/containers/Containerfile.proxy",
-        "src/agentcage/data/containers/Containerfile.dns",
-        "src/agentcage/data/containers/Containerfile.helper",
-        "src/agentcage/data/containers/Containerfile.nested",
-    ):
+    # Globbed, not listed. The hardcoded list named Containerfile.proxy
+    # and Containerfile.dns, which v0.22 unified into
+    # Containerfile.egress — so `update-deps.py containers` died on the
+    # first missing file and checked NOTHING, including the egress
+    # image's own mitmproxy pin, which is the one this tool exists for.
+    # A glob cannot go stale that way.
+    containers = sorted(
+        os.path.join("src", "agentcage", "data", "containers", entry.name)
+        for entry in os.scandir(
+            os.path.join(REPO_ROOT, "src", "agentcage", "data", "containers")
+        )
+        if entry.is_file() and entry.name.startswith("Containerfile")
+    )
+    for cf in containers:
         u, c = _check_digest_pinned(cf, update)
         total_updates += u
         total_current += c

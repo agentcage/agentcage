@@ -1,0 +1,9 @@
+Usage: agentcage cage status [OPTIONS] [NAME]
+
+  Show status — one cage's detail (with NAME) or all cages (without).
+
+  Mirrors `systemctl status`: `agentcage status` lists every cage; `agentcage
+  status <name>` shows that cage's detail (same as `cage show`).
+
+Options:
+  --help  Show this message and exit.

@@ -1,0 +1,1 @@
+ports has no inspected TCP entries (tcp.allow - tcp.passthrough is empty): transparent capture disabled, only L7 HTTP_PROXY-aware traffic will be audited

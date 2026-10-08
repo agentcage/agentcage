@@ -1,0 +1,1 @@
+ValueError: volume host path '/etc' resolves to '/etc' which is outside the home directory ('{{HOME}}')

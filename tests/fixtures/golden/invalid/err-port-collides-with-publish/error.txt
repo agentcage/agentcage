@@ -1,0 +1,1 @@
+ValueError: ports.tcp.allow entry 3000 collides with container.ports inbound forward '127.0.0.1:3000:3000'; the REDIRECT would intercept connections meant for the cage's reverse-mode listener

@@ -1,0 +1,1 @@
+ValueError: top-level watcher is no longer supported; use agents.watcher with flat LLM fields

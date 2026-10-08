@@ -203,6 +203,19 @@ class TestParseSince:
         assert parse_since("foobar") is None
         assert parse_since("") is None
 
+    def test_trailing_newline_is_not_a_relative_offset(self):
+        r"""The pattern anchors on ``\Z``, not ``$``.
+
+        Python's ``$`` also matches immediately before one trailing
+        newline, so ``"1h\n"`` used to parse as one hour. It does not
+        fall through to the ISO branch either, so the value is now
+        rejected outright — which ``cage har`` reports rather than
+        silently treating as "no time filter".
+        """
+        assert parse_since("1h\n") is None
+        assert parse_since("30m\n") is None
+        assert parse_since("1h") is not None
+
     def test_zero_value(self):
         result = parse_since("0h")
         assert result is not None

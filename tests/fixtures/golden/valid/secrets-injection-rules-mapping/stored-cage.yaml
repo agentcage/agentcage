@@ -1,0 +1,18 @@
+name: secrets-injection-rules-mapping
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+secret_injection:
+  rules:
+  - env: MAPPED_KEY
+    placeholder: agentcage:secret:MAPPED_KEY:33333333333333333333333333333333
+    inject_to:
+    - api.example.com

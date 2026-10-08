@@ -1,0 +1,28 @@
+Usage: agentcage cage har [OPTIONS] NAME
+
+  Export captured HTTP traffic as HAR 1.2 JSON.
+
+  Reads the capture JSONL file for a cage and produces standard HAR JSON
+  loadable in Chrome DevTools (Network > Import HAR).
+
+  Two perspectives are available:
+
+    inbound   What the bot saw inside the cage (placeholders, redacted
+              secrets). Safe to share. This is the default.
+    outbound  What went on the wire (real injected secrets, raw server
+              responses). Treat as sensitive.
+
+Options:
+  --view [inbound|outbound]       Perspective to export: inbound (cage sees,
+                                  safe to share) or outbound (wire, contains
+                                  secrets).  [default: inbound]
+  -d, --decision [blocked|flagged|allowed]
+                                  Filter by decision (repeatable).
+  --host TEXT                     Filter by host (substring match, repeatable).
+  --method TEXT                   Filter by HTTP method (repeatable).
+  --direction [inbound|outbound]  Filter by traffic direction (repeatable).
+  --since TEXT                    Time window: 1h, 30m, 7d, or ISO date.
+  -n, --max-entries INTEGER       Max entries (0 = unlimited).  [default: 0]
+  -o, --output PATH               Output file (default: stdout).
+  --json-lines                    Output raw capture JSONL instead of HAR.
+  --help                          Show this message and exit.

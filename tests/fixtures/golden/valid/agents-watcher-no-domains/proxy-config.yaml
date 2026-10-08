@@ -1,0 +1,7 @@
+agents:
+  watcher:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: env:GOLDEN_SET_VAR
+agentcage_version: 0.0.0-golden

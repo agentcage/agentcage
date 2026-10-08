@@ -1,0 +1,480 @@
+{
+  "contract": "encoded_private_ip",
+  "summary": "Does this hostname ENCODE a non-globally-routable IP address? The structural half of agentcage's SSRF guard: wildcard-DNS services (nip.io, sslip.io, clones) turn a syntactically valid PUBLIC name into a route to 169.254.169.254, which name-suffix matching cannot see. Returns the decoded address, or null.",
+  "implementations": {
+    "host": "agentcage.config.encoded_private_ip (src/agentcage/config.py)",
+    "proxy": "policy_api._encoded_private_ip (src/agentcage/data/proxy/policy_api.py)"
+  },
+  "fields": {
+    "input": "the candidate hostname",
+    "expected": "the decoded dotted-quad string when the name encodes a non-global address, else null"
+  },
+  "notes": [
+    "'Non-global' is CPython's ipaddress.IPv4Address.is_global. This is NOT interpreter-version-sensitive: every case in this file was run on CPython 3.12.0, 3.12.3, 3.12.4, 3.13.0 and 3.14.7 and produced identical answers on all five. The is_global implementation is the same expression on all of them (`addr not in 100.64.0.0/10 and not addr.is_private`); gh-113171 altered is_private for some ranges and the is_global docstring, without moving the answer for any address here.",
+    "A Rust port should still implement the IANA special-purpose registry explicitly rather than reach for a crate's is_private(): the two are different predicates, not synonyms. 100.64.0.0/10 is the proof \u2014 is_global is False and is_private is ALSO False for it, so 'not is_private' would let carrier-grade NAT through. The cgnat-* and test-net-* cases exist to make that substitution fail loudly, and test_host_encoded_private_ip_mutation_is_caught demonstrates it doing so."
+  ],
+  "cases": [
+    {
+      "id": "metadata-hyphen",
+      "why": "the original red-team finding: resolves to the cloud metadata endpoint through a valid PUBLIC name",
+      "input": "169-254-169-254.nip.io",
+      "expected": "169.254.169.254"
+    },
+    {
+      "id": "metadata-dotted",
+      "why": "the dotted spelling of the same service",
+      "input": "169.254.169.254.nip.io",
+      "expected": "169.254.169.254"
+    },
+    {
+      "id": "metadata-mixed-separators",
+      "why": "the regex accepts '-' and '.' per position independently, so mixed spellings are caught too",
+      "input": "169.254-169.254.nip.io",
+      "expected": "169.254.169.254"
+    },
+    {
+      "id": "metadata-uppercase",
+      "why": "case must not evade the guard",
+      "input": "169-254-169-254.NIP.IO",
+      "expected": "169.254.169.254"
+    },
+    {
+      "id": "metadata-trailing-dot",
+      "why": "the FQDN spelling",
+      "input": "169-254-169-254.nip.io.",
+      "expected": "169.254.169.254"
+    },
+    {
+      "id": "metadata-bare",
+      "why": "no service suffix at all \u2014 the regex anchors on the leftmost labels and allows end-of-string",
+      "input": "169-254-169-254",
+      "expected": "169.254.169.254"
+    },
+    {
+      "id": "metadata-hyphen-suffix",
+      "why": "the address run is followed by more hyphenated text",
+      "input": "169-254-169-254-prod.example.com",
+      "expected": "169.254.169.254"
+    },
+    {
+      "id": "sslip-rfc1918",
+      "why": "a different wildcard-DNS service",
+      "input": "10-0-0-1.sslip.io",
+      "expected": "10.0.0.1"
+    },
+    {
+      "id": "traefik-me",
+      "why": "another clone",
+      "input": "192-168-1-1.traefik.me",
+      "expected": "192.168.1.1"
+    },
+    {
+      "id": "xip-docker-bridge",
+      "why": "the docker bridge address",
+      "input": "172.17.0.1.xip.io",
+      "expected": "172.17.0.1"
+    },
+    {
+      "id": "localtest-me",
+      "why": "another clone",
+      "input": "127-0-0-1.localtest.me",
+      "expected": "127.0.0.1"
+    },
+    {
+      "id": "arbitrary-domain",
+      "why": "matching the ENCODING rather than a service denylist covers a self-hosted wildcard zone too",
+      "input": "100-64-0-1.example.com",
+      "expected": "100.64.0.1"
+    },
+    {
+      "id": "loopback-hyphen",
+      "why": "127.0.0.1",
+      "input": "127-0-0-1.nip.io",
+      "expected": "127.0.0.1"
+    },
+    {
+      "id": "loopback-dotted",
+      "why": "the plain address",
+      "input": "127.0.0.1",
+      "expected": "127.0.0.1"
+    },
+    {
+      "id": "loopback-high",
+      "why": "the rest of 127/8",
+      "input": "127-255-255-254.nip.io",
+      "expected": "127.255.255.254"
+    },
+    {
+      "id": "unspecified",
+      "why": "0.0.0.0 \u2014 'this host' and a classic SSRF bypass",
+      "input": "0-0-0-0.nip.io",
+      "expected": "0.0.0.0"
+    },
+    {
+      "id": "unspecified-dotted",
+      "why": "the plain address",
+      "input": "0.0.0.0",
+      "expected": "0.0.0.0"
+    },
+    {
+      "id": "zero-slash-eight",
+      "why": "0.0.0.0/8 generally",
+      "input": "0-1-2-3.nip.io",
+      "expected": "0.1.2.3"
+    },
+    {
+      "id": "link-local-metadata",
+      "why": "the plain metadata address",
+      "input": "169.254.169.254",
+      "expected": "169.254.169.254"
+    },
+    {
+      "id": "link-local-low",
+      "why": "the bottom of 169.254/16",
+      "input": "169-254-0-1.nip.io",
+      "expected": "169.254.0.1"
+    },
+    {
+      "id": "link-local-high",
+      "why": "the top of 169.254/16",
+      "input": "169-254-255-255.nip.io",
+      "expected": "169.254.255.255"
+    },
+    {
+      "id": "link-local-below",
+      "why": "169.253.x is PUBLIC \u2014 an off-by-one on the range boundary",
+      "input": "169-253-255-255.nip.io",
+      "expected": null
+    },
+    {
+      "id": "link-local-above",
+      "why": "169.255.x is PUBLIC",
+      "input": "169-255-0-1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "rfc1918-10-low",
+      "why": "bottom of 10/8",
+      "input": "10-0-0-0.nip.io",
+      "expected": "10.0.0.0"
+    },
+    {
+      "id": "rfc1918-10-high",
+      "why": "top of 10/8",
+      "input": "10-255-255-255.nip.io",
+      "expected": "10.255.255.255"
+    },
+    {
+      "id": "rfc1918-172-low",
+      "why": "bottom of 172.16/12",
+      "input": "172-16-0-0.nip.io",
+      "expected": "172.16.0.0"
+    },
+    {
+      "id": "rfc1918-172-high",
+      "why": "top of 172.16/12",
+      "input": "172-31-255-255.nip.io",
+      "expected": "172.31.255.255"
+    },
+    {
+      "id": "rfc1918-172-below",
+      "why": "172.15.x is PUBLIC \u2014 the classic off-by-one on the awkward /12 boundary",
+      "input": "172-15-255-255.nip.io",
+      "expected": null
+    },
+    {
+      "id": "rfc1918-172-above",
+      "why": "172.32.x is PUBLIC",
+      "input": "172-32-0-0.nip.io",
+      "expected": null
+    },
+    {
+      "id": "rfc1918-192-168-low",
+      "why": "bottom of 192.168/16",
+      "input": "192-168-0-0.nip.io",
+      "expected": "192.168.0.0"
+    },
+    {
+      "id": "rfc1918-192-168-high",
+      "why": "top of 192.168/16",
+      "input": "192-168-255-255.nip.io",
+      "expected": "192.168.255.255"
+    },
+    {
+      "id": "rfc1918-192-167",
+      "why": "192.167.x is PUBLIC",
+      "input": "192-167-255-255.nip.io",
+      "expected": null
+    },
+    {
+      "id": "rfc1918-192-169",
+      "why": "192.169.x is PUBLIC",
+      "input": "192-169-0-0.nip.io",
+      "expected": null
+    },
+    {
+      "id": "cgnat-low",
+      "why": "bottom of 100.64/10 \u2014 reachable on a carrier network and NOT globally routable",
+      "input": "100-64-0-0.nip.io",
+      "expected": "100.64.0.0"
+    },
+    {
+      "id": "cgnat-high",
+      "why": "top of 100.64/10",
+      "input": "100-127-255-255.nip.io",
+      "expected": "100.127.255.255"
+    },
+    {
+      "id": "cgnat-below",
+      "why": "100.63.x is PUBLIC",
+      "input": "100-63-255-255.nip.io",
+      "expected": null
+    },
+    {
+      "id": "cgnat-above",
+      "why": "100.128.x is PUBLIC",
+      "input": "100-128-0-0.nip.io",
+      "expected": null
+    },
+    {
+      "id": "test-net-2",
+      "why": "198.51.100.0/24 \u2014 the TEST-NET-2 sinkhole agentcage itself points blocked domains at",
+      "input": "198-51-100-1.nip.io",
+      "expected": "198.51.100.1"
+    },
+    {
+      "id": "test-net-1",
+      "why": "192.0.2.0/24",
+      "input": "192-0-2-1.nip.io",
+      "expected": "192.0.2.1"
+    },
+    {
+      "id": "test-net-3",
+      "why": "203.0.113.0/24",
+      "input": "203-0-113-1.nip.io",
+      "expected": "203.0.113.1"
+    },
+    {
+      "id": "benchmark",
+      "why": "198.18.0.0/15 benchmarking range",
+      "input": "198-18-0-1.nip.io",
+      "expected": "198.18.0.1"
+    },
+    {
+      "id": "ietf-protocol",
+      "why": "192.0.0.0/24 IETF protocol assignments",
+      "input": "192-0-0-1.nip.io",
+      "expected": "192.0.0.1"
+    },
+    {
+      "id": "reserved-240",
+      "why": "240.0.0.0/4 reserved",
+      "input": "240-0-0-1.nip.io",
+      "expected": "240.0.0.1"
+    },
+    {
+      "id": "broadcast",
+      "why": "255.255.255.255 limited broadcast",
+      "input": "255-255-255-255.nip.io",
+      "expected": "255.255.255.255"
+    },
+    {
+      "id": "multicast-local",
+      "why": "224.0.0.1 \u2014 CPython reports multicast as globally reachable, so the guard does NOT flag it. Recorded as observed behaviour, not as an endorsement",
+      "input": "224-0-0-1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "multicast-test-net",
+      "why": "233.252.0.0/24 MCAST-TEST-NET",
+      "input": "233-252-0-1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "anycast-6to4",
+      "why": "192.88.99.1, the deprecated 6to4 relay anycast address \u2014 also reported as global",
+      "input": "192-88-99-1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "public-example",
+      "why": "encodes a PUBLIC address \u2014 no worse than naming the host directly, and flagging it would break real nip.io use",
+      "input": "93-184-216-34.nip.io",
+      "expected": null
+    },
+    {
+      "id": "public-dns",
+      "why": "a well-known public resolver",
+      "input": "8-8-8-8.nip.io",
+      "expected": null
+    },
+    {
+      "id": "public-plain",
+      "why": "a plain public address",
+      "input": "1.1.1.1",
+      "expected": null
+    },
+    {
+      "id": "digit-leading-name",
+      "why": "a legitimate name that merely starts with digits",
+      "input": "10-years.example.com",
+      "expected": null
+    },
+    {
+      "id": "too-few-octets",
+      "why": "three groups is not an address",
+      "input": "1-2-3.example.com",
+      "expected": null
+    },
+    {
+      "id": "five-octets",
+      "why": "five groups: the regex reads the first FOUR and stops at the separator before the fifth, so this decodes to the PUBLIC 1.2.3.4 and is not flagged",
+      "input": "1-2-3-4-5.example.com",
+      "expected": null
+    },
+    {
+      "id": "five-octets-private",
+      "why": "the same shape where the first four groups are RFC1918 \u2014 appending a fifth group does not evade the guard",
+      "input": "10-0-0-1-5.example.com",
+      "expected": "10.0.0.1"
+    },
+    {
+      "id": "not-an-address",
+      "why": "each group is in range for \\d{1,3} but the result is not a valid IPv4 address",
+      "input": "999-999-999-999.nip.io",
+      "expected": null
+    },
+    {
+      "id": "octet-256",
+      "why": "one past the octet limit",
+      "input": "256-1-1-1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "octet-four-digits",
+      "why": "\\d{1,3} cannot consume a 4-digit group, and no shorter match leaves a separator",
+      "input": "10-0-0-1234.nip.io",
+      "expected": null
+    },
+    {
+      "id": "not-leftmost",
+      "why": "the address is not where wildcard-DNS services put it; reading it anywhere would misfire on legitimate names",
+      "input": "cdn.10-0-0-1.example.com",
+      "expected": null
+    },
+    {
+      "id": "empty",
+      "why": "the empty string",
+      "input": "",
+      "expected": null
+    },
+    {
+      "id": "no-digits",
+      "why": "an ordinary name",
+      "input": "registry.npmjs.org",
+      "expected": null
+    },
+    {
+      "id": "zero-padded-octet",
+      "why": "010.0.0.1 would be octal in some parsers; wildcard-DNS services do not encode this way, so the guard deliberately declines to guess",
+      "input": "010-0-0-1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "zero-padded-all",
+      "why": "every octet zero-padded",
+      "input": "010-000-000-001.nip.io",
+      "expected": null
+    },
+    {
+      "id": "octal-full",
+      "why": "the 4-digit octal spelling does not match \\d{1,3} followed by a separator",
+      "input": "0177-0-0-1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "decimal-integer",
+      "why": "2130706433 == 127.0.0.1 as a single integer. NOT caught: no wildcard-DNS service encodes this way, and the label would have to resolve to loopback for it to matter",
+      "input": "2130706433.nip.io",
+      "expected": null
+    },
+    {
+      "id": "hex-integer",
+      "why": "0x7f000001 == 127.0.0.1. Not caught, same reason",
+      "input": "0x7f000001.nip.io",
+      "expected": null
+    },
+    {
+      "id": "dotted-hex",
+      "why": "the dotted-hex spelling",
+      "input": "0x7f.0x0.0x0.0x1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "dotted-octal",
+      "why": "the dotted-octal spelling",
+      "input": "0177.0.0.1.nip.io",
+      "expected": null
+    },
+    {
+      "id": "short-form-two-part",
+      "why": "127.1 expands to 127.0.0.1 in inet_aton, but not in Python's ipaddress and not in this guard",
+      "input": "127.1",
+      "expected": null
+    },
+    {
+      "id": "unicode-digits",
+      "why": "Arabic-Indic digits ARE \\d in a Python str pattern, so the regex matches \u2014 but ipaddress rejects non-ASCII digits, so the guard returns None. A Rust port using ASCII-only \\d reaches the same answer by a different route",
+      "input": "\u0661\u0666\u0669-\u0662\u0665\u0664-\u0661\u0666\u0669-\u0662\u0665\u0664.nip.io",
+      "expected": null
+    },
+    {
+      "id": "ipv6-loopback",
+      "why": "no dotted-quad run at the head",
+      "input": "::1",
+      "expected": null
+    },
+    {
+      "id": "ipv6-link-local",
+      "why": "the v6 link-local spelling",
+      "input": "fe80::1",
+      "expected": null
+    },
+    {
+      "id": "ipv6-mapped-metadata",
+      "why": "IPv4-mapped IPv6 \u2014 the dotted quad is present but not at the leftmost position",
+      "input": "::ffff:169.254.169.254",
+      "expected": null
+    },
+    {
+      "id": "ipv6-mapped-hostname",
+      "why": "the mapped form spelled as a hostname label",
+      "input": "0--ffff-169-254-169-254.nip.io",
+      "expected": null
+    },
+    {
+      "id": "ipv6-hyphen-encoded",
+      "why": "how sslip.io encodes v6: dashes for colons. Not matched by the v4 regex",
+      "input": "fe80--1.sslip.io",
+      "expected": null
+    },
+    {
+      "id": "ipv6-nat64",
+      "why": "the NAT64 well-known prefix with an embedded v4",
+      "input": "64:ff9b::169.254.169.254",
+      "expected": null
+    },
+    {
+      "id": "a6-vector-raw.githubusercontent.com",
+      "why": "carried over from tests/cross_language/vectors.py so this fixture is a superset of what PR A6's conformance test asserted",
+      "input": "raw.githubusercontent.com",
+      "expected": null
+    },
+    {
+      "id": "a6-vector-codecov.io",
+      "why": "carried over from tests/cross_language/vectors.py so this fixture is a superset of what PR A6's conformance test asserted",
+      "input": "codecov.io",
+      "expected": null
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+name: domains-expires-map
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - tmp.example.org
+  expires:
+    TMP.EXAMPLE.ORG.: '2030-01-01T00:00:00+00:00'
+dns_servers:
+- 192.0.2.53

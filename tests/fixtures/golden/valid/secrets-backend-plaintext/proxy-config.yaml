@@ -1,0 +1,8 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+secrets:
+  backend: plaintext
+  allow_plaintext: true
+agentcage_version: 0.0.0-golden

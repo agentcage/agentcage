@@ -1,0 +1,5 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+agentcage_version: {{VERSION}}

@@ -1,0 +1,1 @@
+ValueError: agents.decider.max_tokens must be at least 1024 (got 256) — a reasoning model spends thinking tokens inside this budget before emitting the forced tool call, so a smaller ceiling returns finish_reason=length with no tool call at all, which fails closed on every request. It is a ceiling, not a reservation: providers bill only the tokens actually generated.

@@ -1,0 +1,9 @@
+Usage: agentcage cage shell [OPTIONS] NAME
+
+  Open an interactive shell in a cage container.
+
+Options:
+  -s, --service [cage|egress]  Container service to shell into.  [default: cage]
+  --as-root                    Open the shell as root (uid 0) instead of the
+                               workload's uid 1000 user (debug only).
+  --help                       Show this message and exit.

@@ -130,16 +130,6 @@ class TestPodmanVolume:
         assert "export" in cmd
         assert "test-vol" in cmd
 
-    @patch("agentcage.podman.subprocess.run")
-    def test_volume_create(self, mock_run):
-        from agentcage.podman import Podman
-        Podman().volume_create("new-vol")
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        assert "volume" in cmd
-        assert "create" in cmd
-        assert "new-vol" in cmd
-
     @patch("builtins.open", create=True)
     @patch("agentcage.podman.subprocess.run")
     def test_volume_import(self, mock_run, mock_open):
@@ -272,6 +262,138 @@ class TestCageBackup:
         with tarfile.open(out, "r:gz") as tar:
             names = tar.getnames()
             assert any("secrets/API_KEY" in n for n in names)
+
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_backup_prefers_the_at_rest_value_over_a_stale_runtime_copy(
+        self, mock_state, MockPodman, MockLima, tmp_path,
+    ):
+        """The podman store is not always where the value *lives*.
+
+        When ``runtime_decrypts`` is False the podman entry is a copy,
+        written at deploy time and never refreshed by ``secret set`` —
+        so a backup read from it could carry a value two edits old.
+        Measured on a vm cage on a Mac: three copies, two values, and
+        the tarball got the stale one.
+        """
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
+        mock_state.deployment_exists.return_value = True
+        inj = MagicMock()
+        inj.env = "API_KEY"
+        cfg = _mock_config(secret_injection=[inj])
+        cfg.isolation = "vm"
+        mock_state.load_deployment_config.return_value = cfg
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "cage.yaml").write_text("name: test\n")
+        mock_state.stored_config_path.return_value = str(config_dir / "cage.yaml")
+        mock_state.capture_file.return_value = tmp_path / "capture.jsonl"
+        mock_state.deployment_dir.return_value = tmp_path
+
+        podman = MockPodman.return_value
+        podman.secret_list.return_value = [{"Name": "test.API_KEY"}]
+        podman.secret_read.return_value = "STALE-runtime-copy"
+
+        store = MagicMock()
+        store.runtime_decrypts = False
+        store.names.return_value = ["API_KEY"]
+        store.get.return_value = "CURRENT-at-rest-value"
+
+        out = str(tmp_path / "out.tar.gz")
+        with patch("agentcage.secret_store.resolve_store", return_value=store):
+            result = _runner().invoke(
+                main, ["cage", "backup", "test", "--include-secrets", "-o", out],
+            )
+        assert result.exit_code == 0, result.output
+
+        with tarfile.open(out, "r:gz") as tar:
+            member = tar.extractfile("agentcage-backup/secrets/API_KEY")
+            assert member is not None
+            assert member.read().decode() == "CURRENT-at-rest-value"
+
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_backup_carries_a_key_the_runtime_store_never_saw(
+        self, mock_state, MockPodman, MockLima, tmp_path,
+    ):
+        """A secret set on a cage that has not been deployed since has
+        no runtime copy at all, so it used to be left out of the backup
+        entirely — silently, because the key count came from the same
+        list."""
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
+        mock_state.deployment_exists.return_value = True
+        inj = MagicMock()
+        inj.env = "API_KEY"
+        cfg = _mock_config(secret_injection=[inj])
+        cfg.isolation = "vm"
+        mock_state.load_deployment_config.return_value = cfg
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "cage.yaml").write_text("name: test\n")
+        mock_state.stored_config_path.return_value = str(config_dir / "cage.yaml")
+        mock_state.capture_file.return_value = tmp_path / "capture.jsonl"
+        mock_state.deployment_dir.return_value = tmp_path
+
+        podman = MockPodman.return_value
+        podman.secret_list.return_value = []
+
+        store = MagicMock()
+        store.runtime_decrypts = False
+        store.names.return_value = ["API_KEY"]
+        store.get.return_value = "only-at-rest"
+
+        out = str(tmp_path / "out.tar.gz")
+        with patch("agentcage.secret_store.resolve_store", return_value=store):
+            result = _runner().invoke(
+                main, ["cage", "backup", "test", "--include-secrets", "-o", out],
+            )
+        assert result.exit_code == 0, result.output
+        podman.secret_read.assert_not_called()
+        with tarfile.open(out, "r:gz") as tar:
+            member = tar.extractfile("agentcage-backup/secrets/API_KEY")
+            assert member.read().decode() == "only-at-rest"
+
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_a_backup_without_include_secrets_resolves_no_store(
+        self, mock_state, MockPodman, MockLima, tmp_path,
+    ):
+        """Resolving a keychain store runs its write probe, which writes
+        a throwaway item to the operator's real login keychain. A backup
+        that archives no values has no business doing that."""
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config()
+        cfg.isolation = "vm"
+        mock_state.load_deployment_config.return_value = cfg
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "cage.yaml").write_text("name: test\n")
+        mock_state.stored_config_path.return_value = str(config_dir / "cage.yaml")
+        mock_state.capture_file.return_value = tmp_path / "capture.jsonl"
+        mock_state.deployment_dir.return_value = tmp_path
+        MockPodman.return_value.secret_list.return_value = []
+
+        out = str(tmp_path / "out.tar.gz")
+        with patch("agentcage.secret_store.resolve_store") as resolve:
+            result = _runner().invoke(main, ["cage", "backup", "test", "-o", out])
+        assert result.exit_code == 0, result.output
+        resolve.assert_not_called()
 
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")

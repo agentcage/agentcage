@@ -1,0 +1,15 @@
+name: backend-vm-file-volume
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  volumes:
+  - ${HOME}/dotfile.conf:/etc/app.conf:ro
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+isolation: vm

@@ -1,0 +1,20 @@
+name: err-relay-ca-file-not-string
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 0.0.0.0:1143
+  upstream:
+    host: h.example.com
+    port: 993
+    ca_file: 7

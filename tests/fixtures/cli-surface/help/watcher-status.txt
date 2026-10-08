@@ -1,0 +1,6 @@
+Usage: agentcage watcher status [OPTIONS] NAME
+
+  Show the traffic watcher's configuration and last scan.
+
+Options:
+  --help  Show this message and exit.

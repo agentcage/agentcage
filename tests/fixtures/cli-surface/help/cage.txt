@@ -1,0 +1,39 @@
+Usage: agentcage cage [OPTIONS] COMMAND [ARGS]...
+
+  Manage cages.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  audit    Query, filter, and summarize proxy audit logs.
+  backup   Create a backup tarball of a cage.
+  create   Build images, generate quadlets, install, and start a new cage.
+  destroy  Stop containers, remove quadlets, state, and scoped secrets.
+  edit     Edit a cage's stored config in $EDITOR, with validation and safe...
+  exec     Run a command inside a cage container.
+  grants   Manage Policy API runtime domain grants (see...
+  har      Export captured HTTP traffic as HAR 1.2 JSON.
+  list     List all cages with status.
+  logs     Show journalctl logs for a cage.
+  prune    Remove all exited interactive and ephemeral cages.
+  restart  Restart services without rebuilding images.
+  restore  Restore a cage from a backup tarball.
+  run      Run a coding agent in a sandboxed cage.
+  shell    Open an interactive shell in a cage container.
+  show     Show cage configuration and status.
+  start    Start a stopped cage.
+  status   Show status — one cage's detail (with NAME) or all cages (without).
+  stop     Stop a running cage without destroying it.
+  update   Rebuild and restart an existing cage.
+  verify   Check that a cage is healthy.
+
+Aliases:
+  config → edit
+  delete → destroy
+  describe → show
+  inspect → show
+  ls → list
+  ps → list
+  reload → restart
+  rm → destroy

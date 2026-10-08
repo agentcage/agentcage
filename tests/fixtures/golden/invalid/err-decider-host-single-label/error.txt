@@ -1,0 +1,1 @@
+ValueError: agents.decider.host 'agentcage' must be a dotted hostname (e.g. 'agentcage.local'), not an IP literal or single label

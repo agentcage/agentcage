@@ -1,0 +1,4 @@
+[Network]
+NetworkName=container-env-refs-net
+Internal=true
+Subnet=10.89.250.0/24

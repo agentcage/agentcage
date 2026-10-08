@@ -213,7 +213,7 @@ def parse_since(since: str) -> datetime | None:
     """
     from datetime import timedelta
 
-    m = re.match(r"^(\d+)([hHmMdD])$", since)
+    m = re.match(r"^(\d+)([hHmMdD])\Z", since)
     if m:
         val, unit = int(m.group(1)), m.group(2).lower()
         now = datetime.now(timezone.utc)

@@ -181,6 +181,16 @@ class TestIsRunning:
         with patch("subprocess.run", return_value=mock_result):
             assert inst.is_running() is False
 
+    def test_is_running_false_when_limactl_is_not_installed(self):
+        """A host without Lima has no guest to reach, which is the same
+        answer as a stopped one. This used to raise, so any command that
+        merely asks where a vm cage's secrets live -- `secret rm`,
+        `cage backup` -- died with a traceback on such a host."""
+        inst = LimaInstance("mycage")
+        with patch("subprocess.run", side_effect=FileNotFoundError(
+                2, "No such file or directory", "limactl")):
+            assert inst.is_running() is False
+
     def test_is_running_calls_limactl_list(self):
         inst = LimaInstance("mycage")
         output = json.dumps({"name": "agentcage-mycage", "status": "Running"})
@@ -209,6 +219,13 @@ class TestExists:
         mock_result = MagicMock(stdout=output)
         with patch("subprocess.run", return_value=mock_result):
             assert inst.exists() is True
+
+    def test_exists_false_when_limactl_is_not_installed(self):
+        """Same reason as `is_running` -- no Lima, no instance."""
+        inst = LimaInstance("mycage")
+        with patch("subprocess.run", side_effect=FileNotFoundError(
+                2, "No such file or directory", "limactl")):
+            assert inst.exists() is False
 
     def test_exists_false_on_error(self):
         inst = LimaInstance("mycage")

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=logging-legacy-log-allowed-net
+Internal=true
+Subnet=10.89.22.0/24

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Callable
 
 
 # Keep np deliberately portable across Podman and apple-container. In
@@ -159,6 +160,30 @@ def mask_mountpoint_dirs(
         ``<project>/.git`` parent that the same mask also created.
     """
     result: dict[str, list[str]] = {}
+    for _target, source, chain in mask_target_chains(tmpfs, mount_targets):
+        dirs = result.setdefault(source, [])
+        for path in chain:
+            if path not in dirs:
+                dirs.append(path)
+    for dirs in result.values():
+        dirs.sort(key=lambda path: path.count("/"), reverse=True)
+    return result
+
+
+def mask_target_chains(
+    tmpfs: list[str],
+    mount_targets: list[tuple[str, str]],
+) -> list[tuple[str, str, list[str]]]:
+    """Return ``(container_target, host_source, host_paths)`` per mask.
+
+    The shared mapping behind :func:`mask_mountpoint_dirs` and
+    :func:`unmaskable_masks`: which host paths a single ``tmpfs:`` entry
+    forces into existence, deepest first. Extracted so the two cannot
+    drift — one decides what to clean up afterwards and the other decides
+    whether the mount can be made at all, and they must agree on which
+    host paths a given mask is about.
+    """
+    chains: list[tuple[str, str, list[str]]] = []
     for spec in tmpfs:
         target = tmpfs_spec_target(spec).rstrip("/")
         if not target.startswith("/"):
@@ -172,14 +197,62 @@ def mask_mountpoint_dirs(
         parts = [p for p in target[len(best_target):].split("/") if p]
         if not parts or any(p in (".", "..") for p in parts):
             continue
-        dirs = result.setdefault(best_source, [])
-        for depth in range(len(parts), 0, -1):
-            path = os.path.join(best_source, *parts[:depth])
-            if path not in dirs:
-                dirs.append(path)
-    for dirs in result.values():
-        dirs.sort(key=lambda path: path.count("/"), reverse=True)
-    return result
+        chain = [
+            os.path.join(best_source, *parts[:depth])
+            for depth in range(len(parts), 0, -1)
+        ]
+        chains.append((target, best_source, chain))
+    return chains
+
+
+def unmaskable_masks(
+    tmpfs: list[str],
+    mount_targets: list[tuple[str, str]],
+    lexists: Callable[[str], bool] | None = None,
+    isdir: Callable[[str], bool] | None = None,
+) -> list[tuple[str, str]]:
+    """Return ``(container_target, blocking_host_path)`` for impossible masks.
+
+    A mask nested under a host bind needs its mount point to exist, and the
+    runtime creates it by ``mkdir``ing *through* the bind. That works when
+    the path is absent. It cannot work when an ancestor already exists and
+    is **not a directory**: the runtime fails with ``ENOTDIR`` and the cage
+    does not start at all.
+
+    The live case is a git **worktree** or **submodule**, where ``.git`` is a
+    file holding a ``gitdir:`` pointer rather than a directory. Every shipped
+    scaffold masks ``/workspace/.git/hooks`` (issue #170, to stop a caged
+    agent planting a hook the host later runs), so ``agentcage run <scaffold>``
+    against a worktree failed with::
+
+        vmexec error: mount failed with errno 20:
+        failed to resolve '/workspace/.git/hooks' in rootfs
+
+    — an opaque runtime error naming neither the mask nor the reason.
+
+    Callers skip the masks named here and say so. That relaxes #170 only
+    where it provably cannot apply: in a worktree the real hooks directory
+    lives in the main repository's gitdir, which is not under the bind, so
+    there is nothing reachable through ``/workspace`` for the mask to have
+    protected.
+
+    ``lexists`` / ``isdir`` are injected so the pure-logic tests and the
+    corpus harness can answer from a fixture; they default to the real
+    filesystem. ``lexists`` rather than ``exists`` on purpose: a dangling
+    symlink is not a directory either, and the runtime cannot mkdir through
+    one.
+    """
+    _lexists = lexists or os.path.lexists
+    _isdir = isdir or os.path.isdir
+    blocked: list[tuple[str, str]] = []
+    for target, _source, chain in mask_target_chains(tmpfs, mount_targets):
+        # Shallowest first: the outermost non-directory is the one to name,
+        # because it is what the operator has to look at.
+        for path in reversed(chain):
+            if _lexists(path) and not _isdir(path):
+                blocked.append((target, path))
+                break
+    return blocked
 
 
 def mask_copyup_entries(

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=ports-all-inspected-removed-net
+Internal=true
+Subnet=10.89.18.0/24

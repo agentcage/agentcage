@@ -1,0 +1,8 @@
+[
+  "lima.yaml",
+  "quadlets/vm-full-net.network",
+  "quadlets/vm-full-certs.volume",
+  "quadlets/vm-full-public-certs.volume",
+  "quadlets/vm-full-egress.container",
+  "quadlets/vm-full-cage.container"
+]

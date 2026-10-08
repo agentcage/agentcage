@@ -1,0 +1,194 @@
+[
+  {
+    "domain": "example.com",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "api.example.com",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "a.b.c.example.com",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "EXAMPLE.COM",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "example.com.",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "example",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "nas",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "fcos-vm-home-01",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "-bad.example.com",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "bad-.example.com",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "x.c",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "x.co",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "192.0.2.1",
+    "encoded_private_ip": "192.0.2.1",
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "::1",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "example.com\n",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "example.com\nserver=/x/1.1.1.1",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "exa mple.com",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "example.com/path",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": ".example.com",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com",
+    "encoded_private_ip": null,
+    "valid_domain": false,
+    "valid_domain_single_label": false
+  },
+  {
+    "domain": "169-254-169-254.nip.io",
+    "encoded_private_ip": "169.254.169.254",
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "10-0-0-1.sslip.io",
+    "encoded_private_ip": "10.0.0.1",
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "127-0-0-1.localtest.me",
+    "encoded_private_ip": "127.0.0.1",
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "8-8-8-8.nip.io",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "010-1-1-1.nip.io",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "10.0.0.1.nip.io",
+    "encoded_private_ip": "10.0.0.1",
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "10-years.example.com",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "1-2-3-4-5.example.com",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "192-168-1-1.traefik.me",
+    "encoded_private_ip": "192.168.1.1",
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  },
+  {
+    "domain": "999-1-1-1.nip.io",
+    "encoded_private_ip": null,
+    "valid_domain": true,
+    "valid_domain_single_label": true
+  }
+]

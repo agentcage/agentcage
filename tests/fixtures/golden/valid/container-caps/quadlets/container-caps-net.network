@@ -1,0 +1,4 @@
+[Network]
+NetworkName=container-caps-net
+Internal=true
+Subnet=10.89.213.0/24

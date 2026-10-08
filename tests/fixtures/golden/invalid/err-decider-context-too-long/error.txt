@@ -1,0 +1,1 @@
+ValueError: agents.decider.context is too long (4097 chars, max 4096) — trim it or move details into a shorter summary

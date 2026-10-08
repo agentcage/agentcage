@@ -1,0 +1,23 @@
+name: secrets-stripped-from-env
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  env:
+    FAKE_API_KEY: should-be-stripped
+    KEEP_ME: kept
+  podman_secrets:
+  - FAKE_API_KEY
+  - KEEP_SECRET
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+secret_injection:
+- env: FAKE_API_KEY
+  placeholder: agentcage:secret:FAKE_API_KEY:44444444444444444444444444444444
+  inject_to:
+  - api.example.com

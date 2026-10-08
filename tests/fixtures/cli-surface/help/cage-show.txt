@@ -1,0 +1,6 @@
+Usage: agentcage cage show [OPTIONS] NAME
+
+  Show cage configuration and status.
+
+Options:
+  --help  Show this message and exit.

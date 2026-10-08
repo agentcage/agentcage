@@ -1,0 +1,19 @@
+name: apple-agents-decider
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+isolation: apple-container
+domains:
+  allow:
+  - api.example.com
+dns_servers:
+- 192.0.2.53
+agents:
+  decider:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: systemd-creds:FAKE_DECIDER_KEY
+    base_url: ''

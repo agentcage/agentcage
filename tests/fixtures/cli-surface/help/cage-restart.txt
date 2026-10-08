@@ -1,0 +1,6 @@
+Usage: agentcage cage restart [OPTIONS] NAME
+
+  Restart services without rebuilding images.
+
+Options:
+  --help  Show this message and exit.

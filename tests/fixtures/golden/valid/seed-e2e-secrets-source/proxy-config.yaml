@@ -1,0 +1,17 @@
+secrets:
+  allow_plaintext: true
+domains:
+  allow:
+  - httpbin.org
+secret_injection:
+- env: SRC_ENV_KEY
+  placeholder: '{{SRC_ENV_KEY}}'
+  inject_to:
+  - httpbin.org
+  source: env:E2E_SRC_ENV_SECRET
+- env: SRC_CMD_KEY
+  placeholder: '{{SRC_CMD_KEY}}'
+  inject_to:
+  - httpbin.org
+  source: cmd:echo cmd-secret-value-42
+agentcage_version: 0.0.0-golden

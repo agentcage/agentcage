@@ -12,15 +12,39 @@ from agentcage.legacy_watcher import (
 
 
 def test_noop_when_nothing_installed(tmp_path, monkeypatch):
-    # Post-rework cages have no artifacts: every path is a no-op, never
-    # raises, and never shells out to systemctl/launchctl.
+    """A post-rework cage has no artifacts, and cleanup never raises.
+
+    What "no-op" means differs by platform, and the difference is
+    deliberate rather than incidental:
+
+    * on Linux ``_remove_linux_watcher`` returns before shelling out at
+      all — it checks for the unit file first, so a cage with no unit
+      costs nothing;
+    * on macOS ``_remove_macos_watcher`` runs ``launchctl bootout``
+      **unconditionally**, before it looks for the plist. That is on
+      purpose: a partially-removed cage can have lost its plist while
+      its job is still bootstrapped in the GUI domain, and a cleanup
+      that checked the file first would leave that job running forever.
+
+    So the assertion is "nothing on Linux, and exactly the one
+    unconditional bootout on macOS" — not "nothing", which would be
+    asserting that the macOS safety net does not exist.
+    """
     monkeypatch.setattr(Path, "is_file", lambda self: False)
     ran = []
     monkeypatch.setattr(
         "subprocess.run", lambda *a, **k: ran.append(a) or _fake_ok()
     )
     remove_legacy_grants_watcher("ghost", isolation="container")
-    assert ran == []  # darwin/linux branch bails before bootout/disable
+
+    if sys.platform == "darwin":
+        argvs = [a[0] for a in ran if a and isinstance(a[0], list)]
+        assert len(argvs) == 1, argvs
+        assert argvs[0][0] == "launchctl", argvs
+        assert argvs[0][1] == "bootout", argvs
+        assert "io.agentcage.ghost.grants" in " ".join(argvs[0]), argvs
+    else:
+        assert ran == []
 
 
 class _FakeProc:

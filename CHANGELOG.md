@@ -5,6 +5,435 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0] - 2026-10-02
+
+The version jumps from 0.40.x to 0.50.0 deliberately. 0.40.x is the Python
+CLI's line; 0.50.0 is the first number the Rust binary carries, so
+`agentcage --version` says unambiguously which implementation is answering.
+Nothing about the jump is a compatibility statement. The on-disk state format
+is unchanged, and the state-compatibility fixtures carry a 0.50.0 generation
+alongside 0.40.1 and 0.40.2 — every reader is asserted against all three, so a
+cage deployed by the Python is still readable. (The other half of that promise,
+`cage update` on a Python-deployed cage reporting no changes, is F2's remaining
+acceptance check and is not claimed here.)
+
+One consequence worth knowing: the shared egress image is tagged
+`agentcage-egress:<version>-<build-hash>`, so the version alone moves the tag.
+The next `cage update` on any cage rebuilds that image once — the build inputs
+have not changed, only its name.
+
+### Added
+
+- **`cage backup`, `cage restore` and the whole `secret` group work on
+  `isolation: vm`.** They used to refuse it, because a vm cage keeps its
+  secrets in a podman store *inside its Lima guest* and host podman does not
+  fail when asked about them — it answers, wrongly. `secret list` would have
+  reported every key missing; `secret rm` would have called an existing secret
+  absent. The routing is now explicit (`CagePodman`, the Rust spelling of
+  `cli._podman_for_cage`), and it asks whether the guest is *running* before
+  trusting it; a stopped guest falls back to the host store, which is where a
+  vm cage's secrets are staged and from which the next deploy bridges them in.
+
+  Two consequences worth knowing, neither new but neither previously written
+  down. **A vm cage's named volumes are not included in a backup** — the
+  volume step is container-only, `VmPodman` has no volume verbs, and the
+  tarball comes out with an empty `volumes/` and no warning. And `cage
+  restore` writes secrets to the *host* store on purpose, because the Lima
+  guest does not exist yet at that point; they reach the guest on the deploy
+  that follows. On a host with no podman store at all — which for this backend
+  means a Mac — that step fails and the cage is restored without its secrets;
+  each one warns and the summary says `Restored 0 secrets.`, so you will see
+  it, but the tarball's values do not arrive.
+
+- **The `apple-container` backend executes on the Rust binary.** Track E5:
+  `cage create`, `start`, `stop`, `restart`, `destroy`, `exec`, `logs`,
+  `audit` and `domain add`/`rm` all drive Apple's `container` CLI directly
+  instead of refusing. Verified on real hardware — `tests/e2e/phase_apple.sh`
+  is green on Apple Silicon / macOS 26.5 / `container` 1.5.0, including every
+  2-microVM threat-model assertion (injected secrets unreachable from the cage
+  VM at uid 1000 *and* under `--as-root`; `CAP_NET_ADMIN` cleared from an exec
+  session's `CapEff`), and the `container run` argv it emits for both microVMs
+  is byte-identical to the Python's on the same config.
+
+  Carried from v0.40.2, both of which this backend needs and neither of which
+  had a Rust counterpart before now: the egress `--kernel-arg
+  sysctl.net.ipv4.ip_forward=1` (without it `supervisor-egress.sh` dies at its
+  `ip_forward` gate and the cage loses all connectivity, not just its proxy),
+  and `start`'s preconditions naming the cage and `agentcage cage update
+  <name>` rather than an internal call.
+
+- **`cage backup` / `cage restore` and the `secret` group work on
+  `apple-container`** (Tracks E6 and E7). Backup is a second archive *shape*
+  rather than a second format — same root and manifest, one more member —
+  with `--include-secrets` refused because secrets are env-passed at start
+  rather than stored, `named_volumes` always empty, and the capture and audit
+  streams taken from the per-cage logs directory. Restore prints the
+  `export K=<value>` hints for the env names the manifest recorded. The
+  `secret` group gets no live-apply path, by design: the staged secrets
+  directory is wiped as soon as the egress has read it, so the apple path
+  restarts the cage, as the Python does. `vm` is still refused on both — it
+  has never been ported there either.
+
+### Removed
+
+- **Dead code, swept from both implementations.** Nothing user-visible: every
+  symbol below was defined, sometimes unit tested, and called by nothing.
+  `_security_interaction_blocked` (and its Rust twin `interaction_blocked`)
+  is the one worth naming — a predicate for the keychain's "interaction is
+  not allowed" stderr that no decision ever consulted. It read like a guard
+  someone would wire in later, and wiring it in would have *narrowed* the
+  fall-through, turning a headless Mac that fails for any other reason into a
+  hard failure instead of a System-keychain attempt. The behaviour is now
+  held by a test rather than tempted by an unused helper.
+
+  Also gone: `Podman.run_and_remove` and `Podman.volume_create` (both sides —
+  `cage restore` never needed the latter, because the deploy that runs first
+  creates the named volumes), `_level_grep_pattern` and
+  `collect_image_artifacts` on the Python, and eleven Rust-only items with no
+  Python counterpart.
+
+### Fixed
+
+- **`agentcage doctor` no longer reports QEMU missing on arm64 Linux.** It
+  always probed `qemu-system-x86_64`, but Lima on an arm64 host runs aarch64
+  guests and needs `qemu-system-aarch64`, so a correctly set up Ubuntu or
+  Debian arm64 host got a warning and a hint to install the x86 emulator. The
+  check now probes the host architecture's emulator, and the hint names the
+  arm package (`qemu-system-arm` on Debian/Ubuntu, `qemu-system-aarch64-core`
+  on Fedora, `qemu-arm` on openSUSE). Both implementations had it; the
+  vm backend's own prerequisite check already accepted either binary.
+
+- **`secret rm` and `cage destroy` now remove a vm cage's secret for real on
+  macOS.** The keychain delete was gated on the apple-container backend, but a
+  `vm` cage on a Mac resolves to the keychain too — so `secret rm` removed the
+  guest podman copy and the `.cred` blob, printed `Secret '<cage>.<KEY>'
+  removed.`, and left the value at rest. A plain `cage restart` then brought it
+  back. `cage destroy` had the same hole plus one more: `VmBackend` accepted
+  `--keep-secrets` and ignored it, so the help's "Scoped secrets will also be
+  removed." was false and the *host* staging store — which the container
+  backend does clear — outlived the cage.
+
+  A key that existed only at rest (set, but never deployed) also used to read
+  as `does not exist`, so there was no way to remove it at all. It is found
+  now. A store that refuses the delete warns instead of failing the command:
+  the runtime copies are already gone by then, so the secret has stopped being
+  injected either way, but you need to know the at-rest copy survived.
+
+- **`secret rm` and `cage backup` no longer traceback on a host without Lima
+  installed.** Both now ask whether a vm cage's guest is running, to decide
+  which store holds the secret — and `LimaInstance.is_running()` handled
+  `limactl` exiting non-zero and `limactl` printing junk, but not `limactl`
+  being absent. The `FileNotFoundError` escaped as a traceback. A missing
+  `limactl` now answers the same as a stopped guest, which is what every
+  caller already handles; `cage start` on a vm cage still reports the missing
+  binary through the backend's prerequisite check, as before.
+
+- **`secret rm` on a running `vm` cage no longer leaves it unable to restart.**
+  Removing a secret converges the unit files, which is what drops the
+  now-dangling `Secret=<cage>.<KEY>` line — but on the vm backend the
+  converged quadlet was written to a host staging directory and never pushed
+  into the guest, so the *running* guest kept naming a store entry that no
+  longer existed. The next start inside the guest — a `cage restart`, or
+  systemd's own crash recovery — then failed with podman exit 125 and took the
+  cage down until a full `cage update`. The convergence now reaches the guest.
+
+  This was invisible until the fix above: the keychain copy used to resurrect
+  the value, so the dangling line always resolved.
+
+- **`cage backup --include-secrets` no longer archives a stale value.** The
+  archive was read from the podman store, which on a backend whose runtime
+  does not decrypt is a *copy* — written at deploy time and never refreshed by
+  `secret set`. Measured on a vm cage: three copies of one secret, two
+  different values, and the tarball got the older one. A key with no runtime
+  copy at all was dropped from the backup silently. The at-rest store is now
+  preferred, with the podman copy as the fallback, and the archive carries the
+  union of both key lists. It is resolved only when `--include-secrets` is
+  given, because resolving a keychain store runs a write probe against your
+  real login keychain.
+
+- **`secret set` on a running `vm` cage no longer restarts the workload.** The
+  zero-restart path was unreachable on that backend: `cage_has_live_secret_
+  channel` asks the cage's podman to inspect the running egress container, and
+  the Lima-routed `VmPodman` never defined `container_inspect`. The
+  `AttributeError` landed in that function's own `except Exception`, so the
+  answer was always "no live channel" and every `secret set`/`secret rm` on a
+  running vm cage took the restart path — costing a long-running agent its
+  process state — while the branch written for exactly that case (staging the
+  value into the guest, then pushing the config files so the guest's proxy
+  re-reads them) never ran. The method now exists on both sides.
+
+  The path had a test, and it passed, because it patched the class with a
+  `MagicMock` — which grows whatever attribute you ask it for. The replacement
+  asserts against the real class; deleting the method again makes the new test
+  fail and leaves the old one green, which is the difference.
+
+- **`secret rotate-placeholders` asks the right backend whether a `vm` cage is
+  running.** It used the container backend unconditionally, so it ran
+  `systemctl --user` on the *host*, where a vm cage's unit does not exist. A
+  running vm cage read as stopped and the command printed "the new
+  placeholders apply on next start" while the cage carried on injecting the
+  old ones.
+
+- **Security: `cage secret set` no longer puts the secret in argv on macOS.**
+  `KeychainStore.set` ran `security add-generic-password … -w <CLEARTEXT> -U`,
+  so for the life of that child the credential was readable from the process
+  table — by any process of the same user, and by root. On a laptop "same user"
+  is every other agent session, every MCP server and every package
+  postinstall. It was the only place in agentcage where secret material
+  travelled in argv; every other path already used stdin. It now runs
+  `security -i` with the whole command line on the child's stdin, which
+  `security(1)` splits in process and dispatches to the same handler, so the
+  kernel's argv is `security -i` and nothing more.
+
+  Not a guess: the obvious candidate — piping the value to a bare `-w` — is
+  *refuted*. That routes to `getpass(3)`, which opens `/dev/tty` and falls back
+  to stdin only when the process has no controlling terminal at all, prompts
+  twice, and on EOF returns an empty string that passes its own confirmation,
+  so `security` stores an **empty password and exits 0**. Measured on real
+  hardware, it was worse still: the keychain came back holding the literal
+  string `-U`, having read the next flag as the password, with exit status 0.
+  The shipped channel was round-tripped on the same Mac, including a value
+  carrying both quote characters, a backslash, a doubled backslash and a
+  trailing backslash, because the quoting is ours rather than the shell's —
+  `security`'s splitter treats a backslash as an escape *inside* single quotes.
+
+  Two consequences worth knowing. The write probe behind `available()` moved
+  onto the same channel, so "the keychain is writable" now means the channel
+  `secret set` actually uses is writable. And a secret containing a newline or
+  carriage return, or one long enough to push the command line past 4096 bytes,
+  is now **refused** with a clear message instead of stored: `security -i`'s
+  reader is line-oriented with a 4096-byte buffer, and in both cases the
+  remainder would be parsed as the next command — storing the wrong bytes and
+  echoing a fragment of the secret to stderr. Existing stored secrets are
+  unaffected; reads never had the problem (`find-generic-password -w` asks for
+  the password rather than supplying one).
+
+- **`watcher findings` and `watcher status` work**, and with them **every
+  command in the tree has a body** — 41 leaf commands, zero stubs, verified by
+  walking clap's tree and running each one rather than by reading a list. Both
+  readers are byte-identical to the Python on the real cages on this machine
+  and across six synthesised edge cases: no state file, an empty one, a corrupt
+  one, a fully-populated one, the no-budget branch, and a torn final JSONL
+  line. The three-state read is preserved exactly, because the distinction
+  matters more than it looks: an absent file is "no scan yet", a failed read is
+  "could not reach the VM", and collapsing them would make an unreachable guest
+  report an all-clear from the one command whose job is surfacing suspicious
+  traffic.
+
+- **`cage edit` works.** It was the one command in the tree with no body, so
+  the only way to change a cage's config was to edit the stored `cage.yaml` by
+  hand — which is precisely what the command exists to stop you doing. It now
+  validates the edited YAML before writing anything, keeps a refused edit in
+  `cage.yaml.rejected` so it is not lost, backs the good file up to
+  `cage.yaml.bak`, writes atomically, prints a unified diff, and then says
+  which of your changes applied live and which need a restart or a rebuild.
+  Refuses a rename (that needs state moves this command does not do) and a
+  top-level non-mapping. Verified against the Python on a live cage: the
+  stdout, the stderr and the resulting `cage.yaml` are byte-identical, as are
+  four of the five refusal paths — the fifth differs only in the YAML parser's
+  own problem text, which is the divergence the port already documents for
+  every other YAML error.
+
+  Two things are deliberately not byte-identical, both noted at the code: the
+  unified diff is a plain longest-common-subsequence diff rather than a
+  reimplementation of `difflib.SequenceMatcher` (same output for the edits this
+  command sees; nothing asserts or parses the text), and validation reads the
+  rendered config from memory instead of via a temporary file in the state
+  directory, so a parse-stage message now names the cage's own `cage.yaml`
+  rather than a temp file that has already been deleted. It was the one command body still unported when that message was written, and it said
+  "Run the Python `agentcage cage edit` until PR F2 flips the default" — but F2
+  *has* flipped: `pyproject.toml` installs no `agentcage` console script, so
+  that instruction cannot be followed by anyone who installed from a release.
+  It now points at editing the stored `cage.yaml` and running `cage update`,
+  and says what that loses (`cage edit` validates before saving and keeps the
+  rejected text, so a bad edit cannot leave the cage unloadable).
+
+- **A cage would not start at all from a git worktree or submodule.** Every
+  shipped scaffold masks `/workspace/.git/hooks` (issue #170, so a caged agent
+  cannot plant a git hook the host later runs). The runtime makes a nested
+  mask's mount point by `mkdir`ing through the bind, which works when the path
+  is absent — but in a worktree or submodule `.git` is a *file* holding a
+  `gitdir:` pointer, so it answers `ENOTDIR` and nothing starts:
+  `agentcage run <scaffold>` from a worktree died with `vmexec error: mount
+  failed with errno 20: failed to resolve '/workspace/.git/hooks' in rootfs`,
+  naming neither the mask nor the reason. Such masks are now skipped with a
+  warning that names the blocking path and says why. That relaxes #170 only
+  where it provably cannot apply: in a worktree the real hooks directory lives
+  in the main repository's gitdir, which is not under the bind, so there was
+  nothing reachable through `/workspace` for the mask to protect. Every other
+  mask on the same cage still applies — the skip is per target.
+
+- **`cage destroy` left an `apple-container` cage's secrets in the macOS
+  keychain** while telling the operator it had removed them. The confirmation
+  prompt says "Scoped secrets will also be removed." and the container backend
+  does exactly that with its `<name>.*` podman secrets — but this backend's
+  `destroy_resources` accepted `keep_secrets` and ignored it, so a destroyed
+  cage's values stayed under `agentcage / <cage>.<KEY>` indefinitely, with
+  nothing left on disk to say they were ever there. Observed on a real destroy.
+  Both implementations now delete through the cage's own store, before the unit
+  JSON and the state tree go (the first names the store; under
+  `backend: plaintext` the second *is* the store), and report each removal as
+  `secret:<cage>.<KEY>` so `cage destroy`'s output means the same thing on every
+  backend. `--keep-secrets` is honoured. Failure to resolve a store, or to
+  delete one key, no longer fails the destroy: a cage that cannot be removed
+  because its secrets cannot be is worse than a leftover the operator can find.
+
+- **`cage show` and `cage status` reported every `apple-container` cage's
+  secrets as missing.** They counted present keys by asking host podman, which
+  does not *error* for a cage it has never heard of — it answers nothing found.
+  So a cage with all its secrets read as `Secrets: 0/3 (3 missing)` while
+  `secret list` said `ok` for the same cage, with the reassuring-looking summary
+  being the wrong one. They now read the same store `secret list` does, which is
+  what `cli.py:2473` branches on and for the same stated reason.
+
+- **`cage create --set-secret` could store an apple cage's secret where nothing
+  would find it.** `SecretWriter` chose the store from the rule's `source:`
+  scheme even on `apple-container`, so a rule carrying `source: systemd-creds:`
+  selected `SystemdCredsStore` *by name*, skipping the availability probe — a
+  store whose binary does not exist on macOS, and one `stage_secrets` would
+  never read back, because that resolves with no scheme. Both call sites now
+  derive the store from `config.isolation`, matching the Python.
+
+- **A Mac no longer resolves every cage to the `vm` backend.**
+  `hostenv::RealHost::default_isolation` omitted the `apple-container` branch,
+  so a cage with no explicit `isolation:` — the common case — was reported and
+  driven as a `vm` cage on macOS. `cage list` showed the wrong backend and a
+  wrong status, and because `AnyBackend::refusal` only fires for isolation
+  values outside `container`/`vm`, nothing refused: a mutating command would
+  have taken the Lima path against an Apple cage. The full probe already
+  existed in `cli/har.rs`; both call sites now share it.
+
+- **`cargo test` on a Mac.** Four tests failed on macOS only, for host reasons
+  rather than product ones: two staged a cage with no `isolation:` and so
+  tested a different backend depending on the host, and two handed a
+  panic-on-unstubbed-call fake runner to a code path that reads `sw_vers`.
+  Both are pinned now. (Two macOS failures remain, both pre-existing and both
+  the same shape — committed fixtures record `/etc` and `/tmp` where macOS
+  resolves `/private/etc` and `/private/tmp`.)
+
+- **Both suites pass on macOS.** They were red for host reasons, not product
+  ones — 27 Python failures, 6 Python errors and 2 Rust failures on an Apple
+  Silicon host, against zero on Linux CI — which made a developer on a Mac
+  unable to tell a real regression from the noise. Four root causes, each fixed
+  where it was rather than by skipping the tests:
+
+  - **The platform decided which backend most of the suite tested.**
+    `validate_config` refuses `isolation: container` outright on macOS, and the
+    shared cross-language vector pins exactly that, so every test that
+    validated it raised; the backend-dispatch tests silently exercised the
+    apple-container path instead of the container one they mock. `conftest.py`
+    now pins `platform.system()` to Linux for the unit suite, the same way it
+    already pins the host resolver, so a local run reproduces the CI run.
+    Tests that want another platform still patch it themselves — that is how
+    the Darwin branches are driven — and the `LINUX_ONLY` markers are
+    collection-time, so genuinely Linux-only tests still skip. Fixed 23.
+
+  - **`REQUIRES_PODMAN` only checked that the binary existed.** Homebrew's
+    `podman` on macOS is a client for a Linux VM: `shutil.which` finds it while
+    every call fails to connect. The gate therefore did not fire, nine tests
+    ran anyway, and they failed on the connection rather than skipping — the
+    exact thing that module exists to prevent. It now probes `podman info`,
+    matching `REQUIRES_GNU_REALPATH` right below it.
+
+  - **The golden corpus was not reproducible on macOS.** Its scrubber meant to
+    register both the resolved and unresolved spelling of every sandbox path,
+    but computed the second as `str(Path(resolved))` — a no-op, so the list was
+    always empty. On Linux the two spellings usually coincide and this never
+    showed; on macOS a sandbox lives under `/var/folders`, `/var` is a firmlink
+    to `/private/var`, and so the rule for `<home>/.config` never matched the
+    unresolved path a quadlet carried. Seven artifacts recorded
+    `{{HOME}}/.config` where CI records `{{XDG_CONFIG_HOME}}`. Both spellings
+    are registered now, and the three macOS firmlinks (`/etc`, `/tmp`, `/var`)
+    normalize back to the name the operator wrote — in the Rust scrubber too,
+    since the two have to agree. This also fixed the `vm` fixture generator,
+    which shared the cause.
+
+  - **`gen-cage-har-fixture.py` recorded a different path per host.** Its
+    `plain-cage` input declares no `isolation:` — faithfully, since a real
+    0.40.1 `cage.yaml` does not — so the host picked the backend and the
+    recorded "no capture file found" message quoted a different directory on a
+    Mac. A developer there got a permanent `--check` failure and a regenerate
+    command that would have committed the wrong bytes. The child process now
+    pins the platform, mirroring what `gen-apple-container-fixtures.py` does
+    in the opposite direction.
+
+  No committed fixture byte changed: every fix makes macOS reproduce the bytes
+  Linux already produced.
+
+- **`pytest` wrote to the real macOS login keychain, and to the operator's real
+  cage directory.** `tests/test_phase_apple_skip.py` runs `phase_apple.sh` with
+  `AGENTCAGE_APPLE_E2E_FORCE=1` and passed `**os.environ`, inheriting the real
+  `HOME`. Its docstring justified that on the grounds that the phase "then
+  fails for unrelated reasons (no real backend on the test host)" — true on the
+  Linux CI it was written against, false on Apple Silicon, where it got as far
+  as creating and destroying an `e2e-apple` cage under `~/.config/agentcage/`
+  and running `security add-generic-password -s agentcage -a e2e-apple.API_KEY
+  -w test-secret-value -U` against the login keychain, leaving that entry
+  behind. `HOME` and both XDG roots are sandboxed now, and `security` is shimmed
+  alongside the `uname`/`container`/`sysctl` shims the module already had — the
+  keychain is not `HOME`-scoped, so the sandbox alone could not contain it.
+  Measured with a logging shim: both suites now make zero `security(1)` calls on
+  macOS.
+
+- **`cargo test` no longer raises a keychain dialog on macOS.** The
+  `secret set` refusal test asked for `secrets.backend: keychain`, which is
+  unavailable on Linux and therefore refused there without a probe — but on
+  macOS it resolves a real store, and the writability probe works by adding a
+  generic password to the operator's **real login keychain** and deleting it.
+  That raised an access dialog once per run and cost about 6.7 of the test's 7
+  seconds; had the probe succeeded, the test's canary value would have been
+  written to the operator's keychain for real. It now asks for whichever
+  backend is unavailable on the host it is running on. The suite makes no
+  `security(1)` calls at all, on either platform.
+
+### Changed
+
+- **BREAKING: agentcage is a binary, and the Python package is no longer an install path.** The host CLI is Rust. `pip install agentcage`, `pipx install agentcage` and `uv tool install agentcage` installed a command named `agentcage`; they do not any more. `pyproject.toml` declares no `[project.scripts]`, carries `Private :: Do Not Upload` so PyPI would refuse an upload, and the release workflow no longer publishes one — what a release produces is four binaries and their checksums, attached to the GitHub release. **Migration:** re-run `install.sh`, or `cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.50.0 agentcage-cli`; then remove any old Python install (`uv tool uninstall agentcage`, `pipx uninstall agentcage`) so it cannot shadow the binary on your `PATH`. The Python package remains in the repository as a **dev/test** package — it is the oracle the Rust is asserted against, invoked as `python -m agentcage` or through `tests/e2e/python-cli`, and it is what generates every fixture under `tests/fixtures/`.
+
+- **Linux binaries are statically linked against musl.** The workspace has no C dependencies — no `cc`, `libz-sys` or `openssl-sys` anywhere in `Cargo.lock` — so this costs nothing and removes the glibc version coupling that decides whether a binary built on CI runs on the distribution the operator actually has. Four targets are published: `x86_64`/`aarch64` × `unknown-linux-musl`/`apple-darwin`. The macOS binaries are signed with a Developer ID and notarized when the release has those credentials, and the workflow says in its log when it ships an unsigned binary instead, so an unsigned release cannot be mistaken for a signed one.
+
+- **`install.sh` builds agentcage from source instead of installing Python.** It resolves the latest release (through the `/releases/latest` redirect, not the rate-limited JSON API) and runs `cargo install --locked --git https://github.com/agentcage/agentcage --tag v<version> agentcage-cli`, against the committed `Cargo.lock`. With no Rust toolchain it installs a minimal one via rustup (without editing shell profiles); an existing toolchain older than 1.85 is left alone and the installer says to update it. It no longer installs Python or `uv`, because nothing on the host needs them. `AGENTCAGE_VERSION`, `AGENTCAGE_REF` (a branch) and `AGENTCAGE_BIN_DIR` cover pinning and relocating. Source rather than the release binaries because the macOS binaries are not notarized yet (#413), and a binary built locally is not quarantined, so Gatekeeper never prompts. `cargo install --git` works the same way by hand; agentcage is not on crates.io.
+
+- **`agentcage doctor` no longer checks for Python.** It was dropped rather than ported: the host does not need an interpreter, so a check for one would fail on exactly the machines this design exists to support. Nothing depended on its result — it contributed one `pass` line on any host that could have run the old CLI at all.
+
+### Fixed
+
+- **`update-deps.py containers` had been checking nothing.** Its hardcoded list named `Containerfile.proxy` and `Containerfile.dns`, which v0.22 unified into `Containerfile.egress`, so it died on the first missing file and never reached any of them — including the egress image's own mitmproxy pin, which is the one thing that tool exists to keep current. The list is globbed now and cannot go stale the same way. With it fixed, both remaining base images report as out of date; bumping them is a separate change with its own rebuild.
+
+- **`Containerfile.helper` is deleted.** An alpine image whose entire content was `python3` and `py3-yaml`, built by no backend and referenced only by the dependency script and one test's docstring.
+
+### Added
+
+- **CI enforces that Python stays out of the shipped product** (`scripts/check-invariants.py`, RUST-PORT-PLAN.md §2.4). Three things would quietly undo the cutover and none of them fails any other check: the Rust binary shelling out to an interpreter (one allowlisted exception, `cage verify`'s in-cage probe, whose allowlist entry fails if it stops matching); the egress proxy importing a package its image does not install, which is an ImportError inside the cage found at runtime; and a shipped Containerfile other than the egress installing Python.
+
+- **`packaging/` and `scripts/gen-packaging.py`** — the Homebrew formula and the AUR `PKGBUILD`, generated from a release's published checksums rather than hand-edited, since both pin a version *and* four checksums and are wrong the moment a release ships.
+
+
+- **BREAKING: twelve validators stopped accepting a trailing newline.** Every one of them anchored its regex on `$`, and Python's `$` matches at the end of the string **or immediately before one trailing newline** — so `name`, `container.image`, `agents.decider.host`, the scaffold-name path guard, the `cage restore`/`cage clone` target name, the `--since` duration shorthand in both `cage audit` and `cage har`, the registry tag filters and the `container.memory` suffix all accepted a value ending in `\n`. `valid_domain` had anchored on `\Z` since it was written and its docstring says exactly why; nothing else got the same treatment. This is reachable from a config file and not only from argv: a YAML literal block (`name: |`) produces precisely such a scalar, and `name` then becomes a systemd unit name, a podman object name and a directory under the state dir, while `agents.decider.host` rides into the generated `proxy-config.yaml`. The two copies in `cli.py` read `cage_name` out of a **restored backup manifest**, which is attacker-controlled if you restore an archive you did not make. All twelve now anchor on `\Z`. **Migration:** a config whose `name:` or `container.image:` is written as a *clipped* block scalar — `|` or `>`, both of which keep one trailing newline — now fails validation with the message it already had for a malformed value. Add the strip indicator (`|-`, `>-`), quote the value, or write it plain; those styles and every flow scalar carry no trailing newline and are unaffected. Nothing else in a normally written `cage.yaml` changes.
+
+- **BREAKING: the protocol-relay validator refuses three shapes it used to coerce.** `protocol_relays[].upstream` has always refused a non-mapping outright; the checks in front of its fields had not caught up. `policy:` guarded with `isinstance(policy, dict)` and **no else branch**, so a mistyped `policy:` — a list, a bare string — skipped every check below it in silence, `write_mode` included; the relay then reached `policy.get(...)` on a list and died with an `AttributeError` naming nothing. It now says `protocol_relays[<name>].policy must be a mapping (got list)`. `upstream.port: true` coerced through `int(True)` to **1** and passed the range check, pointing the relay at a port nobody wrote — refused, with a note that YAML reads bare `yes`/`on` as booleans. `upstream.host: [1]` became the string `"[1]"`, which is non-empty and therefore read as "present" — refused as `must be a string (got list)`. **Falsy values still mean "absent", type unexamined:** `host: 0`, `host: []` and `policy: []` behave exactly as before, which is the truthiness-before-type ordering `ca_file`/`ca_pem` have always used. `port: "993"` and `port: 993.7` still coerce, deliberately. **Migration:** none for a well-formed config; a config hitting any of the three was already broken at runtime and now says so at validation time. The contract fixture grew from 107 to 114 cases.
+
+- **The egress image rebuilds on upgrade.** `data/proxy/relays/_validate.py` ships inside the egress, so its content hash moved from `25cff145d1e6` to `000f7fa88672`. Both backends notice by design — the `apple-container` tag carries the digest, and the `container` backend rebuilds unconditionally — so the next `cage update` rebuilds rather than reusing a stale image. Expected, and the point of content-addressed tagging.
+
+- **BREAKING: `cage har --since` rejects a value it cannot parse instead of exporting everything.** An unparseable `--since` fell through to `since_dt = None`, which is not "no offset" but "no time filter at all" — so a narrowing flag that was wrong silently widened the export to the entire capture. `cage audit` had always refused the same input explicitly, with the message `error: could not parse --since '<value>' (use 1h, 30m, 7d, or an ISO date)`; `cage har` now prints it too and exits non-zero. **Migration:** a script that passed a malformed `--since` and relied on getting a full export must drop the flag to keep that behaviour.
+
+### Fixed
+
+- **e2e assertion 7.21 asserted a path inside the guest that agentcage never creates there.** `limactl shell "$VM" -- ls ~/.config/containers/systemd/` looks like it asks the guest about its own home, but `~` is expanded by the *host* shell before `limactl` is called, so it was asking for `/home/<you>/.config/containers/systemd` — a host path that `lima.yaml.j2` does not mount and should not, since the template deliberately mounts two named directories rather than the whole home. It had been red since that narrowing. The quadlets live in the *guest's* home (`/home/<you>.guest`), which `backends/vm.py` creates through a guest-side shell. Rewriting the surrounding block to use the guest home would have been worse: 7.17 ("SSH keys NOT accessible") would then find Lima's own `authorized_keys` and fail. The isolation assertions keep asking about host paths — which is the property they actually mean — and 7.21 now asks the guest about `$HOME`, single-quoted so the host shell leaves it alone. Phase 7 is 33/33.
+
+- **`gen-apple-container-fixtures.py --check` reported drift that could not be resolved, and its own fix-it command destroyed a fixture.** Its orphan sweep treats every file under `tests/fixtures/apple-container/` that it did not itself render as stale, and `gen-apple-argv-fixture.py` writes `argv.json` into that same directory. `--check` therefore printed `EXTRA argv.json` forever, and the regenerate command the failure message prints would have **deleted** the recording that the apple-container argv tests replay. The sweep now knows what it does not own.
+
+- **`tests/e2e/run.sh` dropped fail-fast-skipped phases from its summary.** A run where the sequential chain failed simply omitted the later phases' rows, so a suite that never started phase 8 at all read as `Total: 98 passed, 1 failed`. Skipped phases now get a `SKIPPED (an earlier phase failed)` row.
+
+- **The Rust CLI validated every config except its agents.** `config.py`'s `validate_config` ends with three blocks — the shared Policy API timeout check, the `agents.decider` block and the `agents.watcher` block — and the port left a `── C3 ──` comment where they belong. `agentcage_core::config::agents::validate_agents` was written, unit-tested and exported, and then never called: the seam stayed empty. The measured cost was **thirty-one** invalid corpus cases the Rust accepted and the Python refused, including `agents.decider.max_tokens` below the 1024 floor — the floor 0.38.0 added precisely because a starved decider denies every domain request while `watcher status` and `cage audit` look healthy. Two neighbouring seams were empty for the same reason and are now wired: the apple-container inspector-chain warnings (a `path:` inspector that the wrapper image does not stage, and an unrecognised built-in name that would silently no-op), and the relay `source_validator` hook, which refuses a relay credential naming an unknown scheme (`auth.user_source: vault:X`) at parse time. This only ever affected the Rust binary, which is not yet the default, so no shipped release validated anything less than it does now.
+
+- **A cage with `capture.enable_har` failed to start on a machine that had never captured for that name.** Only the Rust binary, which is not the default, so no release shipped it — but the shape is worth recording. `state.capture_dir()` **creates** the directory as a side effect of computing its path, and `quadlets.py` calls it while rendering the egress unit. The port made the renderer pure — `StatePaths` in `agentcage-core` touches no filesystem, by design — which silently dropped the mkdir; `Paths::ensure_capture_dir` was written and then never called. The egress unit's `ExecStartPre` does `podman unshare chown 200:200 "<dir>" 2>/dev/null || chmod 1777 "<dir>"`, and **both halves fail on a directory that is not there**, so the egress never started and `systemctl` reported only `A dependency job for <name>-cage.service failed`, naming neither the unit nor the reason. It reproduced on a CI runner and on no developer machine, because any machine that had captured for that cage name already had the directory. Two regression tests now assert that a capture deploy creates the directory and that a non-capture deploy does not, and `create_cage` in the e2e harness dumps unit states, container states and the egress journal when a create fails, so the next such failure names itself.
+
+- **Three cages deploying at once could race on the shared patches directory.** `patches_work_dir()` is **one** directory — `~/.local/share/agentcage/patches` — shared by every cage rather than one per cage, and `ensure_patches()` refreshes it by deleting the `nested` tree and copying it back. That is destructive in the middle: two concurrent `cage create`s interleave it into a copy landing in a directory the other has just removed, and whichever one loses dies with `ENOENT` on a path nobody wrote. `tests/e2e/run.sh` deploys three cages in parallel (phases 3, 5 and 6), which is exactly the shape that triggers it. Both implementations had the window; the Rust binary is the one that lost the race on a CI runner. Both now take an exclusive `flock` over the directory for the duration of the refresh — released on close, so a killed process cannot leave it held, and over a lock file that is never unlinked, since removing it would let the next process lock a fresh inode while an older one still holds the old. Measured rather than assumed: eight processes refreshing twelve times each fail **seven of eight** times without the lock and zero with it, and that stress test is now a regression test on both sides.
+
+### Documentation
+
+- **`container.env` values are expanded against the host's environment, and now say so.** `os.path.expandvars` has been applied to every value since 0.1.0 and the apple-container backend mirrors it deliberately, but the configuration reference described the field as "Static environment variables" and mentioned none of it. Two consequences are now written down: a value containing `$NAME` for a name the host exports is rewritten and there is no escape (`$$` stays `$$`), and a `cage.yaml` you did not author can read your shell's environment — `env: { X: "${OPENAI_API_KEY}" }` copies that key into the cage and into the generated unit file on disk. Behaviour is unchanged; whether to keep it is a separate question from documenting it.
 ## [0.40.2] - 2026-09-25
 
 ### Fixed

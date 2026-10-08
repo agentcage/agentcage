@@ -1,0 +1,23 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/app",
+      "${HOME}/agent"
+    ]
+  ],
+  "tmpfs": [],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "ro"
+      ],
+      "raw_options": "ro",
+      "source": "${HOME}/agent",
+      "spec": "${HOME}/agent:/app:ro",
+      "target": "/app"
+    }
+  ]
+}

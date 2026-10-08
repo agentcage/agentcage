@@ -1,0 +1,204 @@
+{
+  "agents": {
+    "decider": {
+      "api_key": "",
+      "base_url": "",
+      "context": "",
+      "enable": false,
+      "host": "agentcage.local",
+      "max_tokens": 8192,
+      "model": "",
+      "provider": "",
+      "rate_limit_burst": 5,
+      "rate_limit_rps": 1.0,
+      "timeout_seconds": 15.0
+    },
+    "watcher": {
+      "api_key": "",
+      "auto_revoke": true,
+      "base_url": "",
+      "context": "",
+      "dedup_samples": true,
+      "enable": false,
+      "interval_seconds": 900.0,
+      "max_digest_tokens": 8000,
+      "max_flows": 200,
+      "max_tokens": 8192,
+      "model": "",
+      "provider": "",
+      "timeout_seconds": 30.0,
+      "window_seconds": 3600.0
+    }
+  },
+  "apple_container_autostart": false,
+  "capture": {
+    "domains": [],
+    "enable_har": false,
+    "exclude_domains": [],
+    "max_body_size": 10485760,
+    "max_file_size": 134217728,
+    "min_action": "all"
+  },
+  "container": {
+    "add_capabilities": [
+      "NET_BIND_SERVICE"
+    ],
+    "build": {
+      "args": {
+        "BASE_IMAGE": "ghcr.io/openclaw/openclaw"
+      },
+      "containerfile": "Containerfile"
+    },
+    "command": [
+      "/usr/local/bin/entrypoint.sh"
+    ],
+    "cpus": "4.0",
+    "drop_capabilities": [
+      "ALL"
+    ],
+    "env": {
+      "CAGE_GATEWAY_PORT": "18789",
+      "HOME": "/home/node",
+      "OPENCLAW_DISABLE_BONJOUR": "1"
+    },
+    "image": "localhost/agentcage-scaffold-openclaw:latest",
+    "memory": "8g",
+    "named_volumes": {
+      "demo-state": "/home/node/.openclaw:rw",
+      "demo-workspace": "/workspace:rw"
+    },
+    "nested_containers": true,
+    "no_new_privileges": true,
+    "podman_secrets": [
+      "OPENCLAW_GATEWAY_PASSWORD"
+    ],
+    "ports": [
+      "127.0.0.1:18789:18789"
+    ],
+    "read_only": true,
+    "restart": "on-failure",
+    "restart_sec": 10,
+    "security_label_disable": true,
+    "timeout_start_sec": 120,
+    "timeout_stop_sec": 30,
+    "tmpfs": [
+      "/tmp:rw,noexec,nosuid,size=4G",
+      "/home/node/.npm:rw,size=512M",
+      "/home/node/.cache:rw,size=1G",
+      "/home/node/.pki:rw,size=16M",
+      "/scratch:rw,exec,nosuid,size=8G"
+    ],
+    "user": "1000:1000",
+    "userns": "",
+    "volumes": []
+  },
+  "dns_servers": [
+    "192.0.2.53",
+    "192.0.2.54"
+  ],
+  "domains": {
+    "allow": [
+      "anthropic.com",
+      "npmjs.org",
+      "npmjs.com",
+      "pypi.org",
+      "files.pythonhosted.org",
+      "nodejs.org",
+      "cdn.jsdelivr.net",
+      "unpkg.com",
+      "esm.sh",
+      "github.com",
+      "githubusercontent.com",
+      "docker.io",
+      "docker.com",
+      "ghcr.io",
+      "pkg-containers.githubusercontent.com",
+      "r2.cloudflarestorage.com",
+      "cdn.playwright.dev",
+      "playwright.download.prss.microsoft.com",
+      "storage.googleapis.com",
+      "debian.org",
+      "dl-cdn.alpinelinux.org"
+    ],
+    "block": [],
+    "expires": {},
+    "mode": "allowlist",
+    "passthrough": []
+  },
+  "exec_aliases": {
+    "openclaw": [
+      "node",
+      "openclaw.mjs"
+    ]
+  },
+  "help": "Open http://localhost:18789 in your browser.\n\nOn first connection, approve the device pairing:\n  agentcage cage exec --as-root demo -- openclaw devices list\n  agentcage cage exec --as-root demo -- openclaw devices approve <request-id>\n\nCommon commands:\n  agentcage cage exec --as-root demo -- openclaw health\n  agentcage cage exec --as-root demo -- openclaw status\n  agentcage cage logs demo\n  agentcage cage logs demo -s proxy\n",
+  "inspectors": [
+    {
+      "name": "content-type"
+    },
+    {
+      "config": {
+        "allow_to_domains": {
+          "azure_jwt": [
+            "docker.io",
+            "registry-1.docker.io",
+            "auth.docker.io"
+          ]
+        }
+      },
+      "name": "secrets"
+    }
+  ],
+  "isolation": "container",
+  "lifecycle": "service",
+  "logging": {
+    "allowed_requests": false,
+    "cage": "",
+    "dns": "warning",
+    "dns_queries": false,
+    "level": "info",
+    "proxy": "",
+    "proxy_connections": false
+  },
+  "name": "demo",
+  "ports": {
+    "icmp": {
+      "allow": false
+    },
+    "tcp": {
+      "allow": [
+        80,
+        443
+      ],
+      "passthrough": []
+    },
+    "udp": {
+      "allow": []
+    }
+  },
+  "protocol_relays": [],
+  "scaffold": "",
+  "secret_injection": [
+    {
+      "env": "ANTHROPIC_API_KEY",
+      "inject_body": false,
+      "inject_headers": [],
+      "inject_to": [
+        "anthropic.com"
+      ],
+      "placeholder": "agentcage:secret:ANTHROPIC_API_KEY:00000000000000000000000000000001",
+      "source": "",
+      "transform": "",
+      "transform_config": {}
+    }
+  ],
+  "secrets": {
+    "allow_plaintext": false,
+    "backend": "auto",
+    "scope": "auto"
+  },
+  "vm": {
+    "mem_mb": 4096,
+    "vcpus": 4
+  }
+}

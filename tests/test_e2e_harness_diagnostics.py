@@ -149,8 +149,10 @@ class TestRunShMacOSContainerGuard:
         assert "1|2|3|4|5|6|8) BLOCKED+=" in text
         assert "|7|" not in text
         # The guard block must precede the stale-cage sweep, which is the
-        # first thing that talks to a backend.
-        assert text.index("BLOCKED+=") < text.index("agentcage cage list")
+        # first thing that talks to a backend. The sweep goes through
+        # "$AGENTCAGE" (the overridable CLI-under-test), not a bare
+        # `agentcage` off PATH.
+        assert text.index("BLOCKED+=") < text.index('"$AGENTCAGE" cage list')
 
 
 class TestCreateCageFailureDiagnostics:
@@ -307,9 +309,12 @@ class TestPhaseCallersKeepStderr:
                 f"#317 failure dump: {line}"
             )
 
-    def test_phase7_suppression_is_documented(self):
+    def test_phase7_create_output_is_kept(self):
         """Phase 7 is the one deliberate exception (its create is expected
-        to fail every run); the waiver must carry its reason."""
+        to fail every run), so its output goes to a log rather than the
+        terminal. Kept, not discarded: when the VM never comes up, that log
+        is the only record of why, and it is printed at the failure."""
         text = (E2E_DIR / "phase7_vm.sh").read_text()
-        assert 'create_cage "$CONFIGS/vm.yaml" >/dev/null 2>&1 || true' in text
-        assert "stderr is suppressed here on purpose" in text
+        assert 'create_cage "$CONFIGS/vm.yaml" >"$CREATE_LOG" 2>&1 || true' in text
+        assert 'create_cage "$CONFIGS/vm.yaml" >/dev/null' not in text
+        assert '"$CREATE_LOG" | head' in text, "the log must be printed on failure"

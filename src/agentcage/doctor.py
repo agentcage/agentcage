@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -108,6 +109,17 @@ _INSTALL_QEMU = {
     "unknown":  "install qemu for your distribution",
 }
 
+# Lima runs guests of the host's own architecture, so an arm64 host needs
+# qemu-system-aarch64, which the x86 packages above do not provide.
+_INSTALL_QEMU_AARCH64 = {
+    "arch":     "sudo pacman -S qemu-full",
+    "debian":   "sudo apt-get install -y qemu-system-arm",
+    "fedora":   "sudo dnf install -y qemu-system-aarch64-core",
+    "rhel":     "sudo dnf install -y qemu-kvm",
+    "opensuse": "sudo zypper install -y qemu-arm",
+    "unknown":  "install qemu for your distribution",
+}
+
 _ENABLE_LINGER = "sudo loginctl enable-linger $USER"
 
 
@@ -140,11 +152,14 @@ def check_podman(distro: str) -> CheckResult:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     if _IS_MACOS:
-        # On macOS, containers run inside the Lima VM — host Podman is
-        # optional and only used by 'agentcage secret set'.
+        # On macOS, containers run inside the Lima VM (or Apple's own
+        # `container`), so host Podman is optional. It used to be named
+        # here as the thing 'agentcage secret set' needs; that stopped
+        # being true when #247 moved macOS secrets to the keychain — see
+        # _check_secret_backend.
         return CheckResult("pass",
                            "Podman not installed (optional on macOS — "
-                           "only needed for 'agentcage secret set')")
+                           "containers run inside the VM)")
     return CheckResult("error", "Podman not found",
                        hint=_INSTALL_PODMAN.get(distro, _INSTALL_PODMAN["unknown"]))
 
@@ -260,10 +275,28 @@ def _check_apple_container(precomputed_issues: list[str] | None = None) -> Check
     )
 
 
+def _host_machine() -> str:
+    """``platform.machine()``, split out so tests can pin the architecture."""
+    return platform.machine()
+
+
+def _is_arm64(machine: str) -> bool:
+    # Linux reports "aarch64"; "arm64" is what macOS and some BSDs say.
+    return machine.lower() in ("aarch64", "arm64")
+
+
 def check_qemu(distro: str) -> CheckResult:
-    """Check QEMU is installed (optional, Linux VM mode only)."""
+    """Check QEMU is installed (optional, Linux VM mode only).
+
+    Probes the system emulator for the host's own architecture: Lima on
+    an arm64 host runs aarch64 guests, so ``qemu-system-x86_64`` there is
+    neither needed nor, usually, installed.
+    """
+    arm64 = _is_arm64(_host_machine())
+    binary = "qemu-system-aarch64" if arm64 else "qemu-system-x86_64"
+    hints = _INSTALL_QEMU_AARCH64 if arm64 else _INSTALL_QEMU
     try:
-        r = subprocess.run(["qemu-system-x86_64", "--version"],
+        r = subprocess.run([binary, "--version"],
                            capture_output=True, text=True, timeout=5)
         if r.returncode == 0:
             # First line: "QEMU emulator version X.Y.Z ..."
@@ -272,7 +305,7 @@ def check_qemu(distro: str) -> CheckResult:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return CheckResult("warn", "QEMU not found (needed for VM mode on Linux)",
-                       hint=_INSTALL_QEMU.get(distro, _INSTALL_QEMU["unknown"]))
+                       hint=hints.get(distro, hints["unknown"]))
 
 
 def check_systemd_linger() -> CheckResult:
@@ -313,20 +346,37 @@ def check_disk_space() -> CheckResult:
 def _check_secret_backend() -> CheckResult:
     """Report the detected secret storage backend."""
     if _IS_MACOS:
-        # systemd-creds does not exist on macOS — secrets use the Podman
-        # store and are bridged into the VM at start. Probe for Podman so
-        # the check reflects whether 'agentcage secret set' actually works.
-        if shutil.which("podman"):
-            return CheckResult(
-                "pass",
-                "Podman secret store",
-                hint="Secrets are stored via host Podman and bridged into the VM.",
-            )
+        # systemd-creds does not exist on macOS, so this branch answers
+        # the same question the Linux one does: which store would
+        # secret_store.resolve_store() pick for a default (`auto`) cage?
+        #
+        # On a Mac that is KeychainStore, for every isolation an operator
+        # can actually run: resolve_store sets host_keychain for
+        # apple-container, and "fix(secret): use the host keychain for vm
+        # cages on macOS" extended it to vm. The podman-backed store that
+        # this check used to name is PlaintextStore, now reachable only
+        # through an explicit `backend: plaintext` / `source: podman:`
+        # opt-in to cleartext. So host podman decides nothing here and is
+        # deliberately no longer probed — the old `shutil.which("podman")`
+        # gate told a keychain Mac its secrets were in podman, and told a
+        # Mac without podman that `secret set` was unavailable when it
+        # works fine.
+        #
+        # Unlike the Linux branch this reports the store without proving
+        # it usable. KeychainStore.available() establishes write-ability
+        # by adding and then deleting a real keychain item (see its
+        # _writable); `systemd-creds encrypt` writes nothing, so Linux can
+        # probe and macOS cannot — a read-only diagnostic must not mutate
+        # the operator's login keychain, nor risk leaving the probe item
+        # behind if the delete loses a sudo race. The ladder
+        # KeychainStore._target() walks is stated in the hint instead.
         return CheckResult(
-            "warn",
-            "Podman not installed — 'agentcage secret set' unavailable",
-            hint="brew install podman to store cage secrets "
-                 "(cages still run without it).",
+            "pass",
+            "macOS keychain (secrets encrypted at rest)",
+            hint="Secrets go to the login keychain when a GUI session has "
+                 "it unlocked, else the System keychain when passwordless "
+                 "sudo for /usr/bin/security is configured. agentcage "
+                 "reads them back and materializes them at cage start.",
         )
     from agentcage.secret_resolver import (
         detect_default_backend, detect_default_scope, _systemd_version,

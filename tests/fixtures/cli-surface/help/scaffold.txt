@@ -1,0 +1,14 @@
+Usage: agentcage scaffold [OPTIONS] COMMAND [ARGS]...
+
+  Create and manage custom scaffolds.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  create  Create a new user scaffold.
+  delete  Delete a user scaffold.
+  edit    Open a user scaffold in $EDITOR.
+  export  Export a scaffold to a directory.
+  list    List all available scaffolds.
+  show    Show details of a scaffold.

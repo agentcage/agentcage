@@ -1,0 +1,22 @@
+Usage: agentcage cage audit [OPTIONS] NAME
+
+  Query, filter, and summarize proxy audit logs.
+
+Options:
+  -d, --decision [blocked|flagged|allowed]
+                                  Filter by decision (repeatable).
+  --host TEXT                     Filter by target host (substring match,
+                                  repeatable).
+  --inspector TEXT                Filter by inspector name (repeatable).
+  --severity [debug|info|warning|error|critical]
+                                  Minimum inspector severity.
+  --direction [inbound|outbound]  Filter by traffic direction (repeatable).
+  --method TEXT                   Filter by HTTP method (repeatable).
+  --since TEXT                    Time window: 1h, 30m, 7d, or ISO date.
+  -n, --max-entries INTEGER       Max entries to show (0 = unlimited).
+                                  [default: 100]
+  -f, --follow                    Stream new entries in real time.
+  --json                          Output as JSON lines.
+  --summary                       Show aggregated statistics.
+  --no-color                      Disable colored output.
+  --help                          Show this message and exit.

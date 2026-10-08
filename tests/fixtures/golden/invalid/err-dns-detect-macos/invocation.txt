@@ -1,0 +1,1 @@
+config._host_dns_servers() with only loopback resolvers (Darwin)

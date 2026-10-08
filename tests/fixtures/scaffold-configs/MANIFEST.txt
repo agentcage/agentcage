@@ -1,0 +1,8 @@
+arch
+busybox
+claude-code
+codex
+debian
+openclaw
+pi
+ubuntu

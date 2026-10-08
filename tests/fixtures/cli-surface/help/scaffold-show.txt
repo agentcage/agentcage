@@ -1,0 +1,6 @@
+Usage: agentcage scaffold show [OPTIONS] NAME
+
+  Show details of a scaffold.
+
+Options:
+  --help  Show this message and exit.

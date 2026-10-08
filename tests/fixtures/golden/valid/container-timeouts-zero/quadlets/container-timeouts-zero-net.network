@@ -1,0 +1,4 @@
+[Network]
+NetworkName=container-timeouts-zero-net
+Internal=true
+Subnet=10.89.152.0/24

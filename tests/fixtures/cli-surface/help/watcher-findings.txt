@@ -1,0 +1,13 @@
+Usage: agentcage watcher findings [OPTIONS] NAME
+
+  Show the traffic watcher's recorded findings.
+
+Options:
+  -s, --severity [info|low|medium|high|critical]
+                                  Filter by severity (repeatable).
+  --host TEXT                     Filter by domain/host (substring match,
+                                  repeatable).
+  -n, --max-entries INTEGER       Max findings to show (most recent; 0 = all).
+                                  [default: 50]
+  --json                          Output raw finding entries as JSON lines.
+  --help                          Show this message and exit.

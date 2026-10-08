@@ -40,20 +40,19 @@ wrap is defense-in-depth on top of that.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import time
 from importlib.metadata import version as _pkg_version
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import click
 
+from agentcage import egress_hash
 from agentcage.apple_container import cli as ac_cli
 from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import scaffold as ac_scaffold
@@ -66,6 +65,7 @@ from agentcage.volume_mounts import (
     mask_copyup_entries,
     mask_mountpoint_dirs,
     split_volume_spec,
+    unmaskable_masks,
     validate_non_persistent_volume,
 )
 
@@ -87,150 +87,25 @@ from agentcage.volume_mounts import (
 # present?" probe misses and therefore rebuilds — no flag required.
 _EGRESS_IMAGE_REPO = "localhost/agentcage-egress"
 
-# Truncated sha256 length for the tag suffix. 12 hex chars = 48 bits;
-# collisions across the handful of egress builds a host ever sees are not
-# a practical concern, and a short tag keeps `container images` readable.
-_EGRESS_TAG_HASH_LEN = 12
+# The content hash and its Containerfile parsing live in
+# `agentcage.egress_hash`, a stdlib-only module with no agentcage imports.
+# They are a cross-language contract: the Rust port (RUST-PORT-PLAN §2.1)
+# must reproduce this digest byte-exactly or every Mac rebuilds its egress
+# image once on upgrade and then drifts from the Python-computed tag. The
+# module keeps the format, the rationale, and the pinned-fixture test; the
+# aliases below preserve the private names this backend (and its tests)
+# have always used.
+_EGRESS_TAG_HASH_LEN = egress_hash.TAG_HASH_LEN
+_EGRESS_CONTAINERFILE_REL = egress_hash.CONTAINERFILE_REL
+_EGRESS_COPY_RE = egress_hash.COPY_RE
+_EGRESS_HASH_EXCLUDE_DIRS = egress_hash.HASH_EXCLUDE_DIRS
+_EGRESS_HASH_EXCLUDE_SUFFIXES = egress_hash.HASH_EXCLUDE_SUFFIXES
 
-# Containerfile path relative to the build context (src/agentcage/data).
-_EGRESS_CONTAINERFILE_REL = "containers/Containerfile.egress"
-
-# `COPY [--flag=…] <src>… <dest>`. Only the shell form is matched; the
-# egress Containerfile does not use the JSON-array form (a JSON COPY would
-# simply contribute no sources, and the Containerfile's own bytes are
-# always hashed, so the tag still changes whenever it is edited).
-_EGRESS_COPY_RE = re.compile(r"^COPY\s+(?P<rest>.+)$", re.IGNORECASE)
-
-# Build-context noise that must never reach the hash: bytecode caches are
-# interpreter-dependent, so hashing them would make the tag unstable
-# across Python versions for byte-identical sources.
-_EGRESS_HASH_EXCLUDE_DIRS = frozenset({"__pycache__"})
-_EGRESS_HASH_EXCLUDE_SUFFIXES = (".pyc", ".pyo")
-
-
-def _egress_data_dir() -> Path:
-    """Build context for the egress image (``src/agentcage/data``).
-
-    Resolved relative to this file so the build works regardless of cwd
-    (tests, agentcage invoked from a sub-dir, etc.).
-    """
-    return Path(__file__).resolve().parent.parent / "data"
-
-
-def _containerfile_logical_lines(text: str):
-    """Yield Containerfile instructions with backslash continuations joined.
-
-    Comment-only lines are dropped. Good enough to find COPY sources; this
-    is deliberately not a general Containerfile parser.
-    """
-    buf = ""
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not buf and (not stripped or stripped.startswith("#")):
-            continue
-        if stripped.endswith("\\"):
-            buf += stripped[:-1] + " "
-            continue
-        buf += stripped
-        if buf:
-            yield buf
-        buf = ""
-    if buf:
-        yield buf
-
-
-def _egress_copy_sources(containerfile_text: str) -> list[str]:
-    """Source paths named by the COPY directives of the egress Containerfile.
-
-    Deriving the list from the Containerfile (rather than hardcoding it)
-    means a new `COPY proxy/<something-new>` joins the content hash
-    automatically, instead of silently falling out of the rebuild decision
-    the way a hand-maintained list eventually would.
-    """
-    sources: list[str] = []
-    for line in _containerfile_logical_lines(containerfile_text):
-        match = _EGRESS_COPY_RE.match(line)
-        if match is None:
-            continue
-        try:
-            parts = shlex.split(match.group("rest"))
-        except ValueError:
-            continue
-        # Drop `--chown=`/`--from=`-style flags; the final token is the
-        # destination inside the image, everything before it is a source.
-        parts = [p for p in parts if not p.startswith("--")]
-        if len(parts) < 2:
-            continue
-        sources.extend(parts[:-1])
-    return sources
-
-
-def _egress_build_inputs(data_dir: Path | None = None) -> list[tuple[str, Path]]:
-    """Every file baked into the egress image, as sorted (relpath, path) pairs.
-
-    The Containerfile itself plus the transitive contents of each COPY
-    source (directories are walked). Returns ``[]`` when the Containerfile
-    is missing — the build path reports that with an actionable error.
-    """
-    root = (data_dir or _egress_data_dir()).resolve()
-    containerfile = root / _EGRESS_CONTAINERFILE_REL
-    if not containerfile.is_file():
-        return []
-
-    inputs: dict[str, Path] = {_EGRESS_CONTAINERFILE_REL: containerfile}
-
-    def _add(path: Path) -> None:
-        if not path.is_file():
-            return
-        if path.suffix in _EGRESS_HASH_EXCLUDE_SUFFIXES:
-            return
-        try:
-            rel = path.relative_to(root)
-        except ValueError:
-            return  # outside the build context; `container build` can't COPY it
-        if _EGRESS_HASH_EXCLUDE_DIRS.intersection(rel.parts):
-            return
-        inputs[rel.as_posix()] = path
-
-    for src in _egress_copy_sources(containerfile.read_text(errors="replace")):
-        parts = PurePosixPath(src.strip("/")).parts
-        if not parts or ".." in parts:
-            continue
-        target = root.joinpath(*parts)
-        if target.is_dir():
-            for child in target.rglob("*"):
-                _add(child)
-        else:
-            # A missing source contributes nothing on purpose: the build
-            # itself fails loudly on it and there are no bytes to hash.
-            _add(target)
-
-    return sorted(inputs.items())
-
-
-def _egress_content_hash(data_dir: Path | None = None) -> str:
-    """Short stable digest over the egress image's build inputs.
-
-    Hashes the sorted (relative path, content) pairs so a rename changes
-    the digest even when the bytes do not, and so the result does not
-    depend on filesystem iteration order.
-    """
-    inputs = _egress_build_inputs(data_dir)
-    if not inputs:
-        return "unknown"
-    digest = hashlib.sha256()
-    for rel, path in inputs:
-        try:
-            body = path.read_bytes()
-        except OSError:
-            body = b""
-        digest.update(rel.encode())
-        digest.update(b"\0")
-        # Length-prefix the body so no path+content concatenation can be
-        # re-partitioned into a different input set with the same hash.
-        digest.update(len(body).to_bytes(8, "big"))
-        digest.update(body)
-    return digest.hexdigest()[:_EGRESS_TAG_HASH_LEN]
+_egress_data_dir = egress_hash.egress_data_dir
+_containerfile_logical_lines = egress_hash.containerfile_logical_lines
+_egress_copy_sources = egress_hash.egress_copy_sources
+_egress_build_inputs = egress_hash.egress_build_inputs
+_egress_content_hash = egress_hash.egress_content_hash
 
 
 def _agentcage_version() -> str:
@@ -255,9 +130,13 @@ def _egress_image_name(data_dir: Path | None = None) -> str:
     rebuilds on the next `cage create` / `cage update` without needing
     `--no-cache` / `--pull`.
     """
+    # Resolve the default here rather than letting `egress_hash` do it:
+    # `_egress_data_dir` is the seam the backend's tests monkeypatch to
+    # point the whole rebuild decision at a throwaway build context.
+    root = data_dir if data_dir is not None else _egress_data_dir()
     return (
         f"{_EGRESS_IMAGE_REPO}:{_agentcage_version()}"
-        f"-{_egress_content_hash(data_dir)}"
+        f"-{_egress_content_hash(root)}"
     )
 
 
@@ -275,7 +154,7 @@ def _normalize_cpus(value: str) -> str:
     return str(math.ceil(f)) if f != int(f) else str(int(f))
 
 
-_MEMORY_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmMgGtTpP][iI]?[bB]?)?$")
+_MEMORY_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmMgGtTpP][iI]?[bB]?)?\Z")
 
 
 def _normalize_memory(value: str) -> str:
@@ -1996,6 +1875,26 @@ class AppleContainerBackend:
         # therefore always mounted before `/workspace/.git/hooks` (depth 3),
         # and the runtime creates the missing mountpoint. We still emit
         # after the volumes so the argv reads in mount order.
+        mount_targets_for_masks = self._mask_mount_targets(volume_entries)
+        # A mask whose host-side mount point cannot be created at all —
+        # an ancestor exists and is not a directory, which is what a git
+        # worktree's `.git` file is. The runtime answers ENOTDIR and the
+        # cage does not start; see `unmaskable_masks`. Skipping is the
+        # only option that leaves the cage usable, and it costs nothing
+        # #170 was buying: in a worktree the hooks directory is in the
+        # main repository's gitdir, not under this bind.
+        unmaskable = dict(unmaskable_masks(
+            meta.get("tmpfs") or [], mount_targets_for_masks,
+        ))
+        for tmpfs_target, blocker in unmaskable.items():
+            click.echo(
+                f"warning: skipping tmpfs mask {tmpfs_target!r} — "
+                f"{blocker!r} is a file (this project is a git worktree or "
+                f"submodule), so the mount point cannot be created. The "
+                f"hooks directory it protects (#170) is not reachable "
+                f"through this bind either; it lives in the main repository.",
+                err=True,
+            )
         for tmpfs_target in self._tmpfs_targets(meta.get("tmpfs") or []):
             # An `np` bind already owns this target with a tmpfs of its own
             # (seeded from the host lowerdir by cage-init stage C'); a second
@@ -2003,6 +1902,8 @@ class AppleContainerBackend:
             # anyway. Skip it so the seeded copy is not masked by an empty
             # mount on a runtime that keeps both.
             if tmpfs_target in np_tmpfs_targets:
+                continue
+            if tmpfs_target in unmaskable:
                 continue
             cage_argv += ["--tmpfs", tmpfs_target]
         # Emulated `tmpcopyup` (#328). Apple's `--tmpfs` has no option
@@ -2315,7 +2216,65 @@ class AppleContainerBackend:
         self.stop(name)
         self.start(name)
 
-    def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:  # noqa: ARG002
+    def _forget_secrets(self, name: str) -> list[str]:
+        """Delete this cage's secrets from whichever store holds them.
+
+        The container backend removes its ``<name>.*`` podman secrets in
+        ``destroy_resources``, and ``cage_destroy`` tells the operator so
+        ("Scoped secrets will also be removed."). This backend used to
+        accept ``keep_secrets`` and ignore it, so that promise was false
+        here: a destroyed cage left its values in the macOS keychain
+        indefinitely, under ``agentcage / <cage>.<KEY>``, with nothing
+        left on disk to say they were there. Observed on a real destroy.
+
+        ``destroy_resources`` has no ``Config`` — it is name-only, like
+        the rest of the protocol — so the four fields ``resolve_store``
+        reads are rebuilt from the unit JSON, exactly as ``_stage_secrets``
+        rebuilds them. A cage whose unit JSON is already gone resolves the
+        default store, which is the same one ``secret set`` would have
+        used, so the common case still cleans up.
+
+        Best-effort throughout: a store that cannot be resolved, or a key
+        that will not delete, must not fail a destroy. The alternative is
+        a cage that cannot be removed because its secrets cannot be,
+        which is worse than a leftover the operator can see with
+        ``security find-generic-password``.
+        """
+        from types import SimpleNamespace
+
+        from agentcage import state as _state
+        from agentcage.secret_store import SecretStoreError, resolve_store
+
+        meta: dict = {}
+        unit_path = self.unit_dir() / f"{name}.json"
+        try:
+            meta = json.loads(unit_path.read_text())
+        except (OSError, ValueError):
+            pass
+        cfg_shim = SimpleNamespace(
+            isolation="apple-container",
+            secrets=SimpleNamespace(
+                backend=meta.get("secrets_backend", "auto"),
+                allow_plaintext=bool(meta.get("secrets_allow_plaintext", False)),
+                scope="auto",
+            ),
+        )
+        sd = _state.deployment_dir(name)
+        removed: list[str] = []
+        try:
+            store = resolve_store(cfg_shim)
+            names = sorted(store.names(name, state_dir=sd))
+        except (SecretStoreError, OSError, ValueError):
+            return removed
+        for key in names:
+            try:
+                store.delete(name, key, state_dir=sd)
+            except (SecretStoreError, OSError):
+                continue
+            removed.append(f"secret:{name}.{key}")
+        return removed
+
+    def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:
         """Stop+delete both microVMs, delete the per-cage network + wrapper
         image + state dir.
 
@@ -2355,6 +2314,12 @@ class AppleContainerBackend:
             r = ac_cli.run(["image", "delete", wrapper_image], check=False)
             if r.returncode == 0:
                 removed.append(f"image:{wrapper_image}")
+        # Scoped secrets, before the unit JSON and the state tree go: the
+        # unit JSON is where the store is named, and under
+        # ``secrets.backend: plaintext`` the store *is* a file in the
+        # deployment dir. Reading them afterwards would find neither.
+        if not keep_secrets:
+            removed.extend(self._forget_secrets(name))
         # State dir + unit JSON.
         unit_path = self.unit_dir() / f"{name}.json"
         if unit_path.exists():

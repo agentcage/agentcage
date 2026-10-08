@@ -1,0 +1,1 @@
+secret_injection['MY_API_KEY']: placeholder '{{MY_API_KEY}}' is not in the 'agentcage:secret:*' form — omit `placeholder:` to auto-generate an entropic token, or run `agentcage secret rotate-placeholders` to mint one

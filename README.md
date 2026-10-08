@@ -159,13 +159,18 @@ Using the official one-line installer:
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-Or install via Python package managers (`uv` or `pip`):
+It builds agentcage from source with `cargo` (setting up a minimal Rust
+toolchain via rustup if you have none). Or, with Rust 1.85+ installed:
 
 ```bash
-uv tool install agentcage
-# or
-pip install agentcage
+cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.50.0 agentcage-cli
 ```
+
+See [the install guide](docs/get-started/install.md) for details.
+
+agentcage is a single binary. It is no longer a Python package:
+`pip install agentcage` and `uv tool install agentcage` are not install
+paths any more, and the `pyproject.toml` here is dev/test-only.
 
 Verify your host environment:
 

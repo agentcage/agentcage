@@ -1,0 +1,9 @@
+{
+  "cage_yaml": "stored-cage.yaml",
+  "image_digests": {
+    "docker.io/library/node:22-slim": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "resolved_config": "resolved-config-filled.json",
+  "scaffold_version": "",
+  "units": "quadlets/* (filename -> file contents; {} when absent)"
+}

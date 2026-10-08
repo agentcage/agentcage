@@ -1,0 +1,2 @@
+warning: not mounting '${HOME}/not-there' into the VM (host path does not exist)
+warning: skipping volume '{{HOME}}/not-there' (host path does not exist)

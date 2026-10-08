@@ -1,0 +1,1 @@
+no domains policy configured: all outbound hosts are blocked at the proxy (default-deny). Add a domains.allow list (or domains.block for blocklist mode) to permit egress.

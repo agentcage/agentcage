@@ -1,0 +1,4 @@
+[Network]
+NetworkName=agents-decider-anthropic-net
+Internal=true
+Subnet=10.89.218.0/24

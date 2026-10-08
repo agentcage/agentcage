@@ -1,0 +1,70 @@
+[Unit]
+Description=agentcage cage
+Requires=tmpfs-mask-over-named-volume-egress.service
+After=tmpfs-mask-over-named-volume-egress.service
+
+[Container]
+ContainerName=tmpfs-mask-over-named-volume-cage
+Image=docker.io/library/node:22-slim
+Network=tmpfs-mask-over-named-volume-net.network:ip=10.89.207.2
+Environment="HTTP_PROXY=http://10.89.207.10:8080"
+Environment="HTTPS_PROXY=http://10.89.207.10:8080"
+Environment="http_proxy=http://10.89.207.10:8080"
+Environment="https_proxy=http://10.89.207.10:8080"
+Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
+Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
+Environment="AGENTCAGE_VERSION=0.0.0-golden"
+Volume=tmpfs-mask-over-named-volume-public-certs.volume:/certs:ro,Z
+Volume={{WORK}}/patches/resolv-tmpfs-mask-over-named-volume.conf:/etc/resolv.conf:ro,Z
+Volume=state:/var/lib/state:rw
+Tmpfs=/var/lib/state/secrets:rw,tmpcopyup,mode=1777
+User=1000:1000
+ReadOnly=true
+SecurityLabelDisable=true
+NoNewPrivileges=true
+DropCapability=ALL
+Exec=node /app/agent.js
+
+[Service]
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec tmpfs-mask-over-named-volume-egress test -f /home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
+# A tmpfs mask that opted into `tmpcopyup` (#328) comes up already holding a
+# copy of what it covers — but the runtime performs that copy as the user-
+# namespace root it mounts as and does not replay the source's ownership, so
+# every entry lands `0:0`. The mask's own `mode=1777` (#321) then lets the
+# cage's uid create NEW files while modifying or deleting a copied one still
+# fails EACCES/EPERM: an agent can read the project's `.claude/settings.json`
+# but not edit its own throwaway copy. Hand the copy to the cage user.
+#
+# This cannot be an ExecStartPre: that runs BEFORE the container, when the
+# tmpfs does not exist yet. It also must not be a `podman exec` — the cage
+# drops every capability, so root in an exec session has no CAP_CHOWN, and
+# `--privileged` would both hand a full capability set to a session running
+# the cage IMAGE's own `chown` binary and undercut the cage's threat model
+# for a cosmetic fix. `nsenter -U` instead joins only the container's user
+# namespace (which this unit's user owns, so it gets a full capability set
+# there) and runs the HOST's chown against the container's mount tree via
+# /proc/PID/root — the same mechanism the default-route ExecStartPost below
+# already relies on. The plain-chown fallback covers a rootful podman with no
+# user namespace to join.
+#
+# `-h` chowns symlinks themselves and `-R` does not traverse them (GNU
+# chown's -P default), so a symlink the workload plants inside the mask
+# between container start and this hook cannot redirect the chown at a path
+# outside it. Only the in-cage tmpfs is touched; the host source the copy
+# came from is never chowned.
+ExecStartPost=-/bin/bash -c 'd=$(echo L3Zhci9saWIvc3RhdGUvc2VjcmV0cw== | base64 -d) || exit 0; for i in $(seq 1 30); do PID=$(podman inspect --format "{{.State.Pid}}" tmpfs-mask-over-named-volume-cage 2>/dev/null); if [ -n "$PID" ] && [ "$PID" != "0" ]; then nsenter -t "$PID" -U -- chown -Rh 1000:1000 "/proc/$PID/root$d" 2>/dev/null && exit 0; chown -Rh 1000:1000 "/proc/$PID/root$d" 2>/dev/null && exit 0; break; fi; sleep 0.5; done; echo "agentcage: could not hand the copy-up tmpfs mask $d to 1000:1000 — the cage can read the seeded content but not edit it" >&2; exit 0'
+# Add the cage's default route via the egress container. Retries because
+# the container PID is briefly invalid (0/empty) right after `podman start`
+# returns and before the container's init has fully populated state.
+# Without the retry, the route is silently skipped on a restart, the
+# cage has no outbound network, and every fetch from inside the cage
+# fails fast with ECONNREFUSED — surfacing as 502s in tests that
+# exercise the data path after a domain add or secret set restart.
+ExecStartPost=/bin/sh -c 'LAST_ERR=""; for i in $(seq 1 30); do PID=$(podman inspect --format "{{.State.Pid}}" tmpfs-mask-over-named-volume-cage 2>/dev/null); if [ -n "$PID" ] && [ "$PID" != "0" ]; then LAST_ERR=$(nsenter -t "$PID" -U -n -- ip route replace default via 10.89.207.10 2>&1) && { echo "added default route via 10.89.207.10 (attempt $i)"; exit 0; }; fi; sleep 0.5; done; echo "WARNING: failed to add cage default route via 10.89.207.10 after 30 attempts: $LAST_ERR" >&2; exit 1'
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

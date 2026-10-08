@@ -1,0 +1,4 @@
+[Network]
+NetworkName=tmpfs-mask-no-copyup-net
+Internal=true
+Subnet=10.89.34.0/24

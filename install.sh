@@ -1,5 +1,6 @@
 #!/bin/sh
-# agentcage installer — installs agentcage and all prerequisites.
+# agentcage installer — builds agentcage from source and installs all
+# prerequisites.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
@@ -136,26 +137,6 @@ has_podman() {
     command -v podman >/dev/null 2>&1
 }
 
-# Check for Python >= 3.12 and set PYTHON_BIN
-has_python() {
-    for py in python3.13 python3.12 python3; do
-        if command -v "$py" >/dev/null 2>&1; then
-            ver=$("$py" -c 'import sys; print("{}.{}".format(sys.version_info.major, sys.version_info.minor))' 2>/dev/null) || continue
-            major=$(echo "$ver" | cut -d. -f1)
-            minor=$(echo "$ver" | cut -d. -f2)
-            if [ "$major" -ge 3 ] && [ "$minor" -ge 12 ]; then
-                PYTHON_BIN="$py"
-                return 0
-            fi
-        fi
-    done
-    return 1
-}
-
-has_uv() {
-    command -v uv >/dev/null 2>&1
-}
-
 has_agentcage() {
     command -v agentcage >/dev/null 2>&1
 }
@@ -269,105 +250,141 @@ install_podman() {
 }
 
 # ---------------------------------------------------------------------------
-# Install: Python
-# ---------------------------------------------------------------------------
-
-install_python() {
-    if has_python; then
-        info "Python >= 3.12 found ($PYTHON_BIN)"
-        return
-    fi
-
-    info "Installing Python..."
-    case "$DISTRO" in
-        arch)     run_pkg pacman -S --noconfirm --needed python ;;
-        debian)   run_pkg apt-get update -qq && run_pkg apt-get install -y -qq python3 ;;
-        fedora)   run_pkg dnf install -y -q python3 ;;
-        rhel)
-            # Try python3.12 package first (EPEL/AppStream), fall back to python3
-            if ! run_pkg dnf install -y -q python3.12 2>/dev/null; then
-                run_pkg dnf install -y -q python3
-            fi
-            ;;
-        opensuse)
-            if ! run_pkg zypper install -y python312 2>/dev/null; then
-                run_pkg zypper install -y python3
-            fi
-            ;;
-        macos)    brew install python ;;
-    esac
-
-    if ! has_python; then
-        err "Python >= 3.12 installation failed (installed version may be too old)"
-    fi
-    info "Python >= 3.12 installed ($PYTHON_BIN)"
-}
-
-# ---------------------------------------------------------------------------
-# Install: uv
-# ---------------------------------------------------------------------------
-
-install_uv() {
-    if has_uv; then
-        info "uv is already installed ($(uv --version))"
-        return
-    fi
-
-    info "Installing uv..."
-    installed_via_pkg=false
-
-    case "$DISTRO" in
-        arch)
-            run_pkg pacman -S --noconfirm --needed uv
-            installed_via_pkg=true
-            ;;
-        fedora)
-            if run_pkg dnf install -y -q uv 2>/dev/null; then
-                installed_via_pkg=true
-            fi
-            ;;
-        macos)
-            brew install uv
-            installed_via_pkg=true
-            ;;
-    esac
-
-    if [ "$installed_via_pkg" = false ] || ! has_uv; then
-        info "Installing uv via official installer..."
-        need_cmd curl
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        # Add common install locations to PATH for this session
-        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-    fi
-
-    if ! has_uv; then
-        err "uv installation failed"
-    fi
-    info "uv installed ($(uv --version))"
-}
-
-# ---------------------------------------------------------------------------
 # Install: agentcage
 # ---------------------------------------------------------------------------
+#
+# agentcage is a single binary, built here from source with cargo straight
+# from the GitHub repository. The host CLI stopped being Python at the
+# Rust cutover, and the only Python left in the product ships inside the
+# egress container image, where the image installs it.
+#
+# Why source rather than a prebuilt download: the macOS binaries are not
+# notarized yet (#413), and a binary built on this machine is not
+# quarantined, so Gatekeeper has nothing to say about it. One path for
+# every platform is simpler than two.
+
+AGENTCAGE_REPO="${AGENTCAGE_REPO:-agentcage/agentcage}"
+
+# The edition-2024 floor, from `rust-version` in the root Cargo.toml.
+RUST_MIN_MINOR=85
+
+# The git ref to build: $AGENTCAGE_REF (a branch), $AGENTCAGE_VERSION (a
+# release tag), or the latest release.
+#
+# Latest is resolved through the redirect on /releases/latest rather than
+# the JSON API, because the API is rate-limited per IP (60/hour
+# unauthenticated) and a shared NAT or a CI runner reaches that without
+# trying.
+resolve_ref() {
+    if [ -n "${AGENTCAGE_REF:-}" ]; then
+        REF_FLAG=--branch
+        REF="$AGENTCAGE_REF"
+        return
+    fi
+    REF_FLAG=--tag
+    if [ -n "${AGENTCAGE_VERSION:-}" ]; then
+        REF="v${AGENTCAGE_VERSION#v}"
+        return
+    fi
+    info "Resolving the latest release..."
+    location=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+        "https://github.com/$AGENTCAGE_REPO/releases/latest" 2>/dev/null) \
+        || err "could not reach github.com to resolve the latest release"
+    REF="v${location##*/tag/v}"
+    case "$REF" in
+        "v$location"|v) err "could not parse a version out of '$location'" ;;
+    esac
+}
+
+# cargo, from PATH or from a rustup install this shell has not sourced.
+find_cargo() {
+    CARGO=$(command -v cargo 2>/dev/null) && return 0
+    [ -x "$HOME/.cargo/bin/cargo" ] && CARGO="$HOME/.cargo/bin/cargo" && return 0
+    return 1
+}
+
+# A Rust toolchain new enough to build the workspace.
+#
+# An existing toolchain is used as-is if it is new enough and left alone
+# if it is not: upgrading somebody's compiler is not an installer's call.
+# With none at all, rustup installs one into ~/.rustup and ~/.cargo,
+# without touching shell profiles — the toolchain is only needed for this
+# build, and the result lands in $bindir.
+ensure_rust() {
+    if ! find_cargo; then
+        info "Rust not found — installing a minimal stable toolchain with rustup..."
+        need_cmd curl
+        # Downloaded to a file, not piped: in `curl | sh` a failed
+        # download is an empty script that sh runs successfully.
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp/rustup-init.sh" https://sh.rustup.rs \
+            || err "could not download rustup from https://sh.rustup.rs. Install Rust from https://rustup.rs and re-run."
+        sh "$tmp/rustup-init.sh" -y --profile minimal --no-modify-path \
+            || err "rustup failed. Install Rust from https://rustup.rs and re-run."
+        find_cargo || err "rustup finished but cargo is not in ~/.cargo/bin"
+    fi
+
+    minor=$("$CARGO" --version | cut -d' ' -f2 | cut -d. -f2)
+    if [ "${minor:-0}" -lt "$RUST_MIN_MINOR" ] 2>/dev/null; then
+        err "agentcage needs Rust 1.$RUST_MIN_MINOR or newer; found $("$CARGO" --version). Run 'rustup update stable' and re-run."
+    fi
+    info "Using $("$CARGO" --version)"
+}
+
+# rustc links with the system C compiler driver. agentcage has no C
+# dependencies, so the linker is all that is needed.
+ensure_linker() {
+    command -v cc >/dev/null 2>&1 && return
+    if [ "$OS" = "macos" ]; then
+        err "no C linker found. Install the Xcode Command Line Tools ('xcode-select --install') and re-run."
+    fi
+    info "Installing a C linker (needed by the Rust build)..."
+    case "$DISTRO" in
+        arch)     run_pkg pacman -S --noconfirm --needed gcc ;;
+        debian)   run_pkg apt-get update -qq && run_pkg apt-get install -y -qq gcc libc6-dev ;;
+        fedora)   run_pkg dnf install -y -q gcc ;;
+        rhel)     run_pkg dnf install -y -q gcc ;;
+        opensuse) run_pkg zypper install -y gcc ;;
+    esac
+    command -v cc >/dev/null 2>&1 || err "C linker installation failed; install gcc and re-run."
+}
 
 install_agentcage() {
-    if has_agentcage; then
-        info "agentcage is already installed, upgrading..."
-        uv tool install --upgrade agentcage
-    else
-        info "Installing agentcage..."
-        uv tool install agentcage
-    fi
+    tmp=$(mktemp -d)
+    # `trap ... 0` rather than EXIT: POSIX sh, and the script may not
+    # reach the end.
+    trap 'rm -rf "$tmp"' 0
 
-    # Ensure uv tool bin dir is on PATH for this session
-    if [ -d "$HOME/.local/bin" ]; then
-        export PATH="$HOME/.local/bin:$PATH"
-    fi
+    resolve_ref
+    ensure_rust
+    ensure_linker
 
+    bindir="${AGENTCAGE_BIN_DIR:-$HOME/.local/bin}"
+
+    # --locked builds against the committed Cargo.lock, so the dependency
+    # versions are the ones CI tested at that ref. --root keeps cargo's
+    # install bookkeeping out of $bindir's parent; the binary is moved
+    # into place below.
+    info "Building agentcage from github.com/$AGENTCAGE_REPO ($REF) — this takes a few minutes..."
+    "$CARGO" install --locked --quiet \
+        --git "https://github.com/$AGENTCAGE_REPO" "$REF_FLAG" "$REF" \
+        --root "$tmp/root" agentcage-cli \
+        || err "cargo install failed for $REF"
+    unpacked="$tmp/root/bin/agentcage"
+    [ -f "$unpacked" ] || err "the build produced no agentcage binary"
+
+    mkdir -p "$bindir"
+    # Install by rename, so a running agentcage is never a half-written
+    # file: the rename is atomic within one filesystem, and $tmp is
+    # moved into place rather than copied over the target.
+    cp "$unpacked" "$bindir/.agentcage.new"
+    chmod 755 "$bindir/.agentcage.new"
+    mv -f "$bindir/.agentcage.new" "$bindir/agentcage"
+
+    export PATH="$bindir:$PATH"
     if ! has_agentcage; then
-        err "agentcage installation failed"
+        err "agentcage was installed to $bindir but is not on PATH"
     fi
-    info "agentcage installed ($(agentcage --version))"
+    info "agentcage installed to $bindir ($("$bindir/agentcage" --version))"
 }
 
 # ---------------------------------------------------------------------------
@@ -520,7 +537,11 @@ parse_args() {
                 cat <<'HELP'
 agentcage installer
 
-Installs agentcage and all prerequisites (Podman, Python 3.12+, uv).
+Builds agentcage from source with cargo, straight from the GitHub
+repository, and installs its prerequisite, Podman. If no Rust toolchain
+is found, a minimal one is installed with rustup (into ~/.rustup and
+~/.cargo, without editing shell profiles). The build uses the committed
+Cargo.lock.
 
 On macOS 26+ Apple Silicon also installs Apple's 'container' CLI (the
 default isolation backend on that platform). On older macOS / Intel Macs
@@ -534,6 +555,12 @@ Options:
   --with-lima   Also install Lima (required for isolation: vm mode).
                 Auto-set on macOS hosts where apple-container is unavailable.
   --help, -h    Show this help message
+
+Environment:
+  AGENTCAGE_VERSION   Build this release tag instead of the latest release.
+  AGENTCAGE_REF       Build this branch instead (e.g. master).
+  AGENTCAGE_BIN_DIR   Where to put the binary (default: ~/.local/bin).
+  AGENTCAGE_REPO      Source repository (default: agentcage/agentcage).
 HELP
                 exit 0
                 ;;
@@ -572,8 +599,6 @@ main() {
     fi
 
     install_podman
-    install_python
-    install_uv
     install_agentcage
 
     setup_podman_machine

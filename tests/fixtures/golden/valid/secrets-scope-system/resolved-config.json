@@ -1,0 +1,143 @@
+{
+  "agents": {
+    "decider": {
+      "api_key": "",
+      "base_url": "",
+      "context": "",
+      "enable": false,
+      "host": "agentcage.local",
+      "max_tokens": 8192,
+      "model": "",
+      "provider": "",
+      "rate_limit_burst": 5,
+      "rate_limit_rps": 1.0,
+      "timeout_seconds": 15.0
+    },
+    "watcher": {
+      "api_key": "",
+      "auto_revoke": true,
+      "base_url": "",
+      "context": "",
+      "dedup_samples": true,
+      "enable": false,
+      "interval_seconds": 900.0,
+      "max_digest_tokens": 8000,
+      "max_flows": 200,
+      "max_tokens": 8192,
+      "model": "",
+      "provider": "",
+      "timeout_seconds": 30.0,
+      "window_seconds": 3600.0
+    }
+  },
+  "apple_container_autostart": false,
+  "capture": {
+    "domains": [],
+    "enable_har": false,
+    "exclude_domains": [],
+    "max_body_size": 10485760,
+    "max_file_size": 134217728,
+    "min_action": "all"
+  },
+  "container": {
+    "add_capabilities": [],
+    "build": {
+      "args": {},
+      "containerfile": ""
+    },
+    "command": [
+      "node",
+      "/app/agent.js"
+    ],
+    "cpus": "",
+    "drop_capabilities": [
+      "ALL"
+    ],
+    "env": {},
+    "image": "docker.io/library/node:22-slim",
+    "memory": "",
+    "named_volumes": {},
+    "nested_containers": false,
+    "no_new_privileges": true,
+    "podman_secrets": [],
+    "ports": [],
+    "read_only": true,
+    "restart": "on-failure",
+    "restart_sec": 10,
+    "security_label_disable": true,
+    "timeout_start_sec": 120,
+    "timeout_stop_sec": 30,
+    "tmpfs": [],
+    "user": "1000:1000",
+    "userns": "",
+    "volumes": []
+  },
+  "dns_servers": [
+    "192.0.2.53"
+  ],
+  "domains": {
+    "allow": [
+      "api.example.com",
+      "cdn.example.com"
+    ],
+    "block": [],
+    "expires": {},
+    "mode": "allowlist",
+    "passthrough": []
+  },
+  "exec_aliases": {},
+  "help": "",
+  "inspectors": [],
+  "isolation": "container",
+  "lifecycle": "service",
+  "logging": {
+    "allowed_requests": false,
+    "cage": "",
+    "dns": "",
+    "dns_queries": false,
+    "level": "info",
+    "proxy": "",
+    "proxy_connections": false
+  },
+  "name": "secrets-scope-system",
+  "ports": {
+    "icmp": {
+      "allow": false
+    },
+    "tcp": {
+      "allow": [
+        80,
+        443
+      ],
+      "passthrough": []
+    },
+    "udp": {
+      "allow": []
+    }
+  },
+  "protocol_relays": [],
+  "scaffold": "",
+  "secret_injection": [
+    {
+      "env": "SCOPED_KEY",
+      "inject_body": false,
+      "inject_headers": [],
+      "inject_to": [
+        "api.example.com"
+      ],
+      "placeholder": "agentcage:secret:SCOPED_KEY:55555555555555555555555555555555",
+      "source": "systemd-creds:SCOPED_KEY",
+      "transform": "",
+      "transform_config": {}
+    }
+  ],
+  "secrets": {
+    "allow_plaintext": false,
+    "backend": "auto",
+    "scope": "system"
+  },
+  "vm": {
+    "mem_mb": 4096,
+    "vcpus": 4
+  }
+}

@@ -1,0 +1,14 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+agents:
+  watcher:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: env:GOLDEN_SET_VAR
+    interval_seconds: 60
+    max_flows: 2000
+    max_digest_tokens: 100000
+agentcage_version: 0.0.0-golden

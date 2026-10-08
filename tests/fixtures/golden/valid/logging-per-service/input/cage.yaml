@@ -1,0 +1,20 @@
+name: logging-per-service
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+logging:
+  level: warning
+  dns: debug
+  proxy: error
+  cage: critical
+  dns_queries: true
+  proxy_connections: true
+  allowed_requests: true

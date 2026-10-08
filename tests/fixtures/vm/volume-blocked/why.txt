@@ -1,0 +1,1 @@
+A volume resolving under ~/.ssh is refused, not skipped.

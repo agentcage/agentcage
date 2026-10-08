@@ -1,0 +1,16 @@
+secrets:
+  allow_plaintext: true
+domains:
+  allow:
+  - httpbin.org
+secret_injection:
+- env: MY_AUTO_KEY
+  inject_to:
+  - httpbin.org
+  placeholder: agentcage:secret:MY_AUTO_KEY:00000000000000000000000000000001
+- env: MY_API_KEY
+  placeholder: '{{MY_API_KEY}}'
+  inject_to:
+  - httpbin.org
+  inject_body: true
+agentcage_version: 0.0.0-golden

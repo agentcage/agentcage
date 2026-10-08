@@ -1,0 +1,1 @@
+ValueError: {{WORK}}/staging/err-yaml-syntax.yaml is not valid YAML at line 2, column 1: expected ',' or ']', but got '<stream end>'

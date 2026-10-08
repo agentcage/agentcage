@@ -1,0 +1,56 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/workspace",
+      "${HOME}/workspace"
+    ],
+    [
+      "/project",
+      "${HOME}/project"
+    ],
+    [
+      "/data",
+      ""
+    ],
+    [
+      "/var/lib/state",
+      ""
+    ]
+  ],
+  "tmpfs": [],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "rw"
+      ],
+      "raw_options": "rw",
+      "source": "${HOME}/workspace",
+      "spec": "${HOME}/workspace:/workspace:rw",
+      "target": "/workspace"
+    },
+    {
+      "non_persistent": false,
+      "options": [
+        "ro"
+      ],
+      "raw_options": "ro",
+      "source": "${HOME}/project",
+      "spec": "${HOME}/project:/project:ro",
+      "target": "/project"
+    },
+    {
+      "non_persistent": true,
+      "options": [
+        "rw",
+        "np"
+      ],
+      "raw_options": "rw,np",
+      "source": "${HOME}/data",
+      "spec": "${HOME}/data:/data:rw,np",
+      "target": "/data"
+    }
+  ]
+}

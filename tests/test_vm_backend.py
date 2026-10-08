@@ -477,8 +477,12 @@ class TestDestroyResources:
         mock_inst = MagicMock()
         mock_inst.exists.return_value = True
         mock_inst.name = "agentcage-testcage"
-        backend._podman = MagicMock()
-        backend._podman.secret_list.return_value = []
+        # `_host_podman` is the seam. This used to set `backend._podman`,
+        # an attribute `VmBackend` does not have and nothing read — so
+        # the setup was dead and a destroy reached real podman.
+        backend._host_podman = MagicMock(
+            return_value=MagicMock(secret_list=MagicMock(return_value=[])),
+        )
 
         with patch.object(backend, "_instance", return_value=mock_inst), \
              patch.object(backend, "unit_dir", return_value=Path("/nonexistent/path")):
@@ -491,8 +495,9 @@ class TestDestroyResources:
         backend = VmBackend()
         mock_inst = MagicMock()
         mock_inst.exists.return_value = False
-        backend._podman = MagicMock()
-        backend._podman.secret_list.return_value = []
+        backend._host_podman = MagicMock(
+            return_value=MagicMock(secret_list=MagicMock(return_value=[])),
+        )
 
         with patch.object(backend, "_instance", return_value=mock_inst), \
              patch.object(backend, "unit_dir", return_value=Path("/nonexistent/path")):
@@ -505,8 +510,9 @@ class TestDestroyResources:
         backend = VmBackend()
         mock_inst = MagicMock()
         mock_inst.exists.return_value = False
-        backend._podman = MagicMock()
-        backend._podman.secret_list.return_value = []
+        backend._host_podman = MagicMock(
+            return_value=MagicMock(secret_list=MagicMock(return_value=[])),
+        )
 
         unit_dir = tmp_path / "lima"
         unit_dir.mkdir()
@@ -527,16 +533,103 @@ class TestDestroyResources:
         assert f"config:{unit_dir / 'lima.yaml'}" in removed
         assert f"quadlets:{quadlets_dir}" in removed
 
-    def test_removes_secrets_by_default(self):
+    def test_removes_the_host_staging_secrets_by_default(self):
+        """`destroy_resources` used to accept `keep_secrets` and ignore
+        it, so `cage_destroy`'s "Scoped secrets will also be removed."
+        was false here. Two copies survived: the host staging store that
+        `_bridge_secrets` mirrors into the guest, and — on macOS — the
+        login keychain the at-rest store resolves to."""
         backend = VmBackend()
         mock_inst = MagicMock()
         mock_inst.exists.return_value = False
+        host = MagicMock()
+        host.secret_list.return_value = [
+            {"Name": "testcage.API_KEY"},
+            {"Name": "testcage.TOKEN"},
+        ]
+        host.secret_remove.return_value = True
+        backend._host_podman = MagicMock(return_value=host)
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch.object(backend, "unit_dir", return_value=Path("/nonexistent/path")), \
+             patch("agentcage.state.load_deployment_config",
+                   side_effect=FileNotFoundError):
+            removed = backend.destroy_resources("testcage")
+
+        assert removed == [
+            "secret:testcage.API_KEY",
+            "secret:testcage.TOKEN",
+        ]
+        # The prefix filter is the store's; another cage's secrets are
+        # never in the list to begin with.
+        host.secret_list.assert_called_once_with(prefix="testcage.")
+
+    def test_keep_secrets_is_no_longer_a_no_op(self):
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.exists.return_value = False
+        host = MagicMock()
+        backend._host_podman = MagicMock(return_value=host)
 
         with patch.object(backend, "_instance", return_value=mock_inst), \
              patch.object(backend, "unit_dir", return_value=Path("/nonexistent/path")):
+            removed = backend.destroy_resources("testcage", keep_secrets=True)
+
+        assert removed == []
+        host.secret_list.assert_not_called()
+        host.secret_remove.assert_not_called()
+
+    def test_removes_the_at_rest_copy_too(self, tmp_path):
+        """On a macOS host a vm cage resolves to the login keychain,
+        which nothing here used to touch — observed on a real destroy:
+        the item was still under ``agentcage / <cage>.<KEY>``."""
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.exists.return_value = False
+        host = MagicMock()
+        host.secret_list.return_value = []
+        backend._host_podman = MagicMock(return_value=host)
+
+        store = MagicMock()
+        store.runtime_decrypts = False
+        store.names.return_value = ["API_KEY"]
+        cfg = _make_config()
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch.object(backend, "unit_dir", return_value=Path("/nonexistent/path")), \
+             patch("agentcage.state.load_deployment_config", return_value=cfg), \
+             patch("agentcage.state.deployment_dir", return_value=tmp_path), \
+             patch("agentcage.secret_store.resolve_store", return_value=store):
             removed = backend.destroy_resources("testcage")
 
-        # No host-side secrets to remove (everything is inside the VM)
+        store.delete.assert_called_once_with(
+            "testcage", "API_KEY", state_dir=tmp_path,
+        )
+        assert removed == ["secret:testcage.API_KEY"]
+
+    def test_a_runtime_decrypting_store_needs_no_extra_delete(self, tmp_path):
+        """On Linux the value is the `.cred` blob, which goes with the
+        state directory, or the podman secret already removed above."""
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.exists.return_value = False
+        host = MagicMock()
+        host.secret_list.return_value = []
+        backend._host_podman = MagicMock(return_value=host)
+
+        store = MagicMock()
+        store.runtime_decrypts = True
+        cfg = _make_config()
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch.object(backend, "unit_dir", return_value=Path("/nonexistent/path")), \
+             patch("agentcage.state.load_deployment_config", return_value=cfg), \
+             patch("agentcage.state.deployment_dir", return_value=tmp_path), \
+             patch("agentcage.secret_store.resolve_store", return_value=store):
+            removed = backend.destroy_resources("testcage")
+
+        store.delete.assert_not_called()
+        store.names.assert_not_called()
         assert removed == []
 
 

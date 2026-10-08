@@ -1,0 +1,5 @@
+domains:
+  allow:
+  - a.example.com
+  - b.example.org
+agentcage_version: 0.0.0-golden

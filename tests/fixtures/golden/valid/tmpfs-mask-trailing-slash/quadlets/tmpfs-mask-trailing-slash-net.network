@@ -1,0 +1,4 @@
+[Network]
+NetworkName=tmpfs-mask-trailing-slash-net
+Internal=true
+Subnet=10.89.73.0/24

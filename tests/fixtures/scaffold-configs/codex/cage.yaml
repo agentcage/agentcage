@@ -1,0 +1,132 @@
+# agentcage configuration for demo (Codex scaffold)
+#
+# Quick start:
+#   1. Deploy:  agentcage cage create -c cage.yaml
+#   2. Start a session:
+#        agentcage cage exec demo -- codex
+#   3. Or use the run command:
+#        agentcage run codex
+#
+# Authentication:
+#   agentcage secret set demo OPENAI_API_KEY
+#   agentcage cage restart demo
+
+name: demo
+
+lifecycle: interactive
+
+scaffold: codex
+
+container:
+  image: "localhost/agentcage-scaffold-codex:latest"
+  build:
+    containerfile: "Containerfile"
+  command: ["sleep", "infinity"]
+
+  # Project directory — mount your repo here
+  volumes:
+    - "${PROJECT_DIR}:/workspace:rw"
+    # Auth & settings — uncomment to mount host ~/.codex so login persists
+    # across sessions. Disabled by default: the host ~/.codex tree contains
+    # credentials, session history, and config that the cage shouldn't see
+    # or be able to mutate. Prefer in-cage `codex login` (volume-backed)
+    # or an injected API key.
+    #- "~/.codex:/home/node/.codex:rw"
+  #  # Git config (uncomment to enable)
+  #  - "~/.gitconfig:/home/node/.gitconfig:ro"
+  #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
+
+  # Map host UID into container so mounted files have correct ownership
+  userns: "keep-id"
+  user: ""
+
+  # Coding agents need to write to various paths in the home directory
+  read_only: false
+
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=256M"
+    # Mask the host's .git/hooks/ so a caged agent can't plant a git hook
+    # (pre-commit, post-checkout, …) that the next host-side `git commit`
+    # runs as the host user — a cage→host pivot (#170). tmpfs overlays the
+    # bind-mounted path: the cage sees an empty, transient .git/hooks/
+    # (writes vanish on stop); the host's hooks are untouched.
+    # `notmpcopyup` is what makes "empty" true (#328). Without it podman
+    # copies the host's hooks into the mask, and the mask is `noexec` so
+    # none of them could ever run in the cage anyway — the copy would only
+    # add confusion plus a Permission denied whenever the agent edits one.
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup"
+
+  # Resource limits
+  memory: "8g"
+  cpus: "4.0"
+
+  timeout_start_sec: 60
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Placeholders are generated decoy tokens, unique per cage — entropy keeps
+# real outbound content from ever colliding with one.
+# Create each secret:  agentcage secret set demo OPENAI_API_KEY
+secret_injection:
+  - env: OPENAI_API_KEY
+    placeholder: "agentcage:secret:OPENAI_API_KEY:00000000000000000000000000000001"
+    inject_to:
+      - openai.com
+
+  # Uncomment for GitHub push via HTTPS:
+  #- env: GITHUB_TOKEN
+  #  placeholder: "agentcage:secret:GITHUB_TOKEN:00000000000000000000000000000002"
+  #  inject_to:
+  #    - github.com
+
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "openai.com" also allows
+# "api.openai.com").
+domains:
+  allow:
+    # ── AI provider ──
+    - openai.com
+
+    # ── Package registries (commented out by default) ──
+    # Codex's deps are installed at image-build time (see Containerfile),
+    # so the running cage doesn't need access to public package indexes.
+    # Uncomment the ones you need if your agent installs packages at
+    # runtime (e.g. `npm install` in /workspace, `pip install`, etc.).
+    #- npmjs.org
+    #- npmjs.com
+    #- pypi.org
+    #- files.pythonhosted.org
+    #- nodejs.org
+
+    # ── Code hosting (uncomment for git push) ──
+    #- github.com
+    #- githubusercontent.com
+
+    # Add domains your agent needs access to:
+    #- example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: content-type
+  # Add `- name: entropy` to also flag encrypted/compressed payloads
+  # (off by default — it false-positives on legitimate high-entropy data).
+
+# ── Exec aliases ──
+exec_aliases:
+  codex: ["codex"]
+
+# ── Help ──
+help: |
+  Start a Codex session:
+    agentcage cage exec demo -- codex
+
+  Or use the run command (creates ephemeral cage):
+    agentcage run codex
+
+  Set your API key:
+    agentcage secret set demo OPENAI_API_KEY

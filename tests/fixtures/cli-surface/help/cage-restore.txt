@@ -1,0 +1,9 @@
+Usage: agentcage cage restore [OPTIONS] TARBALL
+
+  Restore a cage from a backup tarball.
+
+Options:
+  --name TEXT  Restore with a different name (for cloning)
+  --force      Overwrite existing cage
+  --no-start   Restore without starting
+  --help       Show this message and exit.

@@ -1,0 +1,36 @@
+name: backend-apple-container-resources
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  cpus: '2.5'
+  memory: 3g
+  env:
+    AGENT_HOME: ${GOLDEN_AGENT_DIR}
+    PLAIN: literal
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+isolation: apple-container
+lifecycle: ephemeral
+vm:
+  vcpus: 8
+  mem_mb: 16384
+ports:
+  tcp:
+    allow:
+    - 443
+    - 8080
+    passthrough:
+    - 8080
+    - 22
+  udp:
+    allow:
+    - 53
+    - 123
+  icmp:
+    allow: true

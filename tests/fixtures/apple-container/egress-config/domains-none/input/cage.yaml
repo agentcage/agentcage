@@ -1,0 +1,7 @@
+name: apple-domains-none
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+isolation: apple-container

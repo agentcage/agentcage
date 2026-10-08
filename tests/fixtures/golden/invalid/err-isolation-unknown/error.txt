@@ -1,0 +1,1 @@
+ValueError: isolation must be 'container', 'vm', or 'apple-container' (got: 'jail')

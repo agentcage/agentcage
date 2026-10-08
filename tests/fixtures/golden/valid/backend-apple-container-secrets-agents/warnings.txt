@@ -1,0 +1,3 @@
+container.read_only: silently has no effect on apple-container (read-only rootfs — apple-container's rootfs is always RW, so `read_only: true` cannot be enforced). See issue #120 for the parity plan.
+secret_injection['ANTHROPIC_API_KEY']: placeholder 'sk-ant-FAKE-0001' is not in the 'agentcage:secret:*' form — omit `placeholder:` to auto-generate an entropic token, or run `agentcage secret rotate-placeholders` to mint one
+secret_injection['OPENAI_API_KEY']: placeholder 'sk-openai-FAKE-0002' is not in the 'agentcage:secret:*' form — omit `placeholder:` to auto-generate an entropic token, or run `agentcage secret rotate-placeholders` to mint one

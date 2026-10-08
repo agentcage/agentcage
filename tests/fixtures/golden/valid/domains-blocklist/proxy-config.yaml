@@ -1,0 +1,4 @@
+domains:
+  block:
+  - bad.example.com
+agentcage_version: 0.0.0-golden

@@ -160,6 +160,34 @@ class TestCheckQemu:
         assert r.level == "warn"
         assert "apt-get" in r.hint
 
+    @pytest.mark.parametrize("machine,binary", [
+        ("x86_64", "qemu-system-x86_64"),
+        ("aarch64", "qemu-system-aarch64"),
+        ("arm64", "qemu-system-aarch64"),
+    ])
+    def test_probes_the_host_architecture(self, machine, binary):
+        """An arm64 host has qemu-system-aarch64 and no x86 emulator;
+        probing x86_64 there reported QEMU missing when it was not."""
+        result = subprocess.CompletedProcess([], 0,
+                                             stdout="QEMU emulator version 10.2.1\n")
+        with patch("agentcage.doctor._host_machine", return_value=machine), \
+             patch("agentcage.doctor.subprocess.run", return_value=result) as run:
+            r = check_qemu("debian")
+        assert r.level == "pass"
+        assert run.call_args.args[0] == [binary, "--version"]
+
+    @pytest.mark.parametrize("distro,package", [
+        ("debian", "qemu-system-arm"),
+        ("fedora", "qemu-system-aarch64-core"),
+        ("opensuse", "qemu-arm"),
+    ])
+    def test_arm64_hint_names_the_arm_package(self, distro, package):
+        with patch("agentcage.doctor._host_machine", return_value="aarch64"), \
+             patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
+            r = check_qemu(distro)
+        assert r.level == "warn"
+        assert r.hint.endswith(f" {package}")
+
 
 class TestCheckSystemdLinger:
     def test_enabled(self):
@@ -280,6 +308,12 @@ class TestRunDoctor:
 
         # Python version
         p = patch("agentcage.doctor._python_version_info", return_value=(3, 12, 5))
+        p.start()
+        patches.append(p)
+
+        # The QEMU probe names the host's architecture; pin it so the run
+        # below is the same on an arm64 laptop and the x86 CI.
+        p = patch("agentcage.doctor._host_machine", return_value="x86_64")
         p.start()
         patches.append(p)
 
@@ -508,23 +542,63 @@ class TestMacOS:
         assert "apple-container" in r.message
         assert "brew install lima" in r.hint
 
-    def test_secret_backend_macos_with_podman(self):
+    def test_secret_backend_macos_reports_the_keychain(self):
+        """The macOS verdict must name the keychain, not podman.
+
+        It named podman for months after #247 moved macOS secrets to
+        KeychainStore, telling operators with no host podman at all that
+        their secrets were in a podman store."""
         from agentcage.doctor import _check_secret_backend
         with patch("agentcage.doctor._IS_MACOS", True), \
              patch("agentcage.doctor.shutil.which", return_value="/opt/homebrew/bin/podman"):
             r = _check_secret_backend()
         assert r.level == "pass"
+        assert "keychain" in r.message
+        assert "Podman" not in r.message and "podman" not in r.message
         assert "systemd" not in r.message
 
-    def test_secret_backend_macos_without_podman(self):
-        """When Podman is absent on macOS, the secret check must warn — not
-        falsely report a working secret store."""
+    def test_secret_backend_macos_does_not_depend_on_podman(self):
+        """Host podman decides nothing about a Mac's secret store, so its
+        presence must not change a byte of the verdict. This is the check
+        that would have caught the original bug: the old code branched on
+        `shutil.which("podman")` for a store podman no longer backs."""
         from agentcage.doctor import _check_secret_backend
         with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.shutil.which", return_value="/opt/homebrew/bin/podman"):
+            with_podman = _check_secret_backend()
+        with patch("agentcage.doctor._IS_MACOS", True), \
              patch("agentcage.doctor.shutil.which", return_value=None):
-            r = _check_secret_backend()
-        assert r.level == "warn"
-        assert "Podman" in r.message
+            without_podman = _check_secret_backend()
+        assert with_podman == without_podman
+
+    def test_secret_backend_macos_agrees_with_resolve_store(self):
+        """Anti-drift: pin the verdict to the store a cage would really get.
+
+        `resolve_store` is what `secret set` and every backend call, for
+        both isolations a Mac can run. Availability is stubbed True so
+        this never runs KeychainStore's add/delete probe against the real
+        login keychain."""
+        from types import SimpleNamespace
+
+        from agentcage.doctor import _check_secret_backend
+        from agentcage.secret_store import KeychainStore, resolve_store
+
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.shutil.which", return_value=None):
+            verdict = _check_secret_backend()
+
+        for isolation in ("apple-container", "vm"):
+            cfg = SimpleNamespace(
+                isolation=isolation,
+                secrets=SimpleNamespace(
+                    backend="auto", scope=None, allow_plaintext=False,
+                ),
+            )
+            with patch("agentcage.secret_store.sys.platform", "darwin"), \
+                 patch.object(KeychainStore, "available", return_value=True):
+                store = resolve_store(cfg)
+            assert store.name == "keychain", isolation
+            assert store.name in verdict.message.lower(), isolation
 
     def test_run_doctor_skips_linux_only_checks(self):
         """QEMU / systemd-linger / cgroup checks must not run on macOS, and a

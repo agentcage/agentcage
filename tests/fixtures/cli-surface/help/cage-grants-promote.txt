@@ -1,0 +1,7 @@
+Usage: agentcage cage grants promote [OPTIONS] DOMAIN
+
+  Promote a runtime grant into the permanent baseline, then drop it from the
+  overlay.
+
+Options:
+  --help  Show this message and exit.

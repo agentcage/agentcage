@@ -1,0 +1,18 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 0.0.0.0:1143
+  upstream:
+    host: imap.example.com
+    port: 993
+    tls: true
+    tls_servername: imap-real.example.com
+  auth:
+    password_source: env:GOLDEN_SET_VAR
+  policy:
+    write_mode: organise
+agentcage_version: 0.0.0-golden

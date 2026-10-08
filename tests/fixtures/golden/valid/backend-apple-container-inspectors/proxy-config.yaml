@@ -1,0 +1,10 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+inspectors:
+- name: domain
+- name: not-a-real-inspector
+- name: custom
+  path: /etc/agentcage/inspectors/x.py
+agentcage_version: 0.0.0-golden

@@ -1,0 +1,23 @@
+{
+  "why": "the apple-container state root expands `~` directly and ignores XDG_CONFIG_HOME (RUST-PORT-PLAN.md section 2.7). An XDG-only sandbox does not redirect it — which makes it a testing hazard, not just a portability wart.",
+  "env": {
+    "HOME": "{{ROOT}}/home",
+    "XDG_CONFIG_HOME": "{{ROOT}}/xdg/config",
+    "XDG_DATA_HOME": "{{ROOT}}/xdg/data"
+  },
+  "cage": "demo",
+  "apple": {
+    "state_dir": "{{ROOT}}/home/.config/agentcage/apple-container/demo",
+    "logs_dir": "{{ROOT}}/home/.config/agentcage/apple-container/demo/logs",
+    "egress_config_dir": "{{ROOT}}/home/.config/agentcage/apple-container/demo/egress-config",
+    "certs_dir": "{{ROOT}}/home/.config/agentcage/apple-container/demo/certs",
+    "public_certs_dir": "{{ROOT}}/home/.config/agentcage/apple-container/demo/public-certs",
+    "secrets_dir": "{{ROOT}}/home/.config/agentcage/apple-container/demo/secrets",
+    "mask_state_path": "{{ROOT}}/home/.config/agentcage/apple-container/demo/mask-mountpoints.json"
+  },
+  "contrast": {
+    "why": "the container backend's secrets staging, for comparison: a tmpfs under XDG_RUNTIME_DIR. The apple one above is PERSISTENT DISK, because macOS has neither. Deliberate, and easy to mistake for a bug.",
+    "container_runtime_secrets_dir": "{{ROOT}}/xdg/run/agentcage/demo/secrets",
+    "deployment_dir": "{{ROOT}}/xdg/config/agentcage/cages/demo"
+  }
+}

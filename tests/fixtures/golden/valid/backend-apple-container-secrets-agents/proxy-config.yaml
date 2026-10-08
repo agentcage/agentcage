@@ -1,0 +1,42 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+  expires:
+    cdn.example.com: '2030-01-01T00:00:00Z'
+secrets:
+  backend: plaintext
+  allow_plaintext: true
+secret_injection:
+- env: ANTHROPIC_API_KEY
+  source: env:GOLDEN_SET_VAR
+  placeholder: sk-ant-FAKE-0001
+  inject_to:
+  - api.example.com
+- env: OPENAI_API_KEY
+  source: env:GOLDEN_SET_VAR
+  placeholder: sk-openai-FAKE-0002
+  inject_to:
+  - api.example.com
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 0.0.0.0:1143
+  upstream:
+    host: imap.example.com
+    port: 993
+  auth:
+    user_source: env:FAKE_IMAP_USER
+    password_source: env:FAKE_IMAP_PASS
+agents:
+  decider:
+    enable: true
+    provider: anthropic
+    model: claude-x
+    api_key: env:FAKE_DECIDER_KEY
+  watcher:
+    enable: true
+    provider: openai
+    model: gpt-x
+    api_key: systemd-creds:FAKE_WATCHER_KEY
+agentcage_version: 0.0.0-golden

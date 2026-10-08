@@ -1,0 +1,38 @@
+{
+  "decisions": {
+    "allowed": 4,
+    "blocked": 2,
+    "flagged": 2
+  },
+  "directions": {
+    "inbound": 1,
+    "outbound": 7
+  },
+  "inspector_triggers": {
+    "content-type": 1,
+    "domain": 2,
+    "entropy": 1,
+    "secrets": 1,
+    "watcher": 2
+  },
+  "methods": {
+    "DELETE": 1,
+    "GET": 3,
+    "HEAD": 1,
+    "POST": 1,
+    "PUT": 1,
+    "post": 1
+  },
+  "top_blocked_hosts": {
+    "evil.example.org": 2
+  },
+  "top_hosts": {
+    "127.0.0.1": 1,
+    "api.example.com": 2,
+    "cdn.example.com": 1,
+    "evil.example.org": 2,
+    "legacy.example.com": 1,
+    "upload.example.net": 1
+  },
+  "total": 8
+}

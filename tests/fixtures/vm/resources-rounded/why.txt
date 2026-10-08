@@ -1,0 +1,1 @@
+mem_mb 1500 is ceil()'d to 2GiB; vcpus reaches `cpus`.

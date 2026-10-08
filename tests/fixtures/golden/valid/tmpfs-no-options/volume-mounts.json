@@ -1,0 +1,18 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [],
+  "tmpfs": [
+    {
+      "enclosing_mount": [
+        "",
+        ""
+      ],
+      "options": [],
+      "spec": "/scratch",
+      "target": "/scratch",
+      "wants_copyup": false
+    }
+  ],
+  "volumes": []
+}

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=domains-two-letter-tld-net
+Internal=true
+Subnet=10.89.88.0/24

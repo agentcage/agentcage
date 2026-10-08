@@ -1,0 +1,4 @@
+[Network]
+NetworkName=e2e-vm-net
+Internal=true
+Subnet=10.89.156.0/24

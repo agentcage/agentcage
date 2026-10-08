@@ -1,0 +1,14 @@
+name: err-volume-outside-home
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  volumes:
+  - /etc:/etc:ro
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

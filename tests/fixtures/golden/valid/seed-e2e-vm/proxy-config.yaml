@@ -1,0 +1,6 @@
+domains:
+  allow:
+  - httpbin.org
+capture:
+  enable_har: true
+agentcage_version: 0.0.0-golden

@@ -11,3 +11,6 @@ build/
 *.egg-info/
 .claude/worktrees/
 /.worktrees
+
+# Rust build output (Cargo.toml is at the repo root, so target/ is too).
+/target

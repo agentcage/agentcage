@@ -1,0 +1,6 @@
+Usage: agentcage cage stop [OPTIONS] NAME
+
+  Stop a running cage without destroying it.
+
+Options:
+  --help  Show this message and exit.

@@ -11,7 +11,7 @@
 # Secret-injection verification uses real external echo services
 # (httpbin.org, postman-echo.com) via the cage's mitm proxy — no mock server.
 source "$(dirname "$0")/lib.sh"
-preflight_check agentcage podman curl jq
+preflight_check "$AGENTCAGE" podman curl jq
 phase_header 8 "OpenClaw Scaffold Regression Canary"
 
 CAGE="e2e-openclaw"
@@ -51,7 +51,7 @@ echo "Rendering openclaw scaffold..."
 # templating pipeline — the same code path users hit. Past regressions
 # have landed in the template, so we render it fresh here rather than
 # hand-crafting a YAML.
-if ! agentcage init "$CAGE" --scaffold openclaw --port "$PORT" --output cage.yaml --force >/dev/null 2>&1; then
+if ! "$AGENTCAGE" init "$CAGE" --scaffold openclaw --port "$PORT" --output cage.yaml --force >/dev/null 2>&1; then
   e2e_fail "8.0" "scaffold init" "agentcage init --scaffold openclaw failed"
   print_results; exit 1
 fi
@@ -115,7 +115,7 @@ echo "Creating cage (scaffold build may take several minutes cold)..."
 # cage to exist, which would be a chicken-and-egg problem here.
 e2e_timer_start
 CREATE_LOG=$(mktemp /tmp/phase8-create-XXXXXX.log)
-if ! agentcage cage create -c cage.yaml \
+if ! "$AGENTCAGE" cage create -c cage.yaml \
      -s "OPENCLAW_GATEWAY_PASSWORD=$GATEWAY_PW" \
      -s "ANTHROPIC_API_KEY=$SENTINEL" >"$CREATE_LOG" 2>&1; then
   e2e_fail "8.0" "cage create" "agentcage cage create failed"
@@ -149,6 +149,17 @@ fi
 # single curl here can catch the gap and time out (curl: (28) Operation
 # timed out). The recovery idiom mirrors 8.4 below, which already waits
 # for the gateway after a SIGUSR2 restart.
+#
+# The match is a bash substring test rather than `echo "$body" | grep -q`.
+# lib.sh sets `pipefail`, and the gateway's HTML is large: when grep -q
+# finds the string early it exits at once, leaving echo writing into a
+# closed pipe. echo then dies with SIGPIPE (141), pipefail reports 141
+# for the whole pipeline, and the `if` takes the false branch *even
+# though the string was there* -- reporting "expected 'OpenClaw Control'
+# within 30s" against a body that contains it, after only ~60ms. Whether
+# grep wins that race depends on scheduling, which is why this failed
+# intermittently on master rather than always. `[[ ]]` spawns no process
+# and has no pipe, so the race cannot occur.
 e2e_timer_start
 # Match with a pure-bash substring test rather than `echo ... | grep -q`:
 # under `pipefail` (set in lib.sh) `grep -q` exits the instant it matches,
@@ -179,7 +190,7 @@ fi
 # over the socket; those files are owned by the gateway's user (root in
 # this cage), so the default uid-1000 exec session gets EACCES.
 assert_output_contains "8.2" "openclaw health via exec alias" "Agents:" \
-  agentcage cage exec --as-root "$CAGE" -- openclaw health
+  "$AGENTCAGE" cage exec --as-root "$CAGE" -- openclaw health
 
 # 8.3: tini is PID 1
 e2e_timer_start
@@ -320,7 +331,7 @@ fi
 e2e_timer_start
 # Trigger a fresh flow to httpbin.org with the placeholder. The cage env
 # already holds the generated token — expand $ANTHROPIC_API_KEY in-cage.
-agentcage cage exec "$CAGE" -- sh -c \
+"$AGENTCAGE" cage exec "$CAGE" -- sh -c \
   'curl --retry 3 --retry-delay 5 -sS -o /dev/null -x "$HTTPS_PROXY" \
     --max-time 15 \
     -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
@@ -329,7 +340,7 @@ agentcage cage exec "$CAGE" -- sh -c \
 FOUND=false
 for _ in $(seq 1 10); do
   sleep 1
-  if agentcage cage audit "$CAGE" --json-lines -n 30 2>/dev/null \
+  if "$AGENTCAGE" cage audit "$CAGE" --json-lines -n 30 2>/dev/null \
      | grep httpbin.org | grep -q '"secrets_injected":\s*\[\s*"ANTHROPIC_API_KEY"\s*\]'; then
     FOUND=true
     break
@@ -346,7 +357,7 @@ fi
 # but NOT in inject_to. The proxy must NOT log secrets_injected for
 # that flow; the placeholder passes through to upstream verbatim.
 e2e_timer_start
-agentcage cage exec "$CAGE" -- sh -c \
+"$AGENTCAGE" cage exec "$CAGE" -- sh -c \
   'curl --retry 3 --retry-delay 5 -sS -o /dev/null -x "$HTTPS_PROXY" \
     --max-time 15 \
     -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
@@ -354,7 +365,7 @@ agentcage cage exec "$CAGE" -- sh -c \
 LEAKED=false
 for _ in $(seq 1 10); do
   sleep 1
-  if agentcage cage audit "$CAGE" --json-lines -n 30 2>/dev/null \
+  if "$AGENTCAGE" cage audit "$CAGE" --json-lines -n 30 2>/dev/null \
      | grep postman-echo.com | grep -q '"secrets_injected":\s*\[\s*"ANTHROPIC_API_KEY"\s*\]'; then
     LEAKED=true
     break
@@ -369,7 +380,7 @@ fi
 
 # 8.9: domain allowlist blocks unlisted host
 e2e_timer_start
-code=$(agentcage cage exec "$CAGE" -- sh -c \
+code=$("$AGENTCAGE" cage exec "$CAGE" -- sh -c \
   'curl -sx "$HTTPS_PROXY" -o /dev/null -w "%{http_code}" \
     --max-time 10 https://forbidden.example.com' 2>/dev/null || echo "000")
 if [ "$code" = "403" ] || [ "$code" = "502" ]; then
@@ -385,13 +396,13 @@ fi
 # `podman ps` doesn't work inside, fail hard if it works but `run`
 # doesn't (the regression case we're guarding).
 e2e_timer_start
-if ! agentcage cage exec "$CAGE" -- podman ps >/dev/null 2>&1; then
+if ! "$AGENTCAGE" cage exec "$CAGE" -- podman ps >/dev/null 2>&1; then
   e2e_skip "8.10" "nested podman smoke" "nested podman not usable in this environment"
 else
   # Capture combined output so a failure shows the actual podman error
   # instead of swallowing it. `|| true` keeps a non-zero `podman run`
   # from aborting the script under `set -e`.
-  np_out=$(agentcage cage exec "$CAGE" -- \
+  np_out=$("$AGENTCAGE" cage exec "$CAGE" -- \
     podman run --rm docker.io/library/busybox echo ok 2>&1) || true
   if printf '%s\n' "$np_out" | grep -q '^ok$'; then
     e2e_pass "8.10" "nested podman smoke (busybox)"
@@ -401,7 +412,7 @@ else
     # The proxy audit log shows any host the cage's domain inspector
     # blocked during the pull (a common failure mode for nested podman).
     echo "--- 8.10 proxy audit (last 20) ---"
-    agentcage cage audit "$CAGE" --json-lines -n 20 2>/dev/null || true
+    "$AGENTCAGE" cage audit "$CAGE" --json-lines -n 20 2>/dev/null || true
     echo "--- end 8.10 output ---"
     e2e_fail "8.10" "nested podman smoke (busybox)" \
       "podman run inside cage failed (see podman output / proxy audit above)"

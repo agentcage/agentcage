@@ -1,0 +1,7 @@
+name: vm-resources
+isolation: vm
+container:
+  image: docker.io/library/alpine:3.20
+vm:
+  vcpus: 2
+  mem_mb: 1500

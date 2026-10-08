@@ -1,0 +1,1 @@
+ValueError: logging.level must be one of ('debug', 'info', 'warning', 'error', 'critical') (got: 'verbose')
