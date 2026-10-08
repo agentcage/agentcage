@@ -1,6 +1,6 @@
 # Installing agentcage
 
-agentcage is a single, statically linked command-line binary that drives an isolated container or microVM runtime on your host machine. It installs as an unprivileged, user-level utility — no root daemons, no background services, and no system-wide configuration, and no runtime to install first.
+agentcage is a single command-line binary, built from source with Rust's `cargo`, that drives an isolated container or microVM runtime on your host machine. It installs as an unprivileged, user-level utility — no root daemons, no background services, and no system-wide configuration, and no runtime to install first.
 
 ---
 
@@ -11,9 +11,10 @@ agentcage is a single, statically linked command-line binary that drives an isol
 | **Linux Runtime** | Podman 4.4+ (rootless), cgroups v2, systemd | `systemd` 250+ enables encrypted secret storage via `systemd-creds`. |
 | **macOS (Apple Silicon, 26+)** | Apple `container` CLI | Default and fastest backend on modern Apple Silicon Macs (`brew install container`). |
 | **macOS (Intel / Older)** | Lima 0.19+ | MicroVM isolation using Lima (`brew install lima`). |
+| **Rust toolchain** | Rust 1.85+ and a C linker | Build-time only. The installer sets up a minimal toolchain with rustup if none is found. |
 | **Disk Space** | ≥ 2 GB free in `$HOME` | Used for base container images and per-cage persistent volumes. |
 
-agentcage has no host dependencies of its own: the Linux builds are statically linked against musl, so there is no glibc version to match and no interpreter to install. Heavy components (such as `mitmproxy` and `dnsmasq`) run inside the isolated egress container image, which agentcage builds automatically on first use — that image carries its own Python, and it is the only Python in the product.
+agentcage has no runtime dependencies of its own: once built, the binary needs no interpreter and no Rust toolchain. Heavy components (such as `mitmproxy` and `dnsmasq`) run inside the isolated egress container image, which agentcage builds automatically on first use — that image carries its own Python, and it is the only Python in the product.
 
 ---
 
@@ -21,17 +22,23 @@ agentcage has no host dependencies of its own: the Linux builds are statically l
 
 ### Option 1: The Automated Installer (Recommended)
 
-The official installer script inspects your operating system, hardware architecture, and installed packages, then installs agentcage into `~/.local/bin` alongside necessary backend components:
+The official installer script inspects your operating system and installed packages, builds agentcage from source with `cargo`, and installs it into `~/.local/bin` alongside the necessary backend components:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-To review what the script will execute before running it:
+If no Rust toolchain is found, the installer sets up a minimal one with [rustup](https://rustup.rs) (into `~/.rustup` and `~/.cargo`, without editing your shell profile). An existing toolchain older than 1.85 is left alone and the installer stops and asks you to run `rustup update stable`. The build takes a few minutes.
+
+To read the script before running it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh -o install.sh
+less install.sh
+sh install.sh --help
 ```
+
+To pick what gets built, set `AGENTCAGE_VERSION=0.50.0` (a release tag; the default is the latest release) or `AGENTCAGE_REF=master` (a branch).
 
 Ensure `~/.local/bin` is in your shell `$PATH`:
 
@@ -41,46 +48,29 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ---
 
-### Option 2: Download the binary yourself
+### Option 2: `cargo install` from GitHub
 
-Every release publishes one tarball per platform, each with a `.sha256`
-beside it. Pick your target, verify it, and put the binary on your
-`PATH`:
-
-| Platform | Asset |
-| :--- | :--- |
-| Linux x86-64 | `agentcage-<version>-x86_64-unknown-linux-musl.tar.gz` |
-| Linux arm64 | `agentcage-<version>-aarch64-unknown-linux-musl.tar.gz` |
-| macOS Apple Silicon | `agentcage-<version>-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `agentcage-<version>-x86_64-apple-darwin.tar.gz` |
+With Rust 1.85+ already installed, build and install the CLI directly. It is not published to crates.io; `cargo` fetches it from the repository:
 
 ```bash
-VERSION=0.50.0
-TARGET=x86_64-unknown-linux-musl
-BASE="https://github.com/agentcage/agentcage/releases/download/v$VERSION"
-
-curl -fsSLO "$BASE/agentcage-$VERSION-$TARGET.tar.gz"
-curl -fsSLO "$BASE/agentcage-$VERSION-$TARGET.tar.gz.sha256"
-sha256sum -c "agentcage-$VERSION-$TARGET.tar.gz.sha256"
-
-tar xzf "agentcage-$VERSION-$TARGET.tar.gz"
-install -m 755 "agentcage-$VERSION-$TARGET/agentcage" ~/.local/bin/agentcage
+cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.50.0 agentcage-cli
 ```
 
-The macOS binaries are signed with a Developer ID and notarized. A
-binary fetched with `curl` carries no quarantine attribute, so Gatekeeper
-does not prompt on the download path either way.
+`agentcage-cli` is the package name; the binary it installs is `agentcage`, into `~/.cargo/bin`. `--locked` builds against the committed `Cargo.lock`, the same dependency versions CI tested. Use `--branch master` instead of `--tag` to track unreleased changes.
 
-#### Building from source
-
-Needs a Rust toolchain; the pinned version is in `rust-toolchain.toml`.
+#### Building from a clone
 
 ```bash
 git clone https://github.com/agentcage/agentcage.git
 cd agentcage
-cargo build --release --bin agentcage
+cargo build --release --locked --bin agentcage
 install -m 755 target/release/agentcage ~/.local/bin/agentcage
 ```
+
+> **Why there is no prebuilt binary download.** The macOS release binaries
+> are not notarized yet, and an un-notarized download triggers a Gatekeeper
+> prompt. A binary built on your own machine is not quarantined, so building
+> from source avoids that on every platform with one install path.
 
 > **The Python package is not an install path.** `pip install agentcage`
 > and `uv tool install agentcage` used to be how you got the CLI. They
@@ -210,14 +200,11 @@ support.
 When upgrading agentcage, update the CLI binary and refresh existing cage container images:
 
 ```bash
-# If installed via the one-liner or git:
+# If installed via the installer:
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 
-# If installed via uv:
-uv tool upgrade agentcage
-
-# If installed via pipx:
-pipx upgrade agentcage
+# If installed via cargo install (--force replaces the existing build):
+cargo install --locked --force --git https://github.com/agentcage/agentcage --tag v<version> agentcage-cli
 ```
 
 After upgrading, rebuild running persistent cages to pull updated proxy and supervisor layers:
@@ -238,9 +225,9 @@ for cage in $(agentcage ls --quiet 2>/dev/null); do
   agentcage cage destroy "$cage" -y
 done
 
-# 2. Remove the CLI package
-uv tool uninstall agentcage
-# or: pipx uninstall agentcage
+# 2. Remove the CLI binary
+rm -f ~/.local/bin/agentcage
+# or, if installed via cargo install: cargo uninstall agentcage-cli
 
 # 3. Clean up configuration and state directories
 rm -rf ~/.config/agentcage ~/.local/share/agentcage

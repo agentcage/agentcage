@@ -1,5 +1,6 @@
 #!/bin/sh
-# agentcage installer — installs agentcage and all prerequisites.
+# agentcage installer — builds agentcage from source and installs all
+# prerequisites.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
@@ -136,35 +137,6 @@ has_podman() {
     command -v podman >/dev/null 2>&1
 }
 
-# The release asset's target triple for this machine.
-#
-# Linux is built against musl and linked statically — the workspace has
-# no C dependencies, so that costs nothing and removes the glibc version
-# coupling that decides whether a binary built on CI runs on the
-# operator's distro.
-detect_target() {
-    arch=$(uname -m)
-    case "$OS:$arch" in
-        linux:x86_64|linux:amd64)   TARGET=x86_64-unknown-linux-musl ;;
-        linux:aarch64|linux:arm64)  TARGET=aarch64-unknown-linux-musl ;;
-        macos:arm64)                TARGET=aarch64-apple-darwin ;;
-        macos:x86_64)               TARGET=x86_64-apple-darwin ;;
-        *) err "no agentcage binary for $OS/$arch — build from source: https://github.com/agentcage/agentcage#building" ;;
-    esac
-}
-
-# sha256 of a file, on either platform. Linux has sha256sum, macOS has
-# shasum; neither has both.
-sha256_of() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | cut -d' ' -f1
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | cut -d' ' -f1
-    else
-        err "need 'sha256sum' or 'shasum' to verify the download"
-    fi
-}
-
 has_agentcage() {
     command -v agentcage >/dev/null 2>&1
 }
@@ -281,75 +253,124 @@ install_podman() {
 # Install: agentcage
 # ---------------------------------------------------------------------------
 #
-# agentcage is a single static binary. There is no interpreter and no
-# package manager in this path: the host CLI stopped being Python at the
+# agentcage is a single binary, built here from source with cargo straight
+# from the GitHub repository. The host CLI stopped being Python at the
 # Rust cutover, and the only Python left in the product ships inside the
 # egress container image, where the image installs it.
+#
+# Why source rather than a prebuilt download: the macOS binaries are not
+# notarized yet (#413), and a binary built on this machine is not
+# quarantined, so Gatekeeper has nothing to say about it. One path for
+# every platform is simpler than two.
 
 AGENTCAGE_REPO="${AGENTCAGE_REPO:-agentcage/agentcage}"
 
-# The version to install: $AGENTCAGE_VERSION, or the latest release.
+# The edition-2024 floor, from `rust-version` in the root Cargo.toml.
+RUST_MIN_MINOR=85
+
+# The git ref to build: $AGENTCAGE_REF (a branch), $AGENTCAGE_VERSION (a
+# release tag), or the latest release.
 #
-# Resolved through the redirect on /releases/latest rather than the JSON
-# API, because the API is rate-limited per IP (60/hour unauthenticated)
-# and a shared NAT or a CI runner reaches that without trying.
-resolve_version() {
+# Latest is resolved through the redirect on /releases/latest rather than
+# the JSON API, because the API is rate-limited per IP (60/hour
+# unauthenticated) and a shared NAT or a CI runner reaches that without
+# trying.
+resolve_ref() {
+    if [ -n "${AGENTCAGE_REF:-}" ]; then
+        REF_FLAG=--branch
+        REF="$AGENTCAGE_REF"
+        return
+    fi
+    REF_FLAG=--tag
     if [ -n "${AGENTCAGE_VERSION:-}" ]; then
-        VERSION="${AGENTCAGE_VERSION#v}"
+        REF="v${AGENTCAGE_VERSION#v}"
         return
     fi
     info "Resolving the latest release..."
     location=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
         "https://github.com/$AGENTCAGE_REPO/releases/latest" 2>/dev/null) \
         || err "could not reach github.com to resolve the latest release"
-    VERSION="${location##*/tag/v}"
-    case "$VERSION" in
-        "$location"|"") err "could not parse a version out of '$location'" ;;
+    REF="v${location##*/tag/v}"
+    case "$REF" in
+        "v$location"|v) err "could not parse a version out of '$location'" ;;
     esac
 }
 
+# cargo, from PATH or from a rustup install this shell has not sourced.
+find_cargo() {
+    CARGO=$(command -v cargo 2>/dev/null) && return 0
+    [ -x "$HOME/.cargo/bin/cargo" ] && CARGO="$HOME/.cargo/bin/cargo" && return 0
+    return 1
+}
+
+# A Rust toolchain new enough to build the workspace.
+#
+# An existing toolchain is used as-is if it is new enough and left alone
+# if it is not: upgrading somebody's compiler is not an installer's call.
+# With none at all, rustup installs one into ~/.rustup and ~/.cargo,
+# without touching shell profiles — the toolchain is only needed for this
+# build, and the result lands in $bindir.
+ensure_rust() {
+    if ! find_cargo; then
+        info "Rust not found — installing a minimal stable toolchain with rustup..."
+        need_cmd curl
+        # Downloaded to a file, not piped: in `curl | sh` a failed
+        # download is an empty script that sh runs successfully.
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp/rustup-init.sh" https://sh.rustup.rs \
+            || err "could not download rustup from https://sh.rustup.rs. Install Rust from https://rustup.rs and re-run."
+        sh "$tmp/rustup-init.sh" -y --profile minimal --no-modify-path \
+            || err "rustup failed. Install Rust from https://rustup.rs and re-run."
+        find_cargo || err "rustup finished but cargo is not in ~/.cargo/bin"
+    fi
+
+    minor=$("$CARGO" --version | cut -d' ' -f2 | cut -d. -f2)
+    if [ "${minor:-0}" -lt "$RUST_MIN_MINOR" ] 2>/dev/null; then
+        err "agentcage needs Rust 1.$RUST_MIN_MINOR or newer; found $("$CARGO" --version). Run 'rustup update stable' and re-run."
+    fi
+    info "Using $("$CARGO" --version)"
+}
+
+# rustc links with the system C compiler driver. agentcage has no C
+# dependencies, so the linker is all that is needed.
+ensure_linker() {
+    command -v cc >/dev/null 2>&1 && return
+    if [ "$OS" = "macos" ]; then
+        err "no C linker found. Install the Xcode Command Line Tools ('xcode-select --install') and re-run."
+    fi
+    info "Installing a C linker (needed by the Rust build)..."
+    case "$DISTRO" in
+        arch)     run_pkg pacman -S --noconfirm --needed gcc ;;
+        debian)   run_pkg apt-get update -qq && run_pkg apt-get install -y -qq gcc libc6-dev ;;
+        fedora)   run_pkg dnf install -y -q gcc ;;
+        rhel)     run_pkg dnf install -y -q gcc ;;
+        opensuse) run_pkg zypper install -y gcc ;;
+    esac
+    command -v cc >/dev/null 2>&1 || err "C linker installation failed; install gcc and re-run."
+}
+
 install_agentcage() {
-    need_cmd curl
-    need_cmd tar
-    detect_target
-    resolve_version
-
-    bindir="${AGENTCAGE_BIN_DIR:-$HOME/.local/bin}"
-    asset="agentcage-$VERSION-$TARGET.tar.gz"
-    # Overridable for a private mirror, an air-gapped install, or a test
-    # against a local directory (curl reads file:// too). Resolving
-    # "latest" needs github, so a custom base also needs
-    # $AGENTCAGE_VERSION.
-    base="${AGENTCAGE_DOWNLOAD_BASE:-https://github.com/$AGENTCAGE_REPO/releases/download/v$VERSION}"
-
     tmp=$(mktemp -d)
     # `trap ... 0` rather than EXIT: POSIX sh, and the script may not
     # reach the end.
     trap 'rm -rf "$tmp"' 0
 
-    info "Downloading agentcage $VERSION ($TARGET)..."
-    curl -fsSL -o "$tmp/$asset" "$base/$asset" \
-        || err "download failed: $base/$asset"
+    resolve_ref
+    ensure_rust
+    ensure_linker
 
-    # The checksum is published beside the tarball and is not optional.
-    # A truncated or tampered download that still untars would otherwise
-    # install a binary nobody built.
-    curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256" \
-        || err "no checksum published for $asset — refusing to install unverified"
-    expected=$(cut -d' ' -f1 < "$tmp/$asset.sha256")
-    actual=$(sha256_of "$tmp/$asset")
-    if [ "$expected" != "$actual" ]; then
-        err "checksum mismatch for $asset
-  expected: $expected
-  actual:   $actual
-This is either a corrupted download or a tampered release. Not installing."
-    fi
-    info "Checksum verified"
+    bindir="${AGENTCAGE_BIN_DIR:-$HOME/.local/bin}"
 
-    tar -C "$tmp" -xzf "$tmp/$asset" \
-        || err "could not unpack $asset"
-    unpacked="$tmp/agentcage-$VERSION-$TARGET/agentcage"
-    [ -f "$unpacked" ] || err "$asset does not contain an agentcage binary"
+    # --locked builds against the committed Cargo.lock, so the dependency
+    # versions are the ones CI tested at that ref. --root keeps cargo's
+    # install bookkeeping out of $bindir's parent; the binary is moved
+    # into place below.
+    info "Building agentcage from github.com/$AGENTCAGE_REPO ($REF) — this takes a few minutes..."
+    "$CARGO" install --locked --quiet \
+        --git "https://github.com/$AGENTCAGE_REPO" "$REF_FLAG" "$REF" \
+        --root "$tmp/root" agentcage-cli \
+        || err "cargo install failed for $REF"
+    unpacked="$tmp/root/bin/agentcage"
+    [ -f "$unpacked" ] || err "the build produced no agentcage binary"
 
     mkdir -p "$bindir"
     # Install by rename, so a running agentcage is never a half-written
@@ -516,10 +537,11 @@ parse_args() {
                 cat <<'HELP'
 agentcage installer
 
-Installs the agentcage binary and its prerequisite, Podman. agentcage is
-a single static executable -- no interpreter, no package manager, no
-virtualenv. The download's published sha256 is verified before anything
-is installed.
+Builds agentcage from source with cargo, straight from the GitHub
+repository, and installs its prerequisite, Podman. If no Rust toolchain
+is found, a minimal one is installed with rustup (into ~/.rustup and
+~/.cargo, without editing shell profiles). The build uses the committed
+Cargo.lock.
 
 On macOS 26+ Apple Silicon also installs Apple's 'container' CLI (the
 default isolation backend on that platform). On older macOS / Intel Macs
@@ -535,14 +557,10 @@ Options:
   --help, -h    Show this help message
 
 Environment:
-  AGENTCAGE_VERSION   Install this version instead of the latest release.
+  AGENTCAGE_VERSION   Build this release tag instead of the latest release.
+  AGENTCAGE_REF       Build this branch instead (e.g. master).
   AGENTCAGE_BIN_DIR   Where to put the binary (default: ~/.local/bin).
   AGENTCAGE_REPO      Source repository (default: agentcage/agentcage).
-  AGENTCAGE_DOWNLOAD_BASE
-                      Where the release assets live, for a private
-                      mirror or an air-gapped install. Needs
-                      AGENTCAGE_VERSION too, since resolving
-                      'latest' still asks github.
 HELP
                 exit 0
                 ;;
