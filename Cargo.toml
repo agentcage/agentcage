@@ -65,6 +65,11 @@ dbg_macro = "warn"
 todo = "warn"
 print_stderr = "allow"
 print_stdout = "allow"
+# New in clippy 1.99, and it fired on ~90 `assert!(x.is_empty())` lines,
+# all in tests. Its fix (`assert_eq!(x, [] as [T; 0])`) spells out the
+# element type at every site, which is noise; a failing test already
+# names the line. Revisit if the suggestion gets shorter.
+assert_is_empty = "allow"
 
 # ── Release profile ──────────────────────────────────────────
 #
