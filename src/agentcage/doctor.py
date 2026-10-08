@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -105,6 +106,17 @@ _INSTALL_QEMU = {
     "fedora":   "sudo dnf install -y qemu-system-x86-core",
     "rhel":     "sudo dnf install -y qemu-kvm",
     "opensuse": "sudo zypper install -y qemu-x86",
+    "unknown":  "install qemu for your distribution",
+}
+
+# Lima runs guests of the host's own architecture, so an arm64 host needs
+# qemu-system-aarch64, which the x86 packages above do not provide.
+_INSTALL_QEMU_AARCH64 = {
+    "arch":     "sudo pacman -S qemu-full",
+    "debian":   "sudo apt-get install -y qemu-system-arm",
+    "fedora":   "sudo dnf install -y qemu-system-aarch64-core",
+    "rhel":     "sudo dnf install -y qemu-kvm",
+    "opensuse": "sudo zypper install -y qemu-arm",
     "unknown":  "install qemu for your distribution",
 }
 
@@ -263,10 +275,28 @@ def _check_apple_container(precomputed_issues: list[str] | None = None) -> Check
     )
 
 
+def _host_machine() -> str:
+    """``platform.machine()``, split out so tests can pin the architecture."""
+    return platform.machine()
+
+
+def _is_arm64(machine: str) -> bool:
+    # Linux reports "aarch64"; "arm64" is what macOS and some BSDs say.
+    return machine.lower() in ("aarch64", "arm64")
+
+
 def check_qemu(distro: str) -> CheckResult:
-    """Check QEMU is installed (optional, Linux VM mode only)."""
+    """Check QEMU is installed (optional, Linux VM mode only).
+
+    Probes the system emulator for the host's own architecture: Lima on
+    an arm64 host runs aarch64 guests, so ``qemu-system-x86_64`` there is
+    neither needed nor, usually, installed.
+    """
+    arm64 = _is_arm64(_host_machine())
+    binary = "qemu-system-aarch64" if arm64 else "qemu-system-x86_64"
+    hints = _INSTALL_QEMU_AARCH64 if arm64 else _INSTALL_QEMU
     try:
-        r = subprocess.run(["qemu-system-x86_64", "--version"],
+        r = subprocess.run([binary, "--version"],
                            capture_output=True, text=True, timeout=5)
         if r.returncode == 0:
             # First line: "QEMU emulator version X.Y.Z ..."
@@ -275,7 +305,7 @@ def check_qemu(distro: str) -> CheckResult:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return CheckResult("warn", "QEMU not found (needed for VM mode on Linux)",
-                       hint=_INSTALL_QEMU.get(distro, _INSTALL_QEMU["unknown"]))
+                       hint=hints.get(distro, hints["unknown"]))
 
 
 def check_systemd_linger() -> CheckResult:

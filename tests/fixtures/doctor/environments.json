@@ -2,7 +2,7 @@
   "fixture": "doctor",
   "module": "agentcage.doctor",
   "generator": "scripts/gen-doctor-fixture.py",
-  "summary": "39 faked host environments, each recorded by running the real `agentcage.doctor.run_doctor` with every probe it makes answered from the declared environment. `python` is what the Python printed; `expected` is what the Rust port must print -- the same bytes minus the `check_python_version` line, which the port deletes rather than ports (RUST-PORT-PLAN.md \u00a72.4: Python is not a host dependency).",
+  "summary": "41 faked host environments, each recorded by running the real `agentcage.doctor.run_doctor` with every probe it makes answered from the declared environment. `python` is what the Python printed; `expected` is what the Rust port must print -- the same bytes minus the `check_python_version` line, which the port deletes rather than ports (RUST-PORT-PLAN.md \u00a72.4: Python is not a host dependency).",
   "pinned_python_version": "3.12.5",
   "command_keys": {
     "limactl-version": [
@@ -32,6 +32,10 @@
     ],
     "qemu-version": [
       "qemu-system-x86_64",
+      "--version"
+    ],
+    "qemu-version-aarch64": [
+      "qemu-system-aarch64",
       "--version"
     ],
     "ss-18789": [
@@ -75,6 +79,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -311,6 +316,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -533,6 +539,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -769,6 +776,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -1006,6 +1014,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -1242,6 +1251,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -1266,6 +1276,9 @@
             "kind": "timeout"
           },
           "qemu-version": {
+            "kind": "timeout"
+          },
+          "qemu-version-aarch64": {
             "kind": "timeout"
           },
           "ss-18789": {
@@ -1455,6 +1468,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -1684,11 +1698,488 @@
       "exit_code": 0
     },
     {
+      "id": "linux-arm64-qemu-present",
+      "why": "an arm64 Ubuntu host with qemu-system-aarch64 and no x86 emulator. Probing qemu-system-x86_64 there reported QEMU missing on a host that had it",
+      "ported": true,
+      "env": {
+        "macos": false,
+        "machine": "aarch64",
+        "os_release": "ID=ubuntu\nID_LIKE=debian\nNAME=\"Ubuntu\"\n",
+        "existing_paths": [
+          "/sys/fs/cgroup/cgroup.controllers"
+        ],
+        "which": {
+          "podman": "/usr/bin/podman",
+          "systemd-creds": "/usr/bin/systemd-creds"
+        },
+        "commands": {
+          "limactl-version": {
+            "kind": "ok",
+            "stdout": "limactl version 1.0.2\n"
+          },
+          "loginctl-linger": {
+            "kind": "ok",
+            "stdout": "Linger=yes\n"
+          },
+          "podman-networks": {
+            "kind": "ok",
+            "stdout": "[]"
+          },
+          "podman-rootless": {
+            "kind": "ok",
+            "stdout": "true\n"
+          },
+          "podman-version": {
+            "kind": "ok",
+            "stdout": "podman version 4.9.3\n"
+          },
+          "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
+            "kind": "ok",
+            "stdout": "QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)\n"
+          },
+          "ss-18789": {
+            "kind": "ok",
+            "stdout": ""
+          },
+          "ss-3000": {
+            "kind": "ok",
+            "stdout": ""
+          },
+          "ss-8080": {
+            "kind": "ok",
+            "stdout": ""
+          },
+          "systemctl-version": {
+            "kind": "ok",
+            "stdout": "systemd 256 (256.11-1-arch)\n"
+          },
+          "systemd-creds-system": {
+            "kind": "ok",
+            "stdout": ""
+          },
+          "systemd-creds-user": {
+            "kind": "ok",
+            "stdout": ""
+          }
+        },
+        "disk": {
+          "kind": "free",
+          "bytes": 53687091200
+        },
+        "dns": {
+          "kind": "ok"
+        },
+        "ports": {
+          "3000": true,
+          "8080": true,
+          "18789": true
+        },
+        "env_vars": {
+          "USER": "testuser"
+        },
+        "euid": 1000,
+        "apple_issues": [
+          "apple-container isolation requires macOS; current platform is Linux"
+        ]
+      },
+      "python": {
+        "color": "\n\u001b[1magentcage doctor\u001b[0m\n\n  \u001b[1mPrerequisites\u001b[0m\n    \u001b[32m\u2713\u001b[0m Python 3.12.5\n    \u001b[32m\u2713\u001b[0m Podman 4.9.3\n    \u001b[32m\u2713\u001b[0m Podman rootless mode\n    \u001b[32m\u2713\u001b[0m Lima 1.0.2\n    \u001b[32m\u2713\u001b[0m QEMU (QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2))\n    \u001b[32m\u2713\u001b[0m systemd user linger enabled\n\n  \u001b[1mSystem\u001b[0m\n    \u001b[32m\u2713\u001b[0m cgroup v2 enabled\n    \u001b[32m\u2713\u001b[0m 50GB disk available\n\n  \u001b[1mSecrets\u001b[0m\n    \u001b[32m\u2713\u001b[0m systemd-creds --user (systemd 256, per-user key)\n      \u001b[2m\u2192\u001b[0m \u001b[2mSecrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended.\u001b[0m\n\n  \u001b[1mNetwork\u001b[0m\n    \u001b[32m\u2713\u001b[0m DNS resolution working\n    \u001b[32m\u2713\u001b[0m No subnet conflicts\n    \u001b[32m\u2713\u001b[0m Port 8080 available\n    \u001b[32m\u2713\u001b[0m Port 3000 available\n    \u001b[32m\u2713\u001b[0m Port 18789 available\n\n  \u001b[1mSummary:\u001b[0m \u001b[32mall checks passed\u001b[0m\n\n",
+        "plain": "\nagentcage doctor\n\n  Prerequisites\n    \u2713 Python 3.12.5\n    \u2713 Podman 4.9.3\n    \u2713 Podman rootless mode\n    \u2713 Lima 1.0.2\n    \u2713 QEMU (QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2))\n    \u2713 systemd user linger enabled\n\n  System\n    \u2713 cgroup v2 enabled\n    \u2713 50GB disk available\n\n  Secrets\n    \u2713 systemd-creds --user (systemd 256, per-user key)\n      \u2192 Secrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended.\n\n  Network\n    \u2713 DNS resolution working\n    \u2713 No subnet conflicts\n    \u2713 Port 8080 available\n    \u2713 Port 3000 available\n    \u2713 Port 18789 available\n\n  Summary: all checks passed\n\n"
+      },
+      "expected": {
+        "color": "\n\u001b[1magentcage doctor\u001b[0m\n\n  \u001b[1mPrerequisites\u001b[0m\n    \u001b[32m\u2713\u001b[0m Podman 4.9.3\n    \u001b[32m\u2713\u001b[0m Podman rootless mode\n    \u001b[32m\u2713\u001b[0m Lima 1.0.2\n    \u001b[32m\u2713\u001b[0m QEMU (QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2))\n    \u001b[32m\u2713\u001b[0m systemd user linger enabled\n\n  \u001b[1mSystem\u001b[0m\n    \u001b[32m\u2713\u001b[0m cgroup v2 enabled\n    \u001b[32m\u2713\u001b[0m 50GB disk available\n\n  \u001b[1mSecrets\u001b[0m\n    \u001b[32m\u2713\u001b[0m systemd-creds --user (systemd 256, per-user key)\n      \u001b[2m\u2192\u001b[0m \u001b[2mSecrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended.\u001b[0m\n\n  \u001b[1mNetwork\u001b[0m\n    \u001b[32m\u2713\u001b[0m DNS resolution working\n    \u001b[32m\u2713\u001b[0m No subnet conflicts\n    \u001b[32m\u2713\u001b[0m Port 8080 available\n    \u001b[32m\u2713\u001b[0m Port 3000 available\n    \u001b[32m\u2713\u001b[0m Port 18789 available\n\n  \u001b[1mSummary:\u001b[0m \u001b[32mall checks passed\u001b[0m\n\n",
+        "plain": "\nagentcage doctor\n\n  Prerequisites\n    \u2713 Podman 4.9.3\n    \u2713 Podman rootless mode\n    \u2713 Lima 1.0.2\n    \u2713 QEMU (QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2))\n    \u2713 systemd user linger enabled\n\n  System\n    \u2713 cgroup v2 enabled\n    \u2713 50GB disk available\n\n  Secrets\n    \u2713 systemd-creds --user (systemd 256, per-user key)\n      \u2192 Secrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended.\n\n  Network\n    \u2713 DNS resolution working\n    \u2713 No subnet conflicts\n    \u2713 Port 8080 available\n    \u2713 Port 3000 available\n    \u2713 Port 18789 available\n\n  Summary: all checks passed\n\n"
+      },
+      "dropped": [
+        "    \u001b[32m\u2713\u001b[0m Python 3.12.5\n"
+      ],
+      "results": [
+        {
+          "level": "pass",
+          "message": "Python 3.12.5",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Podman 4.9.3",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Podman rootless mode",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Lima 1.0.2",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "QEMU (QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2))",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "systemd user linger enabled",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "cgroup v2 enabled",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "50GB disk available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "systemd-creds --user (systemd 256, per-user key)",
+          "hint": "Secrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended."
+        },
+        {
+          "level": "pass",
+          "message": "DNS resolution working",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "No subnet conflicts",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 8080 available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 3000 available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 18789 available",
+          "hint": ""
+        }
+      ],
+      "expected_results": [
+        {
+          "level": "pass",
+          "message": "Podman 4.9.3",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Podman rootless mode",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Lima 1.0.2",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "QEMU (QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2))",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "systemd user linger enabled",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "cgroup v2 enabled",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "50GB disk available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "systemd-creds --user (systemd 256, per-user key)",
+          "hint": "Secrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended."
+        },
+        {
+          "level": "pass",
+          "message": "DNS resolution working",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "No subnet conflicts",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 8080 available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 3000 available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 18789 available",
+          "hint": ""
+        }
+      ],
+      "exit_code": 0
+    },
+    {
+      "id": "linux-arm64-qemu-missing",
+      "why": "the same host without QEMU: the hint names qemu-system-arm, the Debian package that ships qemu-system-aarch64, not the x86 one",
+      "ported": true,
+      "env": {
+        "macos": false,
+        "machine": "aarch64",
+        "os_release": "ID=ubuntu\nID_LIKE=debian\nNAME=\"Ubuntu\"\n",
+        "existing_paths": [
+          "/sys/fs/cgroup/cgroup.controllers"
+        ],
+        "which": {
+          "podman": "/usr/bin/podman",
+          "systemd-creds": "/usr/bin/systemd-creds"
+        },
+        "commands": {
+          "limactl-version": {
+            "kind": "ok",
+            "stdout": "limactl version 1.0.2\n"
+          },
+          "loginctl-linger": {
+            "kind": "ok",
+            "stdout": "Linger=yes\n"
+          },
+          "podman-networks": {
+            "kind": "ok",
+            "stdout": "[]"
+          },
+          "podman-rootless": {
+            "kind": "ok",
+            "stdout": "true\n"
+          },
+          "podman-version": {
+            "kind": "ok",
+            "stdout": "podman version 4.9.3\n"
+          },
+          "qemu-version": {
+            "kind": "missing"
+          },
+          "ss-18789": {
+            "kind": "ok",
+            "stdout": ""
+          },
+          "ss-3000": {
+            "kind": "ok",
+            "stdout": ""
+          },
+          "ss-8080": {
+            "kind": "ok",
+            "stdout": ""
+          },
+          "systemctl-version": {
+            "kind": "ok",
+            "stdout": "systemd 256 (256.11-1-arch)\n"
+          },
+          "systemd-creds-system": {
+            "kind": "ok",
+            "stdout": ""
+          },
+          "systemd-creds-user": {
+            "kind": "ok",
+            "stdout": ""
+          }
+        },
+        "disk": {
+          "kind": "free",
+          "bytes": 53687091200
+        },
+        "dns": {
+          "kind": "ok"
+        },
+        "ports": {
+          "3000": true,
+          "8080": true,
+          "18789": true
+        },
+        "env_vars": {
+          "USER": "testuser"
+        },
+        "euid": 1000,
+        "apple_issues": [
+          "apple-container isolation requires macOS; current platform is Linux"
+        ]
+      },
+      "python": {
+        "color": "\n\u001b[1magentcage doctor\u001b[0m\n\n  \u001b[1mPrerequisites\u001b[0m\n    \u001b[32m\u2713\u001b[0m Python 3.12.5\n    \u001b[32m\u2713\u001b[0m Podman 4.9.3\n    \u001b[32m\u2713\u001b[0m Podman rootless mode\n    \u001b[32m\u2713\u001b[0m Lima 1.0.2\n    \u001b[33m\u26a0\u001b[0m QEMU not found (needed for VM mode on Linux)\n      \u001b[2m\u2192\u001b[0m \u001b[2msudo apt-get install -y qemu-system-arm\u001b[0m\n    \u001b[32m\u2713\u001b[0m systemd user linger enabled\n\n  \u001b[1mSystem\u001b[0m\n    \u001b[32m\u2713\u001b[0m cgroup v2 enabled\n    \u001b[32m\u2713\u001b[0m 50GB disk available\n\n  \u001b[1mSecrets\u001b[0m\n    \u001b[32m\u2713\u001b[0m systemd-creds --user (systemd 256, per-user key)\n      \u001b[2m\u2192\u001b[0m \u001b[2mSecrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended.\u001b[0m\n\n  \u001b[1mNetwork\u001b[0m\n    \u001b[32m\u2713\u001b[0m DNS resolution working\n    \u001b[32m\u2713\u001b[0m No subnet conflicts\n    \u001b[32m\u2713\u001b[0m Port 8080 available\n    \u001b[32m\u2713\u001b[0m Port 3000 available\n    \u001b[32m\u2713\u001b[0m Port 18789 available\n\n  \u001b[1mSummary:\u001b[0m \u001b[33m1 warning\u001b[0m\n\n",
+        "plain": "\nagentcage doctor\n\n  Prerequisites\n    \u2713 Python 3.12.5\n    \u2713 Podman 4.9.3\n    \u2713 Podman rootless mode\n    \u2713 Lima 1.0.2\n    \u26a0 QEMU not found (needed for VM mode on Linux)\n      \u2192 sudo apt-get install -y qemu-system-arm\n    \u2713 systemd user linger enabled\n\n  System\n    \u2713 cgroup v2 enabled\n    \u2713 50GB disk available\n\n  Secrets\n    \u2713 systemd-creds --user (systemd 256, per-user key)\n      \u2192 Secrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended.\n\n  Network\n    \u2713 DNS resolution working\n    \u2713 No subnet conflicts\n    \u2713 Port 8080 available\n    \u2713 Port 3000 available\n    \u2713 Port 18789 available\n\n  Summary: 1 warning\n\n"
+      },
+      "expected": {
+        "color": "\n\u001b[1magentcage doctor\u001b[0m\n\n  \u001b[1mPrerequisites\u001b[0m\n    \u001b[32m\u2713\u001b[0m Podman 4.9.3\n    \u001b[32m\u2713\u001b[0m Podman rootless mode\n    \u001b[32m\u2713\u001b[0m Lima 1.0.2\n    \u001b[33m\u26a0\u001b[0m QEMU not found (needed for VM mode on Linux)\n      \u001b[2m\u2192\u001b[0m \u001b[2msudo apt-get install -y qemu-system-arm\u001b[0m\n    \u001b[32m\u2713\u001b[0m systemd user linger enabled\n\n  \u001b[1mSystem\u001b[0m\n    \u001b[32m\u2713\u001b[0m cgroup v2 enabled\n    \u001b[32m\u2713\u001b[0m 50GB disk available\n\n  \u001b[1mSecrets\u001b[0m\n    \u001b[32m\u2713\u001b[0m systemd-creds --user (systemd 256, per-user key)\n      \u001b[2m\u2192\u001b[0m \u001b[2mSecrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended.\u001b[0m\n\n  \u001b[1mNetwork\u001b[0m\n    \u001b[32m\u2713\u001b[0m DNS resolution working\n    \u001b[32m\u2713\u001b[0m No subnet conflicts\n    \u001b[32m\u2713\u001b[0m Port 8080 available\n    \u001b[32m\u2713\u001b[0m Port 3000 available\n    \u001b[32m\u2713\u001b[0m Port 18789 available\n\n  \u001b[1mSummary:\u001b[0m \u001b[33m1 warning\u001b[0m\n\n",
+        "plain": "\nagentcage doctor\n\n  Prerequisites\n    \u2713 Podman 4.9.3\n    \u2713 Podman rootless mode\n    \u2713 Lima 1.0.2\n    \u26a0 QEMU not found (needed for VM mode on Linux)\n      \u2192 sudo apt-get install -y qemu-system-arm\n    \u2713 systemd user linger enabled\n\n  System\n    \u2713 cgroup v2 enabled\n    \u2713 50GB disk available\n\n  Secrets\n    \u2713 systemd-creds --user (systemd 256, per-user key)\n      \u2192 Secrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended.\n\n  Network\n    \u2713 DNS resolution working\n    \u2713 No subnet conflicts\n    \u2713 Port 8080 available\n    \u2713 Port 3000 available\n    \u2713 Port 18789 available\n\n  Summary: 1 warning\n\n"
+      },
+      "dropped": [
+        "    \u001b[32m\u2713\u001b[0m Python 3.12.5\n"
+      ],
+      "results": [
+        {
+          "level": "pass",
+          "message": "Python 3.12.5",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Podman 4.9.3",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Podman rootless mode",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Lima 1.0.2",
+          "hint": ""
+        },
+        {
+          "level": "warn",
+          "message": "QEMU not found (needed for VM mode on Linux)",
+          "hint": "sudo apt-get install -y qemu-system-arm"
+        },
+        {
+          "level": "pass",
+          "message": "systemd user linger enabled",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "cgroup v2 enabled",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "50GB disk available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "systemd-creds --user (systemd 256, per-user key)",
+          "hint": "Secrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended."
+        },
+        {
+          "level": "pass",
+          "message": "DNS resolution working",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "No subnet conflicts",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 8080 available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 3000 available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 18789 available",
+          "hint": ""
+        }
+      ],
+      "expected_results": [
+        {
+          "level": "pass",
+          "message": "Podman 4.9.3",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Podman rootless mode",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Lima 1.0.2",
+          "hint": ""
+        },
+        {
+          "level": "warn",
+          "message": "QEMU not found (needed for VM mode on Linux)",
+          "hint": "sudo apt-get install -y qemu-system-arm"
+        },
+        {
+          "level": "pass",
+          "message": "systemd user linger enabled",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "cgroup v2 enabled",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "50GB disk available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "systemd-creds --user (systemd 256, per-user key)",
+          "hint": "Secrets encrypted with the per-user key \u2014 bound to this user, not the host. No polkit prompt at encrypt or decrypt time, so service users can set secrets unattended."
+        },
+        {
+          "level": "pass",
+          "message": "DNS resolution working",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "No subnet conflicts",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 8080 available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 3000 available",
+          "hint": ""
+        },
+        {
+          "level": "pass",
+          "message": "Port 18789 available",
+          "hint": ""
+        }
+      ],
+      "exit_code": 0
+    },
+    {
       "id": "linux-nothing-installed-debian",
       "why": "the remediation hints for the debian family, which are three separate lookup tables keyed on a distro string `_detect_distro` derives from ID and ID_LIKE",
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=ubuntu\nID_LIKE=debian\nNAME=\"Ubuntu\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -1711,6 +2202,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {
@@ -1900,6 +2394,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=fedora\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -1922,6 +2417,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {
@@ -2111,6 +2609,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=rocky\nID_LIKE=\"rhel\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -2133,6 +2632,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {
@@ -2322,6 +2824,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=opensuse-tumbleweed\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -2344,6 +2847,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {
@@ -2533,6 +3039,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=plan9\nNAME=\"Plan 9\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -2555,6 +3062,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {
@@ -2744,6 +3254,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=rocky\nID_LIKE=\"rhel centos fedora\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -2766,6 +3277,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {
@@ -2955,6 +3469,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": null,
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -2977,6 +3492,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {
@@ -3166,6 +3684,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -3402,6 +3921,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -3633,6 +4153,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -3867,6 +4388,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [],
         "which": {
@@ -4101,6 +4623,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "cgroup-crash"
@@ -4337,6 +4860,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -4573,6 +5097,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -4809,6 +5334,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -5045,6 +5571,7 @@
       "ported": false,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -5282,6 +5809,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -5518,6 +6046,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -5756,6 +6285,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -5992,6 +6522,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -6227,6 +6758,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -6463,6 +6995,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -6699,6 +7232,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -6936,6 +7470,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -7172,6 +7707,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -7409,6 +7945,7 @@
       "ported": false,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -7646,6 +8183,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": "ID=arch\nNAME=\"Arch Linux\"\n",
         "existing_paths": [
           "/sys/fs/cgroup/cgroup.controllers"
@@ -7881,6 +8419,7 @@
       "ported": true,
       "env": {
         "macos": false,
+        "machine": "x86_64",
         "os_release": null,
         "existing_paths": [],
         "which": {},
@@ -7901,6 +8440,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {
@@ -8088,6 +8630,7 @@
       "ported": true,
       "env": {
         "macos": true,
+        "machine": "x86_64",
         "os_release": null,
         "existing_paths": [],
         "which": {
@@ -8284,6 +8827,7 @@
       "ported": true,
       "env": {
         "macos": true,
+        "machine": "x86_64",
         "os_release": null,
         "existing_paths": [],
         "which": {},
@@ -8475,6 +9019,7 @@
       "ported": true,
       "env": {
         "macos": true,
+        "machine": "x86_64",
         "os_release": null,
         "existing_paths": [],
         "which": {
@@ -8670,6 +9215,7 @@
       "ported": true,
       "env": {
         "macos": true,
+        "machine": "x86_64",
         "os_release": null,
         "existing_paths": [],
         "which": {},
@@ -8690,6 +9236,9 @@
             "kind": "missing"
           },
           "qemu-version": {
+            "kind": "missing"
+          },
+          "qemu-version-aarch64": {
             "kind": "missing"
           },
           "ss-18789": {

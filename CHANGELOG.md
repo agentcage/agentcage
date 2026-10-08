@@ -94,6 +94,15 @@ have not changed, only its name.
 
 ### Fixed
 
+- **`agentcage doctor` no longer reports QEMU missing on arm64 Linux.** It
+  always probed `qemu-system-x86_64`, but Lima on an arm64 host runs aarch64
+  guests and needs `qemu-system-aarch64`, so a correctly set up Ubuntu or
+  Debian arm64 host got a warning and a hint to install the x86 emulator. The
+  check now probes the host architecture's emulator, and the hint names the
+  arm package (`qemu-system-arm` on Debian/Ubuntu, `qemu-system-aarch64-core`
+  on Fedora, `qemu-arm` on openSUSE). Both implementations had it; the
+  vm backend's own prerequisite check already accepted either binary.
+
 - **`secret rm` and `cage destroy` now remove a vm cage's secret for real on
   macOS.** The keychain delete was gated on the apple-container backend, but a
   `vm` cage on a Mac resolves to the keychain too — so `secret rm` removed the

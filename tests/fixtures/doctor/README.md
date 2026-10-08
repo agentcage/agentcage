@@ -32,7 +32,7 @@ branches stay reachable from a Linux CI runner.
 
 ## What is covered
 
-**39 environments**, 37 of which the Rust port reproduces byte for byte. The
+**41 environments**, 39 of which the Rust port reproduces byte for byte. The
 matrix is built from what `tests/test_doctor.py` already simulated one check at a
 time, widened to whole runs:
 
@@ -41,6 +41,7 @@ time, widened to whole runs:
 | Healthy | everything present and working |
 | Podman | missing, rootful, unverifiable rootless, an old version, every probe timing out |
 | Distro hints | debian, fedora, rhel, opensuse, unknown, an unreadable `/etc/os-release`, and a Rocky box whose `ID_LIKE` names fedora |
+| Architecture | an arm64 host with `qemu-system-aarch64`, and one without it (the hint names the arm package) |
 | systemd | linger disabled, no systemd at all, `USER` unset |
 | System | cgroup v1, an `exists()` that raises, low disk, exactly 2GB, an unreadable `$HOME` |
 | Secrets | user scope, system scope (root), `systemd-creds` present but unusable, systemd 249, unparseable `systemctl --version` |

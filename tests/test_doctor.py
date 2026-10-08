@@ -160,6 +160,34 @@ class TestCheckQemu:
         assert r.level == "warn"
         assert "apt-get" in r.hint
 
+    @pytest.mark.parametrize("machine,binary", [
+        ("x86_64", "qemu-system-x86_64"),
+        ("aarch64", "qemu-system-aarch64"),
+        ("arm64", "qemu-system-aarch64"),
+    ])
+    def test_probes_the_host_architecture(self, machine, binary):
+        """An arm64 host has qemu-system-aarch64 and no x86 emulator;
+        probing x86_64 there reported QEMU missing when it was not."""
+        result = subprocess.CompletedProcess([], 0,
+                                             stdout="QEMU emulator version 10.2.1\n")
+        with patch("agentcage.doctor._host_machine", return_value=machine), \
+             patch("agentcage.doctor.subprocess.run", return_value=result) as run:
+            r = check_qemu("debian")
+        assert r.level == "pass"
+        assert run.call_args.args[0] == [binary, "--version"]
+
+    @pytest.mark.parametrize("distro,package", [
+        ("debian", "qemu-system-arm"),
+        ("fedora", "qemu-system-aarch64-core"),
+        ("opensuse", "qemu-arm"),
+    ])
+    def test_arm64_hint_names_the_arm_package(self, distro, package):
+        with patch("agentcage.doctor._host_machine", return_value="aarch64"), \
+             patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
+            r = check_qemu(distro)
+        assert r.level == "warn"
+        assert r.hint.endswith(f" {package}")
+
 
 class TestCheckSystemdLinger:
     def test_enabled(self):
@@ -280,6 +308,12 @@ class TestRunDoctor:
 
         # Python version
         p = patch("agentcage.doctor._python_version_info", return_value=(3, 12, 5))
+        p.start()
+        patches.append(p)
+
+        # The QEMU probe names the host's architecture; pin it so the run
+        # below is the same on an arm64 laptop and the x86 CI.
+        p = patch("agentcage.doctor._host_machine", return_value="x86_64")
         p.start()
         patches.append(p)
 

@@ -81,6 +81,10 @@ pub trait DoctorHost: fmt::Debug {
     /// `sys.platform == "darwin"`, i.e. `doctor._IS_MACOS`.
     fn is_macos(&self) -> bool;
 
+    /// `platform.machine()`, i.e. `doctor._host_machine()`: which QEMU
+    /// system emulator `check_qemu` probes and which package it names.
+    fn machine(&self) -> String;
+
     /// `Path("/etc/os-release").read_text()`, or `None` if it raised.
     fn os_release(&self) -> Option<String>;
 
@@ -332,19 +336,23 @@ impl Distro {
         }
     }
 
-    /// `_INSTALL_QEMU[distro]`.
+    /// `_INSTALL_QEMU[distro]`, or `_INSTALL_QEMU_AARCH64[distro]` on an
+    /// arm64 host.
     ///
     /// Note that this table is the one that is *not* uniform across the
     /// dnf pair: Fedora wants `qemu-system-x86-core` and RHEL wants
     /// `qemu-kvm`.
-    fn install_qemu(self) -> &'static str {
-        match self {
-            Self::Arch => "sudo pacman -S qemu-full",
-            Self::Debian => "sudo apt-get install -y qemu-system-x86",
-            Self::Fedora => "sudo dnf install -y qemu-system-x86-core",
-            Self::Rhel => "sudo dnf install -y qemu-kvm",
-            Self::OpenSuse => "sudo zypper install -y qemu-x86",
-            Self::Unknown => "install qemu for your distribution",
+    fn install_qemu(self, arm64: bool) -> &'static str {
+        match (self, arm64) {
+            (Self::Arch, _) => "sudo pacman -S qemu-full",
+            (Self::Debian, false) => "sudo apt-get install -y qemu-system-x86",
+            (Self::Debian, true) => "sudo apt-get install -y qemu-system-arm",
+            (Self::Fedora, false) => "sudo dnf install -y qemu-system-x86-core",
+            (Self::Fedora, true) => "sudo dnf install -y qemu-system-aarch64-core",
+            (Self::Rhel, _) => "sudo dnf install -y qemu-kvm",
+            (Self::OpenSuse, false) => "sudo zypper install -y qemu-x86",
+            (Self::OpenSuse, true) => "sudo zypper install -y qemu-arm",
+            (Self::Unknown, _) => "install qemu for your distribution",
         }
     }
 }
@@ -481,10 +489,25 @@ pub fn check_apple_container(issues: &[String]) -> CheckResult {
     }
 }
 
+/// `_is_arm64` — Linux says `aarch64`, macOS and some BSDs `arm64`.
+fn is_arm64(machine: &str) -> bool {
+    machine.eq_ignore_ascii_case("aarch64") || machine.eq_ignore_ascii_case("arm64")
+}
+
 /// `check_qemu` — optional, Linux VM mode only.
+///
+/// Probes the system emulator for the host's own architecture: Lima on
+/// an arm64 host runs aarch64 guests, so `qemu-system-x86_64` there is
+/// neither needed nor, usually, installed.
 #[must_use]
-pub fn check_qemu(runner: &dyn CommandRunner, distro: Distro) -> CheckResult {
-    let cmd = Command::new("qemu-system-x86_64")
+pub fn check_qemu(runner: &dyn CommandRunner, distro: Distro, machine: &str) -> CheckResult {
+    let arm64 = is_arm64(machine);
+    let binary = if arm64 {
+        "qemu-system-aarch64"
+    } else {
+        "qemu-system-x86_64"
+    };
+    let cmd = Command::new(binary)
         .arg("--version")
         .captured()
         .timeout(PROBE_TIMEOUT);
@@ -495,7 +518,7 @@ pub fn check_qemu(runner: &dyn CommandRunner, distro: Distro) -> CheckResult {
     CheckResult::new(
         Level::Warn,
         "QEMU not found (needed for VM mode on Linux)",
-        distro.install_qemu(),
+        distro.install_qemu(arm64),
     )
 }
 
@@ -790,7 +813,9 @@ pub fn run(runner: &dyn CommandRunner, host: &dyn DoctorHost) -> Report {
         prereqs.results.push(check_apple_container(issues));
     }
     if !is_macos {
-        prereqs.results.push(check_qemu(runner, distro));
+        prereqs
+            .results
+            .push(check_qemu(runner, distro, &host.machine()));
         prereqs.results.push(check_systemd_linger(runner, host));
     }
 
@@ -970,6 +995,9 @@ mod tests {
         fn is_macos(&self) -> bool {
             true
         }
+        fn machine(&self) -> String {
+            "arm64".to_owned()
+        }
         fn os_release(&self) -> Option<String> {
             None
         }
@@ -1069,6 +1097,13 @@ impl SystemDoctorHost {
 impl DoctorHost for SystemDoctorHost {
     fn is_macos(&self) -> bool {
         cfg!(target_os = "macos")
+    }
+
+    /// The target the binary was built for, which on a native build is
+    /// the host: `x86_64` or `aarch64`, the spellings Linux's
+    /// `platform.machine()` uses for the same machines.
+    fn machine(&self) -> String {
+        std::env::consts::ARCH.to_owned()
     }
 
     fn os_release(&self) -> Option<String> {

@@ -88,6 +88,7 @@ _COMMAND_KEYS = {
     "podman-networks": ["podman", "network", "ls", "--format", "json"],
     "limactl-version": ["limactl", "--version"],
     "qemu-version": ["qemu-system-x86_64", "--version"],
+    "qemu-version-aarch64": ["qemu-system-aarch64", "--version"],
     "loginctl-linger": ["loginctl", "show-user"],
     "systemctl-version": ["systemctl", "--version"],
     "systemd-creds-user": ["systemd-creds", "--user", "encrypt"],
@@ -141,6 +142,8 @@ class Env:
     id: str
     why: str
     macos: bool = False
+    # platform.machine(): which QEMU system emulator the doctor probes.
+    machine: str = "x86_64"
     # /etc/os-release, or None for "the file is unreadable".
     os_release: str | None = 'ID=arch\nNAME="Arch Linux"\n'
     existing_paths: list[str] = field(
@@ -179,6 +182,7 @@ class Env:
     def to_json(self) -> dict:
         return {
             "macos": self.macos,
+            "machine": self.machine,
             "os_release": self.os_release,
             "existing_paths": sorted(self.existing_paths),
             "which": {k: self.which[k] for k in sorted(self.which)},
@@ -334,6 +338,7 @@ def _world(env: Env):
     with contextlib.ExitStack() as stack:
         p = stack.enter_context
         p(patch.object(doctor, "_IS_MACOS", env.macos))
+        p(patch.object(doctor, "_host_machine", return_value=env.machine))
         p(patch.object(doctor, "_python_version_info", return_value=_PINNED_PYTHON))
         p(patch.object(doctor, "Path", functools.partial(_FakePath, env)))
         # `subprocess`, `shutil`, `socket` and `os` are the real modules
@@ -499,6 +504,31 @@ def _environments() -> list[Env]:
         commands=_healthy_commands(
             **{"limactl-version": missing(), "qemu-version": missing()}
         ),
+    ))
+    e(Env(
+        id="linux-arm64-qemu-present",
+        why="an arm64 Ubuntu host with qemu-system-aarch64 and no x86 "
+            "emulator. Probing qemu-system-x86_64 there reported QEMU "
+            "missing on a host that had it",
+        machine="aarch64",
+        os_release='ID=ubuntu\nID_LIKE=debian\nNAME="Ubuntu"\n',
+        commands=_healthy_commands(
+            **{
+                "qemu-version": missing(),
+                "qemu-version-aarch64": ok(
+                    "QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)\n"
+                ),
+            }
+        ),
+    ))
+    e(Env(
+        id="linux-arm64-qemu-missing",
+        why="the same host without QEMU: the hint names qemu-system-arm, "
+            "the Debian package that ships qemu-system-aarch64, not the "
+            "x86 one",
+        machine="aarch64",
+        os_release='ID=ubuntu\nID_LIKE=debian\nNAME="Ubuntu"\n',
+        commands=_healthy_commands(**{"qemu-version": missing()}),
     ))
     for distro_id, os_release in [
         ("debian", 'ID=ubuntu\nID_LIKE=debian\nNAME="Ubuntu"\n'),

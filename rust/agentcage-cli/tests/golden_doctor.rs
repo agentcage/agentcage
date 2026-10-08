@@ -35,7 +35,7 @@ use agentcage_exec::{FakeRunner, Reply};
 use serde_json::Value;
 
 /// Every environment in the fixture, ported and unported.
-const TOTAL_CASES: usize = 39;
+const TOTAL_CASES: usize = 41;
 
 /// The cases whose Python behaviour comes from `_safe_check`.
 const UNPORTED: [&str; 2] = ["linux-check-crashes", "linux-subnet-json-garbage"];
@@ -63,6 +63,7 @@ fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
 #[derive(Debug)]
 struct FakeHost {
     macos: bool,
+    machine: String,
     os_release: Option<String>,
     existing_paths: BTreeSet<String>,
     disk: Value,
@@ -77,6 +78,7 @@ impl FakeHost {
     fn from_json(env: &Value) -> Self {
         Self {
             macos: env["macos"].as_bool().expect("macos"),
+            machine: env["machine"].as_str().expect("machine").to_owned(),
             os_release: env["os_release"].as_str().map(str::to_owned),
             existing_paths: env["existing_paths"]
                 .as_array()
@@ -117,6 +119,10 @@ impl FakeHost {
 impl DoctorHost for FakeHost {
     fn is_macos(&self) -> bool {
         self.macos
+    }
+
+    fn machine(&self) -> String {
+        self.machine.clone()
     }
 
     fn os_release(&self) -> Option<String> {
