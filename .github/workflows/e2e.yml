@@ -268,13 +268,26 @@ jobs:
           cargo build --release --locked --bin agentcage
           echo "AGENTCAGE=$PWD/target/release/agentcage" >> "$GITHUB_ENV"
 
+      # Present is not usable. The runner ships /dev/kvm as root:kvm 0660
+      # and the `runner` user is not in `kvm`, so QEMU's `-accel kvm`
+      # fails with "Permission denied" and Lima exits within a second of
+      # starting it. That was the whole of phase 7's first CI failure
+      # ("FAIL (0/0, 13s)"). The udev rule is what Lima's own CI uses.
       - name: Check for KVM
         run: |
           test -e /dev/kvm || {
             echo "::error::/dev/kvm is absent; phase 7 would fall back to TCG and time out." >&2
             exit 1
           }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm || {
+            echo "::error::/dev/kvm is not read-write for $(whoami); QEMU cannot use KVM." >&2
+            exit 1
+          }
 
       # Lima is pinned rather than resolved from the releases API, for
       # the same two reasons `lima.yaml.j2` pins the guest image: the

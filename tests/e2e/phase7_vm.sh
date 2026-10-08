@@ -23,18 +23,25 @@ podman build -t basic-agent "$REPO_ROOT/tests/e2e/fixtures/agent" >/dev/null 2>&
 
 echo "Creating VM cage (this takes a few minutes)..."
 export E2E_PORT_VM="$PORT"
-# stderr is suppressed here on purpose: this create is EXPECTED to fail
-# routinely (the agent image isn't inside the VM yet — it's transferred
-# and the services started by hand just below), so the #317 failure dump
-# would be pure noise on every run.
-create_cage "$CONFIGS/vm.yaml" >/dev/null 2>&1 || true
+# Output goes to a log rather than the terminal: this create is EXPECTED
+# to fail routinely (the agent image isn't inside the VM yet — it's
+# transferred and the services started by hand just below), so the #317
+# failure dump would be noise on every run. It is kept, not discarded,
+# because when the VM itself never comes up it is the only record of why.
+CREATE_LOG=$(mktemp)
+create_cage "$CONFIGS/vm.yaml" >"$CREATE_LOG" 2>&1 || true
 
 # The cage service may fail because the image isn't in the VM yet
 # Transfer it and start manually
 if ! limactl shell "$VM_NAME" -- podman image exists localhost/basic-agent:latest 2>/dev/null; then
   echo "Transferring agent image into VM..."
-  podman save localhost/basic-agent:latest | limactl shell "$VM_NAME" -- podman load >/dev/null 2>&1
+  if ! podman save localhost/basic-agent:latest | limactl shell "$VM_NAME" -- podman load >/dev/null 2>&1; then
+    e2e_fail "7.0" "Agent image transfer into VM" "VM '$VM_NAME' unreachable; cage create output follows"
+    grep -vE '^\s*$' "$CREATE_LOG" | head -60
+    print_results; exit 1
+  fi
 fi
+rm -f "$CREATE_LOG"
 
 # Start services
 limactl shell "$VM_NAME" -- systemctl --user reset-failed 2>/dev/null || true
