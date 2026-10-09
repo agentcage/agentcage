@@ -13,10 +13,10 @@ the reference threat model claimed the *structural* layer covered it.
 These tests pin the structural behaviour so it cannot regress to
 "the decider will probably catch it".
 
-Boundary note (RUST-PORT-PLAN.md §2.4): this file holds the egress half only —
-``policy_api`` stays Python. The host half lives in ``tests/test_ssrf_guard_host.py``
-and the "the two implementations agree" assertions, which belong to neither
-side, live in ``tests/cross_language/test_ssrf_guard_conformance.py``.
+Boundary note (docs/history/rust-port-plan.md §2.4): this file holds the egress
+half only. The host half is a Rust test, and the two are held to the same
+answers by ``tests/fixtures/contracts/encoded_private_ip.json`` and
+``is_never_grant.json``.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import types
 
 import pytest
 
-from tests.cross_language.vectors import ALLOWED, BYPASS
+from tests.vectors import ALLOWED, BYPASS
 
 
 def _addon():

@@ -10,7 +10,7 @@
 //! > and the VM hand-off at `cli.py:1008`. A Rust reader assuming a map
 //! > fails on every cage that used either path.
 //!
-//! — RUST-PORT-PLAN.md §2.7, and the state fixture carries
+//! — docs/history/rust-port-plan.md §2.7, and the state fixture carries
 //! `[["GITHUB_TOKEN", "TEST-NOT-A-REAL-SECRET-0003"]]` to prove it.
 //!
 //! Pairs rather than an object is not an accident worth normalising

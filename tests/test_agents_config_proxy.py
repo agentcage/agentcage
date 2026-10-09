@@ -1,16 +1,15 @@
 """The breaking agents schema — egress side: the addon builds both agents.
 
-Split out of ``tests/test_agents_config.py`` (RUST-PORT-PLAN.md §2.4): the host
+Split out of ``tests/test_agents_config.py`` (docs/history/rust-port-plan.md §2.4): the host
 half validates and canonicalises the ``agents`` block, this half asserts that
 the in-egress addon constructs its two agents from the canonical keys the host
-emits. The sample config is shared via ``tests/cross_language/vectors.py`` so
-the two halves cannot drift onto different shapes.
+emits. The sample config lives in ``tests/vectors.py``.
 """
 
 from copy import deepcopy
 from unittest.mock import MagicMock
 
-from tests.cross_language.vectors import (
+from tests.vectors import (
     AGENTS_CLIENT as CLIENT, CANONICAL_AGENTS_CONFIG as CONFIG,
 )
 

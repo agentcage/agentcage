@@ -23,8 +23,8 @@ authors.workspace = true
 #     is enforced by the fact that core does not depend on this crate,
 #     and the compiler will say so if someone tries.
 #
-# See `src/lib.rs` for the rest of the reasoning, and RUST-PORT-PLAN.md
-# (branch `rust-port`) section 4, Layer 3.
+# See `src/lib.rs` for the rest of the reasoning, and docs/history/rust-port-plan.md
+# section 4, Layer 3.
 
 [dependencies]
 # `podman info`, `podman inspect`, `container inspect`, `limactl list

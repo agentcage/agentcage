@@ -25,7 +25,7 @@
 //!    [`ensure_v022_cage`]; `destroy` and `list` are exempt, and
 //!    deliberately so.
 //! 3. Is its backend ported? No → refuse rather than address the wrong
-//!    containers (RUST-PORT-PLAN.md Track E).
+//!    containers (docs/history/rust-port-plan.md Track E).
 
 use std::process::ExitCode;
 

@@ -2,7 +2,7 @@
 //!
 //! # Scope
 //!
-//! This is PR C1 of RUST-PORT-PLAN.md's Track C, and it is deliberately
+//! This is PR C1 of docs/history/rust-port-plan.md's Track C, and it is deliberately
 //! only half of `config.py`:
 //!
 //! | | Here | Elsewhere |
@@ -49,7 +49,7 @@
 //! config in `tests/fixtures/golden/valid/` must reproduce that case's
 //! `resolved-config.json` byte for byte, all 125 of them. That is what
 //! turns "did I port 2,473 lines correctly?" into a diff
-//! (RUST-PORT-PLAN.md §4, Layer 1). `tests/golden_config.rs` is the
+//! (docs/history/rust-port-plan.md §4, Layer 1). `tests/golden_config.rs` is the
 //! test.
 //!
 //! Faithful does **not** mean transliterated. `config.py` reads its

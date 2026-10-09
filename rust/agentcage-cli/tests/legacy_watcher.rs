@@ -2,7 +2,7 @@
 //!
 //! # Which Python test this is
 //!
-//! RUST-PORT-PLAN.md's Track D table names
+//! docs/history/rust-port-plan.md's Track D table names
 //! `tests/test_v021_legacy_cage.py` as D16's acceptance check. That file
 //! tests a *different* piece of migration code: the v0.21 legacy-cage
 //! detector at the CLI entry point (`cage stop` on a v0.21 cage exits 2

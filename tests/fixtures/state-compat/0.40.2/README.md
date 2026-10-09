@@ -5,7 +5,7 @@ A byte-frozen snapshot of the on-disk state that **agentcage 0.40.2
 
 ## Why
 
-The host CLI is being rewritten in Rust (`RUST-PORT-PLAN.md` §2.7). At cutover
+The host CLI is being rewritten in Rust (`docs/history/rust-port-plan.md` §2.7). At cutover
 every existing user has cages that the Python CLI deployed, and the Rust binary
 must read that state **in place, on first run, with no migration step**.
 

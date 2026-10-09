@@ -1,7 +1,7 @@
 //! Where agentcage keeps things, and the four roots that are not one
 //! root.
 //!
-//! RUST-PORT-PLAN.md section 2.7 is the table this module implements.
+//! docs/history/rust-port-plan.md section 2.7 is the table this module implements.
 //! It has been corrected once already, and the corrections are the
 //! interesting part — a Rust reader that assumed the obvious layout
 //! would miss a file on a real user's disk at cutover. In full:
@@ -513,7 +513,7 @@ impl Paths {
     ///
     /// A **sixth** location, and the only one outside the four roots:
     /// macOS decides where a per-user launch agent lives, so opt-in
-    /// autostart writes here. RUST-PORT-PLAN.md section 2.7 does not
+    /// autostart writes here. docs/history/rust-port-plan.md section 2.7 does not
     /// list it.
     #[must_use]
     pub fn apple_launchd_plist(&self, name: &str) -> PathBuf {
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn the_apple_state_root_holds_more_than_the_plan_lists() {
-        // RUST-PORT-PLAN.md section 2.7's apple row names only
+        // docs/history/rust-port-plan.md section 2.7's apple row names only
         // `logs/{audit,capture}.jsonl`, `dnsmasq.log`, `ready` and
         // `mask-mountpoints.json`. `backends/apple_container.py` puts
         // four more directories under the same root, and the launch

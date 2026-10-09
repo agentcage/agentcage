@@ -1,7 +1,7 @@
 //! The two domain contracts, against PR A4's language-neutral fixtures.
 //!
 //! `valid_domain` and `encoded_private_ip` exist on both sides of
-//! agentcage's trust boundary (RUST-PORT-PLAN.md §2.2), and until this
+//! agentcage's trust boundary (docs/history/rust-port-plan.md §2.2), and until this
 //! port they were held equal by a pytest that imported both copies. That
 //! mechanism does not survive the language split, so
 //! `tests/fixtures/contracts/` records the answers instead:
@@ -41,8 +41,8 @@ fn read<T: for<'de> Deserialize<'de>>(name: &str) -> T {
     let path = contract(name);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
         panic!(
-            "reading {}: {error}. Generate it with \
-             `uv run python scripts/gen-contract-fixtures.py`",
+            "reading {}: {error}. The contract fixtures are committed; \
+             see tests/fixtures/contracts/README.md",
             path.display()
         )
     });

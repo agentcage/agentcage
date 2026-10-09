@@ -1,6 +1,6 @@
 """Live secret apply (zero-restart, phase 2) — egress side.
 
-Split out of ``tests/test_live_secret_apply.py`` (RUST-PORT-PLAN.md §2.4):
+Split out of ``tests/test_live_secret_apply.py`` (docs/history/rust-port-plan.md §2.4):
 ``secret_injector`` and ``addon`` run inside the egress container and stay
 Python. Covers the injector's staged-file-first precedence (including the
 empty-file tombstone) and the addon reload that reconfigures it. Test names are

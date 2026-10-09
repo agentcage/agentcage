@@ -421,7 +421,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         // `relays._validate`; after the port it is [`crate::relays`]
         // here and `_validate.py` there, held together by the A4
         // fixture rather than by `import`
-        // (RUST-PORT-PLAN.md §2.2).
+        // (docs/history/rust-port-plan.md §2.2).
         //
         // It runs before any field is read because `load_config` does:
         // the validator is what makes `entry["name"]` on the next line

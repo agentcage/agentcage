@@ -684,53 +684,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn matches_the_python_byte_for_byte() {
-        // The Python source is the oracle for this one constant: it is
-        // a list of escapes assembled against real terminals, and a
-        // transcription error in it is invisible in review.
-        let python = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../src/agentcage/terminal.py"),
-        )
-        .expect("terminal.py");
-        let body = python
-            .split_once("RESTORE_SEQUENCE = (")
-            .expect("the constant")
-            .1
-            .split_once("\n)")
-            .expect("its end")
-            .0;
-        let mut expected = Vec::new();
-        for line in body.lines() {
-            let Some(start) = line.find("b\"") else {
-                continue;
-            };
-            let rest = &line[start + 2..];
-            let end = rest.find('"').expect("closing quote");
-            expected.extend_from_slice(unescape(&rest[..end]).as_slice());
-        }
-        assert_eq!(RESTORE_SEQUENCE, expected.as_slice());
-    }
-
-    /// The only escape the Python constant uses is `\x1b`.
-    fn unescape(literal: &str) -> Vec<u8> {
-        let mut out = Vec::new();
-        let bytes = literal.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'\\' && bytes.get(i + 1) == Some(&b'x') {
-                let hex = &literal[i + 2..i + 4];
-                out.push(u8::from_str_radix(hex, 16).expect("hex escape"));
-                i += 4;
-            } else {
-                out.push(bytes[i]);
-                i += 1;
-            }
-        }
-        out
-    }
-
     // ── restoration ──
 
     #[test]

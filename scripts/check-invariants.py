@@ -19,7 +19,7 @@ this repository:
    Containerfiles are exempt — they build the *workload*, which is
    whatever the operator wants.
 
-RUST-PORT-PLAN.md §2.4. Each check reports independently, so a run says
+docs/history/rust-port-plan.md §2.4. Each check reports independently, so a run says
 everything that is wrong rather than only the first thing.
 
 Exit status is 0 when every invariant holds, 1 otherwise.
@@ -60,10 +60,9 @@ def _rust_sources() -> list[Path]:
     `rust/*/src/**` only — deliberately **not** `tests/`. The invariant
     is about what the shipped binary needs at runtime, and the test
     suite invoking an interpreter is not a violation of it but the
-    opposite: `fingerprint_python_crossing` and `yaml_pyyaml_crossing`
-    exist precisely to run the same input through CPython and compare,
-    which is what makes the port's oracles trustworthy. A guard that
-    forbade those would be arguing against its own evidence.
+    opposite: `yaml_pyyaml_crossing` exists precisely to run the YAML the
+    host writes through the PyYAML the egress proxy reads it with. A
+    guard that forbade that would be arguing against its own evidence.
     """
     return sorted(
         path
@@ -233,7 +232,7 @@ def main() -> int:
     if failed:
         print(
             f"\n{failed} invariant violation(s). These keep Python out of "
-            f"the shipped product — see RUST-PORT-PLAN.md §2.4.",
+            f"the shipped product — see docs/history/rust-port-plan.md §2.4.",
             file=sys.stderr,
         )
         return 1

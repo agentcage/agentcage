@@ -356,7 +356,7 @@ fn colour_only_adds_escapes() {
 
 /// The deletion, stated as a test.
 ///
-/// The port drops `check_python_version` (RUST-PORT-PLAN.md §2.4: the
+/// The port drops `check_python_version` (docs/history/rust-port-plan.md §2.4: the
 /// host no longer needs Python). The fixture records what the Python
 /// printed *and* what it printed minus that one line; this asserts the
 /// difference is exactly one line, that it is the Python-version line,

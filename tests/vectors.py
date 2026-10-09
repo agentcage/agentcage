@@ -1,21 +1,15 @@
-"""Shared fixture data for rules and formats that exist on both sides.
+"""Shared input data for proxy tests that must not drift apart.
 
-Plain data, no imports — which is the point. RUST-PORT-PLAN.md §2.2 turns
-exactly this kind of table into a language-neutral JSON fixture in PR **A4**,
-asserted by both the Rust suite and pytest. Keeping the data in one importable
-module now means A4 has a single place to serialise from, and means a host-side
-file and a proxy-side file split apart by PR A6 cannot silently test different
-inputs in the meantime.
-
-Importing this module does not make a test file straddle the boundary: it is
-test support, not either implementation.
+Plain data, no imports. Several proxy-side test files assert against the
+same inputs; keeping them in one importable module means those files
+cannot silently test different cases. ``tests/test_contract_fixtures.py``
+also checks that the contract fixtures under ``tests/fixtures/contracts/``
+cover every SSRF vector here, so the Rust suite, which asserts the same
+fixtures, sees them too.
 
 ── SSRF / never-grant vectors ────────────────────────────────────────
-Asserted by three files that must not be allowed to drift apart:
-
-* ``tests/test_policy_api_ssrf_guard.py``  — proxy-side (``policy_api``)
-* ``tests/test_ssrf_guard_host.py``        — host-side (``cli`` / ``config``)
-* ``tests/cross_language/test_ssrf_guard_conformance.py`` — the two agree
+``BYPASS`` must be refused and ``ALLOWED`` must not be, by
+``tests/test_policy_api_ssrf_guard.py``.
 """
 
 from __future__ import annotations
@@ -44,12 +38,9 @@ ALLOWED = [
 
 
 # ── canonical `agents` block ──────────────────────────────────────────
-# The cage.yaml `agents` schema is a format contract: the host validates and
-# writes it (`config.validate_agents_raw`, `state.save_proxy_config`) and the
-# addon reads it back (`addon._init_domain_requests` / `_init_watcher`). One
-# canonical sample, consumed by both halves of the split
-# `test_agents_config*.py`, so neither half can drift onto a shape the other
-# does not produce. A4 folds this into the format-contract fixtures.
+# The cage.yaml `agents` schema is a format contract: the host CLI validates
+# and writes it, and the addon reads it back (`addon._init_domain_requests` /
+# `_init_watcher`). One canonical sample of the shape the host produces.
 
 AGENTS_CLIENT = {
     "provider": "openrouter", "model": "m", "api_key": "env:TESTKEY",

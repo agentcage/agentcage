@@ -1,43 +1,26 @@
 """The PROXY side of the contract fixtures, plus the fixtures' own hygiene.
 
 agentcage has six pieces of logic that exist on BOTH sides of its trust
-boundary — the host CLI and the in-egress proxy. They used to agree
-because they were the same language: tests imported both copies and
-compared them to each other. Neither mechanism survives the Rust port of
-the host CLI, so the agreement moved into something neither
+boundary — the Rust host CLI and the Python egress proxy. They cannot
+import each other, so the agreement lives in something neither
 implementation owns — a plain-JSON fixture under
-``tests/fixtures/contracts/``, generated from the current Python by
-``scripts/gen-contract-fixtures.py`` and asserted by both sides
-separately::
+``tests/fixtures/contracts/``, asserted by both sides separately::
 
-    before:   host == proxy
-    after:    host == fixture   AND   proxy == fixture
+    rust == fixture   AND   proxy == fixture
 
-and after the port the Rust suite becomes a third assertion against the
-same file, via ``serde_json``.
+The Rust half reads the same files with ``serde_json``; this file is the
+proxy half. The fixtures were originally generated from the Python host
+CLI and are now maintained by hand — see the README next to them for how
+to change a contract.
 
-**This file is the half that lives forever.** The egress proxy stays
-Python inside the mitmproxy image, so these assertions stay pytest. The
-host half is ``test_contract_fixtures_host.py``, which the Rust suite
-replaces at cutover; what they share is ``tests/contract_cases.py``. No file
-imports both sides — see `scripts/classify-tests.py`.
-
-Two things this file deliberately does NOT do:
-
-* It does not compare host to proxy directly. That assertion is what is
-  being replaced; keeping it would hide a case where both sides drifted
-  together away from the recorded contract. (The one place that identity
-  is still asserted — the two import paths of the shared relay validator
-  — is a genuinely cross-language fact and lives in
-  ``tests/cross_language/``.)
-* It does not hand-write a single expectation. Everything asserted here
-  comes out of the JSON, and the JSON comes out of the generator.
+This file deliberately does not hand-write a single expectation:
+everything asserted here comes out of the JSON.
 
 ``TestFixturesBite`` at the bottom is the load-bearing part: a fixture
 that passes no matter what the implementation does is worse than no
 fixture, because it reads like coverage. Those tests apply real
-source-level mutations to each implementation and require the
-conformance check to fail.
+source-level mutations to the proxy and require the conformance check to
+fail.
 """
 
 from __future__ import annotations
@@ -45,7 +28,6 @@ from __future__ import annotations
 import ipaddress  # noqa: F401  (re-exported into mutated module namespaces)
 import json
 import re  # noqa: F401
-import subprocess
 import sys
 from pathlib import Path  # noqa: F401
 
@@ -179,8 +161,8 @@ class TestIsNeverGrant:
         """The proxy half of the old both-sides assertion.
 
         ``_effective_never_grant`` unions the built-in floor with the
-        control host. The fixture records the result; the host half
-        asserts that ``config._AUTO_NEVER_GRANT`` plus the default
+        control host. The fixture records the result; the Rust half
+        asserts that the host's built-in never-grant set plus the default
         control host produces the same set, against the same JSON. Two
         assertions against one recording, rather than one assertion
         across the boundary.
@@ -236,8 +218,8 @@ class TestSharedConstants:
 
     Not behaviour, so no mutation arm — a constant has no branches. The
     assertion is simply that both sides produce the recorded value, which
-    is what ``tests/cross_language/test_capture_format_conformance.py``
-    and A6's never-grant-set assertion were doing pairwise.
+    replaces the pairwise host/proxy comparisons the Python CLI's tests
+    used to make.
     """
 
     @pytest.mark.parametrize(
@@ -252,12 +234,12 @@ class TestSharedConstants:
 class TestScaffoldInspectors:
     """The rendered cage.yaml is a format contract, so split it at the file.
 
-    ``init.render_config`` (host, becoming Rust) writes the config;
-    ``addon._load_builtin_inspectors`` (egress, Python forever) reads it
+    The host's scaffold renderer (Rust) writes the config;
+    ``addon._load_builtin_inspectors`` (egress, Python) reads it
     back and decides what to load. Asserting the two halves separately —
     host produces the recorded config, proxy loads the recorded
     inspectors from it — means neither test needs the other side, which
-    is what makes the pair survive the port.
+    is what lets the two live in different languages.
     """
 
     @pytest.mark.parametrize(
@@ -310,46 +292,24 @@ class TestFixtureIntegrity:
         assert raw.endswith(b"\n")
         assert json.loads(raw.decode()) == ALL[name]
 
-    def test_superset_of_the_cross_language_vectors(self):
-        """These fixtures must cover everything ``tests/cross_language/`` does.
+    def test_superset_of_the_shared_vectors(self):
+        """These fixtures must cover every SSRF vector in ``tests/vectors.py``.
 
-        PR A6 lifted the SSRF corpus into
-        ``tests/cross_language/vectors.py`` and wrote, in every file of
-        that directory, that A4 dissolves the directory by turning its
-        assertions into JSON fixtures. That is only true if nothing is
-        dropped on the way, so assert the containment rather than assume
-        it. Skipped when A6 has not landed yet — the two branches merge
-        separately — and enforced the moment it does.
+        The proxy tests assert those vectors directly; the Rust suite only
+        sees what is in the fixtures. Asserting the containment keeps a
+        vector added on the proxy side from going unchecked on the host.
         """
-        vectors = ROOT / "tests" / "cross_language" / "vectors.py"
-        if not vectors.exists():
-            pytest.skip("tests/cross_language/vectors.py not present (PR A6)")
+        vectors = ROOT / "tests" / "vectors.py"
         ns: dict = {}
         exec(compile(vectors.read_text(), str(vectors), "exec"), ns)
         wanted = set(ns["BYPASS"]) | set(ns["ALLOWED"])
         for name in ("encoded_private_ip", "is_never_grant"):
             covered = {c["input"] for c in ALL[name]["cases"]}
             assert wanted <= covered, (
-                f"{name}.json is missing cross_language vectors: "
-                f"{sorted(wanted - covered)} — regenerate the fixtures"
+                f"{name}.json is missing tests/vectors.py cases: "
+                f"{sorted(wanted - covered)} — add them to the fixture"
             )
 
-    def test_generator_output_is_current(self):
-        """Hand-editing a fixture is the failure mode this guards.
-
-        An expectation typed by a human is an expectation that can be
-        wrong; every one of these comes out of running the real
-        implementation. If this fails, run the generator and review the
-        diff — a changed expectation is a changed security contract.
-        """
-        proc = subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "gen-contract-fixtures.py"),
-             "--check"],
-            capture_output=True, text=True,
-        )
-        assert proc.returncode == 0, (
-            f"contract fixtures are out of date:\n{proc.stdout}{proc.stderr}"
-        )
 
 class TestFixturesBite:
     """Mutate each implementation; the fixture must notice.

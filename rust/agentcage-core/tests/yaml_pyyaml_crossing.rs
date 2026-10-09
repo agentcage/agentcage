@@ -13,7 +13,7 @@
 //! # Why it is `#[ignore]`d
 //!
 //! `cargo test` has to work on a machine with no Python. The whole point
-//! of the port (RUST-PORT-PLAN.md, scope decision) is that Python stops
+//! of the port (docs/history/rust-port-plan.md, scope decision) is that Python stops
 //! being an agentcage runtime dependency, so requiring an interpreter to
 //! run the unit suite would be an odd thing to introduce. It is run
 //! explicitly instead — by a developer, and by CI, which has both:
@@ -404,7 +404,7 @@ fn the_unquoted_emission_really_is_corrupted() {
     assert!(
         left_plain.len() >= 14,
         "only {} hazards leak through the bare crate; the measurement in \
-         RUST-PORT-PLAN.md section 2.8 found 14",
+         docs/history/rust-port-plan.md section 2.8 found 14",
         left_plain.len()
     );
     println!(

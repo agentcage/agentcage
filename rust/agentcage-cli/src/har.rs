@@ -1,6 +1,6 @@
 //! `agentcage cage har` — export captured HTTP traffic as HAR 1.2 JSON.
 //!
-//! PR D13 of the Rust port (RUST-PORT-PLAN.md §3, Track D row D13).
+//! PR D13 of the Rust port (docs/history/rust-port-plan.md §3, Track D row D13).
 //!
 //! # What is already done, and what this module is
 //!

@@ -115,7 +115,7 @@ fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/cli-surface")
         .canonicalize()
-        .expect("the cli-surface fixture is committed; regenerate with scripts/gen-cli-surface.py")
+        .expect("the cli-surface fixture is committed")
 }
 
 fn load(name: &str) -> Value {

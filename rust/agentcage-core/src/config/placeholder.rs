@@ -7,7 +7,7 @@
 //!
 //! # The cross-boundary contract
 //!
-//! RUST-PORT-PLAN.md §2.2 lists this as a format contract between
+//! docs/history/rust-port-plan.md §2.2 lists this as a format contract between
 //! `config.PLACEHOLDER_PREFIX` and the proxy's `secret_injector`. Reading
 //! the proxy side settles what that contract actually requires, and it is
 //! less than the name suggests: `secret_injector.SecretInjector.load`

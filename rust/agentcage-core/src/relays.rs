@@ -16,7 +16,7 @@
 //!
 //! That arrangement does not survive the port. Rust cannot import a
 //! Python module, and `data/proxy/**` stays Python forever
-//! (RUST-PORT-PLAN.md, scope decision), so the proxy keeps importing
+//! (docs/history/rust-port-plan.md, scope decision), so the proxy keeps importing
 //! `_validate.py` and the host reads this file instead. **One
 //! implementation became two, and they have to agree forever.**
 //!

@@ -1,18 +1,10 @@
 """The contract fixtures, and the checks both sides of the boundary share.
 
 Not a test module: it holds no assertions of its own and pytest does not
-collect it. It exists so that ``test_contract_fixtures.py`` (the proxy
-side, Python forever) and ``test_contract_fixtures_host.py`` (the host
-side, which the Rust suite replaces at cutover) can assert the *same*
-cases with the *same* checkers without either file importing the other
-side of the trust boundary.
-
-That constraint is `scripts/classify-tests.py --fail-on-both`, and it is
-not bookkeeping. A test file that imports both sides has no home after
-the port: delete it with the host tests and the proxy coverage goes with
-it; keep it as pytest and it imports a module that no longer exists in
-Python. PR A6 split every file that straddled; this one arrived from a
-parallel branch a day later and straddled again.
+collect it. ``test_contract_fixtures.py`` (the proxy side) asserts the
+fixtures with these checkers; the host side is asserted by the Rust
+suite against the same JSON. It used to also serve a Python host-side
+test file, removed with the Python CLI.
 
 Nothing here imports ``agentcage`` or the proxy. It reads JSON, compares
 values, and — for the mutation arm — reads a source file off disk as

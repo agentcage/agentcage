@@ -2,7 +2,7 @@
 //!
 //! # The overlay is `grants/grants.yaml`, a top-level YAML **list**
 //!
-//! An earlier draft of RUST-PORT-PLAN.md §2.7 said `grants.json`. It
+//! An earlier draft of docs/history/rust-port-plan.md §2.7 said `grants.json`. It
 //! is neither JSON nor an object. `state.py:243` is
 //! `grants_dir(name) / "grants.yaml"` and the format is a sequence of
 //! mappings:

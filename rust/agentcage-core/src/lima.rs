@@ -1,6 +1,6 @@
 //! `lima/provisioning.py` — the Lima YAML a `vm` cage is created from.
 //!
-//! The first half of the `vm` backend (RUST-PORT-PLAN.md Track E, PR
+//! The first half of the `vm` backend (docs/history/rust-port-plan.md Track E, PR
 //! E1): everything that turns a `cage.yaml` into the text `limactl
 //! create` is handed. No subprocess runs here, so the whole of it is
 //! checkable on a Linux CI runner that has never seen `limactl` — which

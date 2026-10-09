@@ -1,6 +1,6 @@
 //! `backends/vm.py` — a Lima guest with podman and quadlets inside it.
 //!
-//! Both halves (RUST-PORT-PLAN.md Track E). **E1** is the generation
+//! Both halves (docs/history/rust-port-plan.md Track E). **E1** is the generation
 //! half: the units, the Lima YAML, the argv every `limactl` invocation
 //! is built from, the guest-side file pushes and the secret bridging,
 //! none of which needs a Lima host to be checked — every command goes

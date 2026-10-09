@@ -40,7 +40,7 @@
 //! # What it deliberately does not reproduce
 //!
 //! PyYAML's formatting. PyYAML wraps at 80 columns and has its own
-//! quoting heuristics; RUST-PORT-PLAN.md section 2.8 accepts that the
+//! quoting heuristics; docs/history/rust-port-plan.md section 2.8 accepts that the
 //! port changes YAML formatting (comments are already dropped today,
 //! `state.py:195`) and requires the golden corpus to compare YAML
 //! by parsed value rather than by bytes. Sequence indentation *does*

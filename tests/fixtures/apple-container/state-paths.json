@@ -1,5 +1,5 @@
 {
-  "why": "the apple-container state root expands `~` directly and ignores XDG_CONFIG_HOME (RUST-PORT-PLAN.md section 2.7). An XDG-only sandbox does not redirect it — which makes it a testing hazard, not just a portability wart.",
+  "why": "the apple-container state root expands `~` directly and ignores XDG_CONFIG_HOME (docs/history/rust-port-plan.md section 2.7). An XDG-only sandbox does not redirect it — which makes it a testing hazard, not just a portability wart.",
   "env": {
     "HOME": "{{ROOT}}/home",
     "XDG_CONFIG_HOME": "{{ROOT}}/xdg/config",

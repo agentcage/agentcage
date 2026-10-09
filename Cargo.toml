@@ -6,8 +6,8 @@
 # from the root the same way `uv run pytest` does, and so `target/` has
 # one home instead of one per crate.
 #
-# See RUST-PORT-PLAN.md (branch `rust-port`) section 5, Phase 0 and the
-# Track B table for why this exists and what lands next.
+# See docs/history/rust-port-plan.md section 5, Phase 0 and the
+# Track B table for why this exists.
 
 [workspace]
 resolver = "3"

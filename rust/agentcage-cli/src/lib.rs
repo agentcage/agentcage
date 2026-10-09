@@ -7,7 +7,7 @@
 //! to be tested against something external: the styling fixtures under
 //! `tests/fixtures/output/`, and a pty.
 //!
-//! Per RUST-PORT-PLAN.md Track D, PR D4 — `output.py`, `terminal.py` and
+//! Per docs/history/rust-port-plan.md Track D, PR D4 — `output.py`, `terminal.py` and
 //! `_timing.py`. The command tree (D5) and the `CommandRunner` seam (D1)
 //! land beside these.
 

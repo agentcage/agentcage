@@ -1,6 +1,14 @@
 # `cage har` fixtures
 
-`cases.json` is **generated**. Do not hand-edit it.
+> **Recorded from the Python CLI, now maintained by hand.** These files
+> were produced by `scripts/gen-cage-har-fixture.py`, which ran the Python host CLI and was
+> removed with it after v0.50.0. The Rust tests assert them as golden
+> output: a deliberate behaviour change edits them in the same commit
+> (the failing assertion shows the new output), and any other change is
+> a regression. The rest of this README describes how they were
+> originally produced.
+
+`cases.json` was **generated** (see the note above).
 
 ```sh
 uv run python scripts/gen-cage-har-fixture.py          # write

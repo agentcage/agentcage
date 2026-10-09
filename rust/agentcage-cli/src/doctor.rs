@@ -30,7 +30,7 @@
 //!
 //! `doctor.py` checks the host for Python ≥ 3.12. The entire point of
 //! this port is that the host no longer has to have Python at all —
-//! RUST-PORT-PLAN.md §2.4 makes "Python exists only inside the egress
+//! docs/history/rust-port-plan.md §2.4 makes "Python exists only inside the egress
 //! image" an invariant, and `install.sh` sheds its Python detection with
 //! it (§2.5). A port of that check would assert a dependency the port
 //! removes, and would fail on exactly the hosts the port exists to

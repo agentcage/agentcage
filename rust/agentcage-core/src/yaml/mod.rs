@@ -4,7 +4,7 @@
 //! `proxy-config.yaml` by the mitmproxy addon inside the egress
 //! container, `cage.yaml` by the user and then by the next `cage`
 //! invocation. The addon is Python and stays Python forever
-//! (RUST-PORT-PLAN.md, scope decision), so this module is one half of a
+//! (docs/history/rust-port-plan.md, scope decision), so this module is one half of a
 //! cross-language contract, not a convenience wrapper.
 //!
 //! Use [`load`] and [`dump`] rather than `serde_norway` directly. The

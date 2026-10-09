@@ -1,6 +1,6 @@
 """Egress-local DNS apply — the addon side of the handshake.
 
-Split out of ``tests/test_egress_dns_apply.py`` (RUST-PORT-PLAN.md §2.4):
+Split out of ``tests/test_egress_dns_apply.py`` (docs/history/rust-port-plan.md §2.4):
 ``policy_api`` publishes the granted-domain list that the egress supervisor
 renders into dnsmasq. Both ends are inside the egress container and stay
 Python; the host-side and image-side assertions stayed behind. Test names are

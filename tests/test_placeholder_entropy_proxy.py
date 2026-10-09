@@ -1,6 +1,6 @@
 """The injector must never activate an empty placeholder — egress side.
 
-Split out of ``tests/test_placeholder_entropy.py`` (RUST-PORT-PLAN.md §2.4):
+Split out of ``tests/test_placeholder_entropy.py`` (docs/history/rust-port-plan.md §2.4):
 ``secret_injector`` runs inside the egress container and stays Python, while
 the placeholder generation, config parsing, quadlet rendering and CLI column it
 was filed next to are host code and become Rust. Test names are unchanged so

@@ -3,7 +3,7 @@
 //!
 //! `cage update` must be a **no-op when nothing changed** — that is what
 //! `fingerprint.json` exists for, and it is the cutover's acceptance
-//! check (RUST-PORT-PLAN.md Track F, F2). PR C4 ported the hash itself
+//! check (docs/history/rust-port-plan.md Track F, F2). PR C4 ported the hash itself
 //! and matched every corpus case; what lives here is the part that
 //! gathers the five inputs, which is where a port goes wrong silently:
 //! a digest computed over the wrong image set still *looks* like a

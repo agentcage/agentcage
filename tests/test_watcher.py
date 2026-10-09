@@ -9,7 +9,7 @@ The proxy modules are imported the same way the other addon tests do (proxy dir
 on sys.path, mitmproxy stubbed — see test_addon_inspector_chain.py /
 test_policy_api_ssrf_guard.py).
 
-Boundary note (RUST-PORT-PLAN.md §2.4): the host half of the feature — the
+Boundary note (docs/history/rust-port-plan.md §2.4): the host half of the feature — the
 ``agents.watcher`` cage.yaml block's parsing and validation, the egress-only
 credential stripping, the DNS allowlist entry, the severity ladder, the
 secret-list classification and the read-only CLI — is host code and becomes

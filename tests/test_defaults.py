@@ -1,10 +1,9 @@
 """Tests for ported defaults: inspector auto-loading (egress side).
 
-Boundary note (RUST-PORT-PLAN.md §2.4): ``addon.py`` stays Python. The
-host-side halves of this file — BuildConfig parsing and the click CLI — moved
-to ``tests/test_defaults_host.py``, and the one test that feeds a
-host-rendered scaffold to the addon moved to
-``tests/cross_language/test_scaffold_addon_conformance.py``.
+Boundary note (docs/history/rust-port-plan.md §2.4): ``addon.py`` is the
+egress side; the host-side halves of this file are Rust tests now. The
+scaffold-to-addon handshake is asserted against
+``tests/fixtures/contracts/scaffold_inspectors.json``.
 """
 
 import sys
