@@ -131,6 +131,8 @@ When the cage connects, the relay opens the upstream connection and sends `LOGIN
 
 If the cage sends `LOGIN` or `AUTHENTICATE` anyway, the relay answers `OK` without forwarding it.
 
+The relay's own replies (the `NO` to a refused command, that `OK`, a `BAD`) are only ever sent between complete server responses. With pipelined commands, a reply that is ready while the server is half way through a response, for example inside a `FETCH` literal, waits for that response to end. Replies keep their order among themselves, but one can arrive before the server's reply to a command the cage sent earlier, as from a server running pipelined commands concurrently.
+
 After that the relay checks each command line from the cage and forwards it or answers it itself (see [Literals](#literals) for commands that carry data). Server responses are passed through unchanged, apart from the capability filtering above and the `+` the relay holds back when it rewrites a `{n+}` literal.
 
 | Key | Default | Accepted values |

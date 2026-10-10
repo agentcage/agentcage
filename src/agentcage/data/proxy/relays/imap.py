@@ -537,16 +537,30 @@ class ImapRelay:
             # Run both pipes concurrently. When one finishes (typically
             # because the client disconnected), cancel the other so we
             # don't hang on a half-open upstream connection.
+            #
+            # Both pipes write to the cage: the upstream's responses, and
+            # the relay's own replies. _ClientOutput keeps the second from
+            # landing inside the first.
+            #
+            # The PREAUTH greeting is not the only place capabilities reach
+            # the cage: the reply to a CAPABILITY command, and a
+            # [CAPABILITY ...] code in any status response, carry the
+            # upstream's list too, so responses are filtered with the same
+            # rule as the greeting. The tracker sees every response, to
+            # match continuation requests and completions to what the
+            # client pipe forwarded.
             tracker = _CommandTracker()
+            to_client = _ClientOutput(client_writer, _ResponseFilter(
+                lambda t: _capability_hidden(t, self._cfg.write_mode),
+                tracker.observe,
+            ))
             t1 = asyncio.create_task(
                 self._pipe_client_to_upstream(
-                    client_reader, upstream_writer, client_writer, tracker,
+                    client_reader, upstream_writer, to_client, tracker,
                 )
             )
             t2 = asyncio.create_task(
-                self._pipe_upstream_to_client(
-                    upstream_reader, client_writer, tracker,
-                )
+                self._pipe_upstream_to_client(upstream_reader, to_client)
             )
             done, pending = await asyncio.wait(
                 {t1, t2}, return_when=asyncio.FIRST_COMPLETED
@@ -736,7 +750,7 @@ class ImapRelay:
         self,
         client_reader: asyncio.StreamReader,
         upstream_writer: asyncio.StreamWriter,
-        client_writer: asyncio.StreamWriter,
+        to_client: _ClientOutput,
         tracker: _CommandTracker,
     ) -> None:
         while True:
@@ -744,7 +758,7 @@ class ImapRelay:
             if not line:
                 return
             if not await self._relay_command(
-                line, client_reader, upstream_writer, client_writer, tracker,
+                line, client_reader, upstream_writer, to_client, tracker,
             ):
                 return
 
@@ -753,7 +767,7 @@ class ImapRelay:
         line: bytes,
         client_reader: asyncio.StreamReader,
         upstream_writer: asyncio.StreamWriter,
-        client_writer: asyncio.StreamWriter,
+        to_client: _ClientOutput,
         tracker: _CommandTracker,
     ) -> bool:
         """Relay one command whose first line is *line*. False ends the
@@ -796,9 +810,9 @@ class ImapRelay:
             lit = None  # _policy_check() refuses the line
         decision = self._policy_check(line)
         if decision is not None:
-            await self._reply(client_writer, decision)
+            await self._reply(to_client, decision)
             return await self._discard_command(
-                client_reader, client_writer, lit,
+                client_reader, to_client, lit,
             )
 
         tag = (line.split(None, 1) or [b""])[0]
@@ -816,7 +830,7 @@ class ImapRelay:
                 # Part of this command is already upstream, so there is no
                 # refusing it cleanly any more.
                 self._audit_literal_too_large(command)
-                await self._bye(client_writer, b"literal too large")
+                await self._bye(to_client, b"literal too large")
                 return False
             # Make sure the next "+" or tagged response is this literal's:
             # no other command may be outstanding. A later literal of the
@@ -829,7 +843,7 @@ class ImapRelay:
                     "imap relay %s: upstream completed a command before "
                     "its last literal, closing session", self._cfg.name,
                 )
-                await self._bye(client_writer, b"protocol error")
+                await self._bye(to_client, b"protocol error")
                 return False
             verdict = tracker.expect_continuation(tag, forward=lit.sync)
             if first:
@@ -840,7 +854,7 @@ class ImapRelay:
                 # Refused upstream; its tagged response is on its way to
                 # the cage.
                 return await self._discard_command(
-                    client_reader, client_writer, lit,
+                    client_reader, to_client, lit,
                 )
             if not await _copy_exactly(
                 client_reader, upstream_writer, lit.size,
@@ -864,13 +878,13 @@ class ImapRelay:
                     "decision": "blocked",
                     "reason": "malformed literal",
                 })
-                await self._bye(client_writer, b"malformed literal")
+                await self._bye(to_client, b"malformed literal")
                 return False
 
     async def _discard_command(
         self,
         client_reader: asyncio.StreamReader,
-        client_writer: asyncio.StreamWriter,
+        to_client: _ClientOutput,
         lit: Optional[_Literal],
     ) -> bool:
         """Drop the rest of a command that will not reach the upstream.
@@ -884,7 +898,7 @@ class ImapRelay:
         """
         while lit is not None and not lit.sync:
             if lit.size > _MAX_LITERAL_BYTES:
-                await self._bye(client_writer, b"literal too large")
+                await self._bye(to_client, b"literal too large")
                 return False
             if not await _copy_exactly(client_reader, None, lit.size):
                 return False
@@ -899,21 +913,20 @@ class ImapRelay:
 
     async def _reply(
         self,
-        client_writer: asyncio.StreamWriter,
+        to_client: _ClientOutput,
         decision: tuple[bytes, str, bytes],
     ) -> None:
         tag, reason, fake_status = decision
-        client_writer.write(
+        await to_client.from_relay(
             tag + b" " + fake_status + b" " + reason.encode() + b"\r\n"
         )
-        await client_writer.drain()
 
-    async def _bye(
-        self, client_writer: asyncio.StreamWriter, reason: bytes,
-    ) -> None:
+    async def _bye(self, to_client: _ClientOutput, reason: bytes) -> None:
+        """Say why the session is ending. Like any relay reply it is held
+        back while an upstream response is half sent, and the session
+        ends without it rather than wait."""
         try:
-            client_writer.write(b"* BYE " + reason + b"\r\n")
-            await client_writer.drain()
+            await to_client.from_relay(b"* BYE " + reason + b"\r\n")
         except Exception:
             pass
 
@@ -933,23 +946,12 @@ class ImapRelay:
     async def _pipe_upstream_to_client(
         self,
         upstream_reader: asyncio.StreamReader,
-        client_writer: asyncio.StreamWriter,
-        tracker: _CommandTracker,
+        to_client: _ClientOutput,
     ) -> None:
-        # The PREAUTH greeting is not the only place capabilities reach the
-        # cage: the reply to a CAPABILITY command, and a [CAPABILITY ...]
-        # code in any status response, carry the upstream's list too.
-        # Filter them with the same rule as the greeting. The tracker sees
-        # every response, to match continuation requests and completions to
-        # what the client pipe forwarded.
-        filt = _ResponseFilter(
-            lambda t: _capability_hidden(t, self._cfg.write_mode),
-            tracker.observe,
-        )
         while True:
             chunk = await upstream_reader.read(8192)
             try:
-                out = filt.feed(chunk) if chunk else filt.finish()
+                await to_client.from_upstream(chunk)
             except _UnfilterableResponse as e:
                 log.warning(
                     "imap relay %s: closing session: %s", self._cfg.name, e,
@@ -961,9 +963,6 @@ class ImapRelay:
                     "reason": str(e),
                 })
                 return
-            if out:
-                client_writer.write(out)
-                await client_writer.drain()
             if not chunk:
                 return
 
@@ -1283,6 +1282,34 @@ class _ResponseFilter:
         self._literal = 0          # literal bytes still to pass through
         self._continuing = False   # line continues a response after a literal
         self._data = False         # current response may carry literals
+        self._inserts = bytearray()  # relay replies waiting for a boundary
+
+    @property
+    def at_boundary(self) -> bool:
+        """True when everything forwarded so far ends with a complete
+        response, so bytes written to the cage now start a new one.
+
+        A partial line held back in ``_held`` doesn't count against it:
+        none of it has been forwarded yet, so it simply goes out after.
+        """
+        return not (self._streaming or self._literal or self._continuing)
+
+    def insert(self, data: bytes) -> bytes:
+        """Place relay-originated *data* (whole responses) in the stream.
+
+        Returns it if it can be written to the cage now; otherwise keeps
+        it, behind any it already keeps, and returns b"": feed() emits it
+        as soon as the upstream's response in progress is complete.
+        """
+        if self._inserts or not self.at_boundary:
+            self._inserts += data
+            return b""
+        return data
+
+    def _flush_inserts(self, out: bytearray) -> None:
+        if self._inserts and self.at_boundary:
+            out += self._inserts
+            self._inserts.clear()
 
     def feed(self, chunk: bytes) -> bytes:
         out = bytearray()
@@ -1304,6 +1331,7 @@ class _ResponseFilter:
                 if nl >= 0:
                     self._streaming = False
                     self._end_line(self._tail)
+                    self._flush_inserts(out)
                 continue
             self._held += piece
             if nl >= 0:
@@ -1314,6 +1342,7 @@ class _ResponseFilter:
                 if not starting or self._observe is None or self._observe(line):
                     out += self._rewrite(line, kind)
                 self._end_line(line)
+                self._flush_inserts(out)
             elif len(self._held) > _HELD_LINE_LIMIT:
                 line = bytes(self._held)
                 self._held.clear()
@@ -1338,12 +1367,16 @@ class _ResponseFilter:
         return bytes(out)
 
     def finish(self) -> bytes:
-        """Flush a last line the upstream never terminated (at EOF)."""
-        if self._streaming or not self._held:
-            return b""
-        line = bytes(self._held)
-        self._held.clear()
-        return self._rewrite(line, self._classify(line))
+        """Flush a last line the upstream never terminated (at EOF), and
+        relay replies still held, if the stream ends where they fit."""
+        out = bytearray()
+        if not self._streaming and self._held:
+            line = bytes(self._held)
+            self._held.clear()
+            out += self._rewrite(line, self._classify(line))
+            self._end_line(line)
+        self._flush_inserts(out)
+        return bytes(out)
 
     def _classify(self, line: bytes) -> str:
         """``capability``, ``data`` or ``status``: the response this line
@@ -1399,6 +1432,54 @@ class _ResponseFilter:
         return (
             body[:start] + b"".join(b" " + t for t in kept) + body[close:] + eol
         )
+
+
+class _ClientOutput:
+    """The one way bytes reach the cage once the session is bridged.
+
+    Two tasks write to the cage: the upstream -> client pipe, with the
+    upstream's responses, and the client -> upstream pipe, with the relay's
+    own replies to the commands it refuses or answers itself (``NO``, the
+    ``OK`` to a LOGIN, ``BAD``, ``BYE``). Commands are pipelined, so a reply
+    can be ready while the upstream is half way through a response, say
+    inside a FETCH literal; written there, it would become part of the
+    message body and the client's parse of everything after it would be
+    off.
+
+    So a relay reply goes out only between complete upstream responses: at
+    once when the stream is at such a boundary, otherwise held by the
+    _ResponseFilter, which already tracks lines and literals, until the
+    response in progress ends. Replies keep the order they were made in.
+    Each one is the tagged completion of a command the upstream never saw,
+    so it may come before the completion of a command the cage sent
+    earlier, as from a server running pipelined commands concurrently,
+    which RFC 3501 §5.5 allows and clients must expect.
+
+    Feeding the filter and writing its output happen with no await in
+    between, in either task, so what the filter believes has been sent is
+    always what the transport has been given.
+    """
+
+    def __init__(
+        self, writer: asyncio.StreamWriter, filt: _ResponseFilter,
+    ) -> None:
+        self._writer = writer
+        self._filt = filt
+
+    async def from_upstream(self, chunk: bytes) -> None:
+        """Forward upstream bytes (b"" at EOF). May raise
+        _UnfilterableResponse."""
+        out = self._filt.feed(chunk) if chunk else self._filt.finish()
+        if out:
+            self._writer.write(out)
+            await self._writer.drain()
+
+    async def from_relay(self, data: bytes) -> None:
+        """Send a reply the relay made itself, at the next boundary."""
+        out = self._filt.insert(data)
+        if out:
+            self._writer.write(out)
+            await self._writer.drain()
 
 
 class _CommandTracker:
