@@ -28,7 +28,10 @@
 //!    has to happen before it — otherwise a tarball that cannot rebuild
 //!    the cage leaves the host with neither the old cage nor a restored
 //!    one, and with orphaned `<target>.KEY` secrets. This is the
-//!    ordering `cli.py:3535` calls out in a comment of its own.
+//!    ordering `cli.py:3535` calls out in a comment of its own. The
+//!    volume checks are part of it: [`volumes_to_import`], and
+//!    [`clone_volume_collisions`], which refuses a `--name` clone that
+//!    would mount volumes it does not own.
 //! 1. **Secrets**, into the podman store, because the build that
 //!    follows resolves `Secret=` directives against it.
 //! 2. **Config**, through `save_deployment` — which validates the
@@ -41,8 +44,11 @@
 //!    proxy was told; it is not read back, because the generator is the
 //!    source of truth and an old one would silently pin stale policy.
 //! 4. **Build and start**, unless `--no-start`.
-//! 5. **Volumes**, which need the cage stopped again — podman will not
-//!    import into a volume a running container holds. With
+//! 5. **Volumes**, with the cage stopped again. podman would import
+//!    into a volume a running container holds (measured on podman
+//!    6.0.2), merging the archive into it under the agent's feet; the
+//!    stop keeps the agent from writing to the volume during the import
+//!    and starts it on the restored data. With
 //!    `--no-start` there is no cage running, and they are created and
 //!    imported in place of step 4, so the first `cage update` mounts
 //!    them full. Only on `container`: see [`importable_volumes`].
@@ -67,15 +73,18 @@
 //! matters most for the step-0 ordering above: it is one place rather
 //! than two.
 //!
-//! # What is not here
+//! # vm
 //!
-//! The `vm` branch. `_podman_for_cage` routes a running vm cage's
-//! secret and volume calls through `VmPodman` *inside the Lima guest*,
-//! which is a different store from the host podman every line below
-//! talks to. It is refused here with the same message every other
-//! not-yet-ported command uses rather than being half-served by the
-//! container path.
+//! No branch of its own: a vm archive takes the container path, and
+//! [`require_known_backend`] has accepted `vm` since PR E6. `cage
+//! backup` reads the cage's secrets from its own store, inside the Lima
+//! guest, and writes no named volumes, since those live in the guest's
+//! podman. `cage restore` stages the secrets in the *host* store, where
+//! the deploy mirrors them into the guest it creates (see the comment
+//! at the restore's `Podman::new`), and imports no named volumes
+//! ([`importable_volumes`]).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -959,6 +968,12 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ExitCode::from(EXIT_FAILURE)
     })?;
     let volumes = importable_volumes(&manifest.isolation, volumes, &tarball);
+    // In the preflight, so a refusal comes before `--force` destroys
+    // anything and before podman is asked to write anything.
+    if let Err(message) = clone_volume_collisions(ctx, &manifest, &target, &config_src, &volumes) {
+        eprintln!("error: {message}");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
 
     // `cli.py:3786` branches on the *manifest's* `isolation`, not on
     // the archived `cage.yaml`'s and not on anything installed on this
@@ -1109,8 +1124,10 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 
         // ── Import named volumes ────────────────────────
         //
-        // After the deploy and with the cage stopped again: podman
-        // refuses to import into a volume a running container holds.
+        // After the deploy and with the cage stopped again. podman does
+        // not refuse to import into a volume a running container holds
+        // (it merges into it), but the agent must not be writing to the
+        // volume mid-import, and it should start on the restored data.
         // The deploy started the cage, which created the volumes, so
         // there is nothing to create here.
         if !volumes.is_empty() {
@@ -1734,6 +1751,172 @@ fn importable_volumes(
     Vec::new()
 }
 
+/// Refuse a clone that would mount a named volume it does not own.
+///
+/// `--name` rewrites the restored cage's `name:` and nothing else, so a
+/// clone keeps the volume names written in the archived `cage.yaml` —
+/// which the scaffolds name after the cage (`openclaw` mounts
+/// `<name>-workspace` and `<name>-state`). On a host where the original
+/// still existed, the restore imported the archive into the original's
+/// volumes, and the two cages then mounted the same data: one cage
+/// reading and writing another's, across the boundary a cage exists to
+/// keep.
+///
+/// The rule applies to a restore under a name other than the archive's
+/// (a clone), on `container`, the one backend whose named volumes are
+/// in the host's podman: a `vm` cage's are in its own Lima guest, and
+/// apple-container has none. Every volume the clone would import or
+/// mount — the manifest's importable list, plus whatever the archived
+/// config mounts ([`host_volumes`]) — collides when
+///
+/// * another deployed cage mounts it, whether or not podman has created
+///   it yet (both cages would create, then share, the one volume), or
+/// * podman already has it, unless the restore replaces a cage of the
+///   target name (`--force`) that mounts it and no other cage does:
+///   restoring the archive again over an earlier clone of it.
+///
+/// "Already has it" rather than "another cage mounts it", because a
+/// volume with no cage naming it is still somebody's data: `cage
+/// destroy` keeps a cage's named volumes on purpose, so a leftover
+/// `<original>-workspace` is the original's data, waiting for it to be
+/// restored. Importing a clone's archive into it would not even replace
+/// it — `podman volume import` merges into what is there.
+///
+/// A restore under the archive's own name is not checked: those
+/// volumes are that cage's own, and `--force` replacing it imports into
+/// them as it always did.
+///
+/// # Errors
+///
+/// The refusal, naming each colliding volume and what holds it, and
+/// how to go ahead; or that podman or the state dir could not be asked.
+fn clone_volume_collisions(
+    ctx: &Ctx,
+    manifest: &Manifest,
+    target: &str,
+    config_src: &Path,
+    volumes: &[(String, PathBuf)],
+) -> Result<(), String> {
+    if manifest.isolation != "container" || target == manifest.cage_name {
+        return Ok(());
+    }
+    let archived = std::fs::read_to_string(config_src.join("cage.yaml"))
+        .map_err(|error| format!("invalid backup — config/cage.yaml: {error}"))?;
+    let mut wanted = host_volumes(&archived);
+    wanted.extend(volumes.iter().map(|(volume, _)| volume.clone()));
+    if wanted.is_empty() {
+        return Ok(());
+    }
+
+    let mounted_by = |name: &str| {
+        std::fs::read_to_string(ctx.paths.stored_config_path(name))
+            .map(|text| host_volumes(&text))
+            .unwrap_or_default()
+    };
+    let deployed = ctx
+        .paths
+        .list_deployments()
+        .map_err(|error| format!("could not list the deployed cages: {error}"))?;
+    let own = if deployed.iter().any(|name| name == target) {
+        mounted_by(target)
+    } else {
+        BTreeSet::new()
+    };
+    let others: Vec<(String, BTreeSet<String>)> = deployed
+        .into_iter()
+        .filter(|name| name != target)
+        .map(|name| {
+            let mounts = mounted_by(&name);
+            (name, mounts)
+        })
+        .collect();
+
+    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+    let mut collisions = Vec::new();
+    for volume in &wanted {
+        let users: Vec<String> = others
+            .iter()
+            .filter(|(_, mounts)| mounts.contains(volume))
+            .map(|(name, _)| format!("'{name}'"))
+            .collect();
+        let exists = podman.volume_exists(volume).map_err(|error| {
+            format!("could not ask podman whether volume '{volume}' exists: {error}")
+        })?;
+        if !users.is_empty() {
+            collisions.push(format!("  {volume} (mounted by cage {})", users.join(", ")));
+        } else if exists && !own.contains(volume) {
+            collisions.push(format!("  {volume} (already exists)"));
+        }
+    }
+    if collisions.is_empty() {
+        return Ok(());
+    }
+    let original = &manifest.cage_name;
+    Err(format!(
+        "restoring '{original}' as '{target}' would give the clone volumes it does \
+         not own:\n{}\n\
+         --name renames the cage, not its volumes: the clone would mount these, \
+         and share their data with whatever holds them. Nothing was changed. To go \
+         ahead, either:\n  \
+         - restore under the archive's own name, '{original}' (with --force if that \
+         cage exists: it is replaced), or\n  \
+         - give the clone volumes of its own: in the archive, rename each one in \
+         config/cage.yaml (container.named_volumes, container.volumes) and, for one \
+         the archive carries, in manifest.json's named_volumes and as \
+         volumes/<name>.tar, then restore the edited archive, or\n  \
+         - if no cage needs a volume that \"already exists\", remove it: podman \
+         volume rm <name>",
+        collisions.join("\n")
+    ))
+}
+
+/// The host podman volumes a `cage.yaml` mounts, by name, sorted: the
+/// `container.named_volumes` keys, and each `container.volumes` source
+/// that is a bare volume name, which podman mounts the same way.
+///
+/// From the raw document rather than a loaded [`Config`], because
+/// loading expands `~` and `$VAR` against this host and resolves
+/// secrets, and a refusal here should not depend on either. So a
+/// source that only becomes a volume name after expansion is not seen.
+/// A name podman would not accept ([`is_valid_volume_name`]) is
+/// skipped: it is not a volume, and it must not reach podman's argv.
+///
+/// Empty for a config whose `isolation` is not `container`, since a vm
+/// cage's volumes are in its Lima guest and apple-container has none;
+/// a config with no `isolation:` counts as `container`. Empty, too, for
+/// a document that does not parse, which `save_deployment` refuses.
+fn host_volumes(cage_yaml: &str) -> BTreeSet<String> {
+    use agentcage_core::yaml::Value;
+
+    let Ok(document) = agentcage_core::yaml::load(cage_yaml) else {
+        return BTreeSet::new();
+    };
+    let isolation = document.get("isolation").and_then(Value::as_str);
+    if isolation.is_some_and(|isolation| isolation != "container") {
+        return BTreeSet::new();
+    }
+    let Some(container) = document.get("container") else {
+        return BTreeSet::new();
+    };
+    let keys = container
+        .get("named_volumes")
+        .and_then(Value::as_mapping)
+        .into_iter()
+        .flat_map(|mapping| mapping.keys())
+        .filter_map(Value::as_str);
+    let sources = container
+        .get("volumes")
+        .and_then(Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|spec| agentcage_core::volume_mounts::split_volume_spec(spec).0);
+    keys.chain(sources)
+        .filter(|name| is_valid_volume_name(name))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Import each of `volumes` into the host's podman, creating it first
 /// when `create_missing` and it does not exist.
 ///
@@ -1900,9 +2083,10 @@ fn file_timestamp() -> String {
 mod tests {
     use super::{
         Manifest, ROOT, backup_inner, build_context_included, carried_containerfile,
-        check_restore_build_context, file_timestamp, importable_volumes, is_valid_cage_name,
-        is_valid_volume_name, merge_at_rest_keys, restore_build_context, restore_capture,
-        restore_config, restore_inner, restore_secrets, stage_backup_config, volumes_to_import,
+        check_restore_build_context, clone_volume_collisions, file_timestamp, host_volumes,
+        importable_volumes, is_valid_cage_name, is_valid_volume_name, merge_at_rest_keys,
+        restore_build_context, restore_capture, restore_config, restore_inner, restore_secrets,
+        stage_backup_config, volumes_to_import,
     };
     use crate::cli::context::Ctx;
     use agentcage_cli::archive::{self, Member};
@@ -2714,12 +2898,30 @@ container:
     /// [`backup_with_volumes`], for the backend `isolation` (in the
     /// manifest and in the archived `cage.yaml` alike).
     fn backup_with_volumes_on(tarball: &Path, isolation: &str, listed: &[&str], tars: &[&str]) {
+        backup_with_config(
+            tarball,
+            isolation,
+            &format!("{CAGE_YAML_NO_BUILD}isolation: {isolation}\n"),
+            listed,
+            tars,
+        );
+    }
+
+    /// [`backup_with_volumes_on`], archiving `cage_yaml` as the cage's
+    /// config.
+    fn backup_with_config(
+        tarball: &Path,
+        isolation: &str,
+        cage_yaml: &str,
+        listed: &[&str],
+        tars: &[&str],
+    ) {
         let listed: Vec<String> = listed.iter().map(|name| format!("\"{name}\"")).collect();
         let mut members = vec![
             Member::Dir(format!("{ROOT}/config")),
             Member::File(
                 format!("{ROOT}/config/cage.yaml"),
-                format!("{CAGE_YAML_NO_BUILD}isolation: {isolation}\n").into_bytes(),
+                cage_yaml.as_bytes().to_vec(),
             ),
             Member::File(
                 format!("{ROOT}/manifest.json"),
@@ -3018,8 +3220,8 @@ container:
 
     /// A restore that starts the cage imports as it always did: after
     /// the deploy, which started the cage and so created its volumes,
-    /// with the cage stopped again (podman will not import into a
-    /// volume a running container holds), and started once more after.
+    /// with the cage stopped again (so the agent is not writing to a
+    /// volume while it is imported), and started once more after.
     /// No existence probe and no create — and nothing imported before
     /// the deploy.
     #[test]
@@ -3165,6 +3367,380 @@ container:
             "caf\u{e9}",
         ] {
             assert!(!is_valid_volume_name(bad), "{bad:?}");
+        }
+    }
+
+    /// The `cage.yaml` of a cage named `name` that mounts the openclaw
+    /// scaffold's two volumes, named the way the scaffold names them:
+    /// after `owner`, the cage it was written for.
+    fn cage_yaml_mounting(name: &str, owner: &str) -> String {
+        format!(
+            "name: {name}\n\
+             container:\n\
+             \x20 image: docker.io/library/node:22-slim\n\
+             \x20 named_volumes:\n\
+             \x20   {owner}-workspace: /workspace\n\
+             \x20   {owner}-state: /state\n\
+             isolation: container\n"
+        )
+    }
+
+    /// Install `cage_yaml` as the deployed cage `name`.
+    fn deploy(ctx: &Ctx, dir: &TestDir, name: &str, cage_yaml: &str) {
+        let source = dir.join(format!("{name}.yaml"));
+        fs::write(&source, cage_yaml).unwrap();
+        ctx.paths.save_deployment(name, &source).unwrap();
+    }
+
+    /// A backup of `acme-agent` mounting its two scaffold volumes, both
+    /// listed and carried.
+    fn scaffold_backup(tarball: &Path) {
+        backup_with_config(
+            tarball,
+            "container",
+            &cage_yaml_mounting(RICH, RICH),
+            &["acme-agent-workspace", "acme-agent-state"],
+            &["acme-agent-workspace", "acme-agent-state"],
+        );
+    }
+
+    /// `cage restore <tarball> <extra…>`, parsed.
+    fn restore_matches(tarball: &Path, extra: &[&str]) -> clap::ArgMatches {
+        let tarball = tarball.display().to_string();
+        let mut argv = vec!["agentcage", "cage", "restore", &tarball];
+        argv.extend_from_slice(extra);
+        leaf_matches(&argv)
+    }
+
+    /// Every call that is not a `podman volume exists` probe: what a
+    /// refused restore must not have made.
+    fn non_probe_calls(fake: &FakeRunner) -> Vec<Vec<String>> {
+        fake.argv_sequence()
+            .into_iter()
+            .filter(|argv| {
+                argv.get(..3)
+                    .is_none_or(|head| head != ["podman", "volume", "exists"])
+            })
+            .collect()
+    }
+
+    /// **A clone never shares the original's volumes.** `--name` only
+    /// rewrites the cage's `name:`; the volume names in the archived
+    /// `cage.yaml` stay the original's (`acme-agent-workspace`), so
+    /// where the original still exists the restore used to import the
+    /// archive into *its* volumes and leave the two cages mounting the
+    /// same data. Now it is refused in the preflight: before `--force`
+    /// destroys the cage it would replace, and before podman is asked
+    /// to write anything.
+    #[test]
+    fn a_clone_refuses_named_volumes_that_already_exist() {
+        for force in [false, true] {
+            let dir = TestDir::new(&format!("restore-clone-collision-{force}"));
+            let fake = FakeRunner::new();
+            fake.assume_installed();
+            fake.default_reply(Reply::success());
+            let ctx = ctx(&dir, fake.clone());
+            deploy(&ctx, &dir, RICH, &cage_yaml_mounting(RICH, RICH));
+            if force {
+                // A cage of the clone's name, which `--force` would
+                // replace: it must not get to destroy it.
+                deploy(
+                    &ctx,
+                    &dir,
+                    "acme-clone",
+                    &cage_yaml_mounting("acme-clone", "acme-clone"),
+                );
+            }
+            let stored = |name: &str| fs::read_to_string(ctx.paths.stored_config_path(name)).ok();
+            let (original, replaced) = (stored(RICH), stored("acme-clone"));
+
+            let tarball = dir.join("backup.tar.gz");
+            scaffold_backup(&tarball);
+            let mut extra = vec!["--name", "acme-clone", "--no-start"];
+            if force {
+                extra.push("--force");
+            }
+            assert!(
+                restore_inner(&ctx, &restore_matches(&tarball, &extra)).is_err(),
+                "{force}"
+            );
+
+            assert_eq!(stored(RICH), original, "{force}");
+            assert_eq!(stored("acme-clone"), replaced, "{force}");
+            assert!(
+                non_probe_calls(&fake).is_empty(),
+                "{force}: {:?}",
+                fake.argv_sequence()
+            );
+        }
+    }
+
+    /// What else is a collision for a clone: a volume another cage
+    /// mounts, even one podman has not created yet (both cages would
+    /// create and then share it), and a bare volume name as the source
+    /// of a `container.volumes` entry, which podman mounts exactly as
+    /// it does a `named_volumes` key.
+    #[test]
+    fn a_clone_refuses_a_volume_another_cage_mounts_or_a_bare_volume_source() {
+        // The original is deployed, and podman has none of its volumes.
+        let dir = TestDir::new("restore-clone-collision-mounted");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::status(1));
+        let ctx = ctx(&dir, fake.clone());
+        deploy(&ctx, &dir, RICH, &cage_yaml_mounting(RICH, RICH));
+        let tarball = dir.join("backup.tar.gz");
+        scaffold_backup(&tarball);
+        let matches = restore_matches(&tarball, &["--name", "acme-clone", "--no-start"]);
+        assert!(restore_inner(&ctx, &matches).is_err());
+        assert!(!ctx.paths.deployment_exists("acme-clone"));
+        assert!(
+            non_probe_calls(&fake).is_empty(),
+            "{:?}",
+            fake.argv_sequence()
+        );
+
+        // No other cage, but `shared-cache` exists and the archived
+        // config mounts it through `container.volumes`.
+        let dir = TestDir::new("restore-clone-collision-bare");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(
+            ["podman", "volume", "exists", "shared-cache"],
+            Reply::success(),
+        );
+        fake.default_reply(Reply::status(1));
+        let ctx = self::ctx(&dir, fake.clone());
+        let tarball = dir.join("backup.tar.gz");
+        backup_with_config(
+            &tarball,
+            "container",
+            &format!(
+                "{CAGE_YAML_NO_BUILD}  volumes:\n  - shared-cache:/cache\nisolation: container\n"
+            ),
+            &[],
+            &[],
+        );
+        let matches = restore_matches(&tarball, &["--name", "acme-clone", "--no-start"]);
+        assert!(restore_inner(&ctx, &matches).is_err());
+        assert!(!ctx.paths.deployment_exists("acme-clone"));
+        assert!(
+            non_probe_calls(&fake).is_empty(),
+            "{:?}",
+            fake.argv_sequence()
+        );
+    }
+
+    /// A clone onto a host where nothing has the volumes (the original
+    /// is gone, and so are its volumes) goes ahead, creating and filling
+    /// them as any `--no-start` restore does. So does a vm clone,
+    /// whatever the host's podman holds: its volumes live in its own
+    /// Lima guest, so podman is not asked.
+    #[test]
+    fn a_clone_whose_volumes_are_free_proceeds() {
+        let dir = TestDir::new("restore-clone-free");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(["podman", "volume", "create"], Reply::success());
+        fake.on(["podman", "volume", "import"], Reply::success());
+        fake.default_reply(Reply::status(1));
+        let ctx = ctx(&dir, fake.clone());
+        let tarball = dir.join("backup.tar.gz");
+        scaffold_backup(&tarball);
+        let matches = restore_matches(&tarball, &["--name", "acme-clone", "--no-start"]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+        assert!(ctx.paths.deployment_exists("acme-clone"));
+        let writes: Vec<String> = named_volume_calls(&fake)
+            .iter()
+            .map(|argv| argv.join(" "))
+            .filter(|argv| !argv.starts_with("podman volume exists"))
+            .collect();
+        assert_eq!(
+            writes,
+            [
+                "podman volume create -- acme-agent-state",
+                "podman volume import -- acme-agent-state -",
+                "podman volume create -- acme-agent-workspace",
+                "podman volume import -- acme-agent-workspace -",
+            ]
+        );
+
+        let dir = TestDir::new("restore-clone-vm");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(["podman", "volume", "exists"], Reply::success());
+        fake.default_reply(Reply::status(1));
+        let ctx = self::ctx(&dir, fake.clone());
+        let tarball = dir.join("backup.tar.gz");
+        backup_with_config(
+            &tarball,
+            "vm",
+            &cage_yaml_mounting(RICH, RICH).replace("isolation: container", "isolation: vm"),
+            &[],
+            &[],
+        );
+        let matches = restore_matches(&tarball, &["--name", "acme-clone", "--no-start"]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+        assert!(
+            named_volume_calls(&fake).is_empty(),
+            "{:?}",
+            fake.argv_sequence()
+        );
+    }
+
+    /// A restore under the archive's own name is not a clone: the
+    /// volumes are that cage's own, and `--force` replacing it imports
+    /// into them exactly as before, with no probe in the preflight.
+    #[test]
+    fn a_same_name_force_restore_still_imports_into_the_cage_s_own_volumes() {
+        let dir = TestDir::new("restore-same-name-volumes");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::success());
+        let ctx = ctx(&dir, fake.clone());
+        deploy(&ctx, &dir, RICH, &cage_yaml_mounting(RICH, RICH));
+        let tarball = dir.join("backup.tar.gz");
+        scaffold_backup(&tarball);
+        let matches = restore_matches(&tarball, &["--force", "--no-start"]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+        assert_eq!(
+            named_volume_calls(&fake)
+                .iter()
+                .map(|argv| argv.join(" "))
+                .collect::<Vec<_>>(),
+            [
+                "podman volume exists acme-agent-state",
+                "podman volume import -- acme-agent-state -",
+                "podman volume exists acme-agent-workspace",
+                "podman volume import -- acme-agent-workspace -",
+            ]
+        );
+    }
+
+    /// The refusal names every colliding volume and what holds it, so
+    /// the operator knows which to rename or remove.
+    #[test]
+    fn a_clone_refusal_names_each_volume_and_what_holds_it() {
+        let dir = TestDir::new("restore-clone-refusal-message");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(
+            ["podman", "volume", "exists", "acme-agent-state"],
+            Reply::success(),
+        );
+        fake.default_reply(Reply::status(1));
+        let ctx = ctx(&dir, fake.clone());
+        deploy(
+            &ctx,
+            &dir,
+            "other-cage",
+            "name: other-cage\ncontainer:\n  image: docker.io/library/node:22-slim\n  \
+             named_volumes:\n    acme-agent-workspace: /workspace\n",
+        );
+
+        let tarball = dir.join("backup.tar.gz");
+        scaffold_backup(&tarball);
+        let staging = dir.join("staging");
+        archive::extract_into(&tarball, &staging).unwrap();
+        let backup_dir = staging.join(ROOT);
+        let manifest =
+            Manifest::parse(&fs::read_to_string(backup_dir.join("manifest.json")).unwrap())
+                .unwrap();
+        let volumes = volumes_to_import(&manifest, &backup_dir).unwrap();
+        let config_src = backup_dir.join("config");
+
+        let error = clone_volume_collisions(&ctx, &manifest, "acme-clone", &config_src, &volumes)
+            .expect_err("both collide");
+        assert!(
+            error.starts_with("restoring 'acme-agent' as 'acme-clone' would give the clone"),
+            "{error}"
+        );
+        assert!(
+            error.contains("\n  acme-agent-state (already exists)\n"),
+            "{error}"
+        );
+        assert!(
+            error.contains("\n  acme-agent-workspace (mounted by cage 'other-cage')\n"),
+            "{error}"
+        );
+        assert!(error.contains("Nothing was changed"), "{error}");
+        assert!(error.contains("podman volume rm"), "{error}");
+
+        // Under the archive's own name there is nothing to check, and
+        // podman is not asked.
+        let before = fake.call_count();
+        assert!(clone_volume_collisions(&ctx, &manifest, RICH, &config_src, &volumes).is_ok());
+        assert_eq!(fake.call_count(), before);
+    }
+
+    /// What [`host_volumes`] reads off a `cage.yaml`: the
+    /// `named_volumes` keys and the bare volume names among the
+    /// `container.volumes` sources; not paths, not names that only
+    /// appear after expansion, not names podman would refuse. And none
+    /// at all for a cage whose volumes are not the host's.
+    #[test]
+    fn host_volumes_reads_named_volumes_and_bare_volume_sources() {
+        let cage_yaml = "\
+name: acme-agent
+container:
+  image: docker.io/library/node:22-slim
+  named_volumes:
+    acme-agent-workspace: /workspace
+    -rf: /flag
+  volumes:
+  - shared-cache:/cache:ro
+  - ./src:/src
+  - /etc/hosts:/etc/hosts
+  - ${VOL}:/data
+  - ~/notes:/notes
+";
+        let names: Vec<String> = host_volumes(cage_yaml).into_iter().collect();
+        assert_eq!(names, ["acme-agent-workspace", "shared-cache"]);
+        assert_eq!(
+            host_volumes(&format!("{cage_yaml}isolation: container\n")).len(),
+            2
+        );
+        for isolation in ["vm", "apple-container"] {
+            assert!(
+                host_volumes(&format!("{cage_yaml}isolation: {isolation}\n")).is_empty(),
+                "{isolation}"
+            );
+        }
+        assert!(host_volumes("{not yaml").is_empty());
+        assert!(host_volumes("name: x\n").is_empty());
+    }
+
+    /// Restoring the archive again over an earlier clone of it, with
+    /// `--force`, replaces that clone, and the volumes it mounts are its
+    /// own: allowed. Unless another cage mounts them too, which is the
+    /// sharing the refusal exists to stop.
+    #[test]
+    fn a_clone_may_replace_an_earlier_clone_that_owns_the_volumes() {
+        for original_deployed in [false, true] {
+            let dir = TestDir::new(&format!("restore-clone-over-clone-{original_deployed}"));
+            let fake = FakeRunner::new();
+            fake.assume_installed();
+            fake.default_reply(Reply::success());
+            let ctx = ctx(&dir, fake.clone());
+            deploy(
+                &ctx,
+                &dir,
+                "acme-clone",
+                &cage_yaml_mounting("acme-clone", RICH),
+            );
+            if original_deployed {
+                deploy(&ctx, &dir, RICH, &cage_yaml_mounting(RICH, RICH));
+            }
+            let tarball = dir.join("backup.tar.gz");
+            scaffold_backup(&tarball);
+            let matches =
+                restore_matches(&tarball, &["--name", "acme-clone", "--force", "--no-start"]);
+            assert_eq!(
+                restore_inner(&ctx, &matches).is_ok(),
+                !original_deployed,
+                "{:?}",
+                fake.argv_sequence()
+            );
         }
     }
 
