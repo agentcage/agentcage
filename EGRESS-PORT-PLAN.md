@@ -132,6 +132,18 @@ their wire formats.
    three such files and had to restore them).
 4. **No bless mode was a pain.** Give the new golden tests an
    `AGENTCAGE_BLESS=1` mode from day one.
+5. **Read the reference implementation's source, not just its docs.**
+   (Maintainer requirement, 2026-10-10.) For every Phase 2 component,
+   read the source of the proxy being replaced, checked out at the exact
+   version `Containerfile.egress` pins, into a scratch directory outside
+   the repo. Several behaviours the plan depends on are visible only
+   there: which option affects which mode, when a client handshake
+   completes relative to the upstream connect, how protocol detection
+   matches passthrough hosts, how header assignment collapses duplicates,
+   what an error response looks like. Each Phase 2 PR names the upstream
+   modules it was checked against in its PR body. Behaviour is studied
+   and reimplemented; no code is copied, and the Rust source never names
+   the replaced proxy (D12).
 
 ---
 
@@ -682,6 +694,8 @@ records the oracle. The Rust port then reproduces fixed behaviour only.
 | P1.6 | `google-jwt-bearer` transform | transform cases (mock token endpoint) |
 
 ### Phase 2 — proxy core (≈ 4–5 weeks; the risk)
+
+Every Phase 2 PR is written against the reference proxy's source at the pinned version (§3, lesson 5) and says in its body which upstream modules it was checked against.
 
 | PR | Content | Acceptance |
 | :-- | :-- | :-- |
