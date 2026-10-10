@@ -2749,3 +2749,308 @@ class TestRelayRepliesBetweenResponses:
             second,
             b"a1 OK FETCH completed\r\n",
         ], got
+
+
+# ── Folder names: spellings, forms, side doors ──────────
+
+
+_ETE_MUTF7 = b"&AMk-t&AOk-"                 # "Été" in modified UTF-7
+_ETE_NFC = "\u00c9t\u00e9".encode()         # "Été", precomposed
+_ETE_NFD = "E\u0301te\u0301".encode()       # "Été", decomposed
+
+
+class TestModifiedUtf7:
+    @pytest.mark.parametrize("raw,decoded", [
+        ("&AMk-t&AOk-", "\u00c9t\u00e9"),
+        ("&ZeVnLIqe-", "\u65e5\u672c\u8a9e"),   # RFC 3501 §5.1.3 example
+        ("R&-D", "R&D"),
+        ("INBOX", "INBOX"),
+        ("~peter/mail/&U,BTFw-/&ZeVnLIqe-",       # RFC 3501's own example
+         "~peter/mail/\u53f0\u5317/\u65e5\u672c\u8a9e"),
+    ])
+    def test_decodes(self, raw, decoded):
+        from relays.imap import _mutf7_decode
+        assert _mutf7_decode(raw) == decoded
+
+    @pytest.mark.parametrize("raw", [
+        "&AMk", "&A-", "&AM!-", "\u00c9t\u00e9", "&2D0-",
+    ], ids=["unterminated", "one-char-run", "bad-char", "not-ascii",
+            "lone-surrogate"])
+    def test_rejects(self, raw):
+        from relays.imap import _mutf7_decode
+        assert _mutf7_decode(raw) is None
+
+
+async def _select(reader, writer, mailbox: bytes) -> list[bytes]:
+    return await _command(reader, writer, b"a1 SELECT " + mailbox + b"\r\n")
+
+
+class TestFolderNameNormalisation:
+    """The folder lists compared raw names case-insensitively, so the two
+    spellings of a non-ASCII folder, modified UTF-7 (RFC 3501 §5.1.3) and
+    UTF-8 (after ENABLE UTF8=ACCEPT, RFC 6855), and the composed and
+    decomposed forms of one letter, were different names: a cage could
+    open a denied folder by spelling it the other way."""
+
+    @staticmethod
+    def _session(policy, client, **kw):
+        return _run(_literal_session(policy, client, **kw))
+
+    @pytest.mark.parametrize("enable", [False, True],
+                             ids=["mutf7-mode", "utf8-accept"])
+    @pytest.mark.parametrize("spelling", [
+        _ETE_MUTF7, b'"' + _ETE_NFC + b'"', b'"' + _ETE_NFD + b'"',
+        b"&AMk-T&AOk-",                    # same name, different case
+    ], ids=["mutf7", "utf8-nfc", "utf8-nfd", "mutf7-case"])
+    @pytest.mark.parametrize("entry", [
+        "\u00c9t\u00e9", "E\u0301te\u0301", "&AMk-t&AOk-",
+    ], ids=["entry-nfc", "entry-nfd", "entry-mutf7"])
+    def test_deny_catches_every_spelling(self, entry, spelling, enable):
+        async def _client(reader, writer):
+            got = []
+            if enable:
+                got += await _command(
+                    reader, writer, b"a0 ENABLE UTF8=ACCEPT\r\n",
+                )
+            return got + await _select(reader, writer, spelling)
+
+        got, rec, entries = self._session(
+            {"folder_denylist": [entry]}, _client,
+        )
+        assert got[-1].startswith(b"a1 NO SELECT "), got
+        assert got[-1].endswith(b"denied by folder_denylist\r\n"), got
+        assert not any(b"SELECT" in c for c in rec.commands), rec.commands
+        assert [b["reason"] for b in _blocked(entries)] == [
+            "denied by folder_denylist",
+        ]
+
+    def test_allowlist_takes_the_mutf7_reading_before_utf8_is_enabled(self):
+        async def _client(reader, writer):
+            return await _select(reader, writer, _ETE_MUTF7)
+
+        got, rec, _ = self._session(
+            {"folder_allowlist": ["\u00c9t\u00e9"]}, _client,
+        )
+        assert got == [b"a1 OK SELECT completed\r\n"], got
+
+    def test_allowlist_needs_every_reading_once_utf8_is_enabled(self):
+        """After ENABLE UTF8=ACCEPT a server may read `&AMk-t&AOk-` as the
+        literal name `&AMk-t&AOk-` or decode it; the relay can't tell
+        which, so both must be allowed. The UTF-8 spelling has one
+        reading and passes."""
+        async def _client(reader, writer):
+            got = await _command(
+                reader, writer, b"a0 ENABLE UTF8=ACCEPT\r\n",
+            )
+            got += await _select(reader, writer, _ETE_MUTF7)
+            got += await _command(
+                reader, writer, b'a2 SELECT "' + _ETE_NFC + b'"\r\n',
+            )
+            return got
+
+        got, rec, _ = self._session(
+            {"folder_allowlist": ["\u00c9t\u00e9"]}, _client,
+        )
+        assert got[1].startswith(b"a1 NO") and b"folder_allowlist" in got[1]
+        assert got[2] == b"a2 OK SELECT completed\r\n", got
+
+    @pytest.mark.parametrize("enable", [
+        b"a0 ENABLE UTF8=ACCEPT\r\n", b"a0 enable imap4rev2\r\n",
+    ], ids=["utf8-accept", "imap4rev2"])
+    def test_enable_switches_the_allowlist_reading(self, enable):
+        async def _client(reader, writer):
+            await _command(reader, writer, enable)
+            return await _select(reader, writer, _ETE_MUTF7)
+
+        got, _, _ = self._session(
+            {"folder_allowlist": ["\u00c9t\u00e9"]}, _client,
+        )
+        assert got[-1].startswith(b"a1 NO"), got
+
+    def test_inbox_any_case(self):
+        async def _client(reader, writer):
+            return await _select(reader, writer, b"inBox")
+
+        got, _, _ = self._session({"folder_allowlist": ["INBOX"]}, _client)
+        assert got == [b"a1 OK SELECT completed\r\n"]
+
+    def test_invalid_utf8_name_refused(self):
+        async def _client(reader, writer):
+            return await _select(reader, writer, b'"\xc9t\xe9"')  # Latin-1
+
+        got, rec, _ = self._session({"folder_denylist": ["Trash"]}, _client)
+        assert got == [b"a1 NO SELECT mailbox not parseable\r\n"], got
+
+    def test_no_hierarchy(self):
+        """Matching is exact, as documented: a child of a denied folder is
+        another folder."""
+        async def _client(reader, writer):
+            return await _select(reader, writer, b'"Trash/Old"')
+
+        got, _, _ = self._session({"folder_denylist": ["Trash"]}, _client)
+        assert got == [b"a1 OK SELECT completed\r\n"]
+
+    # -- argument forms ----------------------------------------------------
+
+    @pytest.mark.parametrize("pieces", [
+        [b"a1 SELECT Trash\r\n"],
+        [b'a1 SELECT "Trash"\r\n'],
+        [b'a1 SELECT "Tr\\ash"\r\n'],                 # quoted-pair
+        [b"a1 SELECT {5}\r\n", b"Trash", b"\r\n"],
+        [b"a1 SELECT {5+}\r\n", b"Trash", b"\r\n"],
+        [b"a1 STATUS {5}\r\n", b"trash", b" (MESSAGES)\r\n"],
+        [b"a1 EXAMINE {11+}\r\n", _ETE_MUTF7, b" (CONDSTORE)\r\n"],
+    ], ids=["atom", "quoted", "quoted-escape", "literal", "literal-plus",
+            "status-literal", "examine-literal-mutf7"])
+    def test_denied_in_every_form(self, pieces):
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, pieces)
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, entries = self._session(
+            {"folder_denylist": ["Trash", "\u00c9t\u00e9"]}, _client,
+        )
+        assert got[-2].startswith(b"a1 NO "), got
+        assert b"denied by folder_denylist" in got[-2], got
+        assert got[-1] == b"a2 OK NOOP completed\r\n", got
+        # The relay asked for a synchronising literal itself; nothing else.
+        expect_plus = 1 if pieces[0].endswith(b"}\r\n") and \
+            not pieces[0].endswith(b"+}\r\n") else 0
+        assert len([g for g in got if g.startswith(b"+")]) == expect_plus
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+
+    @pytest.mark.parametrize("pieces", [
+        [b"a1 SELECT {5}\r\n", b"INBOX", b"\r\n"],
+        [b"a1 SELECT {5+}\r\n", b"INBOX", b"\r\n"],
+        [b"a1 STATUS {5}\r\n", b"inbox", b" (MESSAGES UNSEEN)\r\n"],
+    ], ids=["sync", "non-sync", "status"])
+    def test_allowed_literal_name_is_relayed(self, pieces):
+        async def _client(reader, writer):
+            return await _send_command(reader, writer, pieces)
+
+        got, rec, _ = self._session({"folder_allowlist": ["INBOX"]}, _client)
+        assert got[-1].startswith(b"a1 OK"), got
+        # One "+" at most: the relay's own; the upstream's is swallowed.
+        assert len([g for g in got if g.startswith(b"+")]) == (
+            0 if b"+}" in pieces[0] else 1
+        ), got
+        assert _without_login(rec.commands) == [
+            b"".join(pieces).replace(b"+}", b"}"),
+        ]
+
+    def test_upstream_refusing_a_literal_name(self):
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 SELECT {5}\r\n", b"INBOX", b" (CONDSTORE)\r\n",
+            ])
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, _ = self._session(
+            {"folder_allowlist": ["INBOX"]}, _client,
+            refuse_literal=frozenset({b"SELECT"}),
+        )
+        assert got == [
+            b"+ Ready for the mailbox name\r\n",
+            b"a1 NO [TRYCREATE] no such mailbox\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [
+            b"a1 SELECT {5}\r\n", b"a2 NOOP\r\n",
+        ]
+
+    @pytest.mark.parametrize("line", [
+        b"a1 SELECT {2000}\r\n",            # longer than any name read ahead
+        b"a1 SELECT INBOX {5}\r\n",         # a literal, but not the name
+    ], ids=["too-long", "not-the-name"])
+    def test_other_literals_still_unparseable(self, line):
+        async def _client(reader, writer):
+            got = await _command(reader, writer, line)
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, _ = self._session({"folder_allowlist": ["INBOX"]}, _client)
+        assert got == [
+            b"a1 NO SELECT mailbox not parseable\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+
+    # -- commands reporting on other mailboxes -------------------------------
+
+    @pytest.mark.parametrize("line,reason", [
+        (b'a1 LIST "" "*" RETURN (STATUS (MESSAGES UNSEEN))\r\n',
+         "STATUS in LIST with folder lists set"),
+        (b'a1 list "" "%" return (children status (messages))\r\n',
+         "STATUS in LIST with folder lists set"),
+        (b"a1 ESEARCH IN (mailboxes Trash) ALL\r\n",
+         "multi-mailbox search with folder lists set"),
+        (b"a1 NOTIFY SET (mailboxes Trash (MessageNew))\r\n",
+         "NOTIFY with folder lists set"),
+    ], ids=["list-status", "list-status-lower", "esearch", "notify"])
+    def test_side_doors_refused_with_folder_lists(self, line, reason):
+        async def _client(reader, writer):
+            return await _command(reader, writer, line)
+
+        got, rec, entries = self._session(
+            {"folder_denylist": ["Trash"]}, _client,
+        )
+        cmd = line.split()[1].upper()
+        assert got == [
+            b"a1 NO " + cmd + b" not permitted (" + reason.encode()
+            + b")\r\n",
+        ], got
+        assert _without_login(rec.commands) == []
+        assert [b["reason"] for b in _blocked(entries)] == [reason]
+
+    @pytest.mark.parametrize("line", [
+        b'a1 LIST "" "*" RETURN (STATUS (MESSAGES UNSEEN))\r\n',
+        b"a1 ESEARCH IN (mailboxes Trash) ALL\r\n",
+        b"a1 NOTIFY SET (mailboxes Trash (MessageNew))\r\n",
+    ], ids=["list-status", "esearch", "notify"])
+    def test_side_doors_open_without_folder_lists(self, line):
+        async def _client(reader, writer):
+            return await _command(reader, writer, line)
+
+        got, rec, _ = self._session({}, _client)
+        assert got[-1].startswith(b"a1 OK"), got
+
+    @pytest.mark.parametrize("line", [
+        b'a1 LIST "" "*"\r\n',
+        b'a1 LIST "" STATUS RETURN (CHILDREN)\r\n',
+        b"a1 NOTIFY NONE\r\n",
+        b"a1 MOVE 1 Trash\r\n",            # destinations aren't checked
+        b"a1 COPY 1 Trash\r\n",
+    ], ids=["list", "list-pattern-status", "notify-none", "move", "copy"])
+    def test_still_allowed_with_folder_lists(self, line):
+        async def _client(reader, writer):
+            return await _command(reader, writer, line)
+
+        got, rec, _ = self._session({"folder_denylist": ["Trash"]}, _client)
+        assert got[-1].startswith(b"a1 OK"), got
+        assert _without_login(rec.commands) == [line]
+
+    @pytest.mark.parametrize("lists", [True, False], ids=["lists", "none"])
+    def test_side_door_capabilities_hidden_with_folder_lists(self, lists):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+                greeting=b"* OK [CAPABILITY IMAP4rev1 IDLE LIST-STATUS "
+                         b"MULTISEARCH NOTIFY] hi\r\n",
+            )
+            try:
+                entry = _relay_entry(up_port)
+                if lists:
+                    entry["policy"]["folder_denylist"] = ["Trash"]
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, _w):
+                        return await reader.readline()
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        tokens = _run(_go()).split(b"]", 1)[0].split()[3:]
+        hidden = {b"LIST-STATUS", b"MULTISEARCH", b"NOTIFY"}
+        assert b"IDLE" in tokens
+        if lists:
+            assert not hidden & set(tokens), tokens
+        else:
+            assert hidden <= set(tokens), tokens
