@@ -2521,3 +2521,231 @@ class TestClientLiterals:
             b"a2 OK NOOP completed\r\n",
         ], got
         assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+
+
+# ── Relay replies vs upstream responses ─────────────────
+
+
+class TestRelayRepliesBetweenResponses:
+    """The relay's own replies (NO to a refused command, the OK to LOGIN)
+    were written to the cage by the client -> upstream task while the
+    upstream -> client task could be half way through a response. With
+    pipelined commands a reply could land inside a FETCH literal, where it
+    became part of the message body, and the client's parse of the stream
+    was off from there on. Replies now wait for the response in progress
+    to end."""
+
+    # Whole responses, as the client must see them. None of them carries
+    # capabilities, so the filter forwards them unchanged.
+    RESPONSES = [
+        b"* 1 FETCH (UID 7 BODY[] {23}\r\nline one\r\na2 NO fake\r\n"
+        b" FLAGS (\\Seen))\r\n",
+        b"* 2 FETCH (BODY[HEADER] ~{4}\r\nab\r\n BODY[TEXT] {0}\r\n)\r\n",
+        b"a1 OK FETCH completed\r\n",
+        b"+ go ahead {3}\r\n",          # free text, not a literal
+        b"* OK still here {4}\r\n",     # likewise
+        b"a3 BAD no {2}\r\n",           # likewise
+        b"* 3 EXISTS\r\n",
+    ]
+    REPLY = b"a9 NO APPEND not permitted (readonly)\r\n"
+
+    @staticmethod
+    def _filter():
+        from relays.imap import _ResponseFilter, _capability_hidden
+        return _ResponseFilter(lambda t: _capability_hidden(t, "none"))
+
+    def _expected(self, forwarded: int) -> bytes:
+        stream = b"".join(self.RESPONSES)
+        ends = [0]
+        for r in self.RESPONSES:
+            ends.append(ends[-1] + len(r))
+        at = min(e for e in ends if e >= forwarded)
+        return stream[:at] + self.REPLY + stream[at:]
+
+    def test_reply_lands_on_the_first_boundary_at_every_cut(self):
+        stream = b"".join(self.RESPONSES)
+        for cut in range(len(stream) + 1):
+            f = self._filter()
+            out = f.feed(stream[:cut])
+            forwarded = len(out)
+            out += f.insert(self.REPLY)
+            out += f.feed(stream[cut:]) + f.finish()
+            assert out == self._expected(forwarded), cut
+
+    def test_replies_keep_their_order(self):
+        stream = b"".join(self.RESPONSES)
+        cut = stream.index(b"line one")
+        f = self._filter()
+        out = f.feed(stream[:cut])
+        for i in range(3):
+            assert f.insert(b"a%d NO x\r\n" % i) == b""
+        out += f.feed(stream[cut:])
+        first = len(self.RESPONSES[0])
+        assert out == (
+            stream[:first] + b"a0 NO x\r\na1 NO x\r\na2 NO x\r\n"
+            + stream[first:]
+        )
+
+    def test_reply_waits_for_an_overlong_line_streamed_raw(self):
+        from relays.imap import _HELD_LINE_LIMIT
+        f = self._filter()
+        line = b"* SEARCH" + b" 12345" * (_HELD_LINE_LIMIT // 3) + b"\r\n"
+        out = f.feed(line[:_HELD_LINE_LIMIT + 100])
+        assert out, "the overlong line should be streaming by now"
+        assert f.insert(self.REPLY) == b""
+        out += f.feed(line[_HELD_LINE_LIMIT + 100:])
+        assert out == line + self.REPLY
+
+    # -- end to end ---------------------------------------------------------
+
+    @staticmethod
+    def _parse_one(buf: bytes) -> Optional[int]:
+        """Length of the first whole response in *buf* (literals in
+        untagged responses followed), or None if it isn't all there."""
+        pos = 0
+        while True:
+            nl = buf.find(b"\n", pos)
+            if nl < 0:
+                return None
+            line = buf[pos:nl + 1]
+            m = re.search(rb"\{(\d+)\}\r\n\Z", line)
+            if m and buf.startswith(b"* "):
+                pos = nl + 1 + int(m.group(1))
+                if pos > len(buf):
+                    return None
+                continue
+            return nl + 1
+
+    async def _read_responses(self, reader, tags: set,
+                              buf: bytes = b"") -> list[bytes]:
+        """Split what the client receives (starting with *buf*) into whole
+        responses until every tag in *tags* has had its tagged one."""
+        got: list[bytes] = []
+        pending = set(tags)
+        buf = bytes(buf)
+        while pending:
+            n = self._parse_one(buf)
+            if n is None:
+                data = await asyncio.wait_for(reader.read(65536), 5)
+                if not data:
+                    raise EOFError(got, buf)
+                buf += data
+                continue
+            resp, buf = buf[:n], buf[n:]
+            got.append(resp)
+            pending.discard(resp.split(None, 1)[0])
+        assert buf == b"", buf
+        return got
+
+    def _session(self, chunks: list[bytes], seen: int, refused: list[bytes],
+                 *, then: Optional[bytes] = None):
+        """a1 FETCH answered with *chunks* (paced); once the client has
+        read *seen* bytes of it, it pipelines the *refused* commands (and
+        *then*, a command the relay forwards)."""
+        tags = {b"a1"} | {c.split(None, 1)[0] for c in refused}
+        if then is not None:
+            tags.add(then.split(None, 1)[0])
+
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+                scripted={b"FETCH": chunks},
+            )
+            try:
+                entry = _relay_entry(up_port, readonly=True)
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()  # PREAUTH
+                        writer.write(b"a1 FETCH 1 (UID BODY[] FLAGS)\r\n")
+                        await writer.drain()
+                        head = await asyncio.wait_for(
+                            reader.readexactly(seen), 5,
+                        )
+                        writer.write(b"".join(refused) + (then or b""))
+                        await writer.drain()
+                        return await self._read_responses(
+                            reader, tags, head,
+                        )
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        return _run(_go())
+
+    def test_refusal_never_lands_inside_a_fetch_literal(self):
+        import random
+        body = random.Random(23).randbytes(100_000).replace(b"\n", b" ")
+        fetch = (
+            b"* 1 FETCH (UID 7 BODY[] {%d}\r\n" % len(body)
+            + body + b" FLAGS (\\Seen))\r\n"
+        )
+        reply = fetch + b"<TAG> OK FETCH completed\r\n"
+        chunks = [reply[i:i + 9000] for i in range(0, len(reply), 9000)]
+        got = self._session(
+            chunks, seen=9000,
+            refused=[b"a2 APPEND INBOX {3}\r\n"],
+            then=b"a3 NOOP\r\n",
+        )
+        assert got == [
+            fetch,
+            b"a2 NO APPEND not permitted (readonly)\r\n",
+            b"a1 OK FETCH completed\r\n",
+            b"a3 OK NOOP completed\r\n",
+        ], [g[:80] for g in got]
+
+    def test_several_refusals_wait_and_keep_their_order(self):
+        body = b"x" * 5000 + b"\r\n" + b"y" * 5000
+        fetch = (
+            b"* 1 FETCH (BODY[] {%d}\r\n" % len(body) + body + b")\r\n"
+        )
+        reply = fetch + b"<TAG> OK FETCH completed\r\n"
+        chunks = [reply[:3000], reply[3000:8000], reply[8000:]]
+        got = self._session(chunks, seen=3000, refused=[
+            b"a2 APPEND INBOX {3}\r\n",
+            b"a3 STORE 1 +FLAGS (\\Seen)\r\n",
+            b'a4 LOGIN "u" "p"\r\n',
+            b"a5 EXPUNGE\r\n",
+        ])
+        assert got == [
+            fetch,
+            b"a2 NO APPEND not permitted (readonly)\r\n",
+            b"a3 NO STORE not permitted (readonly)\r\n",
+            b"a4 OK already authenticated (relay handled login)\r\n",
+            b"a5 NO EXPUNGE not permitted (readonly)\r\n",
+            b"a1 OK FETCH completed\r\n",
+        ], [g[:80] for g in got]
+
+    def test_refusal_waits_for_the_line_after_a_literal(self):
+        """After a literal the response goes on (` FLAGS ...)`); that is
+        still inside the response."""
+        fetch = b"* 1 FETCH (BODY[] {5}\r\nhello FLAGS (\\Seen))\r\n"
+        literal_end = fetch.index(b" FLAGS")
+        # The relay forwards up to the end of the literal and holds the
+        # partial line after it.
+        cut = literal_end + 4
+        chunks = [fetch[:cut], fetch[cut:] + b"<TAG> OK FETCH completed\r\n"]
+        got = self._session(chunks, seen=literal_end,
+                            refused=[b"a2 DELETE Trash\r\n"])
+        assert got == [
+            fetch,
+            b"a2 NO DELETE not permitted (readonly)\r\n",
+            b"a1 OK FETCH completed\r\n",
+        ], got
+
+    def test_refusal_goes_ahead_of_a_line_not_yet_forwarded(self):
+        """A partial line the relay is holding hasn't reached the client,
+        so a reply sent now is still between responses."""
+        first = b"* 1 FETCH (UID 7)\r\n"
+        second = b"* 2 FETCH (FLAGS (\\Seen) UID 8)\r\n"
+        cut = len(first) + 12
+        stream = first + second + b"<TAG> OK FETCH completed\r\n"
+        chunks = [stream[:cut], stream[cut:]]
+        got = self._session(chunks, seen=len(first),
+                            refused=[b"a2 EXPUNGE\r\n"])
+        assert got == [
+            first,
+            b"a2 NO EXPUNGE not permitted (readonly)\r\n",
+            second,
+            b"a1 OK FETCH completed\r\n",
+        ], got
