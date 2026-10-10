@@ -96,7 +96,7 @@ The relay reads each credential by the `NAME` after the colon, from the secret f
 
 - **`env:NAME`** reads the secret store's entry `NAME`. Set it with `-s NAME` at `cage create`, or with `agentcage secret set <cage> NAME`. On the vm backend, a host environment variable `NAME` that is set at deploy time is also copied into the guest, and overrides the stored value.
 - **`systemd-creds:NAME`** reads the same entry, decrypted from `NAME.cred` when the egress starts.
-- **`cmd:` and `podman:`** do not work for relays. Nothing runs a relay's `cmd:` command, so the "name" is the command text. A `podman:` name never reaches a vm guest.
+- **`cmd:` and `podman:`** are refused at `cage create` and `cage update` for relay credentials. Nothing runs a relay's `cmd:` command, so the "name" would be the command text, and a `podman:` name never reaches a vm guest.
 - **A bare `NAME`** with no scheme is refused at `cage create`.
 
 The host removes every relay credential name from the cage's `container.env` and `podman_secrets`, so the values reach the egress only. If either credential resolves to an empty value, the relay doesn't start: the egress records `relay_init_failed` with `credentials not resolved`.
@@ -120,10 +120,10 @@ Certificate verification and hostname checking are always on. There is no option
 `conn_rate_limit` and `send_rate_limit` take `<count>/<unit>`:
 
 - **Count:** a whole number of ASCII digits.
-- **Unit:** one of `sec` or `s` (1 second), `min` or `m` (60 seconds), `hour` or `h` (3600 seconds). Write it in lowercase.
+- **Unit:** one of `sec` or `s` (1 second), `min` or `m` (60 seconds), `hour` or `h` (3600 seconds), in any case (`"10/MIN"` works).
 - **Whitespace:** allowed around the count, the slash and the unit.
 
-For example: `"30/min"`, `"20/hour"`, `"5 / s"`. `"10/minute"` and `"1.5/min"` are not rate strings, and a relay given one does not start. Each limit is a sliding window over the last `<unit>`. A missing, empty or `null` value means the default.
+For example: `"30/min"`, `"20/hour"`, `"5 / s"`. `"10/minute"` and `"1.5/min"` are not rate strings: `cage create` and `cage update` refuse them, naming the field. Each limit is a sliding window over the last `<unit>`. A missing, empty or `null` value means the default.
 
 ## IMAP (`type: imap`)
 
@@ -199,7 +199,8 @@ Commands before `EHLO`/`HELO` get `503`. If the upstream fails during delivery, 
 - **Upstream:** `upstream` has no `host`, its `port` is outside `1`–`65535`, or the port is a YAML boolean.
 - **TLS:** `ca_file` and `ca_pem` are both set, `ca_pem` holds no `-----BEGIN CERTIFICATE-----` block, or `ca_file`, `ca_pem` or `tls_servername` is set with `tls: false`.
 - **Policy:** `policy` is not a mapping, `write_mode` is not one of the three modes, `readonly` contradicts `write_mode`, or a folder list is not a list.
-- **Credentials:** a credential source names an unknown scheme.
+- **Credentials:** a credential source names an unknown scheme, uses `cmd:` or `podman:`, or has an empty `NAME`.
+- **Rate limits:** `conn_rate_limit` or `send_rate_limit` is not a [rate string](#rate-strings).
 - **Ports:** the listen port collides with an inspected `ports.tcp.allow` port.
 
 The egress runs the same structural checks again when it loads the config. An entry that fails is skipped and recorded as `relay_config_invalid`. Other relays and HTTP traffic are unaffected.
@@ -223,7 +224,7 @@ Relays write structured records to the egress audit stream, the same one HTTP de
 | `smtp_data` | `allowed` | Delivered. Carries `sender`, `recipients` (those the upstream accepted), `recipients_rejected_upstream`, `size` and `upstream_status`. |
 | `smtp_data` | `blocked` | An inspector blocked the body. Carries `inspector`, `reason`, `severity`, `sender`, `recipients` and `size`. |
 | `smtp_data` | `upstream_error` | The upstream refused or failed the delivery. Carries `error`. |
-| `smtp_data_flag` | none | An inspector flagged a body that was delivered anyway. One record per flag, with `inspector`, `reason`, `severity`, `sender` and `recipients`. |
+| `smtp_data_flag` | `flagged` | An inspector flagged a body that was delivered anyway. One record per flag, with `inspector`, `reason`, `severity`, `sender` and `recipients`. |
 | `smtp_data_bypass` | none | Inspectors were skipped because every recipient was allowlisted. Carries `bypassed`, `sender` and `recipients`. |
 
 
