@@ -9,8 +9,9 @@ Stdlib only — the proxy environment does not have the CLI package on
 its path.
 
 Deliberately one module rather than a copy in each relay. The other
-small helpers (``_resolve_credential``, ``_ConnRateLimiter``) are
-duplicated across imap.py/smtp.py for code-shape parity, but a drifting
+small helpers (the rate limiters, ``_parse_rate_limit``) are
+duplicated across imap.py/smtp.py for code-shape parity (credential
+resolution is shared too, in ``secret_lookup``), but a drifting
 copy of *this* one silently downgrades certificate verification on one
 protocol and not the other, which is exactly the class of bug that
 never shows up in a passing test run.

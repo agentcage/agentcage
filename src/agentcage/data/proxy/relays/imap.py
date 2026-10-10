@@ -20,13 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import ssl
 import time
 from typing import Callable, Optional
 
 from relays._tls import upstream_connect_kwargs
+from secret_lookup import resolve_credential
 
 log = logging.getLogger("agentcage.relays.imap")
 
@@ -119,23 +119,6 @@ def _parse_rate_limit(spec: str) -> tuple[int, int]:
     return int(m.group(1)), _RATE_UNIT_SECS[m.group(2).lower()]
 
 
-def _resolve_credential(source: str) -> str:
-    """Read the credential value at relay startup.
-
-    All four supported schemes (env:, cmd:, systemd-creds:, podman:)
-    have already populated the proxy container's environment by the
-    time relays start — quadlets handle the decryption at unit start.
-    So at runtime we just read the env var named after the scheme arg
-    (or, for env:VAR, after the colon).
-    """
-    scheme, _, arg = (source or "").partition(":")
-    if scheme in ("env", "cmd", "systemd-creds", "podman", ""):
-        if not arg:
-            return ""
-        return os.environ.get(arg, "")
-    raise ValueError(f"unsupported relay credential source: {source!r}")
-
-
 class _ConnRateLimiter:
     """Sliding-window rate limiter. Thread-unsafe — single asyncio loop."""
 
@@ -225,8 +208,8 @@ class ImapRelay:
         # SMTP relay but is not used here — IMAP traffic is bridged
         # at the byte level and policy is per-command, not body-shape.
         self._cfg = _RelayConfig(entry)
-        self._user = _resolve_credential(self._cfg.user_source)
-        self._password = _resolve_credential(self._cfg.password_source)
+        self._user = resolve_credential(self._cfg.user_source)
+        self._password = resolve_credential(self._cfg.password_source)
         if not self._user or not self._password:
             raise ValueError(
                 f"imap relay {self._cfg.name}: credentials not resolved "
