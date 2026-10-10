@@ -20,6 +20,32 @@ if TYPE_CHECKING:
 
 _ACTION_ORDER = {"all": 0, "flag": 1, "block": 2}
 
+# Per-flow bound on buffered WebSocket frames. A WebSocket's entry is
+# written when the socket ends, so every frame it records sits in memory
+# until then, and a socket can stay open for hours. Each frame's data is
+# capped at ``max_body_size`` like a body; on top of that one flow keeps
+# at most _WS_MAX_MESSAGES frames and at most ``max_body_size`` bytes of
+# frame data in total (_WS_DEFAULT_TOTAL when ``max_body_size`` is 0: an
+# unlimited body still ends, a socket need not). Frames past either bound
+# are counted, not kept, and the entry reports them as
+# ``ws_messages_omitted``. The sizes keep a WebSocket entry inside the
+# watcher's single-line cap (four body slots plus 1 MiB of slack): the
+# frame data fills at most one body slot, and 4096 records of roughly
+# 120 bytes of JSON framing each fit in the slack.
+_WS_MAX_MESSAGES = 4096
+_WS_DEFAULT_TOTAL = 10485760
+
+
+class _WsBuffer:
+    """One flow's recorded WebSocket frames and what the bound dropped."""
+
+    __slots__ = ("messages", "data_bytes", "omitted")
+
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+        self.data_bytes = 0
+        self.omitted = 0
+
 
 class CaptureWriter:
     """Append capture entries to a JSONL file."""
@@ -30,7 +56,8 @@ class CaptureWriter:
         self._min_action = cfg.get("min_action", "all")
         self._domains: list[str] = cfg.get("domains") or []
         self._exclude_domains: list[str] = cfg.get("exclude_domains") or []
-        self._ws_buffers: dict[str, list[dict]] = {}
+        self._ws_buffers: dict[str, _WsBuffer] = {}
+        self._ws_total = self._max_body or _WS_DEFAULT_TOTAL
 
         # Size cap + single-generation rotation. Without this the capture
         # file grows without bound: a body-heavy cage writes far faster
@@ -155,7 +182,15 @@ class CaptureWriter:
         min_level = _ACTION_ORDER.get(self._min_action, 0)
         if decision_level < min_level:
             return False
+        return self.captures_host(host)
 
+    def captures_host(self, host: str) -> bool:
+        """Check the domain filters alone (``domains``/``exclude_domains``).
+
+        A WebSocket's decision can still escalate after its upgrade (a
+        later frame may be flagged or blocked), so at the upgrade only
+        the domain half of ``should_capture`` is final.
+        """
         # Domain allowlist
         if self._domains:
             if not any(self._domain_matches(d, host) for d in self._domains):
@@ -189,6 +224,7 @@ class CaptureWriter:
         outbound_req: dict,
         outbound_resp: dict,
         ws_messages: list[dict] | None = None,
+        ws_messages_omitted: int = 0,
     ) -> None:
         """Write a complete capture entry as one JSONL line."""
         entry: dict = {
@@ -211,6 +247,8 @@ class CaptureWriter:
         }
         if ws_messages:
             entry["ws_messages"] = ws_messages
+        if ws_messages_omitted:
+            entry["ws_messages_omitted"] = ws_messages_omitted
 
         line = json.dumps(entry, separators=(",", ":"))
         self._file.write(line + "\n")
@@ -222,20 +260,88 @@ class CaptureWriter:
 
     # ── WebSocket buffering ──────────────────────────────
 
+    def add_ws_frame(
+        self,
+        flow_id: str,
+        *,
+        from_client: bool,
+        is_text: bool,
+        content: bytes,
+        ts: str,
+        decision: str = "allowed",
+    ) -> None:
+        """Record one WebSocket message for a flow, within the flow's bound.
+
+        ``content`` must already be in its capture form (redacted by the
+        caller). Text messages are stored as text (opcode 1); binary ones
+        (opcode 2) as text when they decode as UTF-8, else base64 with
+        ``dataEncoding``. Data past ``max_body_size``, or past what is
+        left of the flow's total, is cut and marked ``dataTruncated``; a
+        message arriving with nothing left, or past _WS_MAX_MESSAGES, is
+        only counted (see the module constants).
+        """
+        buf = self._ws_buffers.setdefault(flow_id, _WsBuffer())
+        room = self._ws_total - buf.data_bytes
+        if len(buf.messages) >= _WS_MAX_MESSAGES or room <= 0:
+            buf.omitted += 1
+            return
+        limit = min(self._max_body, room) if self._max_body else room
+        original_size = len(content)
+        kept = content[:limit]
+        msg: dict = {
+            "type": "send" if from_client else "receive",
+            "ts": ts,
+            "opcode": 1 if is_text else 2,
+        }
+        if is_text:
+            # Text messages are UTF-8 by definition; "replace" only ever
+            # touches a character the truncation cut in half.
+            msg["data"] = kept.decode("utf-8", errors="replace")
+        else:
+            try:
+                msg["data"] = kept.decode("utf-8")
+            except UnicodeDecodeError:
+                msg["data"] = base64.b64encode(kept).decode("ascii")
+                msg["dataEncoding"] = "base64"
+        if len(kept) < original_size:
+            msg["dataTruncated"] = True
+            msg["dataOriginalSize"] = original_size
+        if decision != "allowed":
+            msg["decision"] = decision
+        buf.data_bytes += len(kept)
+        buf.messages.append(msg)
+
     def add_ws_message(self, flow_id: str, msg: dict) -> None:
-        """Buffer a WebSocket message for a flow."""
-        self._ws_buffers.setdefault(flow_id, []).append(msg)
+        """Buffer an already-serialized WebSocket message for a flow.
+
+        Counts against the flow's message bound but not its data total
+        (``msg`` is opaque here); the proxy records through add_ws_frame.
+        """
+        buf = self._ws_buffers.setdefault(flow_id, _WsBuffer())
+        if len(buf.messages) >= _WS_MAX_MESSAGES:
+            buf.omitted += 1
+            return
+        buf.messages.append(msg)
+
+    def pop_ws_buffer(self, flow_id: str) -> tuple[list[dict], int]:
+        """Pop a flow's buffered WS messages and how many were omitted."""
+        buf = self._ws_buffers.pop(flow_id, None)
+        if buf is None:
+            return [], 0
+        return buf.messages, buf.omitted
 
     def pop_ws_messages(self, flow_id: str) -> list[dict]:
         """Pop and return buffered WS messages for a flow."""
-        return self._ws_buffers.pop(flow_id, [])
+        return self.pop_ws_buffer(flow_id)[0]
 
     def adopt_ws_buffers(self, other: "CaptureWriter") -> None:
         """Take over ``other``'s buffered WebSocket frames.
 
         Used when a config reload replaces the writer: flows still open
         across the swap are completed by the new writer, which must hand
-        back the frames buffered before it existed.
+        back the frames buffered before it existed. Each buffer keeps
+        what it already used of its bound; frames from here on are
+        measured against this writer's limits.
         """
         self._ws_buffers.update(other._ws_buffers)
         other._ws_buffers = {}

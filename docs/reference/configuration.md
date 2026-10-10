@@ -318,6 +318,14 @@ logging:
   allowed_requests: false # Log successful HTTP requests
 ```
 
+A WebSocket is captured as one entry, written when the socket closes: the
+upgrade request and its `101` response, then the messages of both directions
+in order (`ws_messages`). Each message's data is capped at `max_body_size`, and
+one socket keeps at most 4096 messages and `max_body_size` bytes of message data
+in total; the number of messages past that limit is recorded as
+`ws_messages_omitted`. `min_action` is applied to the socket's worst outcome, so
+a socket with a flagged or blocked message is recorded under `flag` or `block`.
+
 ---
 
 ## 7. `vm` (Lima Backend Sizing)
