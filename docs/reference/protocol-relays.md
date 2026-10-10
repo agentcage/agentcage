@@ -131,7 +131,7 @@ When the cage connects, the relay opens the upstream connection and sends `LOGIN
 
 If the cage sends `LOGIN` or `AUTHENTICATE` anyway, the relay answers `OK` without forwarding it.
 
-After that the relay checks each command line from the cage and forwards it or answers it itself. Server responses are passed through unchanged.
+After that the relay checks each command line from the cage and forwards it or answers it itself (see [Literals](#literals) for commands that carry data). Server responses are passed through unchanged, apart from the capability filtering above and the `+` the relay holds back when it rewrites a `{n+}` literal.
 
 | Key | Default | Accepted values |
 | :-- | :-- | :-- |
@@ -156,6 +156,21 @@ The reasons behind the `organise` list:
 - **`RENAME`** can silently break server-side filing rules that refer to folders by name.
 
 A command that isn't listed for a mode is forwarded.
+
+### Literals
+
+A message the cage uploads with `APPEND`, and any string argument sent as an IMAP literal (`{n}` followed by n bytes, RFC 3501 §4.3), is data, not commands. The relay checks the line that starts a command, then streams the literal through byte for byte, never reading its lines as commands, and treats the line after it as the rest of the same command. A body line such as `x LOGIN u p` or `a1 COMPRESS DEFLATE` reaches the upstream as part of the message, in every `write_mode`.
+
+The relay only forwards a literal's bytes after the upstream has answered the line announcing it with `+`, so the two always agree on where the literal ends:
+- **`{n}` (synchronising):** the relay passes the upstream's `+` to the cage. If the upstream answers `NO` or `BAD` instead, the cage sends no literal, and the relay reads what follows as the next command.
+- **`{n+}` (non-synchronising, RFC 7888 `LITERAL+` / `LITERAL-`):** the cage sends the literal without waiting. The relay announces it to the upstream as `{n}`, holds the literal until the upstream's `+` (which the cage does not see), then forwards it. If the upstream refuses, the relay drops the literal and the rest of the command. This costs one round trip per literal.
+- **`~{n}` / `~{n+}` (RFC 3516 `BINARY`):** handled the same way.
+- **Refused commands:** a command the relay refuses never reaches the upstream. For `{n}` the relay answers `NO` in place of the `+`, so the cage never sends the literal. For `{n+}` it reads and drops exactly n bytes, then the rest of the command.
+- **Ordering:** a command with a literal waits until every command forwarded before it has completed, so that the upstream's untagged `+` can only belong to that literal and not to, say, an `IDLE`.
+- **Size:** a literal may be at most 64 MiB. A larger one is refused with `NO [TOOBIG]` and a `blocked` audit entry. For `{n}` the session goes on. For `{n+}`, or a literal later in a command that has already been partly forwarded, the relay then closes the session with `* BYE literal too large`.
+- **Malformed:** a line ending in something brace-shaped that is not a literal (`{5-}`, `{ 5}`) is refused with `BAD malformed literal`.
+
+A line whose tag is not a valid IMAP tag (RFC 3501 §9: printable ASCII except `(`, `)`, `{`, `%`, `*`, `"`, `\` and `+`) is answered `* BAD invalid command tag` and not forwarded. An upstream echoing a `+` or `*` tag back would make its reply read as a continuation request or an untagged response.
 
 ### Folder lists
 
@@ -215,7 +230,7 @@ Relays write structured records to the egress audit stream, the same one HTTP de
 | `relay_init_failed` | none | The relay could not be built, for example because a credential did not resolve. `error` says why. |
 | `relay_start_failed` | none | The listener could not start: port in use, or a malformed `listen`. |
 | `imap_command` | `intercepted` | The cage sent `LOGIN` / `AUTHENTICATE`. |
-| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list. Carries `command`, `reason`, and `mailbox` for folder refusals. |
+| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list, or because of its form: `reason` is `invalid tag`, `malformed literal` or `literal too large`. Carries `command`, `reason`, and `mailbox` for folder refusals. |
 | `imap_command` | `allowed` | A forwarded command, recorded only while allowed-request logging is on (`logging.allowed_requests`). The egress currently treats an absent key as on, so set `false` explicitly if IMAP sync traffic is too noisy. |
 | `imap_upstream_unreachable` | none | The upstream connection failed. Carries `upstream` and `error`. |
 | `smtp_command` | `intercepted` | The cage sent `AUTH`. |

@@ -10,6 +10,7 @@ integration but bypassed here.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -35,6 +36,48 @@ class FakeUpstreamRecorder:
 
     login_seen: Optional[tuple[str, str]] = None
     commands: list[bytes] = field(default_factory=list)
+    # Every byte received after LOGIN, in order (literals=True only).
+    raw: bytearray = field(default_factory=bytearray)
+
+
+_UPSTREAM_LITERAL_RE = re.compile(rb"~?\{(\d+)(\+?)\}\r\n\Z")
+
+
+async def _read_upstream_command(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    recorder: FakeUpstreamRecorder,
+    refuse_literal: frozenset,
+) -> tuple[bytes, bool]:
+    """Read one whole command the way a server does, literals included.
+
+    A synchronising literal is answered with ``+`` before its bytes are
+    read, unless the command is in *refuse_literal*: then the server answers
+    ``NO`` and the command ends there, its literal unsent. Returns the
+    command's bytes (b"" at EOF) and whether it was refused that way.
+    """
+    cmd = b""
+    while True:
+        line = await reader.readline()
+        recorder.raw += line
+        cmd += line
+        if not line:
+            return cmd, False
+        m = _UPSTREAM_LITERAL_RE.search(line)
+        if m is None:
+            return cmd, False
+        if not m.group(2):
+            name = cmd.split(None, 2)[1].upper()
+            if name in refuse_literal:
+                tag = cmd.split(None, 1)[0]
+                writer.write(tag + b" NO [TRYCREATE] no such mailbox\r\n")
+                await writer.drain()
+                return cmd, True
+            writer.write(b"+ go ahead\r\n")
+            await writer.drain()
+        payload = await reader.readexactly(int(m.group(1)))
+        recorder.raw += payload
+        cmd += payload
 
 
 async def _start_fake_upstream(
@@ -44,6 +87,8 @@ async def _start_fake_upstream(
     fail_login: bool = False,
     greeting: bytes = b"* OK [CAPABILITY IMAP4rev1] fake upstream ready\r\n",
     scripted: Optional[dict[bytes, list[bytes]]] = None,
+    literals: bool = False,
+    refuse_literal: frozenset = frozenset(),
 ) -> tuple[asyncio.AbstractServer, int]:
     """Start an asyncio TCP server pretending to be a Migadu IMAP host.
 
@@ -51,6 +96,11 @@ async def _start_fake_upstream(
     instead of its usual one-line OK: a list of chunks, each written and
     drained on its own with a pause in between so the relay reads them
     separately. ``<TAG>`` in a chunk is replaced with the command's tag.
+
+    With ``literals``, commands are read whole, literals and all (see
+    _read_upstream_command), each recorded as one entry in
+    ``recorder.commands``, and ``IDLE`` is served: ``+ idling``, then
+    ``OK`` on ``DONE`` or ``BAD`` (the line discarded) on anything else.
     """
 
     async def _handle(reader, writer):
@@ -83,13 +133,31 @@ async def _start_fake_upstream(
             writer.write(tag + b" OK LOGIN completed\r\n")
             await writer.drain()
             while True:
-                line = await reader.readline()
+                if literals:
+                    line, refused = await _read_upstream_command(
+                        reader, writer, recorder, refuse_literal,
+                    )
+                else:
+                    line, refused = await reader.readline(), False
                 if not line:
                     return
                 recorder.commands.append(line)
+                if refused:
+                    continue
                 parts = line.split(b" ", 2)
                 tag = parts[0]
                 cmd = parts[1].rstrip(b"\r\n").upper() if len(parts) > 1 else b""
+                if literals and cmd == b"IDLE":
+                    writer.write(b"+ idling\r\n")
+                    await writer.drain()
+                    done = await reader.readline()
+                    recorder.raw += done
+                    if done.rstrip(b"\r\n").upper() == b"DONE":
+                        writer.write(tag + b" OK IDLE terminated\r\n")
+                    else:
+                        writer.write(tag + b" BAD expected DONE\r\n")
+                    await writer.drain()
+                    continue
                 if cmd == b"LOGOUT":
                     writer.write(b"* BYE\r\n")
                     writer.write(tag + b" OK LOGOUT completed\r\n")
@@ -1962,3 +2030,494 @@ class TestWriteModeDefaults:
 
     def test_explicit_write_mode_wins(self):
         assert self._cfg(write_mode="organise").write_mode == "organise"
+
+
+# ── Literals from the cage ──────────────────────────────
+
+
+async def _literal_session(
+    policy: dict,
+    client,
+    *,
+    refuse_literal: frozenset = frozenset(),
+    log_allowed: bool = False,
+):
+    """Run *client(reader, writer)* against a relay with *policy* in front
+    of a literal-aware upstream. Returns what *client* returned, the
+    upstream's recorder and the relay's audit entries."""
+    recorder = FakeUpstreamRecorder()
+    upstream, up_port = await _start_fake_upstream(
+        recorder, "real-user@example.com", "real-app-password",
+        literals=True, refuse_literal=refuse_literal,
+    )
+    entries: list[dict] = []
+    try:
+        entry = _relay_entry(up_port)
+        entry["policy"] = {**entry["policy"], **policy}
+        relay = ImapRelay(
+            entry, audit_log=entries.append, log_allowed=log_allowed,
+        )
+        await relay.start()
+        try:
+            port = relay._server.sockets[0].getsockname()[1]
+            async with _imap_client(port) as (reader, writer):
+                await reader.readline()  # PREAUTH
+                result = await asyncio.wait_for(client(reader, writer), 5)
+            await asyncio.sleep(0.05)
+        finally:
+            await relay.stop()
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+    return result, recorder, entries
+
+
+async def _send_command(reader, writer, pieces: list[bytes]) -> list[bytes]:
+    """Send one command as a compliant client would.
+
+    *pieces* alternates lines and literal payloads: line, payload, line,
+    ..., line. Before the payload of a synchronising literal the client
+    waits for ``+``; a tagged response instead ends the command there.
+    A non-synchronising (``{n+}``) payload goes straight out. Returns every
+    line received, up to and including the command's tagged response.
+    """
+    tag = pieces[0].split(None, 1)[0]
+    got: list[bytes] = []
+
+    async def _line() -> bytes:
+        line = await asyncio.wait_for(reader.readline(), 5)
+        if not line:
+            raise EOFError(got)
+        got.append(line)
+        return line
+
+    for i in range(0, len(pieces), 2):
+        writer.write(pieces[i])
+        await writer.drain()
+        if i + 1 == len(pieces):
+            break
+        if not pieces[i].endswith(b"+}\r\n"):
+            while True:
+                line = await _line()
+                if line.startswith(b"+"):
+                    break
+                if line.startswith(tag + b" "):
+                    return got
+        writer.write(pieces[i + 1])
+        await writer.drain()
+    while not (await _line()).startswith(tag + b" "):
+        pass
+    return got
+
+
+async def _command(reader, writer, line: bytes) -> list[bytes]:
+    return await _send_command(reader, writer, [line])
+
+
+# A message whose body has lines that read as IMAP commands, including ones
+# the relay refuses or intercepts in every mode.
+_TRICKY_BODY = (
+    b"From: someone@example.com\r\n"
+    b"Subject: notes\r\n"
+    b"\r\n"
+    b"a1 COMPRESS DEFLATE\r\n"
+    b"x LOGIN u p\r\n"
+    b"y EXPUNGE\r\n"
+    b"Please starttls\r\n"
+    b"Please login when you can\r\n"
+    b"z UNAUTHENTICATE\r\n"
+    b"+ NOOP\r\n"
+    b"* tail {5}\r\n"
+)
+
+
+def _without_login(cmds: list[bytes]) -> list[bytes]:
+    return [c for c in cmds if b" LOGIN \"real-user" not in c]
+
+
+class TestClientLiterals:
+    """Literal payload from the cage is data: forwarded byte for byte and
+    never read as commands, while every real command line is still
+    checked. Before, each payload line went through the policy check as
+    if it were a command, so a body line like `Please login ...` was
+    swallowed (answered OK by the relay), and lines whose second word is
+    COMPRESS, STARTTLS or UNAUTHENTICATE were refused even in `full`."""
+
+    @pytest.mark.parametrize("marker", [b"{%d}", b"{%d+}", b"~{%d}"],
+                             ids=["sync", "non-sync", "binary"])
+    def test_append_body_reaches_upstream_byte_exact(self, marker):
+        body = _TRICKY_BODY + (b"\x00\xff\r\n" if b"~" in marker else b"")
+        head = b"a1 APPEND INBOX (\\Seen) " + marker % len(body) + b"\r\n"
+
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [head, body, b"\r\n"])
+            got += await _command(reader, writer, b"a2 NOOP\r\n")
+            return got
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client, log_allowed=True,
+        ))
+        # A non-synchronising literal goes upstream as a synchronising one.
+        sent_head = head.replace(b"+}", b"}")
+        assert _without_login(rec.commands) == [
+            sent_head + body + b"\r\n", b"a2 NOOP\r\n",
+        ]
+        assert got[-2:] == [
+            b"a1 OK APPEND completed\r\n", b"a2 OK NOOP completed\r\n",
+        ], got
+        # The cage sees a "+" only where it asked for one.
+        pluses = [g for g in got if g.startswith(b"+")]
+        assert len(pluses) == (0 if b"+}" in marker else 1), got
+        # Nothing in the body was audited as a command.
+        assert [(e["decision"], e["command"]) for e in entries] == [
+            ("allowed", "APPEND"), ("allowed", "NOOP"),
+        ], entries
+
+    @pytest.mark.parametrize("policy", [
+        {"write_mode": "none"}, {"write_mode": "organise"},
+    ], ids=["none", "organise"])
+    def test_refused_sync_literal_is_never_sent(self, policy):
+        """The relay answers NO in place of the "+", so a compliant client
+        never sends the payload, and the next command is checked as one."""
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 APPEND INBOX {%d}\r\n" % len(_TRICKY_BODY),
+                _TRICKY_BODY, b"\r\n",
+            ])
+            got += await _command(reader, writer, b"a2 EXPUNGE\r\n")
+            got += await _command(reader, writer, b"a3 NOOP\r\n")
+            return got
+
+        got, rec, entries = _run(_literal_session(policy, _client))
+        assert [g.split(None, 2)[:2] for g in got] == [
+            [b"a1", b"NO"], [b"a2", b"NO"], [b"a3", b"OK"],
+        ], got
+        assert _without_login(rec.commands) == [b"a3 NOOP\r\n"]
+        assert [e["command"] for e in _blocked(entries)] == [
+            "APPEND", "EXPUNGE",
+        ], entries
+
+    @pytest.mark.parametrize("policy", [
+        {"write_mode": "none"}, {"write_mode": "organise"},
+    ], ids=["none", "organise"])
+    def test_refused_non_sync_literal_is_dropped_exactly(self, policy):
+        """With `{n+}` the cage sends the payload unasked; the relay drops
+        exactly n bytes and the rest of the command, and forwards none of
+        it. The payload deliberately ends mid-line, so an off-by-one in
+        either direction would show up in the next command."""
+        payload = b"b NOOP\r\nc SELECT INBOX\r\nd EXAMINE x"
+        second = b"e STATUS INBOX (MESSAGES)\r\n"
+
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 APPEND INBOX {%d+}\r\n" % len(payload), payload,
+                b" (\\Seen) {%d+}\r\n" % len(second), second,
+                b"\r\n",
+            ])
+            got += await _command(reader, writer, b"a2 EXPUNGE\r\n")
+            got += await _command(reader, writer, b"a3 NOOP\r\n")
+            return got
+
+        got, rec, entries = _run(_literal_session(policy, _client))
+        assert [g.split(None, 2)[:2] for g in got] == [
+            [b"a1", b"NO"], [b"a2", b"NO"], [b"a3", b"OK"],
+        ], got
+        assert _without_login(rec.commands) == [b"a3 NOOP\r\n"]
+        assert [e["command"] for e in _blocked(entries)] == [
+            "APPEND", "EXPUNGE",
+        ], entries
+
+    def test_upstream_refusing_sync_literal(self):
+        """A tagged NO instead of "+" ends the command: the client sends
+        no payload and the relay reads the next line as a command."""
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 APPEND Nope {%d}\r\n" % len(_TRICKY_BODY),
+                _TRICKY_BODY, b"\r\n",
+            ])
+            got += await _command(reader, writer, b"a2 NOOP\r\n")
+            return got
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+            refuse_literal=frozenset({b"APPEND"}),
+        ))
+        assert got == [
+            b"a1 NO [TRYCREATE] no such mailbox\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [
+            b"a1 APPEND Nope {%d}\r\n" % len(_TRICKY_BODY), b"a2 NOOP\r\n",
+        ]
+        assert not _blocked(entries)
+
+    def test_upstream_refusing_non_sync_literal(self):
+        """The relay announced the cage's `{n+}` upstream as `{n}`; when
+        the upstream refuses it, the payload the cage already sent is
+        dropped, not read as commands."""
+        payload = b"b COMPRESS DEFLATE\r\nc NOOP\r\n"
+
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 APPEND Nope {%d+}\r\n" % len(payload), payload,
+                b"\r\n",
+            ])
+            got += await _command(reader, writer, b"a2 NOOP\r\n")
+            return got
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+            refuse_literal=frozenset({b"APPEND"}),
+        ))
+        assert got == [
+            b"a1 NO [TRYCREATE] no such mailbox\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [
+            b"a1 APPEND Nope {%d}\r\n" % len(payload), b"a2 NOOP\r\n",
+        ]
+        assert not _blocked(entries)
+
+    @pytest.mark.parametrize("second", [b"{%d}", b"{%d+}"],
+                             ids=["sync-sync", "sync-non-sync"])
+    def test_multiappend_two_literals(self, second):
+        """RFC 3502 MULTIAPPEND: the command goes on after each literal
+        until a line ends without one."""
+        m1 = _TRICKY_BODY
+        m2 = b"Subject: two\r\n\r\nq LOGIN a b\r\nr compress deflate\r\n"
+        pieces = [
+            b"a1 APPEND INBOX (\\Seen) {%d}\r\n" % len(m1), m1,
+            b' (\\Flagged) "10-Oct-2026 10:00:00 +0000" '
+            + second % len(m2) + b"\r\n", m2,
+            b"\r\n",
+        ]
+
+        async def _client(reader, writer):
+            return await _send_command(reader, writer, pieces)
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert _without_login(rec.commands) == [
+            b"".join(pieces).replace(b"+}", b"}"),
+        ]
+        assert got[-1] == b"a1 OK APPEND completed\r\n", got
+        assert len(got) == (3 if second == b"{%d}" else 2), got
+        assert not _blocked(entries)
+
+    def test_oversized_sync_literal_refused(self):
+        from relays.imap import _MAX_LITERAL_BYTES
+
+        async def _client(reader, writer):
+            got = await _command(
+                reader, writer,
+                b"a1 APPEND INBOX {%d}\r\n" % (_MAX_LITERAL_BYTES + 1),
+            )
+            got += await _command(reader, writer, b"a2 NOOP\r\n")
+            return got
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert got == [
+            b"a1 NO [TOOBIG] literal larger than %d bytes\r\n"
+            % _MAX_LITERAL_BYTES,
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+        blocks = _blocked(entries)
+        assert [(b["command"], b["reason"]) for b in blocks] == [
+            ("APPEND", "literal too large"),
+        ], entries
+
+    @pytest.mark.parametrize("count", [
+        b"%d+" % (64 * 1024 * 1024 + 1),
+        b"9" * 40 + b"+",
+    ], ids=["just-over", "40-digits"])
+    def test_oversized_non_sync_literal_closes_session(self, count):
+        """The relay can't skip a payload it won't read, so after the NO it
+        ends the session rather than read the payload as commands."""
+        async def _client(reader, writer):
+            writer.write(b"a1 APPEND INBOX {" + count + b"}\r\n")
+            writer.write(b"b COMPRESS DEFLATE\r\n")
+            await writer.drain()
+            return await asyncio.wait_for(reader.read(), 5)
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        lines = got.splitlines(keepends=True)
+        assert lines[0].startswith(b"a1 NO [TOOBIG]"), got
+        assert lines[1:] == [b"* BYE literal too large\r\n"], got
+        assert _without_login(rec.commands) == []
+        assert [b["reason"] for b in _blocked(entries)] == [
+            "literal too large",
+        ]
+
+    def test_oversized_literal_mid_command_closes_session(self):
+        from relays.imap import _MAX_LITERAL_BYTES
+
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 APPEND INBOX {3}\r\n", b"abc",
+                b" {%d}\r\n" % (_MAX_LITERAL_BYTES + 1),
+            ])
+            return got
+
+        async def _until_closed(reader, writer):
+            try:
+                return await _client(reader, writer)
+            except EOFError as e:
+                return e.args[0]
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _until_closed,
+        ))
+        assert got == [b"+ go ahead\r\n", b"* BYE literal too large\r\n"], got
+        assert [b["reason"] for b in _blocked(entries)] == [
+            "literal too large",
+        ]
+
+    @pytest.mark.parametrize("marker", [b"{%d}", b"{%d+}"],
+                             ids=["sync", "non-sync"])
+    def test_literal_split_across_small_writes(self, marker):
+        head = b"a1 APPEND INBOX " + marker % len(_TRICKY_BODY) + b"\r\n"
+
+        async def _client(reader, writer):
+            async def _dribble(data: bytes):
+                for i in range(0, len(data), 3):
+                    writer.write(data[i:i + 3])
+                    await writer.drain()
+                    await asyncio.sleep(0.001)
+
+            await _dribble(head)
+            if b"+}" not in marker:
+                assert (await reader.readline()).startswith(b"+")
+            await _dribble(_TRICKY_BODY + b"\r\n")
+            return await _read_until_tag(reader, b"a1")
+
+        line, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert line == b"a1 OK APPEND completed\r\n"
+        assert _without_login(rec.commands) == [
+            head.replace(b"+}", b"}") + _TRICKY_BODY + b"\r\n",
+        ]
+        assert not _blocked(entries)
+
+    @pytest.mark.parametrize("line", [
+        b"+ NOOP\r\n", b"* NOOP\r\n", b"a(1 NOOP\r\n", b"+\r\n",
+    ], ids=["plus", "star", "paren", "bare-plus"])
+    def test_invalid_tag_refused(self, line):
+        """A "+" tag echoed back by the upstream would read as a
+        continuation request, so such a line never reaches it."""
+        async def _client(reader, writer):
+            writer.write(line)
+            await writer.drain()
+            got = [await asyncio.wait_for(reader.readline(), 5)]
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert got == [
+            b"* BAD invalid command tag\r\n", b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+        assert [b["reason"] for b in _blocked(entries)] == ["invalid tag"]
+
+    @pytest.mark.parametrize("marker", [b"{5-}", b"{ 5}", b"{}", b"{5+ }"])
+    def test_malformed_literal_refused(self, marker):
+        async def _client(reader, writer):
+            got = await _command(
+                reader, writer, b"a1 SEARCH TEXT " + marker + b"\r\n",
+            )
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert got == [
+            b"a1 BAD malformed literal\r\n", b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+
+    def test_idle_then_done(self):
+        """DONE is a one-word line; it must still pass."""
+        async def _client(reader, writer):
+            writer.write(b"a1 IDLE\r\n")
+            await writer.drain()
+            got = [await asyncio.wait_for(reader.readline(), 5)]
+            writer.write(b"DONE\r\n")
+            await writer.drain()
+            return got + [await _read_until_tag(reader, b"a1")]
+
+        got, rec, _ = _run(_literal_session({"write_mode": "none"}, _client))
+        assert got == [b"+ idling\r\n", b"a1 OK IDLE terminated\r\n"]
+
+    def test_idle_continuation_is_not_taken_for_a_literal(self):
+        """`+` has no tag. A cage that pipelines a literal behind an IDLE
+        must not get IDLE's `+ idling` taken as the go-ahead for its
+        literal: the relay would forward the payload while the upstream,
+        still idling, refuses the line announcing it and then reads the
+        payload as a command. So the relay holds a literal back until
+        nothing else it forwarded is outstanding."""
+        payload = b"b COMPRESS DEFLATE\r\n"
+
+        async def _client(reader, writer):
+            writer.write(
+                b"a1 IDLE\r\n"
+                b"a2 SEARCH TEXT {%d+}\r\n" % len(payload)
+                + payload + b"\r\n"
+            )
+            await writer.drain()
+            got = await asyncio.wait_for(reader.readline(), 5)
+            await asyncio.sleep(0.3)
+            return got
+
+        got, rec, _ = _run(_literal_session({"write_mode": "full"}, _client))
+        assert got == b"+ idling\r\n"
+        assert b"COMPRESS" not in bytes(rec.raw), bytes(rec.raw)
+        assert b"SEARCH" not in bytes(rec.raw), bytes(rec.raw)
+
+    def test_literal_waits_for_pipelined_commands(self):
+        """A literal command pipelined behind ordinary ones still works:
+        it is held until they complete, then relayed."""
+        async def _client(reader, writer):
+            writer.write(
+                b"a1 NOOP\r\na2 SELECT INBOX\r\n"
+                b"a3 APPEND INBOX {%d+}\r\n" % len(_TRICKY_BODY)
+                + _TRICKY_BODY + b"\r\na4 NOOP\r\n"
+            )
+            await writer.drain()
+            return await _read_until_tag(reader, b"a4")
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert got == b"a4 OK NOOP completed\r\n"
+        assert _without_login(rec.commands) == [
+            b"a1 NOOP\r\n", b"a2 SELECT INBOX\r\n",
+            b"a3 APPEND INBOX {%d}\r\n" % len(_TRICKY_BODY)
+            + _TRICKY_BODY + b"\r\n",
+            b"a4 NOOP\r\n",
+        ]
+
+    def test_login_literal_intercepted_and_payload_dropped(self):
+        """LOGIN is answered by the relay; a `{n+}` password after it is
+        dropped, not forwarded and not read as a command."""
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 LOGIN {4+}\r\n", b"user", b" {13+}\r\n",
+                b"x EXPUNGE\r\n\r\n", b"\r\n",
+            ])
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "none"}, _client,
+        ))
+        assert got == [
+            b"a1 OK already authenticated (relay handled login)\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
