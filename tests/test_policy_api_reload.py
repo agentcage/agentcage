@@ -18,8 +18,6 @@ import os
 
 import yaml
 
-from agentcage.data.proxy import addon as addon_mod
-
 
 def _decider(**over):
     d = {
@@ -41,6 +39,11 @@ class _Cage:
     """Writes the proxy config and drives load/reload on a real addon."""
 
     def __init__(self, tmp_path, monkeypatch):
+        # Imported lazily, like the other addon suites: an import at
+        # collection time would pin the addon to a ``secret_injector``
+        # module that test_policy_api_control later evicts from sys.modules.
+        from agentcage.data.proxy import addon as addon_mod
+        self.addon_mod = addon_mod
         self.path = tmp_path / "config.yaml"
         monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
         monkeypatch.setenv("AGENTCAGE_DNS_PUBLISH",
@@ -60,7 +63,7 @@ class _Cage:
         }))
 
     def load(self):
-        self.addon = addon_mod.Agentcage()
+        self.addon = self.addon_mod.Agentcage()
         self.addon.load(loader=None)
         return self.addon
 
