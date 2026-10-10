@@ -67,7 +67,13 @@ To duplicate an existing cage configuration and volume state under a new name:
 agentcage cage restore ~/backups/my-agent.tar.gz --name my-cloned-agent
 ```
 
-Only the cage's `name:` changes. Named volumes keep the names written in `container.named_volumes`. On a host where the original cage still exists, the restore imports the archived data into the original's volumes, with or without `--no-start`, and the two cages then share them.
+Only the cage's `name:` changes. Named volumes keep the names written in the archived `cage.yaml`: the openclaw scaffold, for example, names them `my-agent-workspace` and `my-agent-state`. Two cages mounting one volume would share its data, so on `container` a restore under a new name refuses, before it changes anything, when a volume the clone would import or mount already exists in podman or another cage mounts it. This covers the `container.named_volumes` keys and any `container.volumes` entry whose source is a bare volume name. The error lists each volume and what holds it. To go ahead, pick one:
+
+- **Restore under the archive's own name** instead, after `agentcage cage destroy my-agent` or with `--force` to replace it, if you don't need the original any more.
+- **Give the clone volumes of its own.** Unpack the archive. Rename each volume in `config/cage.yaml` (`container.named_volumes`, `container.volumes`). For a volume the archive carries, also rename its entry in `manifest.json`'s `named_volumes` and its `volumes/<name>.tar`. Then pack the archive again and restore it.
+- **Remove a leftover volume** that nothing needs: `podman volume rm <name>`. `cage destroy` keeps a cage's named volumes, so one can outlive its cage. The restore counts it as taken because it still holds that cage's data, and `podman volume import` merges into an existing volume instead of replacing it.
+
+On a host where none of the volumes exist and no cage mounts them, the clone gets them, created and filled from the archive. Keep in mind they still carry the original's name: a cage created later under that name would mount them. Restoring the same archive again with `--force` over a clone made this way works, since those volumes are the clone's own, as long as no other cage mounts them. A restore under the archive's own name isn't checked, because the volumes are that cage's own. `vm` and `apple-container` clones aren't checked either: a `vm` cage's volumes live in its own Lima guest, and `apple-container` has none.
 
 ### Restoring Without Starting
 To restore the cage without building or starting it:
