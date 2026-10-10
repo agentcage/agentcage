@@ -561,8 +561,7 @@ class TestConstruction:
 
 class TestCredentialLookup:
     """Credentials resolve through the egress's shared secret lookup:
-    staged file (``$AGENTCAGE_SECRETS_DIR/<NAME>``) → ``$XDG_RUNTIME_DIR/<NAME>``
-    → env. The apple-container backend delivers secrets ONLY as staged
+    staged file (``$AGENTCAGE_SECRETS_DIR/<NAME>``) → env. The apple-container backend delivers secrets ONLY as staged
     files, and only the staged file carries a live ``agentcage secret
     set`` — an env-only relay started with no credentials there."""
 
@@ -609,18 +608,13 @@ class TestCredentialLookup:
         assert relay._user == "real-user@example.com"
         assert relay._password == "real-app-password"
 
-    def test_runtime_dir_file_beats_env(self, dirs):
+    def test_runtime_dir_file_is_ignored(self, dirs):
+        """No ``$XDG_RUNTIME_DIR`` step: nothing stages secrets there, and
+        in the egress it only ever meant ``/run/<NAME>``."""
         _, runtime = dirs
         (runtime / "TEST_IMAP_PASS").write_text("runtime-password\n")
         relay = ImapRelay(_relay_entry(1))
-        assert relay._password == "runtime-password"
-
-    def test_staged_file_beats_runtime_dir(self, dirs):
-        staged, runtime = dirs
-        (staged / "TEST_IMAP_PASS").write_text("staged-password\n")
-        (runtime / "TEST_IMAP_PASS").write_text("runtime-password\n")
-        relay = ImapRelay(_relay_entry(1))
-        assert relay._password == "staged-password"
+        assert relay._password == "real-app-password"
 
 
 # ── A3: UID subcommand-aware readonly policy ─────────────

@@ -14,7 +14,7 @@ import pytest
 def injector(monkeypatch, tmp_path):
     """A SecretInjector whose staged-secrets dir points at tmp_path."""
     from agentcage.data.proxy import secret_injector as si
-    monkeypatch.setattr(si, "_SECRETS_DIR", tmp_path)
+    monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(tmp_path))
     return si.SecretInjector(), tmp_path
 
 
@@ -80,15 +80,13 @@ class TestAddonReloadReconfiguresInjector:
         self, tmp_path, monkeypatch,
     ):
         import os
-        # The addon does `from secret_injector import SecretInjector` (the
-        # proxy dir is on sys.path inside the container and in conftest) —
-        # patch THAT module instance, not the package-path twin.
+        # The staged dir is an env var read on every configure(), so it
+        # reaches whichever module instance the addon imported.
         from agentcage.data.proxy import addon as addon_mod
-        import secret_injector as si
 
         secrets_dir = tmp_path / "staged"
         secrets_dir.mkdir()
-        monkeypatch.setattr(si, "_SECRETS_DIR", secrets_dir)
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(secrets_dir))
         cfg_path = tmp_path / "config.yaml"
         rule_a = {"env": "KEY_A",
                   "placeholder": "agentcage:secret:KEY_A:0123456789abcdef0123456789abcdef"}
@@ -118,15 +116,13 @@ class TestAddonReloadReconfiguresInjector:
         self, tmp_path, monkeypatch,
     ):
         import os
-        # The addon does `from secret_injector import SecretInjector` (the
-        # proxy dir is on sys.path inside the container and in conftest) —
-        # patch THAT module instance, not the package-path twin.
+        # The staged dir is an env var read on every configure(), so it
+        # reaches whichever module instance the addon imported.
         from agentcage.data.proxy import addon as addon_mod
-        import secret_injector as si
 
         secrets_dir = tmp_path / "staged"
         secrets_dir.mkdir()
-        monkeypatch.setattr(si, "_SECRETS_DIR", secrets_dir)
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(secrets_dir))
         cfg_path = tmp_path / "config.yaml"
         rule = {"env": "KEY_A",
                 "placeholder": "agentcage:secret:KEY_A:0123456789abcdef0123456789abcdef"}

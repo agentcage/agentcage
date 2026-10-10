@@ -569,6 +569,23 @@ class TestReviewFailClosed:
                                           "api_key": ""}})
         assert w._review_sync({"note": ""}) is None
 
+    def test_empty_staged_key_is_a_tombstone(self, tmp_path, monkeypatch):
+        """The watcher key resolves through the egress's one secret lookup
+        (via the decider's ``_read_secret``): an existing-but-empty staged
+        file (``secret rm``) leaves the key unresolved instead of falling
+        back to the stale boot-time env value — the scan fails closed."""
+        staged = tmp_path / "secrets"
+        staged.mkdir()
+        (staged / "TESTKEY").write_text("")
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(staged))
+        w, _ = _mk_watcher(tmp_path, monkeypatch)  # env TESTKEY=sk-test
+        assert w._secret == ""
+
+        def must_not_call(**kw):
+            raise AssertionError("watcher called its model without a key")
+        monkeypatch.setattr(wmod, "llm_tool_call", must_not_call)
+        assert w._review_sync({"note": ""}) is None
+
     def test_shareable_parser_rejects_wrong_name_for_decider_too(self):
         # The shared helper now pins the name on BOTH wire formats —
         # the decider (which shares it) inherits the fix.

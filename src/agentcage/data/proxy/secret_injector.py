@@ -11,29 +11,26 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from mitmproxy import http
 
 from inspectors.base import InspectionResult
+from secret_lookup import read_secret
 
 log = logging.getLogger("agentcage.secret_injector")
 
-# File-delivery fallback for backends that don't inject secrets as env vars.
-# The container/podman backend uses Quadlet `Secret=type=env,target=KEY` so
-# secrets land in os.environ. The apple-container backend can't — apple's
-# `container` CLI has no quadlet-style env-secret primitive and we
-# deliberately don't pass cleartext via `-e KEY=VAL` (would show in
-# `container inspect` and process listings). Instead the backend bind-mounts
-# a 0600 secrets dir into the egress sibling at /home/acproxy/secrets.
-# This module reads from there when env lookup misses. Path is overridable
-# via AGENTCAGE_SECRETS_DIR so tests don't need to write to /home.
-_SECRETS_DIR = Path(
-    os.environ.get("AGENTCAGE_SECRETS_DIR", "/home/acproxy/secrets")
-)
+# Values resolve through the egress's one secret lookup
+# (``secret_lookup.read_secret``, shared with the Policy API, the watcher and
+# the relays): the staged file ``$AGENTCAGE_SECRETS_DIR/<NAME>`` (default
+# /home/acproxy/secrets) → env. The container/podman backend delivers
+# secrets as env (Quadlet `Secret=type=env,target=KEY`) AND stages the file;
+# the apple-container backend can't do env — apple's `container` CLI has no
+# quadlet-style env-secret primitive and we deliberately don't pass
+# cleartext via `-e KEY=VAL` (would show in `container inspect` and process
+# listings) — so there the staged file is the only channel. The dir is read
+# on every configure() (each live-apply reload), not frozen at import.
 
 # Strict (default) injection confines secret substitution to the "auth
 # channel": a placeholder is swapped for its real value only when it appears
@@ -99,7 +96,7 @@ def _rewrite_basic_auth(value: str, find: str, replace: str) -> tuple[str, bool]
 class InjectionRule:
     name: str  # e.g. "ANTHROPIC_API_KEY"
     placeholder: str  # e.g. "{{ANTHROPIC_API_KEY}}"
-    real_value: str  # loaded from os.environ at startup
+    real_value: str  # resolved via secret_lookup at configure()
     inject_to: list[str] = field(default_factory=list)  # domain restrictions
     # When set, ``transform_fn`` is called at substitution time to
     # produce a derived value (e.g. a freshly minted access token) in
@@ -168,37 +165,22 @@ class SecretInjector:
                 continue
             inject_to = [d.lower() for d in entry.get("inject_to", [])]
 
-            # Value resolution — staged file first, env fallback.
+            # Value resolution — secret_lookup.read_secret.
             #
-            # The bind-mounted secrets dir (/home/acproxy/secrets, staged by
-            # the egress ExecStartPre and re-written live by `agentcage
-            # secret set`) is authoritative WHEN the file exists: the
-            # process env is frozen at container creation, so only the file
-            # can carry a value change without a container restart. An
-            # EXISTING-but-EMPTY file is a tombstone (`secret rm` / failed
-            # staging of a deleted store entry): the rule is skipped rather
-            # than falling back to a stale env value. Only a MISSING file
-            # falls back to the env channel (pre-staging cages, podman <
-            # 4.7 where --showsecret is unavailable).
-            real_value = ""
-            staged = False
-            secret_file = _SECRETS_DIR / env_name
-            try:
-                if secret_file.is_file():
-                    staged = True
-                    real_value = secret_file.read_text().rstrip("\n")
-            except OSError as e:
-                log.warning(
-                    "secret_injection: failed reading %s: %s",
-                    secret_file, e,
-                )
-            if not staged:
-                real_value = os.environ.get(env_name, "")
+            # The staged file (re-written live by `agentcage secret set`)
+            # is authoritative WHEN it exists: the process env is frozen at
+            # container creation, so only the file can carry a value change
+            # without a container restart. An EXISTING-but-EMPTY file is a
+            # tombstone (`secret rm` / failed staging of a deleted store
+            # entry): the rule is skipped rather than falling back to a
+            # stale env value. Only a MISSING file falls back to the env
+            # channel (pre-staging cages, podman < 4.7 where --showsecret is
+            # unavailable).
+            real_value = read_secret(env_name)
             if not real_value:
                 log.warning(
-                    "secret_injection: no value for %s (%s), skipping rule",
-                    env_name,
-                    "staged file is empty" if staged else "env var not set",
+                    "secret_injection: no value for %s (unset, or staged "
+                    "file empty/unreadable), skipping rule", env_name,
                 )
                 continue
 

@@ -46,6 +46,8 @@ from typing import Optional
 import yaml
 from mitmproxy import http
 
+from secret_lookup import read_secret
+
 
 # A syntactically valid public-ish hostname: 2+ dotted labels, each label
 # alphanumeric/hyphen, not an IP literal, last label length >= 2 (rejects
@@ -485,28 +487,13 @@ class PolicyApi:
     def _read_secret(auth_source: str) -> str:
         """Resolve a ``*_source`` credential to its real value.
 
-        Mirrors the secret-injection convention: the staged tmpfs file at
-        ``/home/acproxy/secrets/<NAME>`` first (it is the live-update
-        channel — ``secret set`` restages it without a restart), then the
-        boot-time env (the Podman Secret env channel). Returns "" if unset
-        (the decider call then fails closed — fail-closed is unconditional).
+        The egress's one secret lookup (``secret_lookup.read_secret``, shared
+        with the injector and the relays): staged file → env, an empty
+        staged file a tombstone, only the trailing newline stripped. Returns "" if unset (the decider call then fails closed —
+        fail-closed is unconditional). The watcher's key reads through here.
         """
-        scheme, _, arg = (auth_source or "").partition(":")
-        if not arg:
-            return ""
-        for path in (
-            os.path.join("/home/acproxy/secrets", arg),
-            os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run"), arg),
-        ):
-            try:
-                with open(path) as f:
-                    val = f.read().strip()
-                    if val:
-                        return val
-            except OSError:
-                continue
-        val = os.environ.get(arg)
-        return val.strip() if val else ""
+        _scheme, _, arg = (auth_source or "").partition(":")
+        return read_secret(arg)
 
     # ── Control-host matching ───────────────────────────────
 
