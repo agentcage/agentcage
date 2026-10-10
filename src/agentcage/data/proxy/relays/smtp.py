@@ -188,6 +188,14 @@ def _extract_address(arg: str) -> Optional[str]:
     return None
 
 
+def _without_credentials(text: str, *credentials: str) -> str:
+    """*text* with each non-empty credential replaced by ``[redacted]``."""
+    for value in credentials:
+        if value:
+            text = text.replace(value, "[redacted]")
+    return text
+
+
 class SmtpRelay:
     """Single SMTP relay instance: one listener, one upstream target."""
 
@@ -1103,12 +1111,24 @@ class _UpstreamSmtp:
         token = b64encode(
             b"\0" + self._user.encode() + b"\0" + self._password.encode()
         ).decode("ascii")
-        auth_code, auth_text = await self._command(
-            b"AUTH PLAIN " + token.encode("ascii"),
-        )
+        try:
+            auth_code, auth_text = await self._command(
+                b"AUTH PLAIN " + token.encode("ascii"),
+            )
+        except ValueError as e:
+            # A malformed reply is quoted in the error.
+            raise ValueError(
+                _without_credentials(str(e), token, self._password)
+            ) from None
         if auth_code not in (235,):
+            # The error is logged and audited (the host keeps both), so
+            # never with the credential in it, should the server quote
+            # the AUTH line back.
             raise ConnectionError(
-                f"upstream AUTH failed: {auth_code} {auth_text}"
+                "upstream AUTH failed: "
+                + _without_credentials(
+                    f"{auth_code} {auth_text}", token, self._password,
+                )
             )
 
     async def rset(self) -> None:

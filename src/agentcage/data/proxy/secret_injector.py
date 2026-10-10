@@ -645,6 +645,39 @@ class SecretInjector:
         """
         return self._redact_request_values(flow)
 
+    def redact_record(self, record: Any) -> Any:
+        """Return *record* with every secret value in its strings swapped
+        for its rule's placeholder.
+
+        For audit entries: JSON-shaped data (dicts, lists, strings and
+        scalars), walked recursively; keys are left alone. The values are
+        those ``redact_request`` swaps back in a request (each rule's real
+        value and each token a transform minted, longest first), so a
+        field read from a request after injection (its URL, path or host)
+        records what ``redact_request`` would leave there: the
+        placeholder. The record is returned as is when there is nothing
+        to redact, otherwise a copy.
+        """
+        if not self.rules and not self._retired:
+            return record
+        targets = self._redaction_targets()
+        if not targets:
+            return record
+
+        def walk(value: Any) -> Any:
+            if isinstance(value, str):
+                for real, ph, _name in targets:
+                    if real in value:
+                        value = value.replace(real, ph)
+                return value
+            if isinstance(value, dict):
+                return {k: walk(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [walk(v) for v in value]
+            return value
+
+        return walk(record)
+
     def redact_response(self, flow: http.HTTPFlow) -> list[str]:
         """Replace real secret values with placeholders in the response.
 

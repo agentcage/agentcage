@@ -236,6 +236,37 @@ class TestFailClosed:
         assert not dom.is_granted("x.com")
         assert _overlay_domains(tmp_path) == set()
 
+    def test_provider_error_echoing_the_key_is_not_recorded(
+            self, tmp_path, monkeypatch):
+        """A provider's error body quoted in the deny reason never carries
+        the decider's own key, neither in the audit entry (kept by the
+        host's journal) nor in the response to the cage."""
+        import io
+        import urllib.error
+
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        pa._llm_secret = "sk-or-FAKE-DECIDER-KEY-0123456789"
+        entries: list[dict] = []
+        pa._audit = entries.append
+        responses: list = []
+        pa._respond = lambda flow, status, body: responses.append(body)
+
+        def reject(*a):
+            raise urllib.error.HTTPError(
+                "https://openrouter.ai/api/v1/chat/completions", 401,
+                "Unauthorized", {},
+                io.BytesIO(b'{"error": "invalid key '
+                           b'sk-or-FAKE-DECIDER-KEY-0123456789"}'))
+        pa._llm_openai_compat = reject
+        _handle(pa, _flow(domain="x.com"))
+
+        assert not dom.is_granted("x.com")
+        recorded = json.dumps(entries) + json.dumps(responses)
+        assert "sk-or-FAKE-DECIDER-KEY-0123456789" not in recorded
+        [entry] = [e for e in entries if e.get("decision") == "denied"]
+        assert entry["reason"].startswith("llm http 401: ")
+        assert "[redacted]" in entry["reason"]
+
     def test_unconfigured_llm_503_denies(self, tmp_path, monkeypatch,
                                           resp_status):
         pa, dom = _make_pa(tmp_path, monkeypatch)

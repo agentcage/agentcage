@@ -570,7 +570,14 @@ class Agentcage:
         the egress container. Past the cap, records still go to stderr
         (journald's own rotation applies) but the file is left alone; the
         operator can rotate or truncate it.
+
+        Every secret in the entry is swapped for its rule's placeholder
+        first (``_redact_audit_entry``), whoever produced it: stderr
+        ends up in the host's journal, readable by anyone with journal
+        access, and ``audit.jsonl`` is kept on disk, so neither may hold
+        a value the egress injects.
         """
+        entry = self._redact_audit_entry(entry)
         if "ts" not in entry:
             entry["ts"] = datetime.now(timezone.utc).isoformat()
         self._ring_ingest(entry)
@@ -601,6 +608,25 @@ class Agentcage:
                     audit_file.flush()
             except OSError:
                 pass
+
+    def _redact_audit_entry(self, entry: dict) -> dict:
+        """*entry* with every secret in its strings swapped for its rule's
+        placeholder (``SecretInjector.redact_record``): each rule's real
+        value and each token a transform minted.
+
+        HTTP and WebSocket entries read the request's URL, path and host
+        after injection, so a rule that injects into the URL (or the
+        host name) put its secret there; redacting them records what
+        ``redact_request`` leaves in the flow for the capture, the
+        placeholder. It also covers a literal secret the cage sent, an
+        inspector reason quoting one (response inspectors see the
+        response before it is redacted for the cage) and any other
+        producer's text (a relay's upstream error, say).
+        """
+        injector = getattr(self, "injector", None)
+        if injector is None:
+            return entry
+        return injector.redact_record(entry)
 
     def _sync_protocol_relays(self) -> None:
         """Make the running ``protocol_relays`` listeners (IMAP, SMTP)
@@ -1530,9 +1556,11 @@ class Agentcage:
         # must not keep it either. Injection only swaps placeholders
         # for secrets and this redaction swaps every secret back, so
         # the redacted request is what the cage sent with each secret
-        # as its rule's placeholder. The entry's ``path`` is refreshed
-        # too: ``request()`` read it after injection, so a rule that
-        # injects into the URL put its secret there.
+        # as its rule's placeholder. The entry's ``path`` and ``host``
+        # are refreshed too: ``request()`` read them after injection, so
+        # a rule that injects into the URL put its secret there (into
+        # the host for a placeholder in the host name: setting the URL
+        # re-parses it).
         if self._capture and flow.id in self._cap_pending:
             try:
                 redacted_req = self._capture.snapshot_request(flow)
@@ -1540,6 +1568,7 @@ class Agentcage:
                 staged["outbound_req"] = redacted_req
                 staged["inbound_req"] = redacted_req
                 staged["path"] = flow.request.path
+                staged["host"] = flow.request.host
             except Exception as e:  # pragma: no cover
                 ctx.log.warn(
                     f"agentcage: request re-snapshot failed: {e}"
@@ -2242,6 +2271,12 @@ class Agentcage:
         secrets_injected: list[str] | None = None,
         secrets_redacted: list[str] | None = None,
     ) -> None:
+        # The request fields are read as they are now, which for an
+        # allowed or flagged request is after injection: a rule that
+        # injects into the URL has its secret in url and path (and in
+        # host, for a placeholder in the host name). Both sinks below
+        # redact every secret back to its placeholder
+        # (_redact_audit_entry), as redact_request does for the capture.
         entry: dict = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "direction": direction,
@@ -2286,8 +2321,10 @@ class Agentcage:
             # exfiltration and beacons live in traffic that was allowed,
             # so suppressing the watcher's evidence along with the log
             # would blind the auditor to exactly its subject. Ingest the
-            # ring copy and stop before _audit_write's durable sinks.
-            self._ring_ingest(entry)
+            # ring copy (redacted as _audit_write redacts: the watcher
+            # sends what it scans to an LLM) and stop before
+            # _audit_write's durable sinks.
+            self._ring_ingest(self._redact_audit_entry(entry))
             return
         # Everything else rides the ONE audit funnel: stderr print +
         # audit.jsonl (capped) + the watcher ring — no direct writes, so

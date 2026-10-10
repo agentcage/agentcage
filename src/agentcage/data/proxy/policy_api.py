@@ -965,7 +965,8 @@ class PolicyApi:
             # grants. The whole point of the feature is that the caged agent
             # cannot expand its own egress without a positive decision, so
             # granting on an error would invert the trust model.
-            verdict = {"decision": "deny", "reason": f"llm call failed: {e}",
+            verdict = {"decision": "deny",
+                       "reason": self._without_llm_key(f"llm call failed: {e}"),
                        "decided_by": "decider"}
 
         decided_by = verdict.get("decided_by") or f"decider:agent:{self._llm_provider}"
@@ -1033,11 +1034,26 @@ class PolicyApi:
                 raw = self._llm_openai_compat(base, provider, domain,
                                                reason, timeout)
         except urllib.error.HTTPError as e:
+            # The reason is audited and returned to the cage: never with
+            # the decider's own key in it, should the provider's error
+            # body quote it. Cut out before truncating, so no prefix of
+            # it survives either.
+            body = e.read()
+            key = self._llm_secret.encode()
+            if key:
+                body = body.replace(key, b"[redacted]")
             return {"decision": "deny",
-                    "reason": f"llm http {e.code}: {e.read()[:200]!r}"}
+                    "reason": f"llm http {e.code}: {body[:200]!r}"}
         except Exception as e:
-            return {"decision": "deny", "reason": f"llm error: {e}"}
+            return {"decision": "deny",
+                    "reason": self._without_llm_key(f"llm error: {e}")}
         return self._parse_llm_verdict(raw, provider)
+
+    def _without_llm_key(self, text: str) -> str:
+        """*text* with the decider's key replaced by ``[redacted]``."""
+        if self._llm_secret:
+            text = text.replace(self._llm_secret, "[redacted]")
+        return text
 
     @staticmethod
     def _system_prompt() -> str:
