@@ -1982,4 +1982,51 @@ mod tests {
 
         assert!(backend.forget_secrets("demo").is_empty());
     }
+
+    /// The apple-container half of "a relay or agent credential is the
+    /// secret store's entry NAME, whatever its scheme, on every
+    /// backend" — the behaviour the container and vm backends now
+    /// match. Each is staged from the store under the name after the
+    /// colon (`env:` and `systemd-creds:` alike) into the egress-only
+    /// bind mount, and never becomes a cage `-e` flag. Nothing here
+    /// reads the host environment.
+    #[test]
+    fn relay_and_agent_credentials_are_staged_from_the_store_by_name() {
+        let dir = TestDir::new("apple-relay-agent-staging");
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(paths.deployment_dir("demo")).expect("deployment dir");
+        std::fs::write(
+            paths.deployment_dir("demo").join("pending_secrets.json"),
+            r#"[["MAIL_USER","stored-user"],["MAIL_PW","stored-password"],["DECIDER_KEY","stored-key"]]"#,
+        )
+        .expect("store");
+        // What `generate_units` records for a relay with
+        // `user_source: env:MAIL_USER` / `password_source:
+        // systemd-creds:MAIL_PW` and a decider on `env:DECIDER_KEY`.
+        let meta = super::Meta::parse(
+            r#"{"name":"demo","secrets_backend":"plaintext","secrets_allow_plaintext":true,
+                "relay_secret_envs":["MAIL_USER","MAIL_PW","DECIDER_KEY"],
+                "decider_api_key_source":"env:DECIDER_KEY"}"#,
+        )
+        .expect("unit json");
+        let runner = FakeRunner::new();
+        runner.assume_missing();
+        let backend = AppleBackend::new(&paths, &runner, "0.0.0");
+
+        let cage_envs = backend.stage_secrets("demo", &meta);
+
+        assert!(cage_envs.is_empty(), "{cage_envs:?} would reach the cage");
+        let secrets = paths.apple_secrets_dir("demo");
+        for (name, value) in [
+            ("MAIL_USER", "stored-user"),
+            ("MAIL_PW", "stored-password"),
+            ("DECIDER_KEY", "stored-key"),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(secrets.join(name)).ok().as_deref(),
+                Some(value),
+                "{name}"
+            );
+        }
+    }
 }

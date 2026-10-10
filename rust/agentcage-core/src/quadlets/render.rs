@@ -256,7 +256,7 @@ pub struct GenerateOptions<'a> {
     /// and that will not be materialized before container start by a
     /// decrypt `ExecStartPre` (present `.cred` blob, including
     /// `systemd-creds:` sources) or by the start path's
-    /// `resolve_and_populate` (`env:` / `cmd:` source) — is skipped
+    /// `resolve_and_populate` (an injection rule's `env:` / `cmd:` source) — is skipped
     /// instead of rendered as an unresolvable directive that fails the
     /// next boot with `start-limit-hit`. `None` keeps the legacy
     /// emit-everything behaviour.
@@ -692,6 +692,16 @@ pub fn generate_quadlets(
     // Either way the rule still needs the podman Secret= directive — the
     // ExecStartPre decrypts the blob and populates the podman store
     // before the proxy container starts.
+    //
+    // Not on vm. A `.cred` blob is sealed to the *host's* credential
+    // key, and the guest's `systemd-creds` has its own: run in the guest
+    // against the host's blob (which it sees through the config mount)
+    // the decrypt fails, and with no `-` prefix the egress unit fails
+    // with it. The host decrypts every blob itself instead
+    // (`VmBackend::bridge_secrets`) and creates the guest store entry
+    // before the egress starts, so the `Secret=` line and the staging
+    // step below find the value there.
+    let decrypt_in_unit = config.isolation != "vm";
     let creds_dir = options.state.creds_dir(deploy);
     let has_cred_file = |env_name: &str| host.exists(&format!("{creds_dir}/{env_name}.cred"));
     // True when a `Secret=` reference to `env_name` will resolve at
@@ -700,7 +710,8 @@ pub fn generate_quadlets(
     // behaviour). Otherwise true when the entry is in the store now, or
     // a pre-start channel materializes it: the decrypt ExecStartPre
     // (present `.cred` blob, including `systemd-creds:` sources) or the
-    // start path's resolve_and_populate (`env:` / `cmd:` source).
+    // start path's resolve_and_populate (an injection rule's `env:` /
+    // `cmd:` source — relays and agents pass no scheme, see below).
     let boot_resolvable = |env_name: &str, scheme: &str, cred_file: bool| -> bool {
         let Some(store) = options.store_secrets else {
             return true;
@@ -721,7 +732,7 @@ pub fn generate_quadlets(
             // units and the line comes back.
             continue;
         }
-        if scheme == "systemd-creds" || cred_file {
+        if decrypt_in_unit && (scheme == "systemd-creds" || cred_file) {
             creds_secrets.push(rule.env.clone());
         }
         proxy_secrets.push(rule.env.clone());
@@ -734,6 +745,15 @@ pub fn generate_quadlets(
     // sees them; they only land in the proxy. Auto-decrypt the .cred
     // file if systemd-creds is the default backend, mirroring
     // secret_injection above.
+    //
+    // A relay's `env:NAME` / `systemd-creds:NAME` names the store entry
+    // NAME — the path a `secret_injection` rule without a `source:` takes
+    // — and nothing materializes it from the host's environment at
+    // start (`resolve_and_populate` handles injection rules only). So it
+    // is gated like a sourceless rule: on the store or a `.cred` blob,
+    // never on its scheme. Gating on `env:` let a `secret rm`'d relay
+    // credential keep its `Secret=` line, and the next egress start
+    // failed on it.
     for relay in &config.protocol_relays {
         for source in [&relay.auth.user_source, &relay.auth.password_source] {
             let (scheme, argument) = partition(source);
@@ -741,10 +761,10 @@ pub fn generate_quadlets(
                 continue;
             }
             let cred_file = has_cred_file(argument);
-            if !boot_resolvable(argument, scheme, cred_file) {
+            if !boot_resolvable(argument, "", cred_file) {
                 continue;
             }
-            if scheme == "systemd-creds" || cred_file {
+            if decrypt_in_unit && (scheme == "systemd-creds" || cred_file) {
                 creds_secrets.push(argument.to_owned());
             }
             proxy_secrets.push(argument.to_owned());
@@ -753,11 +773,12 @@ pub fn generate_quadlets(
 
     // agents.decider's api_key — same shape and same egress-only
     // invariant as a relay credential: it uses a `*_source` scheme
-    // (env:/cmd:/systemd-creds:) and must NEVER reach the cage. An
+    // (env:/systemd-creds:) and must NEVER reach the cage. An
     // egress-only credential (the CLI parser already stripped it from
     // cage env/podman_secrets in config.load_config). Stage it into the
     // proxy's tmpfs secret files so the addon can read the real value
-    // when calling the decider. Same relay-auth staging path.
+    // when calling the decider. Same relay-auth staging path, and the
+    // same store gate: NAME is the store entry, whatever the scheme.
     //
     // The traffic watcher agent's own api_key has an identical
     // egress-only invariant and an identical staging path, and reusing
@@ -781,10 +802,10 @@ pub fn generate_quadlets(
             continue;
         }
         let cred_file = has_cred_file(argument);
-        if !boot_resolvable(argument, scheme, cred_file) {
+        if !boot_resolvable(argument, "", cred_file) {
             continue;
         }
-        if scheme == "systemd-creds" || cred_file {
+        if decrypt_in_unit && (scheme == "systemd-creds" || cred_file) {
             creds_secrets.push(argument.to_owned());
         }
         proxy_secrets.push(argument.to_owned());
@@ -1563,6 +1584,162 @@ secret_injection:
             ]
         );
         assert!(units.warnings.is_empty());
+    }
+
+    /// [`TestHost`], plus a `.cred` blob for each listed name.
+    struct CredHost(&'static [&'static str]);
+
+    impl QuadletHost for CredHost {
+        fn env_var(&self, name: &str) -> Option<String> {
+            TestHost.env_var(name)
+        }
+        fn realpath(&self, path: &str) -> String {
+            TestHost.realpath(path)
+        }
+        fn exists(&self, path: &str) -> bool {
+            TestHost.exists(path)
+                || self
+                    .0
+                    .iter()
+                    .any(|name| path.ends_with(&format!("/creds/{name}.cred")))
+        }
+        fn is_dir(&self, path: &str) -> bool {
+            TestHost.is_dir(path)
+        }
+        fn stage_vm_file_volume(&self, source: &str, deploy: &str) -> Result<String, String> {
+            TestHost.stage_vm_file_volume(source, deploy)
+        }
+        fn detect_default_creds_scope(&self) -> Option<String> {
+            TestHost.detect_default_creds_scope()
+        }
+    }
+
+    /// One relay and one agent, every credential named by a scheme.
+    const RELAY_AND_AGENT: &str = r"
+container:
+  image: busybox
+domains:
+  allow: [api.example.com]
+dns_servers: [192.0.2.53]
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 0.0.0.0:1143
+  upstream: {host: imap.example.com, port: 993}
+  auth:
+    type: imap-login
+    user_source: env:MAIL_USER
+    password_source: env:MAIL_PW
+agents:
+  decider:
+    enable: true
+    provider: openrouter
+    model: m
+    api_key: env:DECIDER_KEY
+  watcher:
+    enable: true
+    provider: openrouter
+    model: m
+    api_key: systemd-creds:WATCHER_KEY
+";
+
+    fn render_egress(
+        isolation: &str,
+        store: Option<&BTreeSet<String>>,
+        host: &dyn QuadletHost,
+    ) -> String {
+        let yaml = format!("name: c\nisolation: {isolation}\n{RELAY_AND_AGENT}");
+        let config = crate::config::load(
+            "cage.yaml",
+            &yaml,
+            &crate::config::FixedHost {
+                isolation: isolation.to_owned(),
+                dns_servers: Ok(vec!["192.0.2.53".to_owned()]),
+            },
+        )
+        .expect("valid config");
+        let state = StatePaths {
+            config_root: "/cfg/agentcage".to_owned(),
+            data_root: "/data/agentcage".to_owned(),
+        };
+        let units = generate_quadlets(
+            &config,
+            &GenerateOptions {
+                config_host_path: "/cfg/agentcage/cages/c/cage.yaml",
+                patches_host_dir: "/data/patches",
+                deploy_name: "c",
+                rootless: true,
+                used_octets: None,
+                network_octet: None,
+                store_secrets: store,
+                state: &state,
+                version: "9.9.9",
+            },
+            host,
+        )
+        .expect("renders");
+        units.files["c-egress.container"].clone()
+    }
+
+    /// A relay or agent credential's `env:NAME` is the store entry NAME,
+    /// the way a `secret_injection` rule without a `source:` names its
+    /// `env`: nothing materializes it from the host environment before
+    /// the egress starts. So its `Secret=` line is gated like such a
+    /// rule's, on the store or a `.cred` blob. It used to be waved
+    /// through on its `env:` scheme, as if `resolve_and_populate` would
+    /// create it, so a `secret rm`'d relay credential kept its line and
+    /// the next egress start failed with `no such secret`.
+    #[test]
+    fn relay_and_agent_secret_lines_are_gated_on_the_store_like_a_sourceless_rule() {
+        let store: BTreeSet<String> = ["MAIL_USER".to_owned()].into_iter().collect();
+        let egress = render_egress("container", Some(&store), &CredHost(&["WATCHER_KEY"]));
+
+        // In the store, or sealed in a `.cred` blob: rendered.
+        assert!(egress.contains("Secret=c.MAIL_USER,type=env,target=MAIL_USER\n"));
+        assert!(egress.contains("Secret=c.WATCHER_KEY,type=env,target=WATCHER_KEY\n"));
+        // `env:`-named but in neither: left out, so the egress starts
+        // and the relay / decider fail closed on the missing value.
+        assert!(!egress.contains("MAIL_PW"), "{egress}");
+        assert!(!egress.contains("DECIDER_KEY"), "{egress}");
+
+        // With the store unknown, everything is emitted, as before.
+        let unknown = render_egress("container", None, &TestHost);
+        for name in ["MAIL_USER", "MAIL_PW", "DECIDER_KEY", "WATCHER_KEY"] {
+            assert!(
+                unknown.contains(&format!("Secret=c.{name},type=env,target={name}\n")),
+                "{name}: {unknown}"
+            );
+        }
+    }
+
+    /// On vm the guest never decrypts a `.cred` blob: it is sealed to
+    /// the host's credential key, and the guest's `systemd-creds` would
+    /// fail on it and take the egress unit down (the `ExecStartPre` has
+    /// no `-`). The host decrypts it into the guest store before the
+    /// egress starts (`VmBackend::bridge_secrets`), so the guest unit
+    /// keeps the `Secret=` line and the staging step only. On container
+    /// the unit decrypts, as before.
+    #[test]
+    fn only_the_container_unit_decrypts_a_cred_blob() {
+        let host = CredHost(&["MAIL_PW", "WATCHER_KEY"]);
+
+        let container = render_egress("container", None, &host);
+        for name in ["MAIL_PW", "WATCHER_KEY"] {
+            assert!(
+                container.contains(&format!("decrypt --name \"{name}\"")),
+                "{name}: {container}"
+            );
+        }
+
+        let vm = render_egress("vm", None, &host);
+        assert!(!vm.contains("systemd-creds"), "{vm}");
+        for name in ["MAIL_PW", "WATCHER_KEY"] {
+            assert!(
+                vm.contains(&format!("Secret=c.{name},type=env,target={name}\n")),
+                "{name}: {vm}"
+            );
+            assert!(vm.contains(&format!("/secrets/{name}\"")), "{name}: {vm}");
+        }
     }
 
     #[test]

@@ -908,16 +908,17 @@ impl<'a> VmBackend<'a> {
     /// only calls it for `isolation: container`, while
     /// [`Self::bridge_secrets`] can only mirror a host store that a
     /// macOS host does not have. Without this, a `source:`-schemed
-    /// secret — most visibly `domains.auto`'s decider `api_key` — is
-    /// referenced by the egress unit and never created, and the egress
-    /// dies at start with `no such secret`, taking the cage with it.
+    /// injection rule is referenced by the egress unit and never
+    /// created, and the egress dies at start with `no such secret`,
+    /// taking the cage with it.
     ///
-    /// Sources are collected in the Python's order — the injection
-    /// rules, then each relay's user and password, then the decider and
-    /// watcher API keys — and the first occurrence of an env name wins.
-    /// Then the store-held values (`agentcage secret set`, no scheme),
-    /// which on a macOS host live in the login keychain and have no
-    /// other route into the guest.
+    /// Only injection rules' `source:` is resolved here, in rule order,
+    /// and the first occurrence of an env name wins. Relay credentials
+    /// and agent API keys name a store entry rather than a source (see
+    /// `source_secrets`), so they come with the store-held values
+    /// (`agentcage secret set`) in [`Self::bridge_store_secrets`], which
+    /// on a macOS host live in the login keychain and have no other
+    /// route into the guest.
     ///
     /// Best-effort throughout: an unresolvable source warns rather than
     /// aborting the deploy, and the egress's `ExecStartPre` tolerates a
@@ -2217,51 +2218,29 @@ fn build_argv(flags: &[String], tag: &str, containerfile: &str, context: &str) -
     argv
 }
 
-/// `(env_name, source)` for every `source:`-schemed secret in a config.
+/// `(env_name, source)` for every `secret_injection` rule with a
+/// `source:`.
 ///
-/// The Python's collection order, which decides which duplicate wins.
+/// The rules' order, which decides which duplicate wins.
+///
+/// Relay credentials and agent API keys used to be collected here too,
+/// which made their `env:NAME` read the *host's* environment on this
+/// backend only: the container backend never resolves them
+/// (`resolve_and_populate` handles injection rules) and apple-container
+/// stages them from the store. Their NAME is the store entry, the way a
+/// rule without a `source:` names its `env`, so they now reach the guest
+/// only through [`VmBackend::bridge_secrets`] and
+/// [`VmBackend::bridge_store_secrets`], like such a rule. Leaving them
+/// here also put them in the store pass's `skip`, so on a Mac, where
+/// the host has no podman store to bridge, a value held only in the
+/// keychain never reached the guest at all.
 fn source_secrets(config: &Config) -> Vec<(String, String)> {
-    let mut sources: Vec<(String, String)> = Vec::new();
-    for rule in &config.secret_injection {
-        if !rule.source.is_empty() {
-            sources.push((rule.env.clone(), rule.source.clone()));
-        }
-    }
-    for relay in &config.protocol_relays {
-        for source in [&relay.auth.user_source, &relay.auth.password_source] {
-            // `scheme, _, var = src.partition(":")` then `if scheme and
-            // var` — an unschemed value and a scheme with nothing after
-            // it are both skipped.
-            if let Some((scheme, var)) = source.split_once(':') {
-                if !scheme.is_empty() && !var.is_empty() {
-                    sources.push((var.to_owned(), source.clone()));
-                }
-            }
-        }
-    }
-    // The decider's and watcher's API keys: staged into the guest's
-    // secret store, never into the cage's environment, the same
-    // egress-only invariant a relay credential has.
-    for (enabled, api_key) in [
-        (
-            config.agents.decider.enable,
-            &config.agents.decider.llm.api_key,
-        ),
-        (
-            config.agents.watcher.enable,
-            &config.agents.watcher.llm.api_key,
-        ),
-    ] {
-        if !enabled {
-            continue;
-        }
-        if let Some((scheme, var)) = api_key.split_once(':') {
-            if !scheme.is_empty() && !var.is_empty() {
-                sources.push((var.to_owned(), api_key.clone()));
-            }
-        }
-    }
-    sources
+    config
+        .secret_injection
+        .iter()
+        .filter(|rule| !rule.source.is_empty())
+        .map(|rule| (rule.env.clone(), rule.source.clone()))
+        .collect()
 }
 
 /// `["bash", "-c", script]`.

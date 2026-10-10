@@ -140,7 +140,7 @@ protocol_relays:
       max_message_bytes: 5242880 # 5 MB cap
 ```
 
-Store both credentials before deploying: `agentcage secret set my-agent SENDGRID_USER` and `agentcage secret set my-agent SENDGRID_API_KEY`. Credential sources take the form `scheme:NAME`, where the scheme is `env:` or `systemd-creds:` and `NAME` is the secret's name. A bare name with no scheme is rejected at `cage create`.
+Store both credentials before deploying: `agentcage secret set my-agent SENDGRID_USER` and `agentcage secret set my-agent SENDGRID_API_KEY`. Credential sources take the form `scheme:NAME`, where the scheme is `env:` or `systemd-creds:` and `NAME` is the secret's name. A bare name with no scheme is rejected at `cage create`. On every backend, both schemes read the secret store's entry `NAME`. A shell environment variable with the same name is not read.
 
 ### Example IMAP Relay in `cage.yaml`:
 

@@ -472,22 +472,29 @@ impl<'a> SecretHost<'a> {
         ))
     }
 
-    /// `resolve_and_populate` -- materialize every rule and both agent
-    /// API keys into the podman store.
+    /// `resolve_and_populate` -- materialize every `secret_injection`
+    /// rule's `source:` into the podman store.
     ///
     /// Returns the env names that were handled, so the caller can keep
     /// them out of the rule-strip filter.
     ///
-    /// # Why the agents are in here
+    /// # Why the agents and relays are not in here
     ///
-    /// Neither `agents.decider.api_key` nor `agents.watcher.api_key` is
-    /// a `secret_injection` rule -- both are egress-only and never
-    /// injected into cage traffic -- but `quadlets` emits a `Secret=`
-    /// directive for each, and `_boot_resolvable` green-lights `env:`
-    /// and `cmd:` schemes *because* this function is expected to
-    /// materialize them. Drop this loop and the egress unit references
-    /// a podman secret nobody creates, the container dies at start with
-    /// `no such secret`, and the whole cage goes with it.
+    /// An injection rule's `source:` says where the value comes from
+    /// (`env:VAR` is the host's environment at deploy time), and this
+    /// is where that is honoured. A relay's `auth.*_source` and an
+    /// agent's `api_key` are not injection sources: their `env:NAME` /
+    /// `systemd-creds:NAME` names the secret store's entry NAME, the
+    /// way a rule *without* a `source:` names its `env`, and the docs
+    /// tell the operator to `agentcage secret set` it. The vm and
+    /// apple-container backends read them from the store, and so did
+    /// the relays here. The agents used to be resolved from the
+    /// host's environment, so a key that was only in the store failed
+    /// `cage create` / `cage start` with "env var not set", and a
+    /// stale exported value overwrote a fresh `secret set`. The
+    /// quadlet gates their `Secret=` line on the store as it gates a
+    /// sourceless rule's, so nothing references an entry that does not
+    /// exist.
     ///
     /// # Errors
     ///
@@ -530,77 +537,11 @@ impl<'a> SecretHost<'a> {
             Self::store_resolution(podman, deploy_name, &rule.env, &result, &mut out.resolved)?;
         }
 
-        for (enabled, api_key, label) in [
-            (
-                cfg.agents.decider.enable,
-                cfg.agents.decider.llm.api_key.as_str(),
-                "agents.decider",
-            ),
-            (
-                cfg.agents.watcher.enable,
-                cfg.agents.watcher.llm.api_key.as_str(),
-                "agents.watcher",
-            ),
-        ] {
-            if !enabled {
-                continue;
-            }
-            self.resolve_agent_api_key(
-                podman,
-                api_key,
-                label,
-                deploy_name,
-                state_dir,
-                skip,
-                strict,
-                &mut out,
-            )?;
-        }
-
         Ok(out)
     }
 
-    /// `_resolve_agent_api_key` -- one agent's `api_key` source.
-    ///
-    /// The env name is the *argument* of the scheme, not a rule's
-    /// `env:` -- `env:OPENROUTER_API_KEY` names `OPENROUTER_API_KEY`.
-    /// A source with no argument at all (a bare `FOO`, or an empty
-    /// string) is skipped, which is the Python's `if not arg`.
-    #[allow(clippy::too_many_arguments)]
-    fn resolve_agent_api_key(
-        &self,
-        podman: &dyn PodmanSecrets,
-        source: &str,
-        label: &str,
-        deploy_name: &str,
-        state_dir: &Path,
-        skip: &BTreeSet<String>,
-        strict: bool,
-        out: &mut Populated,
-    ) -> Result<(), SecretError> {
-        let arg = source.split_once(':').map_or("", |(_, arg)| arg);
-        if arg.is_empty() || skip.contains(arg) || out.resolved.contains(arg) {
-            return Ok(());
-        }
-        let result = match self.resolve(source, arg, state_dir) {
-            Ok(result) => result,
-            Err(e) => {
-                if strict {
-                    return Err(SecretError::value(format!(
-                        "failed to resolve {label} api_key '{arg}': {e}"
-                    )));
-                }
-                out.warnings.push(format!(
-                    "warning: failed to resolve {label} api_key {arg}: {e}"
-                ));
-                return Ok(());
-            }
-        };
-        Self::store_resolution(podman, deploy_name, arg, &result, &mut out.resolved)
-    }
-
-    /// The two branches both call sites share: a resolved value becomes
-    /// a podman secret, a quadlet-handled one is only recorded.
+    /// A resolved value becomes a podman secret, a quadlet-handled one
+    /// is only recorded.
     fn store_resolution(
         podman: &dyn PodmanSecrets,
         deploy_name: &str,

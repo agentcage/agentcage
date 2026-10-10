@@ -801,15 +801,10 @@ fn the_existing_schemes_run_nothing() {
     assert_eq!(fake.call_count(), 0);
 }
 
-/// `resolve_and_populate` over one rule of every shape, plus both
-/// agents, in one sequence.
-///
-/// The agents are in this function for a reason worth restating: their
-/// `api_key` is not a `secret_injection` rule, but the quadlet
-/// generator emits a `Secret=` directive for each on the strength of
-/// this function materializing it. Miss them and the egress unit
-/// references a podman secret nobody created, dies at start with
-/// `no such secret`, and takes the cage with it.
+/// `resolve_and_populate` over one rule of every shape, in one
+/// sequence. Both agents are enabled with keys whose names the host
+/// environment and the shell could answer, and neither is touched: see
+/// [`relay_and_agent_credentials_name_the_store_entry_not_the_host_env`].
 #[test]
 fn resolve_and_populate_materializes_every_scheme_in_order() {
     use agentcage_core::config::types::SecretInjectionRule;
@@ -843,15 +838,6 @@ fn resolve_and_populate_materializes_every_scheme_in_order() {
     fake.push_all([Reply::status(0), Reply::success(), Reply::success()]);
     // CMD_KEY: the shell, then absent -> create.
     fake.push_all([Reply::ok("cmd-value\n"), Reply::status(1), Reply::success()]);
-    // agents.decider's api_key names HOST_VAR, which nothing has
-    // resolved yet under that name.
-    fake.push_all([Reply::status(1), Reply::success()]);
-    // agents.watcher's names `print-it`, likewise.
-    fake.push_all([
-        Reply::ok("watcher-value\n"),
-        Reply::status(1),
-        Reply::success(),
-    ]);
 
     let env = MapEnv::new().with("HOST_VAR", VALUE);
     let host = SecretHost::new(&fake, &env, true);
@@ -864,7 +850,7 @@ fn resolve_and_populate_materializes_every_scheme_in_order() {
 
     assert_eq!(
         out.resolved.iter().map(String::as_str).collect::<Vec<_>>(),
-        ["CMD_KEY", "CRED_KEY", "ENV_KEY", "HOST_VAR", "print-it"]
+        ["CMD_KEY", "CRED_KEY", "ENV_KEY"]
     );
     assert!(out.warnings.is_empty());
 
@@ -875,19 +861,66 @@ fn resolve_and_populate_materializes_every_scheme_in_order() {
         &["/bin/sh", "-c", "print-it"],
         &["podman", "secret", "inspect", "acme.CMD_KEY"],
         &["podman", "secret", "create", "acme.CMD_KEY", "-"],
-        &["podman", "secret", "inspect", "acme.HOST_VAR"],
-        &["podman", "secret", "create", "acme.HOST_VAR", "-"],
-        &["/bin/sh", "-c", "print-it"],
-        &["podman", "secret", "inspect", "acme.print-it"],
-        &["podman", "secret", "create", "acme.print-it", "-"],
     ]);
-    // `STORE_KEY`, `NO_SOURCE` and `SKIPPED` produced no calls at all,
-    // and `CRED_KEY` was recorded without one.
+    // `STORE_KEY`, `NO_SOURCE`, `SKIPPED` and both agents produced no
+    // calls at all, and `CRED_KEY` was recorded without one.
     assert_eq!(fake.call(2).stdin_text().as_deref(), Some(VALUE));
     for call in fake.calls() {
         argv_is_clean(&call.raw_argv());
     }
     fake.assert_drained();
+}
+
+/// The container backend's half of "a relay or agent credential is the
+/// secret store's entry NAME, whatever its scheme, on every backend".
+///
+/// `env:NAME` on an injection rule's `source:` reads the host's
+/// environment; on a relay's `auth.*_source` or an agent's `api_key`
+/// it names a store entry, like a rule without a `source:`. The relays
+/// were already left alone here. The agents were resolved from the host
+/// environment: a key that existed only in the store (`secret set`,
+/// `-s`) failed `cage create` / `cage start` with "env var not set",
+/// and an exported value overwrote the stored one on every start. A
+/// `systemd-creds:` key with no `.cred` blob failed the same way, where
+/// a relay's went on to the store.
+///
+/// The vm half is `relay_and_agent_credentials_are_not_read_from_the_host_env_on_vm`
+/// in `vm_argv.rs`, and apple-container's is
+/// `relay_and_agent_credentials_are_staged_from_the_store_by_name` in
+/// `apple/backend.rs`.
+#[test]
+fn relay_and_agent_credentials_name_the_store_entry_not_the_host_env() {
+    use agentcage_core::config::types::ProtocolRelay;
+
+    let mut cfg = common::config("container", "auto", "auto", false);
+    let mut relay = ProtocolRelay::default();
+    relay.auth.user_source = "env:MAIL_USER".to_owned();
+    relay.auth.password_source = "systemd-creds:MAIL_PW".to_owned();
+    cfg.protocol_relays.push(relay);
+    cfg.agents.decider.enable = true;
+    cfg.agents.decider.llm.api_key = "env:DECIDER_KEY".to_owned();
+    cfg.agents.watcher.enable = true;
+    cfg.agents.watcher.llm.api_key = "systemd-creds:WATCHER_KEY".to_owned();
+
+    // Every name is also a host environment variable, holding a value
+    // that must not reach the store.
+    let env = MapEnv::new()
+        .with("MAIL_USER", VALUE)
+        .with("MAIL_PW", VALUE)
+        .with("DECIDER_KEY", VALUE)
+        .with("WATCHER_KEY", VALUE);
+    let fake = FakeRunner::new();
+    let host = SecretHost::new(&fake, &env, true);
+    let podman = Podman::new(&fake);
+
+    // No `.cred` blobs under the state dir, and strict.
+    let temp = TempDir::new("populate-relay-agent");
+    let out = host
+        .resolve_and_populate(&podman, &cfg, "acme", temp.path(), &BTreeSet::new(), true)
+        .expect("the store holds them; nothing here needs the host env");
+    assert!(out.resolved.is_empty(), "{:?}", out.resolved);
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    assert_eq!(fake.call_count(), 0, "nothing written to the store");
 }
 
 /// `strict=False` collects the failure and carries on; `strict=True`
