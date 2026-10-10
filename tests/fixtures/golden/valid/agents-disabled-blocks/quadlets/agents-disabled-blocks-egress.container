@@ -35,11 +35,12 @@ Environment="AGENTCAGE_VERSION=0.0.0-golden"
 # derivable) rather than scraping the rendered baseline — under full
 # default-deny that baseline is EMPTY, and a grant must still resolve.
 Environment="AGENTCAGE_DNS_UPSTREAMS=192.0.2.53"
-Volume=agents-disabled-blocks-certs.volume:/home/acproxy/.mitmproxy:Z
+Volume=agents-disabled-blocks-certs.volume:/home/acproxy/ca:Z
 # Public-only cert publish dir — see quadlets.py for why this is a
 # separate volume. supervisor-egress.sh Step E installs the public
-# CA cert here after mitmproxy generates it; the cage's /certs:ro
-# bind reads from this volume (NOT the private-key volume above).
+# CA cert here (agentcage-ca.pem) after the egress generates it; the
+# cage's /certs:ro bind reads from this volume (NOT the private-key
+# volume above).
 Volume=agents-disabled-blocks-public-certs.volume:/home/acproxy/public-certs:Z
 AddCapability=NET_ADMIN
 AddCapability=NET_BIND_SERVICE

@@ -343,14 +343,14 @@ impl Default for CaptureConfig {
 /// policy.
 pub const DEFAULT_TCP_ALLOW_PORTS: [i64; 2] = [80, 443];
 
-/// Ports reserved by mitmdump's own listeners.
+/// Ports reserved by the egress proxy's own listeners.
 ///
 /// Redirecting them would either loop (8443 is the transparent
 /// listener's own port) or break the L7 `HTTP_PROXY` path (8080 is the
 /// regular HTTP-proxy listener). Applied only to inspected TCP ports
 /// (= `tcp.allow` - `tcp.passthrough`); passthrough entries never get a
 /// REDIRECT rule and don't conflict.
-pub const MITMDUMP_RESERVED_PORTS: [i64; 2] = [8080, 8443];
+pub const EGRESS_RESERVED_PORTS: [i64; 2] = [8080, 8443];
 
 /// `TcpPortsConfig` — TCP egress port policy.
 ///

@@ -123,12 +123,9 @@ fn verify_container(
 
     println!();
     println!("-- CA Certificate --");
-    match podman.container_exec(
-        &cage,
-        &argv(&["test", "-f", "/certs/mitmproxy-ca-cert.pem"]),
-    ) {
-        Ok((0, _)) => results.pass("mitmproxy CA cert exists in shared volume"),
-        _ => results.fail("mitmproxy CA cert NOT found at /certs/mitmproxy-ca-cert.pem"),
+    match podman.container_exec(&cage, &argv(&["test", "-f", "/certs/agentcage-ca.pem"])) {
+        Ok((0, _)) => results.pass("CA cert exists in shared volume"),
+        _ => results.fail("CA cert NOT found at /certs/agentcage-ca.pem"),
     }
 
     println!();
@@ -374,10 +371,10 @@ fn verify_apple_container(ctx: &Ctx, name: &str, results: &mut Results) {
 
     println!();
     println!("-- CA Certificate --");
-    if exec(&["test", "-f", "/certs/mitmproxy-ca-cert.pem"]).0 {
-        results.pass("mitmproxy CA cert exists at /certs/mitmproxy-ca-cert.pem");
+    if exec(&["test", "-f", "/certs/agentcage-ca.pem"]).0 {
+        results.pass("CA cert exists at /certs/agentcage-ca.pem");
     } else {
-        results.fail("mitmproxy CA cert NOT found at /certs/mitmproxy-ca-cert.pem");
+        results.fail("CA cert NOT found at /certs/agentcage-ca.pem");
     }
 
     println!();
@@ -413,7 +410,7 @@ fn verify_apple_container(ctx: &Ctx, name: &str, results: &mut Results) {
         "https://evil-exfil-server.io",
     ]);
     if status == "403" {
-        results.pass("Blocked domain (evil-exfil-server.io) is denied (HTTP 403 from mitmproxy)");
+        results.pass("Blocked domain (evil-exfil-server.io) is denied (HTTP 403 from the egress)");
     } else if status.is_empty() || status == "000" {
         // Connection refused or timed out — the proxy or iptables
         // dropped it, which is also a pass, just less informative.
@@ -597,7 +594,7 @@ mod tests {
                 "acme",
                 "test",
                 "-f",
-                "/certs/mitmproxy-ca-cert.pem"
+                "/certs/agentcage-ca.pem"
             ]
         );
         assert_eq!(calls[1][3..], ["cat", "/etc/resolv.conf"]);

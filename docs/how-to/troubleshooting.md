@@ -54,13 +54,13 @@ agentcage renders expected failures as a single `error: ...` line; set `AGENTCAG
      ```
 
 #### Symptom: Package managers report TLS / SSL Certificate Errors
-- **Cause**: The agent runtime is not trusting the per-cage CA certificate mounted at `/certs/mitmproxy-ca-cert.pem`.
+- **Cause**: The agent runtime is not trusting the per-cage CA certificate mounted at `/certs/agentcage-ca.pem`.
 - **Solution**:
   Verify the following environment variables are set inside the container:
-  - Python: `REQUESTS_CA_BUNDLE=/certs/mitmproxy-ca-cert.pem`
-  - Node.js: `NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem`
-  - cURL: `CURL_CA_BUNDLE=/certs/mitmproxy-ca-cert.pem`
-  - Git: `git config --global http.sslCAInfo /certs/mitmproxy-ca-cert.pem`
+  - Python: `REQUESTS_CA_BUNDLE=/certs/agentcage-ca.pem`
+  - Node.js: `NODE_EXTRA_CA_CERTS=/certs/agentcage-ca.pem`
+  - cURL: `CURL_CA_BUNDLE=/certs/agentcage-ca.pem`
+  - Git: `git config --global http.sslCAInfo /certs/agentcage-ca.pem`
 
 ---
 

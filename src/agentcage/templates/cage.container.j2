@@ -11,8 +11,8 @@ Environment="HTTP_PROXY=http://{{ ip_egress }}:8080"
 Environment="HTTPS_PROXY=http://{{ ip_egress }}:8080"
 Environment="http_proxy=http://{{ ip_egress }}:8080"
 Environment="https_proxy=http://{{ ip_egress }}:8080"
-Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
-Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
+Environment="NODE_EXTRA_CA_CERTS=/certs/agentcage-ca.pem"
+Environment="SSL_CERT_FILE=/certs/agentcage-ca.pem"
 Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
 Volume={{ name }}-public-certs.volume:/certs:ro,Z
 {# NOTE: do NOT reintroduce a broad `Volume={{ patches_host_dir }}:/agentcage`
@@ -124,7 +124,10 @@ ExecStartPre=/bin/bash -c 'mkdir -p {{ mask.state_dir }} && : > {{ mask.state_fi
 # never-recorded (pre-existing) directories are simply not in the list.
 ExecStopPost=-/bin/bash -c 'f={{ mask.state_file }}; [ -f "$f" ] || exit 0; root=$(echo {{ mask.root_b64 }} | base64 -d) && root=$(realpath -m -- "$root") || exit 0; while IFS= read -r d; do [ -n "$d" ] || continue; case "$(realpath -m -- "$d")" in "$root"/*) ;; *) continue ;; esac; [ -L "$d" ] && continue; [ -d "$d" ] || continue; rmdir "$d" 2>/dev/null || echo "agentcage: keeping $d (created as a tmpfs mask mount point, but not empty)" >&2; done < "$f"; rm -f "$f"; exit 0'
 {% endfor %}
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-egress test -f /home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
+{# Polls the PUBLIC cert — the file this cage's /certs mount serves — which
+   the egress supervisor publishes only once its proxy is listening, so the
+   cage never starts before the CA it trusts exists. #}
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-egress test -f /home/acproxy/public-certs/agentcage-ca.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
 {% for mask in copyup_masks %}
 # A tmpfs mask that opted into `tmpcopyup` (#328) comes up already holding a
 # copy of what it covers — but the runtime performs that copy as the user-

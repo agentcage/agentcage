@@ -18,7 +18,7 @@
 #      tcp/443 to its in-process mitmproxy on :8443 — same flow shape as
 #      container/vm in PR 2.
 #   C. Best-effort install the proxy CA into the system trust store. The
-#      egress sibling writes mitmproxy-ca-cert.pem into a shared /certs
+#      egress sibling writes agentcage-ca.pem into a shared /certs
 #      bind-mount; we race the egress's first-startup write briefly.
 #   D. capsh-drop NoNewPrivs + bounding set + setuid to the uid-1000
 #      user, then exec the user's original argv via the shell-escaped
@@ -241,35 +241,35 @@ else
 fi
 
 #-- Stage C. Install proxy CA into the cage's trust store -----------------
-# The egress sibling writes mitmproxy-ca-cert.pem into the shared /certs
+# The egress sibling writes agentcage-ca.pem into the shared /certs
 # bind-mount on its first startup. Cage and egress mount the same host
 # dir (the backend wires this via two --volume flags pointing at the
 # same host path). Wait up to 10s for the file; fall through silently
 # on timeout because (a) HTTPS to the proxy will fail loudly anyway,
 # and (b) some operator workflows (e.g. cage exec into a pre-existing
 # container after `cage edit`) don't need the trust store updated.
-log "stage C: waiting for egress CA cert at /certs/mitmproxy-ca-cert.pem"
+log "stage C: waiting for egress CA cert at /certs/agentcage-ca.pem"
 i=0
 while [ "$i" -lt 20 ]; do
-  if [ -s /certs/mitmproxy-ca-cert.pem ]; then
+  if [ -s /certs/agentcage-ca.pem ]; then
     break
   fi
   sleep 0.5
   i=$((i + 1))
 done
 
-if [ -s /certs/mitmproxy-ca-cert.pem ]; then
+if [ -s /certs/agentcage-ca.pem ]; then
   # update-ca-certificates is debian/ubuntu-specific. ca-certificates
   # was installed in the wrapper Containerfile, so it should exist; but
   # tolerate missing for distros where the wrapper's apt branch didn't
   # match (alpine apk path, future bases). The cage will then see
   # certificate-verify failures on HTTPS — louder than silent breakage.
-  cp /certs/mitmproxy-ca-cert.pem \
+  cp /certs/agentcage-ca.pem \
      /usr/local/share/ca-certificates/agentcage-proxy.crt 2>/dev/null || true
   update-ca-certificates >/dev/null 2>&1 || true
   log "stage C: proxy CA installed into trust store"
 else
-  log "stage C: no /certs/mitmproxy-ca-cert.pem after 10s — HTTPS to the proxy may fail (egress still booting?)"
+  log "stage C: no /certs/agentcage-ca.pem after 10s — HTTPS to the proxy may fail (egress still booting?)"
 fi
 
 #-- Seeding helper (stages C' and C'') -------------------------------------

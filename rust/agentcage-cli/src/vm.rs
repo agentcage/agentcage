@@ -1235,7 +1235,7 @@ impl<'a> VmBackend<'a> {
     /// The four units `_deploy_cage` starts before the cage itself.
     ///
     /// Order is the dependency order and is load-bearing: the cage's
-    /// `ExecStartPre` polls for mitmproxy's CA certificate, which the
+    /// `ExecStartPre` polls for the egress's public CA certificate, which the
     /// egress generates on its first run, so racing the two turns a
     /// first `cage create` into a near-certain spurious failure.
     #[must_use]
@@ -1713,8 +1713,8 @@ impl<'a> VmBackend<'a> {
     ///
     /// Step 5's ordering is the one a reader is most likely to tidy
     /// away. The cage unit's `ExecStartPre` is a 30-attempt poll for
-    /// mitmproxy's CA certificate, which the egress generates on its
-    /// first run; starting the two together turns a first `cage create`
+    /// the egress's public CA certificate, which the egress publishes on
+    /// its first run; starting the two together turns a first `cage create`
     /// into a near-certain spurious failure that the operator reads as a
     /// real one.
     ///

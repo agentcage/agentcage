@@ -80,7 +80,7 @@ use super::ConfigError;
 use super::domain::{LabelPolicy, valid_domain};
 use super::placeholder::is_canonical;
 use super::types::{
-    BUILTIN_INSPECTOR_NAMES, Config, MITMDUMP_RESERVED_PORTS, PLACEHOLDER_PREFIX, VALID_LIFECYCLES,
+    BUILTIN_INSPECTOR_NAMES, Config, EGRESS_RESERVED_PORTS, PLACEHOLDER_PREFIX, VALID_LIFECYCLES,
     VALID_LOG_LEVELS,
 };
 use crate::yaml::{Value, python_bool};
@@ -317,9 +317,9 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // otherwise see a different "first violation" on each run. A
     // `BTreeSet` is sorted already; the note is why the sort exists.
     for port in &inspected {
-        if MITMDUMP_RESERVED_PORTS.contains(port) {
+        if EGRESS_RESERVED_PORTS.contains(port) {
             return Err(ConfigError::value(format!(
-                "ports.tcp.allow entry {port} is reserved by mitmdump \
+                "ports.tcp.allow entry {port} is reserved by the egress proxy \
                  (8080 = HTTP-proxy listener, 8443 = transparent listener); \
                  redirecting it would loop or break the L7 proxy path. \
                  Move it to ports.tcp.passthrough if the cage needs to \

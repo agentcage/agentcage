@@ -813,14 +813,14 @@ pub fn generate_quadlets(
         };
         if container_port == "8080" {
             return Err(ConfigError::value(format!(
-                "container port 8080 conflicts with the mitmproxy forward proxy (port spec: {}). \
+                "container port 8080 conflicts with the egress forward proxy (port spec: {}). \
                  Use a different container port.",
                 repr_str(port_spec)
             )));
         }
         if container_port == "8443" {
             return Err(ConfigError::value(format!(
-                "container port 8443 conflicts with the mitmproxy transparent proxy (port spec: \
+                "container port 8443 conflicts with the egress transparent proxy (port spec: \
                  {}). Use a different container port.",
                 repr_str(port_spec)
             )));
@@ -1684,5 +1684,53 @@ secret_injection:
                 "/workspace/x:rw,mode=0700,notmpcopyup".to_owned(),
             ]
         );
+    }
+
+    /// A published container port on one of the egress's own listeners
+    /// is refused, and the message names the listener by what it is,
+    /// not by the engine that happens to run it today.
+    #[test]
+    fn a_published_port_on_an_egress_listener_is_refused_by_role() {
+        let state = StatePaths {
+            config_root: "/cfg/agentcage".to_owned(),
+            data_root: "/data/agentcage".to_owned(),
+        };
+        for (port, role) in [
+            ("8080", "the egress forward proxy"),
+            ("8443", "the egress transparent proxy"),
+        ] {
+            let yaml = format!(
+                "name: c\ncontainer:\n  image: busybox\n  ports: ['127.0.0.1:9000:{port}']\n\
+                 dns_servers: [192.0.2.53]\n"
+            );
+            let config = crate::config::load(
+                "cage.yaml",
+                &yaml,
+                &crate::config::FixedHost::linux(&["192.0.2.53"]),
+            )
+            .expect("valid config");
+            let error = generate_quadlets(
+                &config,
+                &GenerateOptions {
+                    config_host_path: "/cfg/agentcage/cages/c/cage.yaml",
+                    patches_host_dir: "/data/patches",
+                    deploy_name: "c",
+                    rootless: true,
+                    used_octets: None,
+                    network_octet: None,
+                    store_secrets: None,
+                    state: &state,
+                    version: "9.9.9",
+                },
+                &TestHost,
+            )
+            .expect_err("refused")
+            .to_string();
+            assert!(
+                error.contains(&format!("container port {port} conflicts with {role}")),
+                "{error}"
+            );
+            assert!(!error.contains("mitm"), "{error}");
+        }
     }
 }

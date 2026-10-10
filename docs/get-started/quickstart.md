@@ -38,7 +38,7 @@ Behind the scenes, `agentcage run`:
    agentcage:secret:ANTHROPIC_API_KEY:a1b2c3d4e5f60718293a4b5c6d7e8f90
    ```
 5. Set `ANTHROPIC_API_KEY` in the container to this placeholder value.
-6. Handed the container a trusted per-cage CA public certificate (`/certs/ca-cert.pem`).
+6. Handed the container a trusted per-cage CA public certificate (`/certs/agentcage-ca.pem`).
 7. Forwarded outbound requests through the egress gateway, where placeholders are swapped for your real API key only on the wire.
 
 When you exit Claude Code (e.g. typing `/exit`), the ephemeral cage and network namespaces are automatically destroyed, while your workspace edits remain intact on your host.
