@@ -1,7 +1,9 @@
 """agentcage — mitmproxy traffic inspection with pluggable inspectors."""
 
 import asyncio
+import copy
 import dataclasses
+import hashlib
 import ipaddress
 import json
 import os
@@ -10,7 +12,7 @@ import sys
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, NamedTuple, Optional
 
 import yaml
 from mitmproxy import ctx, http
@@ -91,6 +93,41 @@ class _RelaySecretsInspector:
         return self._adjust(self._inner.inspect_response(ctx))
 
 
+class _RunningRelay(NamedTuple):
+    """A started protocol relay and what it was built from.
+
+    ``_sync_protocol_relays`` keeps the relay across a reload only while
+    both still match: ``entry`` (a copy of its ``protocol_relays`` entry)
+    and ``credentials`` (see ``_relay_credentials_digest``).
+    """
+
+    entry: dict
+    credentials: str
+    relay: Any
+
+
+def _relay_credentials_digest(entry: dict) -> str:
+    """SHA-256 over the values a relay's ``auth.*_source`` resolve to now.
+
+    Lets a reload notice a rotated credential without keeping another
+    plaintext copy of it. Resolved through the same lookup the relays
+    use (staged file, then ``$XDG_RUNTIME_DIR``, then env); a source
+    that does not resolve contributes "" (the relay itself refuses it).
+    """
+    from secret_lookup import resolve_credential
+
+    auth = entry.get("auth")
+    if not isinstance(auth, dict):
+        auth = {}
+    values = []
+    for key in ("user_source", "password_source"):
+        try:
+            values.append(resolve_credential(str(auth.get(key) or "")))
+        except ValueError:
+            values.append("")
+    return hashlib.sha256("\0".join(values).encode()).hexdigest()
+
+
 # ── Orchestrator ─────────────────────────────────────────
 
 
@@ -167,19 +204,21 @@ class Agentcage:
             except OSError as e:
                 ctx.log.warn(f"agentcage: cannot open audit log {audit_path}: {e}")
 
-        # Capture JSONL — full request/response bodies for HAR export
-        self._capture = None
-        cap_cfg = self.cfg.get("capture") or {}
-        if cap_cfg.get("enable_har") and CAPTURE_PATH:
-            try:
-                from capture import CaptureWriter
-                self._capture = CaptureWriter(cap_cfg, CAPTURE_PATH)
-                ctx.log.info(f"agentcage: capture enabled → {CAPTURE_PATH}")
-            except Exception as e:
-                ctx.log.warn(f"agentcage: cannot init capture: {e}")
-
         # Per-flow capture staging — stores partial snapshots between hooks
         self._cap_pending: dict[str, dict] = {}
+
+        # Capture JSONL — full request/response bodies for HAR export
+        self._capture = None
+        self._capture_cfg: Optional[dict] = None
+        self._init_capture()
+
+        # Protocol relays — started in running(), re-synced on reload.
+        # ``_relays_by_name`` maps each relay name to its _RunningRelay
+        # (the relay and what it was built from); ``_relays`` is the same
+        # relays as a list, which done() drains.
+        self._relays: list = []
+        self._relays_by_name: dict[str, _RunningRelay] = {}
+        self._relay_apply_task: Optional[asyncio.Task] = None
 
         names = [i.name for i in self.inspectors]
         ctx.log.info(
@@ -262,7 +301,7 @@ class Agentcage:
         and start any non-HTTP protocol relay listeners."""
         self._running = True
         self._apply_passthrough()
-        self._start_protocol_relays()
+        self._sync_protocol_relays()
         self._start_policy_sweeper()
         self._start_watcher_task()
 
@@ -390,8 +429,15 @@ class Agentcage:
         lived IDLE connections receive a ``* BYE`` close instead of a
         TCP reset. Without this hook the careful shutdown logic in the
         relay is never invoked; mitmproxy just tears down the loop.
+
+        A reload's stop/start task still in flight is awaited first:
+        stopping a relay whose start() has not bound yet is a no-op, and
+        the listener would then come up after shutdown.
         """
         self._running = False
+        apply_task = getattr(self, "_relay_apply_task", None)
+        if apply_task is not None and not apply_task.done():
+            await asyncio.wait([apply_task])
         relays = list(getattr(self, "_relays", []) or [])
         if relays:
             await asyncio.gather(
@@ -460,34 +506,87 @@ class Agentcage:
             except OSError:
                 pass
 
-    def _start_protocol_relays(self) -> None:
-        """Boot ``protocol_relays`` listeners (IMAP, etc.) on the same
-        asyncio loop mitmproxy is using. Relays are housed in this
-        process — same systemd-creds mount, same audit pipeline — to
-        avoid expanding the trust boundary across more containers.
-        """
-        relay_cfg = self.cfg.get("protocol_relays") or []
-        if not relay_cfg:
-            return
+    def _sync_protocol_relays(self) -> None:
+        """Make the running ``protocol_relays`` listeners (IMAP, SMTP)
+        match the live config.
 
+        Called from running() at boot and from _maybe_reload on every
+        config change, on the asyncio loop mitmproxy is using. Relays
+        are housed in this process — same systemd-creds mount, same
+        audit pipeline — to avoid expanding the trust boundary across
+        more containers.
+
+        Entries are diffed against the running relays by ``name``:
+
+        * identical entry, same credentials → the running relay is kept
+          untouched, so its client sessions (a long IMAP IDLE, say)
+          survive the reload;
+        * changed entry, or credentials that now resolve to different
+          values (``agentcage secret set`` re-stages the file and bumps
+          the config mtime; a relay reads its credentials only when it
+          is built) → the old relay is stopped and a new one built
+          from the new entry. If the new entry fails validation or
+          construction the old relay is still stopped: the running set
+          is always what a fresh boot with this config would produce,
+          minus the restarts the diff avoids;
+        * removed entry → stopped;
+        * new entry → validated, built and started exactly as at boot,
+          with the same ``relay_config_invalid`` / ``relay_init_failed``
+          / ``relay_start_failed`` audit records.
+
+        A later entry reusing a name is ``relay_config_invalid`` and the
+        first one wins: diffing by name needs unique names, and a
+        duplicate would otherwise be a listener nothing tracks.
+
+        Validation and construction happen here, synchronously, so the
+        bookkeeping is settled before this returns and the next reload
+        diffs against it. Stopping and starting are async and run as one
+        task (_apply_relay_changes) that stops everything first and only
+        then starts the replacements — a changed relay that keeps its
+        listen port has released the socket before the new listener
+        binds it. Each task waits for the previous one, so back-to-back
+        reloads apply in order.
+        """
         from relays import get as _get_relay
         from relays._validate import validate_relay_entry
 
-        relay_inspectors = self._build_relay_inspectors()
+        relay_cfg = self.cfg.get("protocol_relays") or []
+        current: dict = getattr(self, "_relays_by_name", None) or {}
+        # Built fresh on every sync — after _maybe_reload reconfigured the
+        # inspectors — so a (re)started relay gets the current chain.
+        # Kept relays hold the chain they were built with; it shares the
+        # inspector instances, which reload reconfigures in place.
+        relay_inspectors = self._build_relay_inspectors() if relay_cfg else []
 
-        self._relays: list = []
-        loop = asyncio.get_event_loop()
+        wanted: dict[str, _RunningRelay] = {}
+        starts: list[tuple[str, object]] = []
+        seen: set[str] = set()
         for entry in relay_cfg:
             rname = entry.get("name", "?") if isinstance(entry, dict) else "?"
             try:
                 validate_relay_entry(entry)
-            except ValueError as e:
+                if rname in seen:
+                    raise ValueError(f"duplicate relay name {rname!r}")
+            except (ValueError, TypeError) as e:
+                # TypeError: an unhashable ``name`` (the host rejects
+                # one, but a reload must not crash on it).
                 ctx.log.warn(f"agentcage: relay {rname} invalid config: {e}")
                 self._audit_write({
                     "kind": "relay_config_invalid",
                     "relay": rname,
                     "error": str(e),
                 })
+                continue
+            seen.add(rname)
+            # Digested BEFORE the relay reads them: a value re-staged in
+            # between leaves a stale digest, which only costs one extra
+            # restart on the next reload — never a relay kept on old
+            # credentials.
+            creds = _relay_credentials_digest(entry)
+            running = current.get(rname)
+            if (running is not None and running.entry == entry
+                    and running.credentials == creds):
+                wanted[rname] = running
                 continue
             rtype = entry["type"]
             try:
@@ -512,26 +611,37 @@ class Agentcage:
                     "error": str(e),
                 })
                 continue
-            try:
-                task = loop.create_task(relay.start())
-            except Exception as e:
+            # A copy: it is compared against the next reload's entry and
+            # must not alias anything a relay could mutate.
+            wanted[rname] = _RunningRelay(copy.deepcopy(entry), creds, relay)
+            starts.append((rname, relay))
+            ctx.log.info(f"agentcage: scheduled relay {rname} ({rtype})")
+
+        stops = []
+        for rname, running in current.items():
+            kept = wanted.get(rname)
+            if kept is None or kept.relay is not running.relay:
+                ctx.log.info(f"agentcage: stopping relay {rname}")
+                stops.append(running.relay)
+        self._relays_by_name = wanted
+        self._relays = [r.relay for r in wanted.values()]
+        if not stops and not starts:
+            return
+
+        prev = getattr(self, "_relay_apply_task", None)
+        coro = self._apply_relay_changes(prev, stops, starts)
+        try:
+            task = asyncio.get_event_loop().create_task(coro)
+        except Exception as e:
+            coro.close()
+            for rname, relay in starts:
                 ctx.log.warn(
                     f"agentcage: relay {rname} start scheduling failed: {e}"
                 )
-                self._audit_write({
-                    "kind": "relay_start_failed",
-                    "relay": rname,
-                    "error": str(e),
-                })
-                continue
-            task.add_done_callback(
-                lambda t, name=rname: self._on_relay_start_done(t, name)
-            )
-            self._relays.append(relay)
-            ctx.log.info(
-                f"agentcage: scheduled relay {entry.get('name')} "
-                f"({rtype})"
-            )
+                self._relay_start_failed(rname, relay, e)
+            return
+        task.add_done_callback(self._on_relay_apply_done)
+        self._relay_apply_task = task
 
     def _build_relay_inspectors(self) -> list:
         """Build the inspector chain handed to protocol relays.
@@ -567,20 +677,121 @@ class Agentcage:
                 out.append(i)
         return out
 
-    def _on_relay_start_done(self, task: "asyncio.Task", name: str) -> None:
-        """Surface ``relay.start()`` exceptions instead of letting Python
-        raise ``Task exception was never retrieved`` at GC time."""
-        if task.cancelled():
+    async def _apply_relay_changes(
+        self,
+        prev: Optional["asyncio.Task"],
+        stops: list,
+        starts: list,
+    ) -> None:
+        """Stop ``stops``, then start ``starts`` (see _sync_protocol_relays).
+
+        Every stop is awaited before any start: ``stop()`` closes the
+        listener and waits for it (and its cancelled sessions), which is
+        what frees a reused listen port for the replacement. A start
+        failure is audited and drops that relay from the running set; it
+        never affects the other relays.
+        """
+        if prev is not None and not prev.done():
+            # asyncio.wait, not await: it never raises, so a failed or
+            # cancelled predecessor cannot abort this batch.
+            await asyncio.wait([prev])
+        if stops:
+            await asyncio.gather(
+                *[r.stop() for r in stops], return_exceptions=True
+            )
+        if not starts:
             return
-        exc = task.exception()
-        if exc is None:
-            return
+        results = await asyncio.gather(
+            *[r.start() for _name, r in starts], return_exceptions=True
+        )
+        for (rname, relay), result in zip(starts, results):
+            if isinstance(result, BaseException):
+                self._relay_start_failed(rname, relay, result)
+
+    def _relay_start_failed(self, name: str, relay, exc: BaseException) -> None:
+        """Audit a relay that could not start, and forget it.
+
+        Dropping it from the running set means the next reload treats
+        the entry as new and tries again, instead of calling it unchanged
+        and leaving the name dead until a restart. Only that exact relay
+        object is dropped: a later reload may already have replaced it.
+        """
         ctx.log.error(f"agentcage: relay {name} start failed: {exc}")
         self._audit_write({
             "kind": "relay_start_failed",
             "relay": name,
             "error": str(exc),
         })
+        by_name = getattr(self, "_relays_by_name", None) or {}
+        running = by_name.get(name)
+        if running is not None and running.relay is relay:
+            del by_name[name]
+            self._relays = [r.relay for r in by_name.values()]
+
+    def _on_relay_apply_done(self, task: "asyncio.Task") -> None:
+        """Surface an unexpected failure of the stop/start task instead
+        of letting Python raise ``Task exception was never retrieved`` at
+        GC time. Per-relay failures are handled inside the task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            ctx.log.error(f"agentcage: relay reload failed: {exc}")
+
+    # ── Capture ──────────────────────────────────────────
+
+    def _init_capture(self) -> None:
+        """Build (or rebuild) the capture writer from the live config.
+
+        Called from load() and on every reload. A no-op when the
+        ``capture`` section equals the one the current writer was built
+        from, so an unrelated edit never reopens the file.
+
+        * Disabled (``enable_har`` off, or ``AGENTCAGE_CAPTURE`` empty):
+          the old writer is closed and the staged ``_cap_pending``
+          entries are dropped — those flows are simply not captured, the
+          same as any flow that starts after the edit.
+        * Enabled or changed: the new writer is constructed BEFORE the
+          old one is closed, so a bad edit (an unparsable limit, an
+          unwritable path) logs a warning and keeps the working writer;
+          the bad section is not recorded, so the next edit retries.
+          Both writers append to the same file, so nothing is rotated or
+          truncated by the swap. Staged ``_cap_pending`` entries are
+          plain snapshots and are kept: those flows complete under the
+          new writer, with its filters and limits applied to whatever is
+          snapshotted from then on (request bodies already snapshotted
+          keep the old truncation). Buffered WebSocket frames move to
+          the new writer for the same reason.
+        """
+        cap_cfg = self.cfg.get("capture") or {}
+        if not isinstance(cap_cfg, dict):
+            ctx.log.warn(
+                "agentcage: capture config is not a mapping "
+                f"(got {type(cap_cfg).__name__}) — capture disabled")
+            cap_cfg = {}
+        if cap_cfg == self._capture_cfg:
+            return
+        if not (cap_cfg.get("enable_har") and CAPTURE_PATH):
+            if self._capture is not None:
+                self._capture.close()
+                ctx.log.info("agentcage: capture disabled")
+            self._capture = None
+            self._cap_pending.clear()
+            self._capture_cfg = cap_cfg
+            return
+        try:
+            from capture import CaptureWriter
+            new_writer = CaptureWriter(cap_cfg, CAPTURE_PATH)
+        except Exception as e:
+            ctx.log.warn(f"agentcage: cannot init capture: {e}")
+            return
+        old = self._capture
+        if old is not None:
+            new_writer.adopt_ws_buffers(old)
+            old.close()
+        self._capture = new_writer
+        self._capture_cfg = cap_cfg
+        ctx.log.info(f"agentcage: capture enabled → {CAPTURE_PATH}")
 
     # ── Inspector loading ────────────────────────────────
 
@@ -769,6 +980,15 @@ class Agentcage:
 
         # Update TLS passthrough (--ignore-hosts)
         self._apply_passthrough()
+
+        # Re-sync protocol relays (diffed by name: unchanged ones keep
+        # running) and rebuild the capture writer if its section moved.
+        # Relays only once running() has started them: before that there
+        # is nothing to diff against, and running() reads the newest
+        # config anyway.
+        if getattr(self, "_running", False):
+            self._sync_protocol_relays()
+        self._init_capture()
 
         # Reconfigure the Policy API (agents.decider) controller in place:
         # enabling / disabling auto, or changing the decider/host/rate-limit,

@@ -294,7 +294,13 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
 
     let changes = classify_changes(&original_raw, &edited_raw);
 
-    if changes.live.contains("domains") || changes.live.contains("agents") {
+    // A relay's upstream host is in the DNS allowlist too (the relay
+    // resolves it through the egress's dnsmasq), so a relay edit can
+    // move a host that has to resolve.
+    if changes.live.contains("domains")
+        || changes.live.contains("agents")
+        || changes.live.contains("protocol_relays")
+    {
         crate::cli::domain::update_dns_quadlet(ctx, &config)?;
     }
 
@@ -329,6 +335,43 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
             "  secret_injection: proxy rules apply on the next request; new \
              exec sessions see the updated placeholders. Restart the cage to \
              refresh the boot process's environment."
+        );
+    }
+
+    if changes.live.contains("protocol_relays") {
+        // The egress re-syncs its relays on its next config reload, which
+        // its next proxied request triggers: changed, added and removed
+        // relays restart, unchanged ones keep their sessions. A relay's
+        // credentials, though, reach the egress only as secrets staged
+        // at container start (or re-staged live by `secret set`), so a
+        // relay naming a credential the running egress was never given
+        // fails `relay_init_failed` until one of those happens. The
+        // units are refreshed so the next start stages it.
+        if let Err(error) = crate::cli::secret::live::refresh_units(ctx, name, &config) {
+            eprintln!("warning: quadlet refresh failed: {error}");
+        }
+        println!(
+            "  protocol_relays: changed relays restart on the proxy's next \
+             request; unchanged ones keep their sessions. A relay that names a \
+             newly added credential starts once `agentcage secret set` stages \
+             it, or after `agentcage cage restart`."
+        );
+    }
+
+    if changes.live.contains("capture") {
+        // The egress rebuilds its capture writer on the same reload. But
+        // on the podman backends the capture volume and the
+        // `AGENTCAGE_CAPTURE` path are only in the unit when
+        // `enable_har` was on at generation time, so turning capture on
+        // for an egress started without it needs the refreshed unit and
+        // a restart; turning it off or retuning it does not.
+        if let Err(error) = crate::cli::secret::live::refresh_units(ctx, name, &config) {
+            eprintln!("warning: quadlet refresh failed: {error}");
+        }
+        println!(
+            "  capture: limits, filters and disabling apply on the proxy's \
+             next request. Restart the cage if HAR capture was just enabled \
+             (`agentcage cage restart` mounts the capture volume)."
         );
     }
 

@@ -230,6 +230,16 @@ class CaptureWriter:
         """Pop and return buffered WS messages for a flow."""
         return self._ws_buffers.pop(flow_id, [])
 
+    def adopt_ws_buffers(self, other: "CaptureWriter") -> None:
+        """Take over ``other``'s buffered WebSocket frames.
+
+        Used when a config reload replaces the writer: flows still open
+        across the swap are completed by the new writer, which must hand
+        back the frames buffered before it existed.
+        """
+        self._ws_buffers.update(other._ws_buffers)
+        other._ws_buffers = {}
+
     # ── Lifecycle ────────────────────────────────────────
 
     def flush(self) -> None:
