@@ -10,8 +10,10 @@ in production).
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import re
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Optional
@@ -40,6 +42,8 @@ class FakeSmtpRecorder:
     transactions: list[dict] = field(default_factory=list)
     reject_rcpts: set[str] = field(default_factory=set)
     fail_auth: bool = False
+    # Reject AUTH with a reply that quotes the AUTH line back.
+    echo_auth: bool = False
 
 
 async def _start_fake_upstream(
@@ -79,6 +83,14 @@ async def _start_fake_upstream(
                         await writer.drain()
                         continue
                     recorder.auth_seen = (user, pwd)
+                    if recorder.echo_auth:
+                        writer.write(
+                            b"535-5.7.8 rejected: " + line.rstrip(b"\r\n")
+                            + b"\r\n535 5.7.8 password " + pwd.encode()
+                            + b" is wrong\r\n"
+                        )
+                        await writer.drain()
+                        continue
                     if recorder.fail_auth or user != expected_user or pwd != expected_pass:
                         writer.write(b"535 5.7.8 bad credentials\r\n")
                         await writer.drain()
@@ -1015,6 +1027,109 @@ class TestAuthIntercept:
                 await upstream.wait_closed()
 
         _run(_go())
+
+
+class TestAuthNeverLogged:
+    """No credential reaches the audit log or the relay's own log lines:
+    neither one the cage sends in its (intercepted) AUTH dialog nor the
+    relay's, should the upstream quote it back in an AUTH rejection."""
+
+    _CAGE_PASS = "cage-held-SMTP-pass-0123456789"
+
+    def _secrets(self) -> list[str]:
+        return [
+            self._CAGE_PASS,
+            b64encode(b"\0cage-user\0" + self._CAGE_PASS.encode()).decode(),
+            b64encode(self._CAGE_PASS.encode()).decode(),
+            "real-app-password",
+            b64encode(b"\0agent@example.com\0real-app-password").decode(),
+        ]
+
+    def _assert_clean(self, entries, caplog):
+        recorded = json.dumps(entries) + caplog.text
+        for secret in self._secrets():
+            assert secret not in recorded, (secret, recorded)
+
+    @pytest.mark.parametrize("dialog", ["plain-inline", "plain-continued",
+                                        "login"])
+    def test_cage_auth_dialog_not_logged(self, dialog, caplog):
+        caplog.set_level(logging.DEBUG)
+        plain = b64encode(
+            b"\0cage-user\0" + self._CAGE_PASS.encode()).decode().encode()
+        lines = {
+            "plain-inline": [b"AUTH PLAIN " + plain],
+            "plain-continued": [b"AUTH PLAIN", plain],
+            "login": [b"AUTH LOGIN", b64encode(b"cage-user"),
+                      b64encode(self._CAGE_PASS.encode())],
+        }[dialog]
+
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port), audit_log=entries.append,
+                    log_allowed=True,
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        for line in lines:
+                            code, _ = await _cmd(w, r, line)
+                        assert code == 235
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<u@x.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(b"hi\r\n.\r\n")
+                        await w.drain()
+                        await _read_response(r)
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+            return entries
+
+        entries = _run(_go())
+        assert any(e.get("command") == "AUTH" for e in entries), entries
+        self._assert_clean(entries, caplog)
+
+    def test_upstream_echoing_the_auth_line_not_logged(self, caplog):
+        caplog.set_level(logging.DEBUG)
+
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            recorder.echo_auth = True
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port), audit_log=entries.append,
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<u@x.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(b"hi\r\n.\r\n")
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 451
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+            return entries
+
+        entries = _run(_go())
+        [error] = [e for e in entries if e.get("decision") == "upstream_error"]
+        # The rejection is still recorded, with the credential cut out.
+        assert error["error"].startswith("upstream AUTH failed: 535")
+        assert "[redacted]" in error["error"]
+        self._assert_clean(entries, caplog)
 
 
 # ── Inspector chain integration ──────────────────────────

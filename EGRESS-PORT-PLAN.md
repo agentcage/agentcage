@@ -365,6 +365,12 @@ fixtures pin them.
 - Other kinds keep their exact field sets: `tcp_bypass_blocked`,
   `private_peer_blocked`, `relay_*`, `imap_*`, `smtp_*`, `policy_*`,
   `watcher_*`, plus new `upstream_error` (D5) and `config_reload_failed` (D1).
+- Every record of every kind is redacted before any sink (stderr,
+  `audit.jsonl`, watcher ring): in each string value, at any depth, each
+  rule's real value and each live minted token becomes the rule's
+  placeholder, longest first, as `redact_request` does (0a.31). `url`,
+  `path` and `host` are read after injection, so this is what keeps a
+  URL-injected secret out of the log.
 - Capture: compact JSON line per flow `{ts, flow_id, direction, decision,
   host, method, path, inspectors, inbound:{request,response},
   outbound:{request,response}}`; request/response snapshots with headers as
@@ -639,7 +645,7 @@ the 403 body shape, a wasm plugin blocking a request.
 
 ## 9. Phasing and PR breakdown
 
-### Phase 0a — fix the existing bugs first, neutralise the CA contract (30 items)
+### Phase 0a — fix the existing bugs first, neutralise the CA contract (31 items)
 
 Separate PRs against the **current** Python egress (and the host), each with
 a test that fails before the fix, landed and released (0.50.x) before Phase 0
@@ -677,6 +683,7 @@ records the oracle. The Rust port then reproduces fixed behaviour only.
 | 0a.28 | Reload removes inspectors dropped from `inspectors:` and adds built-ins enabled by top-level keys; SMTP relay honours `log_allowed` | `addon.py`, `relays/smtp.py` |
 | 0a.29 | IMAP relay refuses bare CR in client lines; metadata commands (GETQUOTAROOT/GETMETADATA/GETACL/SUBSCRIBE) respect folder lists | `relays/imap.py` |
 | 0a.30 | `cage restore --name` refuses a clone whose named volumes collide with existing ones | `cli/cage/backup.rs` |
+| 0a.31 | Audit records never hold a secret: every entry (HTTP, WebSocket, relay, Policy API, watcher) is redacted to placeholders before stderr, `audit.jsonl` and the watcher ring, so a URL-injected value (`inject_body`) is not logged after injection; capture `host` refreshed from the redacted request; relays and the decider cut their own credentials from logged upstream errors | `addon.py`, `secret_injector.py`, `relays/`, `policy_api.py` |
 
 ### Phase 0 — oracle and decisions (≈ 1.5 weeks)
 

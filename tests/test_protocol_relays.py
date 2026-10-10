@@ -10,6 +10,9 @@ integration but bypassed here.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import logging
 import re
 import time
 from contextlib import asynccontextmanager
@@ -89,8 +92,12 @@ async def _start_fake_upstream(
     scripted: Optional[dict[bytes, list[bytes]]] = None,
     literals: bool = False,
     refuse_literal: frozenset = frozenset(),
+    echo_login: bool = False,
 ) -> tuple[asyncio.AbstractServer, int]:
     """Start an asyncio TCP server pretending to be a Migadu IMAP host.
+
+    With ``echo_login``, a refused LOGIN is answered with a ``NO`` that
+    quotes the LOGIN line back, credentials and all.
 
     ``scripted`` maps an upper-case command to the reply the upstream sends
     instead of its usual one-line OK: a list of chunks, each written and
@@ -127,6 +134,12 @@ async def _start_fake_upstream(
             pwd = sp[1].strip(b'"').decode() if len(sp) > 1 else ""
             recorder.login_seen = (user, pwd)
             if fail_login or user != expected_user or pwd != expected_pass:
+                if echo_login:
+                    writer.write(tag + b" NO [AUTHENTICATIONFAILED] "
+                                 b"rejected: " + line.rstrip(b"\r\n")
+                                 + b"\r\n")
+                    await writer.drain()
+                    return
                 writer.write(tag + b" NO bad credentials\r\n")
                 await writer.drain()
                 return
@@ -3583,3 +3596,85 @@ class TestFolderListsOnEveryMailboxCommand:
             b"a1 NO SELECT x??* BYE haha not in folder_allowlist\r\n",
             b"a2 OK NOOP completed\r\n",
         ], got
+
+
+# ── Credentials never logged ────────────────────────────
+
+
+class TestCredentialsNeverLogged:
+    """No credential reaches the audit log or the relay's own log lines:
+    neither one the cage sends to LOGIN / AUTHENTICATE (intercepted on
+    the PREAUTH'd connection) nor the relay's, should the upstream quote
+    its LOGIN back in a refusal."""
+
+    _CAGE_PASS = "cage-held-IMAP-pass-0123456789"
+
+    def _assert_clean(self, recorded: str) -> None:
+        for secret in (
+            self._CAGE_PASS,
+            base64.b64encode(
+                b"\0cage-user\0" + self._CAGE_PASS.encode()).decode(),
+            "real-app-password",
+        ):
+            assert secret not in recorded, (secret, recorded)
+
+    def test_cage_login_and_authenticate_not_logged(self, caplog):
+        caplog.set_level(logging.DEBUG)
+        plain = base64.b64encode(
+            b"\0cage-user\0" + self._CAGE_PASS.encode())
+
+        async def _client(reader, writer):
+            return [
+                *await _command(
+                    reader, writer,
+                    b'a1 LOGIN "cage-user" "' + self._CAGE_PASS.encode()
+                    + b'"\r\n'),
+                *await _command(
+                    reader, writer, b"a2 AUTHENTICATE PLAIN " + plain
+                    + b"\r\n"),
+                *await _send_command(reader, writer, [
+                    b"a3 LOGIN {9+}\r\n", b"cage-user",
+                    b" {%d+}\r\n" % len(self._CAGE_PASS),
+                    self._CAGE_PASS.encode() + b"\r\n",
+                ]),
+                *await _command(reader, writer, b"a4 NOOP\r\n"),
+            ]
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "none"}, _client, log_allowed=True,
+        ))
+        assert got[-1] == b"a4 OK NOOP completed\r\n", got
+        intercepted = [e["command"] for e in entries
+                       if e.get("decision") == "intercepted"]
+        assert intercepted == ["LOGIN", "AUTHENTICATE", "LOGIN"], entries
+        assert self._CAGE_PASS.encode() not in b"".join(rec.commands)
+        self._assert_clean(json.dumps(entries) + caplog.text)
+
+    def test_upstream_quoting_the_login_not_logged(self, caplog):
+        caplog.set_level(logging.DEBUG)
+
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+                fail_login=True, echo_login=True,
+            )
+            entries: list[dict] = []
+            relay = ImapRelay(_relay_entry(up_port), audit_log=entries.append)
+            await relay.start()
+            try:
+                port = relay._server.sockets[0].getsockname()[1]
+                async with _imap_client(port) as (reader, _w):
+                    line = await reader.readline()
+                    assert b"BYE" in line and b"auth failed" in line
+            finally:
+                await relay.stop()
+                upstream.close()
+                await upstream.wait_closed()
+            return entries
+
+        entries = _run(_go())
+        # The refusal is still logged, with the credential cut out.
+        assert "upstream LOGIN failed" in caplog.text
+        assert "[redacted]" in caplog.text
+        self._assert_clean(json.dumps(entries) + caplog.text)

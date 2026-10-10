@@ -872,9 +872,17 @@ class ImapRelay:
                             upstream_reader, upstream_writer
                         )
                     return True
+                # Logged (the host keeps it), so never with the password
+                # in it, should the server quote the LOGIN line back.
+                reply = line.rstrip().decode(errors="replace")
+                for value in (
+                    _quote(self._password).decode(errors="replace"),
+                    self._password,
+                ):
+                    reply = reply.replace(value, "[redacted]")
                 log.warning(
                     "imap relay %s: upstream LOGIN failed: %s",
-                    self._cfg.name, line.rstrip().decode(errors="replace"),
+                    self._cfg.name, reply,
                 )
                 client_writer.write(b"* BYE auth failed\r\n")
                 await client_writer.drain()
