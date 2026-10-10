@@ -669,6 +669,16 @@ class TestCredentialLookup:
         with pytest.raises(ValueError, match="unsupported relay credential"):
             ImapRelay(entry)
 
+    def test_podman_source_is_refused(self, dirs):
+        """The host refuses ``podman:`` relay credentials at validation;
+        the egress refuses them too rather than resolving by NAME."""
+        from secret_lookup import resolve_credential
+
+        staged, _ = dirs
+        (staged / "MAIL_PASS").write_text("would-have-resolved\n")
+        with pytest.raises(ValueError, match="unsupported relay credential"):
+            resolve_credential("podman:MAIL_PASS")
+
 
 # ── A3: UID subcommand-aware readonly policy ─────────────
 

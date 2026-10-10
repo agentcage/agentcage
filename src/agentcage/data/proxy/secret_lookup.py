@@ -57,12 +57,10 @@ log = logging.getLogger("agentcage.secret_lookup")
 # that happens to carry that name. Refusing it fails the relay's start with
 # an audited ``relay_init_failed`` instead of a relay logging in with "".
 #
-# ``podman`` stays for now: on the podman and apple-container backends its
-# NAME is the store entry the egress's ``Secret=`` line / staging delivers,
-# so it resolves. It does not reach a vm guest, and the host is moving to
-# refuse it for relays at validation (as ``agents.*.api_key`` already
-# does); drop it here when that lands.
-_SOURCE_SCHEMES = ("env", "systemd-creds", "podman", "")
+# ``podman`` is absent too: its NAME never reached a vm guest, and the host
+# refuses it for relay credentials at validation (as it does for
+# ``agents.*.api_key``), so the egress refuses it the same way.
+_SOURCE_SCHEMES = ("env", "systemd-creds", "")
 
 
 def _secrets_dir() -> Path:
