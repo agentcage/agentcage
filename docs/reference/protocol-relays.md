@@ -94,7 +94,7 @@ The relays ignore the other type's policy keys. Validation still checks `write_m
 
 The relay reads each credential by the `NAME` after the colon, from the secret files and environment the egress unit provides:
 
-- **`env:NAME`** reads the secret store's entry `NAME`. Set it with `-s NAME` at `cage create`, or with `agentcage secret set <cage> NAME`. On the vm backend, a host environment variable `NAME` that is set at deploy time is also copied into the guest, and overrides the stored value.
+- **`env:NAME`** reads the secret store's entry `NAME`. Set it with `-s NAME` at `cage create`, or with `agentcage secret set <cage> NAME`. The host environment is never read, on any backend.
 - **`systemd-creds:NAME`** reads the same entry, decrypted from `NAME.cred` when the egress starts.
 - **`cmd:` and `podman:`** are refused at `cage create` and `cage update` for relay credentials. Nothing runs a relay's `cmd:` command, so the "name" would be the command text, and a `podman:` name never reaches a vm guest.
 - **A bare `NAME`** with no scheme is refused at `cage create`.
