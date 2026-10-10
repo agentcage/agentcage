@@ -415,7 +415,7 @@ impl<'a> AnyBackend<'a> {
     pub fn egress_image(&self) -> String {
         match self {
             Self::Container(backend) => backend.egress_image(),
-            Self::Vm(backend) => format!("agentcage-egress:{}", backend.version()),
+            Self::Vm(backend) => backend.egress_image(),
             // The only arm whose tag carries a content hash as well as
             // the version, which is what makes its "already built"
             // short-circuit safe. See `apple::image`.

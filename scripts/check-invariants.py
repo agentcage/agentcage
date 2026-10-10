@@ -48,6 +48,10 @@ RUST_PYTHON_ALLOWED = {
         "the in-cage probe: this python3 runs in the workload container, "
         "not on the host"
     ),
+    "rust/agentcage-cli/src/egress_engine.rs": (
+        "`python` is a value of AGENTCAGE_EGRESS_ENGINE naming the egress "
+        "image to build, not an argv; the module goes at the egress cutover"
+    ),
 }
 
 #: `"python"` / `"python3"` as a whole string literal.
