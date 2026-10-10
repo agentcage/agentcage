@@ -84,7 +84,8 @@ improves behaviour is a port nobody can verify:
    `no-metadata-reads-as-legacy` exits 2 and prints a migration procedure for a
    layout the cage may never have had.
 3. **`--json-lines` suppresses the outbound secrets warning.**
-   `json-lines-outbound-no-warning` asks for the wire view, which contains real
+   `json-lines-outbound-no-warning` asks for the outbound view, which in a
+   capture recorded by 0.50.0 or earlier (as this one is) can contain real
    injected API keys, and gets no warning at all — the guard in `cli.py` is
    `if view == "outbound" and not json_lines`.
 

@@ -336,14 +336,16 @@ def _excerpt_body(body, encoding, rng: "random.Random | None" = None) -> str:
 def _safe_path(entry: dict, in_req: dict) -> str:
     """The request path+query as the CAGE wrote it (placeholders intact).
 
-    The capture entry's TOP-LEVEL ``path`` is snapshotted in
-    ``addon.request()`` AFTER ``injector.inject_request`` has run, and an
-    ``inject_body: true`` rule rewrites the placeholder inside
-    ``flow.request.url`` — the documented ``?key=`` query-string case. So
-    that field can hold a REAL secret and must never reach the model
-    (invariant: secret NAMES may appear, values never). The INBOUND
-    snapshot is taken before injection, so its ``url`` is
-    placeholder-safe, and it is the source used here.
+    An egress from agentcage 0.50.0 or earlier wrote the capture entry's
+    TOP-LEVEL ``path`` as read in ``addon.request()`` AFTER
+    ``injector.inject_request`` had run, and an ``inject_body: true`` rule
+    rewrites the placeholder inside ``flow.request.url`` — the documented
+    ``?key=`` query-string case. So in a capture file it wrote, that field
+    can hold a REAL secret and must never reach the model (invariant:
+    secret NAMES may appear, values never). The INBOUND snapshot's
+    ``url`` is placeholder-safe (it was taken before injection then, and
+    is the request redacted after the send now), so it is the source
+    used here.
 
     Fallback when no inbound url was recorded: the top-level path with the
     query STRIPPED, since the query is where an injected secret rides.
@@ -365,10 +367,13 @@ def _sample_capture(entry: dict, host_hint: str = "",
     """Reduce one capture.jsonl entry to a digest-safe sample.
 
     INBOUND view only for bodies AND for the path (placeholders — safe to
-    show); the OUTBOUND view contributes status/size metadata alone (it
-    holds the REAL secrets secret-injection put on the wire, and those
-    must never ride to a third-party model). Sensitive header values are
-    redacted. ``_safe_path`` explains why the top-level ``path`` is unsafe.
+    show); the OUTBOUND view contributes status/size metadata alone. The
+    current egress redacts both views alike, but in a capture file written
+    by agentcage 0.50.0 or earlier the outbound view can hold REAL secrets
+    (a server's echo of an injected value, a token a transform minted),
+    and those must never ride to a third-party model. Sensitive header
+    values are redacted. ``_safe_path`` explains why the top-level
+    ``path`` is unsafe.
     """
     inbound = entry.get("inbound") or {}
     in_req = inbound.get("request") or {}

@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use agentcage_core::har::datetime::DateTime;
 use agentcage_core::har::json::{self, DumpOptions, Json};
-use agentcage_core::har::{CaptureFilter, capture_to_har_with, parse_since};
+use agentcage_core::har::{CaptureFilter, MinAction, capture_to_har_with, parse_since};
 
 /// The version the harness pins `importlib.metadata.version` to, so a
 /// release does not churn the corpus.
@@ -95,14 +95,14 @@ fn golden_filters() -> Vec<(&'static str, CaptureFilter)> {
         (
             "min-action-flag",
             CaptureFilter {
-                min_action: Some("flag".to_string()),
+                min_action: Some(MinAction::Flag),
                 ..CaptureFilter::default()
             },
         ),
         (
             "min-action-block",
             CaptureFilter {
-                min_action: Some("block".to_string()),
+                min_action: Some(MinAction::Block),
                 ..CaptureFilter::default()
             },
         ),

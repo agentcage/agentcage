@@ -83,8 +83,9 @@ const EXIT_FAILURE: u8 = 1;
 pub struct HarArgs {
     /// The cage to export.
     pub name: String,
-    /// `inbound` (what the bot saw) or `outbound` (what went on the
-    /// wire, with real secrets in it).
+    /// `inbound` (what the bot saw) or `outbound` (the wire side,
+    /// recorded after the egress redacted it; a capture from 0.50.0 or
+    /// earlier can hold real secrets there).
     pub view: String,
     /// `-d/--decision`, repeatable.
     pub decisions: Vec<String>,
@@ -123,7 +124,7 @@ pub fn main(args: &HarArgs) -> u8 {
 ///
 /// The order of the checks is `cli.py`'s order and it is observable: a
 /// v0.21 cage is refused (exit 2) *before* anything asks whether it has
-/// a capture file, and the outbound-secrets warning is printed only
+/// a capture file, and the outbound-view warning is printed only
 /// once the file has been found, so a failed export never warns about
 /// data it did not read.
 #[must_use]
@@ -153,20 +154,27 @@ pub fn run(
         return EXIT_FAILURE;
     }
 
-    // Every outbound view carries real injected secrets, whichever
-    // output form it takes, so every one of them warns.
+    // The current egress records both views redacted: every secret it
+    // manages (real values, minted tokens, server echoes of either) is
+    // its placeholder in the outbound view as in the inbound one. A
+    // capture file written by agentcage 0.50.0 or earlier is different:
+    // its outbound view can hold a server's echo of an injected secret
+    // or a token a transform minted. Nothing in an entry says which
+    // egress wrote it, so every outbound export warns about that, in
+    // every output form.
     //
     // `cli.py` used to write `if view == "outbound" and not
     // json_lines`, which dropped the warning from the one form people
-    // pipe into other tools while the piped bytes still held the API
-    // keys. The warning goes to stderr and cannot corrupt stdout, so
-    // there was nothing for the suppression to protect. Fixed in the
-    // same commit as this port; see `tests/fixtures/cage-har/`.
+    // pipe into other tools. The warning goes to stderr and cannot
+    // corrupt stdout, so there was nothing for the suppression to
+    // protect. Fixed in the same commit as this port; see
+    // `tests/fixtures/cage-har/`.
     if args.view == "outbound" {
         let _ = writeln!(
             stderr,
-            "WARNING: --view outbound includes real secrets (API keys, tokens). \
-             Treat the output as sensitive."
+            "WARNING: captures recorded by agentcage 0.50.0 or earlier can include \
+             real secrets (API keys, tokens) in --view outbound. \
+             Treat output from such captures as sensitive."
         );
     }
 
@@ -192,7 +200,8 @@ pub fn run(
         directions: args.directions.clone(),
         hosts: args.hosts.clone(),
         methods: args.methods.clone(),
-        // `cage har` declares no `--min-action`; `cage audit` does.
+        // No command declares `--min-action` (`cage audit` filters by
+        // `--severity`, not by action); only the core filter has it.
         min_action: None,
         since,
     };

@@ -161,9 +161,13 @@ loadable in Chrome DevTools (Network > Import HAR).
 Two perspectives are available:
 
   inbound   What the bot saw inside the cage (placeholders, redacted
-            secrets). Safe to share. This is the default.
-  outbound  What went on the wire (real injected secrets, raw server
-            responses). Treat as sensitive.";
+            secrets). This is the default.
+  outbound  The wire side, recorded after the egress redacted it: the
+            same placeholders, never the injected secrets. Captures
+            from agentcage 0.50.0 or earlier can hold real secrets here.
+
+Both views record bodies, cookies and any credential the agent holds
+itself as is; review a capture before sharing it.";
 
 /// `agentcage cage har NAME` — export capture records as HAR 1.2.
 pub(crate) fn har() -> Command {
@@ -176,7 +180,7 @@ pub(crate) fn har() -> Command {
                 "view",
                 "view",
                 "[inbound|outbound]",
-                "Perspective to export: inbound (cage sees, safe to share) or outbound (wire, contains secrets).",
+                "Perspective to export: inbound (what the cage saw) or outbound (wire side, redacted; captures from 0.50.0 or earlier can hold secrets).",
             )
             .value_parser(DIRECTIONS)
             .default_value("inbound"),

