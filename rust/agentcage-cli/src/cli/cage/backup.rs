@@ -42,7 +42,10 @@
 //!    source of truth and an old one would silently pin stale policy.
 //! 4. **Build and start**, unless `--no-start`.
 //! 5. **Volumes**, which need the cage stopped again — podman will not
-//!    import into a volume a running container holds.
+//!    import into a volume a running container holds. With
+//!    `--no-start` there is no cage running, and they are created and
+//!    imported in place of step 4, so the first `cage update` mounts
+//!    them full. Only on `container`: see [`importable_volumes`].
 //! 6. **Capture**, last, because `build_and_deploy` does not touch it.
 //!
 //! # apple-container
@@ -955,6 +958,7 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         eprintln!("error: invalid backup — {message}");
         ExitCode::from(EXIT_FAILURE)
     })?;
+    let volumes = importable_volumes(&manifest.isolation, volumes, &tarball);
 
     // `cli.py:3786` branches on the *manifest's* `isolation`, not on
     // the archived `cage.yaml`'s and not on anything installed on this
@@ -1043,13 +1047,17 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 
     // ── Build and deploy ────────────────────────────────
     if no_start {
+        // The named volumes go in now, not "on first start": nothing
+        // runs at first start that could import them, and the
+        // extracted tars are deleted with the staging dir when this
+        // returns. podman creates and fills a volume without any
+        // container, and the cage's unit mounts it by name
+        // (`Volume=<name>:<path>`), so the one `cage update` builds
+        // finds it — data included — instead of creating an empty
+        // one. This cage holds none of them: `--force` stopped the
+        // existing one, and the restored one has not started.
+        import_volumes(&podman, &volumes, &tarball, true);
         println!("Cage state restored. Run: agentcage cage update {target} to build and start.");
-        if !volumes.is_empty() {
-            println!(
-                "Note: Named volumes will be imported when the cage is \
-                 started for the first time."
-            );
-        }
     } else {
         let config = ctx
             .paths
@@ -1103,18 +1111,11 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         //
         // After the deploy and with the cage stopped again: podman
         // refuses to import into a volume a running container holds.
+        // The deploy started the cage, which created the volumes, so
+        // there is nothing to create here.
         if !volumes.is_empty() {
-            println!("Importing volumes...");
             backend.stop(&target);
-            for (volume, archive_path) in volumes {
-                if let Err(error) =
-                    podman.volume_import(&volume, &archive_path.display().to_string())
-                {
-                    eprintln!("warning: could not import volume '{volume}': {error}");
-                    continue;
-                }
-                println!("  Imported volume '{volume}'");
-            }
+            import_volumes(&podman, &volumes, &tarball, false);
             if let Err(error) = backend.start(&config.name, false) {
                 eprintln!("error: {error}");
                 return Err(ExitCode::from(EXIT_FAILURE));
@@ -1252,9 +1253,10 @@ fn restore_apple(
 
     if no_start {
         println!("Cage state restored. Run: agentcage cage update {target} to build and start.");
-        // No named-volume note, unlike the container path: this
-        // backend has none to import, and the manifest's list is empty
-        // by construction.
+        // No volumes to import, with or without `--no-start`: this
+        // backend has none, the manifest's list is empty by
+        // construction, and [`importable_volumes`] has already warned
+        // about any a hand-made one listed.
         return Ok(());
     }
 
@@ -1603,6 +1605,11 @@ fn copy_restored_entry(source: &Path, dest: &Path) {
 /// generated with one the archive's author chose
 /// (`EGRESS-PORT-PLAN.md` D11).
 ///
+/// * A manifest entry that is not a name podman accepts
+///   ([`is_valid_volume_name`]) refuses the restore. podman would
+///   refuse it too, but a name starting with `-` would reach podman's
+///   argv first and be parsed as a flag; `cage backup` only ever lists
+///   volumes podman created, so such an entry was written by hand.
 /// * A name in agentcage's own namespace
 ///   ([`agentcage_core::quadlets::reserved_volume`]), as a tar or as a
 ///   manifest entry, refuses the restore. `cage backup` never writes
@@ -1617,8 +1624,8 @@ fn copy_restored_entry(source: &Path, dest: &Path) {
 ///
 /// # Errors
 ///
-/// The refusal, naming the reserved volume, phrased to follow
-/// `invalid backup — `.
+/// The refusal, naming the invalid or reserved volume, phrased to
+/// follow `invalid backup — `.
 fn volumes_to_import(
     manifest: &Manifest,
     backup_dir: &Path,
@@ -1630,6 +1637,13 @@ fn volumes_to_import(
         )
     };
     for volume in &manifest.named_volumes {
+        if !is_valid_volume_name(volume) {
+            return Err(format!(
+                "manifest.json lists volume {volume:?}, which is not a podman \
+                 volume name (names must match [a-zA-Z0-9][a-zA-Z0-9_.-]*); \
+                 refusing to restore it"
+            ));
+        }
         if let Some(reason) = reserved_volume(volume) {
             return Err(refusal(format!("manifest.json lists '{volume}'"), reason));
         }
@@ -1672,6 +1686,90 @@ fn volumes_to_import(
         }
     }
     Ok(import)
+}
+
+/// The part of `volumes` the archive's backend can import — all of it
+/// on `container`, none of it anywhere else — warning, per volume,
+/// about the rest.
+///
+/// Only `container` keeps its named volumes in the host's podman, which
+/// is the one store a restore can reach whether or not it starts the
+/// cage:
+///
+/// * **`vm`**: the volumes live in the cage's Lima guest. `cage backup`
+///   does not export them (the manifest's list is empty by
+///   construction), and `cage restore` used to import a hand-listed
+///   one into the *host* store, where the guest's cage never sees it.
+///   With `--no-start` the guest does not even exist yet.
+/// * **`apple-container`**: there are no named volumes;
+///   `container.named_volumes` is one of the knobs the backend drops,
+///   and its manifest's list is empty by construction too.
+///
+/// So a listed volume on either is not imported, and the warning says
+/// where its data still is: in the archive, which a restore never
+/// changes. Before this the apple path dropped them in silence.
+fn importable_volumes(
+    isolation: &str,
+    volumes: Vec<(String, PathBuf)>,
+    tarball: &Path,
+) -> Vec<(String, PathBuf)> {
+    if isolation == "container" {
+        return volumes;
+    }
+    let reason = match isolation {
+        "vm" => {
+            "a vm cage's named volumes live in its Lima guest, which \
+             `cage restore` does not import into"
+        }
+        APPLE_CONTAINER => "apple-container has no named volumes",
+        _ => "only the container backend's named volumes can be imported",
+    };
+    for (volume, _) in &volumes {
+        eprintln!(
+            "warning: not importing volume '{volume}': {reason}. Its data stays in \
+             {} as {ROOT}/volumes/{volume}.tar",
+            tarball.display()
+        );
+    }
+    Vec::new()
+}
+
+/// Import each of `volumes` into the host's podman, creating it first
+/// when `create_missing` and it does not exist.
+///
+/// podman will not import into a volume it does not know, so
+/// `--no-start`, which runs before anything has created the volumes,
+/// asks for them to be created; after a deploy the started cage has
+/// created them already. A volume that fails is a warning, as it
+/// always was — the config is installed by now — and the warning says
+/// where the data still is.
+fn import_volumes(
+    podman: &agentcage_exec::tools::podman::Podman<'_>,
+    volumes: &[(String, PathBuf)],
+    tarball: &Path,
+    create_missing: bool,
+) {
+    if volumes.is_empty() {
+        return;
+    }
+    println!("Importing volumes...");
+    for (volume, archive_path) in volumes {
+        let created = if create_missing && !podman.volume_exists(volume).unwrap_or(false) {
+            podman.volume_create(volume)
+        } else {
+            Ok(())
+        };
+        let imported = created
+            .and_then(|()| podman.volume_import(volume, &archive_path.display().to_string()));
+        match imported {
+            Ok(()) => println!("  Imported volume '{volume}'"),
+            Err(error) => eprintln!(
+                "warning: could not import volume '{volume}': {error}. Its data \
+                 is in {} as {ROOT}/volumes/{volume}.tar",
+                tarball.display()
+            ),
+        }
+    }
 }
 
 /// Copy the archived `capture.jsonl` back into the cage's data dir.
@@ -1717,6 +1815,20 @@ fn is_valid_cage_name(name: &str) -> bool {
         return false;
     }
     name.len() <= 63 && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// `[a-zA-Z0-9][a-zA-Z0-9_.-]*`, podman's own rule for a volume name
+/// (`podman volume create` refuses anything else with exactly that
+/// pattern), spelled out.
+///
+/// A restore takes volume names from the archive's `manifest.json` and
+/// hands them to `podman volume create` / `import`. Both get them after
+/// a `--`, but a name podman would refuse anyway is refused here first,
+/// in the preflight, by name — before `--force` has destroyed anything.
+fn is_valid_volume_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 /// Add the at-rest store's keys to the runtime store's list, in place.
@@ -1788,9 +1900,9 @@ fn file_timestamp() -> String {
 mod tests {
     use super::{
         Manifest, ROOT, backup_inner, build_context_included, carried_containerfile,
-        check_restore_build_context, file_timestamp, is_valid_cage_name, merge_at_rest_keys,
-        restore_build_context, restore_capture, restore_config, restore_inner, restore_secrets,
-        stage_backup_config, volumes_to_import,
+        check_restore_build_context, file_timestamp, importable_volumes, is_valid_cage_name,
+        is_valid_volume_name, merge_at_rest_keys, restore_build_context, restore_capture,
+        restore_config, restore_inner, restore_secrets, stage_backup_config, volumes_to_import,
     };
     use crate::cli::context::Ctx;
     use agentcage_cli::archive::{self, Member};
@@ -2596,18 +2708,24 @@ container:
     /// listing `listed` and its `volumes/` holding one (empty) tar per
     /// entry of `tars`.
     fn backup_with_volumes(tarball: &Path, listed: &[&str], tars: &[&str]) {
+        backup_with_volumes_on(tarball, "container", listed, tars);
+    }
+
+    /// [`backup_with_volumes`], for the backend `isolation` (in the
+    /// manifest and in the archived `cage.yaml` alike).
+    fn backup_with_volumes_on(tarball: &Path, isolation: &str, listed: &[&str], tars: &[&str]) {
         let listed: Vec<String> = listed.iter().map(|name| format!("\"{name}\"")).collect();
         let mut members = vec![
             Member::Dir(format!("{ROOT}/config")),
             Member::File(
                 format!("{ROOT}/config/cage.yaml"),
-                CAGE_YAML_NO_BUILD.as_bytes().to_vec(),
+                format!("{CAGE_YAML_NO_BUILD}isolation: {isolation}\n").into_bytes(),
             ),
             Member::File(
                 format!("{ROOT}/manifest.json"),
                 format!(
                     "{{\"format_version\": 1, \"cage_name\": \"{RICH}\", \
-                      \"isolation\": \"container\", \"named_volumes\": [{}]}}\n",
+                      \"isolation\": \"{isolation}\", \"named_volumes\": [{}]}}\n",
                     listed.join(", ")
                 )
                 .into_bytes(),
@@ -2743,6 +2861,311 @@ container:
             "{error}"
         );
         assert!(error.contains("reserved for agentcage"), "{error}");
+    }
+
+    /// The podman calls a restore made on the cage's named volumes —
+    /// not the certs-volume probes of the CA purge — in order.
+    fn named_volume_calls(fake: &FakeRunner) -> Vec<Vec<String>> {
+        fake.argv_sequence()
+            .into_iter()
+            .filter(|argv| argv.get(1).is_some_and(|arg| arg == "volume"))
+            .filter(|argv| !argv.iter().any(|arg| arg.starts_with("agentcage-")))
+            .collect()
+    }
+
+    /// **`--no-start` keeps the named volumes.** It used to print that
+    /// they "will be imported when the cage is started for the first
+    /// time", and then delete the staging dir holding the extracted
+    /// tars: nothing imports at first start, so the data was gone. Now
+    /// they are imported during the restore itself — created first,
+    /// since podman refuses to import into a volume that does not
+    /// exist, and left alone if one already does — and the cage is not
+    /// started. The cage's unit mounts them by name, so the `cage
+    /// update` that builds it finds them full.
+    #[test]
+    fn a_no_start_restore_imports_the_named_volumes() {
+        let dir = TestDir::new("restore-no-start-volumes");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        // `state` survived an earlier cage; `workspace` does not exist.
+        fake.on(
+            ["podman", "volume", "exists", "acme-agent-state"],
+            Reply::success(),
+        );
+        fake.on(["podman", "volume", "create"], Reply::success());
+        fake.on(["podman", "volume", "import"], Reply::success());
+        fake.default_reply(Reply::status(1));
+        let ctx = ctx(&dir, fake.clone());
+
+        let tarball = dir.join("backup.tar.gz");
+        backup_with_volumes(
+            &tarball,
+            &["acme-agent-workspace", "acme-agent-state"],
+            &["acme-agent-workspace", "acme-agent-state"],
+        );
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "restore",
+            &tarball.display().to_string(),
+            "--no-start",
+        ]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+        assert!(ctx.paths.deployment_exists(RICH));
+
+        assert_eq!(
+            named_volume_calls(&fake),
+            [
+                vec!["podman", "volume", "exists", "acme-agent-state"],
+                vec!["podman", "volume", "import", "--", "acme-agent-state", "-"],
+                vec!["podman", "volume", "exists", "acme-agent-workspace"],
+                vec!["podman", "volume", "create", "--", "acme-agent-workspace"],
+                vec![
+                    "podman",
+                    "volume",
+                    "import",
+                    "--",
+                    "acme-agent-workspace",
+                    "-"
+                ],
+            ]
+        );
+        // Each import is fed its own tar from the extracted archive.
+        let fed: Vec<PathBuf> = fake
+            .calls()
+            .iter()
+            .filter(|call| call.argv().get(2).is_some_and(|arg| arg == "import"))
+            .map(|call| match call.command.stdin_spec() {
+                agentcage_exec::Stdin::File(path) => path.clone(),
+                other => panic!("import not fed from a file: {other:?}"),
+            })
+            .collect();
+        assert_eq!(fed.len(), 2);
+        assert!(
+            fed[0].ends_with(format!("{ROOT}/volumes/acme-agent-state.tar")),
+            "{fed:?}"
+        );
+        assert!(
+            fed[1].ends_with(format!("{ROOT}/volumes/acme-agent-workspace.tar")),
+            "{fed:?}"
+        );
+        // And the cage was not started: nothing but podman ran, and
+        // podman neither built nor started anything.
+        let others: Vec<Vec<String>> = fake
+            .argv_sequence()
+            .into_iter()
+            .filter(|argv| {
+                argv.first().is_none_or(|program| program != "podman")
+                    || argv.iter().any(|arg| arg == "build" || arg == "start")
+            })
+            .collect();
+        assert!(others.is_empty(), "{others:?}");
+    }
+
+    /// Only `container` keeps named volumes in the host's podman. A vm
+    /// cage's live in its Lima guest — which `--no-start` has not even
+    /// created — and apple-container has none, and `cage backup` lists
+    /// none for either. A hand-listed one is not imported into the host
+    /// store, where the cage would never see it; the warning points at
+    /// the archive, which still holds the data.
+    #[test]
+    fn only_a_container_restore_imports_named_volumes() {
+        let volumes = vec![(
+            "acme-agent-workspace".to_owned(),
+            PathBuf::from("/staging/agentcage-backup/volumes/acme-agent-workspace.tar"),
+        )];
+        let tarball = Path::new("/backups/acme.tar.gz");
+        assert_eq!(
+            importable_volumes("container", volumes.clone(), tarball),
+            volumes
+        );
+        for isolation in ["vm", "apple-container", "no-such-backend"] {
+            assert!(
+                importable_volumes(isolation, volumes.clone(), tarball).is_empty(),
+                "{isolation}"
+            );
+        }
+
+        // Through the command: a vm `--no-start` restore asks podman
+        // nothing about the volume at all.
+        let dir = TestDir::new("restore-vm-no-start-volumes");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::status(1));
+        let ctx = ctx(&dir, fake.clone());
+        let tarball = dir.join("backup.tar.gz");
+        backup_with_volumes_on(
+            &tarball,
+            "vm",
+            &["acme-agent-workspace"],
+            &["acme-agent-workspace"],
+        );
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "restore",
+            &tarball.display().to_string(),
+            "--no-start",
+        ]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+        assert!(ctx.paths.deployment_exists(RICH));
+        assert!(
+            named_volume_calls(&fake).is_empty(),
+            "{:?}",
+            fake.argv_sequence()
+        );
+    }
+
+    /// A restore that starts the cage imports as it always did: after
+    /// the deploy, which started the cage and so created its volumes,
+    /// with the cage stopped again (podman will not import into a
+    /// volume a running container holds), and started once more after.
+    /// No existence probe and no create — and nothing imported before
+    /// the deploy.
+    #[test]
+    fn a_started_restore_imports_after_the_deploy_with_the_cage_stopped() {
+        let dir = TestDir::new("restore-started-volumes");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(["podman", "info"], Reply::ok("{}"));
+        fake.default_reply(Reply::success());
+        let ctx = ctx(&dir, fake.clone());
+        let tarball = dir.join("backup.tar.gz");
+        backup_with_volumes(
+            &tarball,
+            &["acme-agent-workspace", "acme-agent-state"],
+            &["acme-agent-workspace", "acme-agent-state"],
+        );
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "restore",
+            &tarball.display().to_string(),
+        ]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+
+        let calls: Vec<String> = fake
+            .argv_sequence()
+            .iter()
+            .map(|argv| argv.join(" "))
+            .collect();
+        let position = |wanted: &str| {
+            calls
+                .iter()
+                .position(|call| call == wanted)
+                .unwrap_or_else(|| panic!("no `{wanted}` in {calls:#?}"))
+        };
+        let start = "systemctl --user start acme-agent-cage.service";
+        let deployed = position(start);
+        let stopped = position("systemctl --user stop acme-agent-cage.service");
+        let state = position("podman volume import -- acme-agent-state -");
+        let workspace = position("podman volume import -- acme-agent-workspace -");
+        let restarted = calls
+            .iter()
+            .rposition(|call| call == start)
+            .expect("started");
+        assert!(
+            deployed < stopped && stopped < state && state < workspace && workspace < restarted,
+            "{calls:#?}"
+        );
+        assert_eq!(
+            named_volume_calls(&fake),
+            [
+                vec!["podman", "volume", "import", "--", "acme-agent-state", "-"],
+                vec![
+                    "podman",
+                    "volume",
+                    "import",
+                    "--",
+                    "acme-agent-workspace",
+                    "-"
+                ],
+            ]
+        );
+    }
+
+    /// **A volume name from an archive never reaches podman as a
+    /// flag.** The manifest's names go to `podman volume create` and
+    /// `import`, and `-rf` there is not a volume. Both now get `--`
+    /// before the name, and a name podman would not accept
+    /// (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`) is refused by name in the
+    /// preflight: before `--force` destroys the existing cage, and
+    /// before anything is asked of podman.
+    #[test]
+    fn a_restore_refuses_a_volume_name_podman_would_not_accept() {
+        for (label, bad) in [("flag", "-rf"), ("dot", ".hidden"), ("slash", "a/b")] {
+            let dir = TestDir::new(&format!("restore-bad-volume-{label}"));
+            plant_ca(&dir);
+            let fake = FakeRunner::new();
+            fake.assume_installed();
+            fake.default_reply(Reply::status(1));
+            let ctx = ctx(&dir, fake.clone());
+
+            let source = dir.join("cage.yaml");
+            fs::write(
+                &source,
+                fixture_state(&format!("xdg-config/agentcage/cages/{RICH}/cage.yaml")),
+            )
+            .unwrap();
+            ctx.paths.save_deployment(RICH, &source).unwrap();
+            let before = fs::read_to_string(ctx.paths.stored_config_path(RICH)).unwrap();
+
+            let tarball = dir.join("tampered.tar.gz");
+            // The tar too where it can be one; `a/b` cannot.
+            let tars: &[&str] = if bad.contains('/') { &[] } else { &[bad] };
+            backup_with_volumes(&tarball, &[bad], tars);
+            let matches = leaf_matches(&[
+                "agentcage",
+                "cage",
+                "restore",
+                &tarball.display().to_string(),
+                "--force",
+                "--no-start",
+            ]);
+            assert!(restore_inner(&ctx, &matches).is_err(), "{label}");
+            assert_eq!(
+                fs::read_to_string(ctx.paths.stored_config_path(RICH)).unwrap(),
+                before,
+                "{label}"
+            );
+            assert!(
+                fake.calls().is_empty(),
+                "{label}: {:?}",
+                fake.argv_sequence()
+            );
+
+            let staging = dir.join("staging");
+            archive::extract_into(&tarball, &staging).unwrap();
+            let backup_dir = staging.join(ROOT);
+            let manifest =
+                Manifest::parse(&fs::read_to_string(backup_dir.join("manifest.json")).unwrap())
+                    .unwrap();
+            let error = volumes_to_import(&manifest, &backup_dir).expect_err(label);
+            assert!(error.contains(&format!("{bad:?}")), "{error}");
+            assert!(error.contains("not a podman volume name"), "{error}");
+        }
+    }
+
+    /// podman's rule, `[a-zA-Z0-9][a-zA-Z0-9_.-]*`, at its edges.
+    #[test]
+    fn volume_names_follow_podman_s_rule() {
+        for good in ["a", "0", "acme-agent-workspace", "Acme_agent.state-1"] {
+            assert!(is_valid_volume_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "-rf",
+            "--help",
+            ".x",
+            "_x",
+            "a/b",
+            "a b",
+            "a:b",
+            "a\nb",
+            "caf\u{e9}",
+        ] {
+            assert!(!is_valid_volume_name(bad), "{bad:?}");
+        }
     }
 
     /// The same ordering, exercised through the whole command: a real

@@ -25,7 +25,8 @@
 //! `test_podman.py` covers 14 of the 19 methods across 36 test
 //! functions; the five it never invokes -- `container_exec`,
 //! `volume_export`, `volume_import`, `pull`, `image_inspect` -- are
-//! pinned here for the first time.
+//! pinned here for the first time. `volume_create`, which came after the
+//! port (`cage restore --no-start`), is pinned here too.
 
 use agentcage_exec::tools::podman::{BuildOptions, Podman, secret_env_names};
 use agentcage_exec::{Command, Elevation, FakeRunner, Reply, Sink, Stdin};
@@ -458,7 +459,8 @@ fn removals_and_existence_checks_report_the_status() {
 
 /// Not covered by `test_podman.py`. `volume export` redirects stdout to
 /// the backup file; `volume import` feeds the archive in on stdin with a
-/// trailing `-`.
+/// trailing `-`, and ends its options with `--` before the name, which
+/// `cage restore` reads out of an archive.
 #[test]
 fn volume_backup_and_restore_wire_their_streams_to_files() {
     let fake = FakeRunner::new();
@@ -469,7 +471,7 @@ fn volume_backup_and_restore_wire_their_streams_to_files() {
 
     fake.assert_argv(&[
         &["podman", "volume", "export", "myvol"],
-        &["podman", "volume", "import", "myvol", "-"],
+        &["podman", "volume", "import", "--", "myvol", "-"],
     ]);
     assert_eq!(
         fake.call(0).command.stdout_spec(),
@@ -480,6 +482,27 @@ fn volume_backup_and_restore_wire_their_streams_to_files() {
         fake.call(1).command.stdin_spec(),
         &Stdin::File("/backup/myvol.tar".into())
     );
+}
+
+/// `volume create`, which `cage restore --no-start` runs before an
+/// import because podman will not import into a volume that does not
+/// exist. A name that looks like a flag stays a name: it follows `--`,
+/// as podman's own parser needs (`podman volume create -bad` is
+/// `unknown shorthand flag: 'b'`). The echoed name is discarded.
+#[test]
+fn volume_create_ends_its_options_before_the_name() {
+    let fake = FakeRunner::new();
+    fake.push_all([Reply::status(0), Reply::status(125)]);
+    let p = podman(&fake);
+    p.volume_create("myvol").unwrap();
+    assert!(p.volume_create("-myvol").is_err());
+
+    fake.assert_argv(&[
+        &["podman", "volume", "create", "--", "myvol"],
+        &["podman", "volume", "create", "--", "-myvol"],
+    ]);
+    assert_eq!(fake.call(0).command.stdout_spec(), &Sink::Null);
+    fake.assert_drained();
 }
 
 // ---------------------------------------------------------------------
