@@ -1189,6 +1189,48 @@ class TestInspectorIntegration:
 
         _run(_go())
 
+    def test_chain_swap_mid_inspection_keeps_the_running_chain(self):
+        """A reload hands a kept relay a new chain (update_settings) on
+        the event loop while a DATA check may be running in the
+        executor. That check finishes on the chain it started with —
+        including the inspectors after the one running at the swap —
+        and the next message gets the new chain."""
+        import threading
+
+        from relays.smtp import _Transaction
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        class _GateInspector(Inspector):
+            name = "gate"
+
+            def configure(self, config: dict) -> None:
+                pass
+
+            def inspect_request(self, ctx):  # noqa: ARG002
+                entered.set()
+                release.wait(5)
+                return None
+
+        async def _go():
+            relay = SmtpRelay(
+                _relay_entry(1),
+                inspectors=[_GateInspector(), _MarkerInspector()],
+            )
+            body = b"Subject: x\r\n\r\nEXFIL_MARKER_99\r\n"
+            task = asyncio.create_task(
+                relay._run_inspectors(body, _Transaction()))
+            assert await asyncio.to_thread(entered.wait, 5)
+            relay.update_settings(log_allowed=True, inspectors=[])
+            release.set()
+            block = await asyncio.wait_for(task, 5)
+            assert block is not None and block.inspector == "marker"
+            assert await relay._run_inspectors(body, _Transaction()) is None
+            assert relay._log_allowed is True
+
+        _run(_go())
+
     def test_secrets_inspector_blocks_anthropic_key_in_body(self):
         """Use the real SecretsInspector to verify the wire-up: a
         leaked Anthropic key in an outbound email body must be

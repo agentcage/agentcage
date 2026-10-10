@@ -611,9 +611,13 @@ class Agentcage:
 
         Entries are diffed against the running relays by ``name``:
 
-        * identical entry, same credentials → the running relay is kept
-          untouched, so its client sessions (a long IMAP IDLE, say)
-          survive the reload;
+        * identical entry, same credentials → the running relay is kept,
+          not restarted, so its client sessions (a long IMAP IDLE, say)
+          survive the reload. It is handed the reload's
+          ``logging.allowed_requests`` and relay inspector chain
+          (``update_settings``): it was built with the old ones, and
+          an inspector the reload added or enabled would otherwise never
+          reach it;
         * changed entry, or credentials that now resolve to different
           values (``agentcage secret set`` re-stages the file and bumps
           the config mtime; a relay reads its credentials only when it
@@ -646,9 +650,9 @@ class Agentcage:
         relay_cfg = self.cfg.get("protocol_relays") or []
         current: dict = getattr(self, "_relays_by_name", None) or {}
         # Built fresh on every sync — after _maybe_reload reconfigured the
-        # inspectors — so a (re)started relay gets the current chain.
-        # Kept relays hold the chain they were built with; it shares the
-        # inspector instances, which reload reconfigures in place.
+        # inspectors and re-read the ``inspectors:`` section — so a
+        # (re)started relay gets the current chain, and a kept one is
+        # handed it below.
         relay_inspectors = self._build_relay_inspectors() if relay_cfg else []
 
         wanted: dict[str, _RunningRelay] = {}
@@ -679,6 +683,13 @@ class Agentcage:
             running = current.get(rname)
             if (running is not None and running.entry == entry
                     and running.credentials == creds):
+                # On the event loop, like the relay's sessions; the SMTP
+                # relay swaps its chain as one tuple, so a DATA check in
+                # the executor finishes on the chain it started with.
+                running.relay.update_settings(
+                    log_allowed=self.log_allowed,
+                    inspectors=relay_inspectors,
+                )
                 wanted[rname] = running
                 continue
             rtype = entry["type"]

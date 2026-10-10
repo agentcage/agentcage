@@ -525,6 +525,22 @@ class ImapRelay:
         for a in self._cfg.folder_allowlist:
             self._allow_forms |= _name_forms(str(a))
 
+    def update_settings(
+        self,
+        *,
+        log_allowed: bool,
+        inspectors: Optional[list] = None,
+    ) -> None:
+        """Take a config reload's settings without restarting.
+
+        The addon calls this, on the event loop, for a relay a reload
+        keeps (its entry unchanged), so open sessions — a long IDLE —
+        survive while ``logging.allowed_requests`` follows the live
+        config. ``inspectors`` is accepted for symmetry with the SMTP
+        relay and unused, as in ``__init__``.
+        """
+        self._log_allowed = log_allowed
+
     async def start(self) -> None:
         host, _, port_s = self._cfg.listen.rpartition(":")
         if not port_s.isdigit():

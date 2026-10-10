@@ -408,6 +408,263 @@ class TestRelayReload:
         _run_with_upstream(_t)
 
 
+# ── Settings pushed into kept relays ─────────────────────
+
+
+_MARKER_INSPECTOR_SRC = """\
+from inspectors.base import InspectionResult, Inspector
+
+
+class ReloadMarkerInspector(Inspector):
+    name = "reload-marker"
+
+    def configure(self, config):
+        self.marker = (config or {}).get("marker", "RELOAD_MARKER_42")
+
+    def inspect_request(self, ctx):
+        if ctx.body_text and self.marker in ctx.body_text:
+            return InspectionResult(
+                inspector=self.name,
+                action="block",
+                reason="contains " + self.marker,
+                severity="critical",
+            )
+        return None
+"""
+
+_MARKER = "RELOAD_MARKER_42"
+# An AWS-style access key id: a built-in secrets pattern.
+_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+
+
+@pytest.fixture
+def marker_inspector(tmp_path, monkeypatch):
+    """A custom inspector file the ``inspectors:`` section can load."""
+    d = tmp_path / "inspectors"
+    d.mkdir()
+    path = d / "reload_marker.py"
+    path.write_text(_MARKER_INSPECTOR_SRC)
+    monkeypatch.setenv("AGENTCAGE_INSPECTOR_DIRS", str(d))
+    return {"name": "reload-marker", "path": str(path)}
+
+
+@pytest.fixture
+def smtp_creds(monkeypatch):
+    monkeypatch.setenv("TEST_SMTP_USER", "agent@example.com")
+    monkeypatch.setenv("TEST_SMTP_PASS", "real-app-password")
+
+
+def _smtp_entry(up_port, *, name="out"):
+    return {
+        "name": name,
+        "type": "smtp",
+        "listen": "127.0.0.1:0",
+        "upstream": {"host": "127.0.0.1", "port": up_port, "tls": False},
+        "auth": {
+            "type": "smtp-plain",
+            "user_source": "env:TEST_SMTP_USER",
+            "password_source": "env:TEST_SMTP_PASS",
+        },
+        "policy": {"send_rate_limit": "100/min", "conn_rate_limit": "100/min"},
+    }
+
+
+def _run_with_smtp_upstream(test):
+    """Run ``test(up_port, recorder)`` on a fresh loop with a fake SMTP
+    upstream."""
+    from tests.test_protocol_relays_smtp import (
+        FakeSmtpRecorder,
+        _start_fake_upstream,
+    )
+
+    async def _go():
+        recorder = FakeSmtpRecorder()
+        upstream, up_port = await _start_fake_upstream(
+            recorder, "agent@example.com", "real-app-password")
+        try:
+            await test(up_port, recorder)
+        finally:
+            upstream.close()
+            await upstream.wait_closed()
+    asyncio.run(_go())
+
+
+async def _smtp_send(port: int, body: str) -> int:
+    """Send one message through the relay; return the reply code to the
+    end of DATA."""
+    from tests.test_protocol_relays_smtp import _cmd, _read_response
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        await _read_response(reader)  # greeting
+        await _cmd(writer, reader, b"EHLO cage.local")
+        await _cmd(writer, reader, b"MAIL FROM:<agent@example.com>")
+        await _cmd(writer, reader, b"RCPT TO:<friend@example.com>")
+        await _cmd(writer, reader, b"DATA")
+        writer.write(b"Subject: t\r\n\r\n" + body.encode() + b"\r\n.\r\n")
+        await writer.drain()
+        code, _ = await asyncio.wait_for(_read_response(reader), 5)
+        await _cmd(writer, reader, b"QUIT")
+        return code
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
+def _allowed_imap(audit):
+    return [e["command"] for e in audit
+            if e.get("kind") == "imap_command"
+            and e.get("decision") == "allowed"]
+
+
+class TestKeptRelayFollowsReload:
+    """A relay a reload keeps (its entry unchanged) must still pick up
+    the reload's ``logging.allowed_requests`` and inspector chain: it
+    was built with the old ones, and nothing else hands it the new."""
+
+    @pytest.mark.parametrize("spelling", ["logging", "legacy"])
+    def test_allowed_requests_flip_reaches_a_kept_imap_relay(
+            self, env, spelling):
+        def _flag(on):
+            if spelling == "logging":
+                return {"logging": {"allowed_requests": on}}
+            return {"log_allowed": on}
+
+        async def _t(up):
+            entry = _imap_entry(up)
+            addon, audit = _make_addon(
+                env, protocol_relays=[entry], **_flag(False))
+            addon.running()
+            await _settle(addon)
+            relay = _relay(addon, "mail")
+
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", _port(relay))
+
+            async def _noop(tag):
+                writer.write(tag + b" NOOP\r\n")
+                await writer.drain()
+                line = await asyncio.wait_for(reader.readline(), 5)
+                assert line.startswith(tag + b" OK"), line
+
+            try:
+                await reader.readline()  # PREAUTH
+                await _noop(b"a1")
+                assert _allowed_imap(audit) == []
+
+                _reload(env, addon, protocol_relays=[entry], **_flag(True))
+                await _settle(addon)
+                assert _relay(addon, "mail") is relay  # not restarted
+                # Same session, opened before the reload.
+                await _noop(b"a2")
+                assert _allowed_imap(audit) == ["NOOP"]
+
+                _reload(env, addon, protocol_relays=[entry], **_flag(False))
+                await _settle(addon)
+                assert _relay(addon, "mail") is relay
+                await _noop(b"a3")
+                assert _allowed_imap(audit) == ["NOOP"]
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+            await addon.done()
+
+        _run_with_upstream(_t)
+
+    def test_inspector_added_by_reload_reaches_a_kept_smtp_relay(
+            self, env, marker_inspector, smtp_creds):
+        async def _t(up, recorder):
+            entry = _smtp_entry(up)
+            addon, audit = _make_addon(env, protocol_relays=[entry])
+            addon.running()
+            await _settle(addon)
+            relay = _relay(addon, "out")
+            assert await _smtp_send(_port(relay), _MARKER) == 250
+
+            _reload(env, addon, protocol_relays=[entry],
+                    inspectors=[marker_inspector])
+            await _settle(addon)
+            assert _relay(addon, "out") is relay  # not restarted
+            assert await _smtp_send(_port(relay), _MARKER) == 550
+            blocked = [e for e in audit if e.get("kind") == "smtp_data"
+                       and e.get("decision") == "blocked"]
+            assert [e["inspector"] for e in blocked] == ["reload-marker"]
+            assert len(recorder.transactions) == 1
+            await addon.done()
+
+        _run_with_smtp_upstream(_t)
+
+    def test_inspector_removed_from_the_chain_stops_applying(
+            self, env, marker_inspector, smtp_creds):
+        """Reload itself never shrinks the shared chain today (an entry
+        dropped from ``inspectors:`` keeps running on HTTP until restart),
+        but whatever the shared chain is after a reload is what a kept
+        relay runs: here an inspector taken out of it."""
+        async def _t(up, recorder):
+            entry = _smtp_entry(up)
+            addon, _ = _make_addon(env, protocol_relays=[entry],
+                                   inspectors=[marker_inspector])
+            addon.running()
+            await _settle(addon)
+            relay = _relay(addon, "out")
+            assert await _smtp_send(_port(relay), _MARKER) == 550
+
+            addon.inspectors = [i for i in addon.inspectors
+                                if i.name != "reload-marker"]
+            _reload(env, addon, protocol_relays=[entry])
+            await _settle(addon)
+            assert _relay(addon, "out") is relay
+            assert await _smtp_send(_port(relay), _MARKER) == 250
+            assert len(recorder.transactions) == 1
+            await addon.done()
+
+        _run_with_smtp_upstream(_t)
+
+    def test_refreshed_chain_keeps_the_relay_adjustments(
+            self, env, marker_inspector, smtp_creds):
+        """The pushed chain is built as at relay start: no domain
+        inspector, and the secrets inspector forced to block although
+        HTTP only flags by default."""
+        from inspectors.domain import DomainInspector
+
+        async def _t(up, recorder):
+            addon_mod = env[0]
+            entry = _smtp_entry(up)
+            addon, audit = _make_addon(
+                env, protocol_relays=[entry], secrets={"enabled": True})
+            addon.running()
+            await _settle(addon)
+            relay = _relay(addon, "out")
+
+            _reload(env, addon, protocol_relays=[entry],
+                    secrets={"enabled": True},
+                    inspectors=[marker_inspector])
+            await _settle(addon)
+            assert _relay(addon, "out") is relay
+            chain = list(relay._inspectors)
+            assert "reload-marker" in [i.name for i in chain]
+            assert not any(isinstance(i, DomainInspector) for i in chain)
+            secrets = next(i for i in chain if i.name == "secrets")
+            assert isinstance(secrets, addon_mod._RelaySecretsInspector)
+            assert secrets._inner is next(
+                i for i in addon.inspectors if i.name == "secrets")
+
+            assert await _smtp_send(_port(relay), "key " + _AWS_KEY) == 550
+            blocked = [e for e in audit if e.get("kind") == "smtp_data"
+                       and e.get("decision") == "blocked"]
+            assert [e["inspector"] for e in blocked] == ["secrets"]
+            assert recorder.transactions == []
+            await addon.done()
+
+        _run_with_smtp_upstream(_t)
+
+
 # ── Capture ──────────────────────────────────────────────
 
 
