@@ -1332,9 +1332,12 @@ class ImapRelay:
         if not _valid_tag(tag):
             # Answered untagged: echoing a "+" or "*" tag back would itself
             # read as a continuation request or an untagged response.
+            # Logged by length only: a bare base64 SASL line from the cage
+            # reads as an invalid tag, and its text is the cage's
+            # credential.
             log.warning(
-                "imap relay %s: blocked line with invalid tag %r",
-                self._cfg.name, tag[:32],
+                "imap relay %s: blocked line with invalid tag (%d bytes)",
+                self._cfg.name, len(tag),
             )
             self._audit_log({
                 "kind": "imap_command",

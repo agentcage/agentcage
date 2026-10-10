@@ -628,6 +628,22 @@ class Agentcage:
             return entry
         return injector.redact_record(entry)
 
+    def _capture_inspectors(
+        self, results: list[InspectionResult],
+    ) -> list[dict]:
+        """A capture entry's ``inspectors``, each reason redacted as an
+        audit entry is (``_redact_audit_entry``): ``capture.jsonl`` is
+        readable by the cage, and a response inspector's reason can quote
+        a secret the server echoed (it sees the response before
+        ``redact_response``)."""
+        inspectors = [{"name": r.inspector, "action": r.action,
+                       "reason": r.reason, "severity": r.severity}
+                      for r in results]
+        injector = getattr(self, "injector", None)
+        if injector is None:
+            return inspectors
+        return injector.redact_record(inspectors)
+
     def _sync_protocol_relays(self) -> None:
         """Make the running ``protocol_relays`` listeners (IMAP, SMTP)
         match the live config.
@@ -1480,9 +1496,7 @@ class Agentcage:
                     flow_id=flow.id, direction=direction, decision="blocked",
                     host=flow.request.host, method=flow.request.method,
                     path=flow.request.path,
-                    inspectors=[{"name": r.inspector, "action": r.action,
-                                 "reason": r.reason, "severity": r.severity}
-                                for r in results],
+                    inspectors=self._capture_inspectors(results),
                     inbound_req=inbound_req, inbound_resp=inbound_resp,
                     outbound_req=inbound_req, outbound_resp=inbound_resp,
                 )
@@ -1515,9 +1529,7 @@ class Agentcage:
                     "host": flow.request.host,
                     "method": flow.request.method,
                     "path": flow.request.path,
-                    "inspectors": [{"name": r.inspector, "action": r.action,
-                                    "reason": r.reason, "severity": r.severity}
-                                   for r in results],
+                    "inspectors": self._capture_inspectors(results),
                     "inbound_req": cap_req,
                     "outbound_req": cap_req,
                 }
@@ -1590,7 +1602,13 @@ class Agentcage:
 
         blocked = [r for r in results if r.action == "block"]
         if blocked:
-            reason = blocked[0].reason
+            # The reason can quote a secret the server echoed (response
+            # inspectors see the response before it is redacted) and goes
+            # to the cage in the 403 body: redacted before it is
+            # JSON-encoded there, which would escape an escaped echo
+            # again (``\/`` to ``\\/``), a spelling redaction does not
+            # match.
+            reason, redacted = self.injector.redact_text(blocked[0].reason)
             flow.response = http.Response.make(
                 403,
                 json.dumps(
@@ -1599,7 +1617,8 @@ class Agentcage:
                 ).encode(),
                 {"Content-Type": "application/json"},
             )
-            redacted = self.injector.redact_response(flow)
+            redacted += [name for name in self.injector.redact_response(flow)
+                         if name not in redacted]
             self._log(flow, "blocked", reason, results, direction=direction, secrets_redacted=redacted)
 
             # Write capture for response-blocked flow
@@ -1613,11 +1632,8 @@ class Agentcage:
                     host=pending["host"],
                     method=pending["method"],
                     path=pending["path"],
-                    inspectors=pending["inspectors"] + [
-                        {"name": r.inspector, "action": r.action,
-                         "reason": r.reason, "severity": r.severity}
-                        for r in results
-                    ],
+                    inspectors=(pending["inspectors"]
+                                + self._capture_inspectors(results)),
                     inbound_req=pending["inbound_req"],
                     inbound_resp=resp_snap,
                     outbound_req=pending["outbound_req"],

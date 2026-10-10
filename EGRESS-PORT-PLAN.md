@@ -371,6 +371,18 @@ fixtures pin them.
   placeholder, longest first, as `redact_request` does (0a.31). `url`,
   `path` and `host` are read after injection, so this is what keeps a
   URL-injected secret out of the log.
+- Every redaction (request, response, WebSocket frame, audit record,
+  capture inspector reasons) and the literal-value policy check match each
+  secret in its derived forms as well (0a.32): each character literal or,
+  unless it is a letter, digit or `-._`, as `%XX` per UTF-8 byte (either
+  hex case), `+` for a space, JSON `\uXXXX` (surrogate pair past the BMP)
+  or a JSON short escape; and the value at any byte offset of a standard
+  or URL-safe base64 blob (values of 8+ bytes), found by its three
+  alignment cores, decoded, replaced and re-encoded (padding kept; a blob
+  needing none re-padded only in the standard alphabet). The placeholder
+  takes the match's encoding: percent-encoded in the match's hex case if
+  it used `%XX` or `+`, JSON-escaped if it used a backslash escape,
+  literal otherwise.
 - Capture: compact JSON line per flow `{ts, flow_id, direction, decision,
   host, method, path, inspectors, inbound:{request,response},
   outbound:{request,response}}`; request/response snapshots with headers as
@@ -645,7 +657,7 @@ the 403 body shape, a wasm plugin blocking a request.
 
 ## 9. Phasing and PR breakdown
 
-### Phase 0a — fix the existing bugs first, neutralise the CA contract (31 items)
+### Phase 0a — fix the existing bugs first, neutralise the CA contract (32 items)
 
 Separate PRs against the **current** Python egress (and the host), each with
 a test that fails before the fix, landed and released (0.50.x) before Phase 0
@@ -684,6 +696,7 @@ records the oracle. The Rust port then reproduces fixed behaviour only.
 | 0a.29 | IMAP relay refuses bare CR in client lines; metadata commands (GETQUOTAROOT/GETMETADATA/GETACL/SUBSCRIBE) respect folder lists | `relays/imap.py` |
 | 0a.30 | `cage restore --name` refuses a clone whose named volumes collide with existing ones | `cli/cage/backup.rs` |
 | 0a.31 | Audit records never hold a secret: every entry (HTTP, WebSocket, relay, Policy API, watcher) is redacted to placeholders before stderr, `audit.jsonl` and the watcher ring, so a URL-injected value (`inject_body`) is not logged after injection; capture `host` refreshed from the redacted request; relays and the decider cut their own credentials from logged upstream errors | `addon.py`, `secret_injector.py`, `relays/`, `policy_api.py` |
+| 0a.32 | Redaction and the literal-value policy check match each secret's encoded forms too: any character percent-encoded (either hex case, `+` for space) or JSON-escaped (letters, digits, `-._` literal only), and base64 (standard or URL-safe, any byte offset, values of 8+ bytes); the placeholder replaces it in the same encoding. Capture inspector reasons redacted; a response block's 403 reason redacted before JSON-encoding; IMAP invalid-tag warning logs the tag's length, not its text | `secret_injector.py`, `addon.py`, `relays/imap.py` |
 
 ### Phase 0 — oracle and decisions (≈ 1.5 weeks)
 

