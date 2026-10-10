@@ -46,11 +46,23 @@ from pathlib import Path
 
 log = logging.getLogger("agentcage.secret_lookup")
 
-# Every scheme the host accepts for a relay ``*_source``. The host validates
-# the scheme and arranges delivery; by the time the egress runs, every one
-# of them has landed in one of the two channels above under NAME, so only NAME is used
-# here.
-_SOURCE_SCHEMES = ("env", "cmd", "systemd-creds", "podman", "")
+# The relay ``*_source`` schemes whose value the host delivers into one of
+# the two channels above under NAME, the part after the colon; only NAME is
+# used here, and a scheme not listed is refused rather than guessed at.
+#
+# ``cmd`` is deliberately absent. Its "NAME" is the command text, so the
+# host rendered ``Secret=<cage>.<command text>`` and the egress looked up a
+# secret named after the command: nothing ever runs a relay's command, and
+# the only value that lookup could find is a store entry or staged file
+# that happens to carry that name. Refusing it fails the relay's start with
+# an audited ``relay_init_failed`` instead of a relay logging in with "".
+#
+# ``podman`` stays for now: on the podman and apple-container backends its
+# NAME is the store entry the egress's ``Secret=`` line / staging delivers,
+# so it resolves. It does not reach a vm guest, and the host is moving to
+# refuse it for relays at validation (as ``agents.*.api_key`` already
+# does); drop it here when that lands.
+_SOURCE_SCHEMES = ("env", "systemd-creds", "podman", "")
 
 
 def _secrets_dir() -> Path:

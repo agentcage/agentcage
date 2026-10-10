@@ -643,6 +643,32 @@ class TestCredentialLookup:
         relay = ImapRelay(_relay_entry(1))
         assert relay._password == "real-app-password"
 
+    @pytest.mark.parametrize("scheme", ["env", "systemd-creds", "podman"])
+    def test_delivered_schemes_resolve_by_name(self, dirs, scheme):
+        """Every scheme the host delivers lands under NAME, the part after
+        the colon."""
+        from secret_lookup import resolve_credential
+
+        staged, _ = dirs
+        (staged / "MAIL_PW").write_text("staged-password\n")
+        assert resolve_credential(f"{scheme}:MAIL_PW") == "staged-password"
+
+    def test_cmd_source_is_refused_not_looked_up_by_its_command_text(self, dirs):
+        """``cmd:``'s NAME is the command text: nothing runs it for a
+        relay, so the lookup could only ever find a secret that happens to
+        be named after the command. Refused, so the relay fails to start
+        (audited) instead of logging in with whatever that name holds."""
+        from secret_lookup import resolve_credential
+
+        staged, _ = dirs
+        (staged / "printf fake").write_text("named-after-the-command\n")
+        with pytest.raises(ValueError, match="unsupported relay credential"):
+            resolve_credential("cmd:printf fake")
+        entry = _relay_entry(1)
+        entry["auth"]["password_source"] = "cmd:printf fake"
+        with pytest.raises(ValueError, match="unsupported relay credential"):
+            ImapRelay(entry)
+
 
 # ── A3: UID subcommand-aware readonly policy ─────────────
 

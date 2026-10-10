@@ -1,0 +1,79 @@
+{
+  "contract": "logging_defaults",
+  "summary": "Whether allowed requests (HTTP and protocol-relay commands) are written to the egress log, for each way an operator can spell or omit it. The host copies the raw logging block into proxy-config.yaml without filling defaults in, so an omitted key runs at the EGRESS fallback while the host validates and documents its own. The two must be the same value.",
+  "implementations": {
+    "host": "rust/agentcage-core/src/config/parse.rs (the resolved value) and rust/agentcage-state/src/derived.rs (PROXY_KEYS: what reaches proxy-config.yaml)",
+    "proxy": "src/agentcage/data/proxy/addon.py (_log_allowed)"
+  },
+  "fields": {
+    "cage": "the logging keys of a cage.yaml, merged into an otherwise minimal valid config",
+    "proxy_config": "the same keys as the host writes them into proxy-config.yaml; the split point, so neither half needs the other",
+    "allowed_requests": "whether allowed requests are logged, on both sides"
+  },
+  "notes": "The host half asserts cage -> allowed_requests (its parse) and cage -> proxy_config (its writer); the proxy half asserts proxy_config -> allowed_requests (its loader). A key the host strips from proxy-config.yaml shows up as a proxy_config mismatch on the host half.",
+  "cases": [
+    {
+      "id": "omitted",
+      "why": "no logging block at all, the common case: the host documents false, and the egress used to fall back to true, logging every allowed request and IMAP/SMTP command for an operator who never asked",
+      "cage": {},
+      "proxy_config": {},
+      "allowed_requests": false
+    },
+    {
+      "id": "logging-block-without-the-key",
+      "why": "a logging block that sets other keys only; the omitted key still resolves to the default",
+      "cage": {"logging": {"level": "debug"}},
+      "proxy_config": {"logging": {"level": "debug"}},
+      "allowed_requests": false
+    },
+    {
+      "id": "explicit-true",
+      "why": "the documented way to opt in",
+      "cage": {"logging": {"allowed_requests": true}},
+      "proxy_config": {"logging": {"allowed_requests": true}},
+      "allowed_requests": true
+    },
+    {
+      "id": "explicit-false",
+      "why": "the documented default, written out",
+      "cage": {"logging": {"allowed_requests": false}},
+      "proxy_config": {"logging": {"allowed_requests": false}},
+      "allowed_requests": false
+    },
+    {
+      "id": "legacy-log-allowed-true",
+      "why": "the legacy top-level key is honoured when logging.allowed_requests is absent; the host stripped it from proxy-config.yaml, so it only worked by accident of the old egress fallback",
+      "cage": {"log_allowed": true},
+      "proxy_config": {"log_allowed": true},
+      "allowed_requests": true
+    },
+    {
+      "id": "legacy-log-allowed-false",
+      "why": "the legacy key set to false: the host honoured it, the egress never saw it and logged everything",
+      "cage": {"log_allowed": false},
+      "proxy_config": {"log_allowed": false},
+      "allowed_requests": false
+    },
+    {
+      "id": "new-key-false-wins-over-legacy-true",
+      "why": "logging.allowed_requests wins whenever it is present, even as false",
+      "cage": {"log_allowed": true, "logging": {"allowed_requests": false}},
+      "proxy_config": {"log_allowed": true, "logging": {"allowed_requests": false}},
+      "allowed_requests": false
+    },
+    {
+      "id": "new-key-true-wins-over-legacy-false",
+      "why": "the same precedence the other way round",
+      "cage": {"log_allowed": false, "logging": {"allowed_requests": true}},
+      "proxy_config": {"log_allowed": false, "logging": {"allowed_requests": true}},
+      "allowed_requests": true
+    },
+    {
+      "id": "legacy-fallback-beside-other-logging-keys",
+      "why": "a logging block without allowed_requests does not hide the legacy key",
+      "cage": {"log_allowed": true, "logging": {"dns_queries": true}},
+      "proxy_config": {"log_allowed": true, "logging": {"dns_queries": true}},
+      "allowed_requests": true
+    }
+  ]
+}
