@@ -2,9 +2,9 @@ name: E2E Tests
 
 on:
   pull_request:
-    branches: [master]
+    branches: [master, egress/rust-port]
   push:
-    branches: [master]
+    branches: [master, egress/rust-port]
   workflow_dispatch:
   # Phase 7 only — see the e2e-vm job for why it is not on the PR path.
   schedule:

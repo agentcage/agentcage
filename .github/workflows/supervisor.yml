@@ -19,9 +19,9 @@ name: Apple-container supervisor
 
 on:
   push:
-    branches: [master]
+    branches: [master, egress/rust-port]
   pull_request:
-    branches: [master]
+    branches: [master, egress/rust-port]
     paths:
       - 'src/agentcage/data/apple-container/**'
       - 'src/agentcage/data/containers/supervisor-egress.sh'
