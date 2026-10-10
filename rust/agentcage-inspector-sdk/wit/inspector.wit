@@ -1,0 +1,133 @@
+// The custom-inspector ABI between agentcage's egress proxy and a plugin.
+//
+// A plugin is a WebAssembly component that exports the `inspector`
+// world. The egress instantiates it with no capabilities (no filesystem,
+// network, environment or wall clock), calls `configure` once per
+// instance with the entry's `config:` mapping as JSON, then calls
+// `inspect-request` / `inspect-response` once per exchange, under a fuel
+// and memory budget. A trap, an exhausted budget or a malformed verdict
+// counts as a `block` (fail closed).
+//
+// This file is the stable contract: a plugin built against 1.x keeps
+// loading on every egress that speaks 1.x. Additions go in a new minor
+// version as new optional members; nothing here changes meaning.
+package agentcage:inspector@1.0.0;
+
+interface types {
+    /// What a verdict asks for. There is no `allow`: an inspector with
+    /// nothing to report returns `none`.
+    enum action {
+        /// Refuse the exchange.
+        block,
+        /// Let it through, but record why it looked suspicious.
+        flag,
+    }
+
+    /// How serious a verdict is, as audit records spell it.
+    enum severity {
+        debug,
+        info,
+        warning,
+        error,
+        critical,
+    }
+
+    /// Which way the flow runs.
+    enum direction {
+        /// From the cage to the world (forward and transparent proxy,
+        /// protocol relays).
+        outbound,
+        /// From the world to a port the cage exposes (reverse proxy).
+        inbound,
+    }
+
+    /// What kind of message is being inspected.
+    enum phase {
+        /// An HTTP request, or a relayed mail.
+        request,
+        /// An HTTP response.
+        response,
+        /// One complete WebSocket message. `inspect-request` sees the
+        /// ones the cage sends, `inspect-response` the ones it receives.
+        websocket,
+    }
+
+    /// One `key: value` of a verdict's free-form details. `value` is a
+    /// JSON document (`"text"`, `42`, `{"a": [1]}`, …).
+    record metadata-entry {
+        key: string,
+        value: string,
+    }
+
+    /// A finding an inspector earlier in the chain already reported.
+    record prior-result {
+        /// The reporting inspector's name.
+        inspector: string,
+        action: action,
+        reason: string,
+        severity: severity,
+        metadata: list<metadata-entry>,
+    }
+
+    /// Everything an inspector may look at, computed once per exchange.
+    ///
+    /// Requests are seen as the cage sent them: secret placeholders, not
+    /// the real values, because inspection runs before injection.
+    record context {
+        /// The full URL.
+        url: string,
+        /// The upstream host name.
+        host: string,
+        /// The request method (for a response, the request's).
+        method: string,
+        /// Header name/value pairs in wire order, case and duplicates
+        /// kept.
+        headers: list<tuple<string, string>>,
+        /// The `Content-Type` header value, or "".
+        content-type: string,
+        /// The body with any Content-Encoding removed; `none` when the
+        /// message has no body.
+        body: option<list<u8>>,
+        /// The body decoded as text (the declared charset, else UTF-8
+        /// for JSON/HTML/XML/JS/CSS, else Latin-1); `none` when there is
+        /// no body or it does not decode.
+        body-text: option<string>,
+        /// Length of `body` in bytes.
+        body-size: u64,
+        /// Shannon entropy of `body` in bits per byte; `none` for an
+        /// empty body.
+        body-entropy: option<f64>,
+        /// Verdicts already returned by earlier inspectors in the chain.
+        prior-results: list<prior-result>,
+        direction: direction,
+        phase: phase,
+    }
+
+    /// An inspector's finding.
+    record verdict {
+        action: action,
+        /// Human-readable reason, carried verbatim into the 403 body and
+        /// the audit record.
+        reason: string,
+        severity: severity,
+        /// Free-form details, visible to later inspectors; never written
+        /// to the audit record.
+        metadata: list<metadata-entry>,
+    }
+}
+
+world inspector {
+    use types.{context, verdict};
+
+    /// Called once per instance, before any inspection, with the
+    /// `config:` mapping from cage.yaml as a JSON object ("{}" when
+    /// absent). An `err` refuses the configuration: the egress keeps
+    /// its previous one and reports the message.
+    export configure: func(config: string) -> result<_, string>;
+
+    /// Inspect a message the cage sends. `none` abstains.
+    export inspect-request: func(ctx: context) -> option<verdict>;
+
+    /// Inspect a message the cage receives. `none` abstains.
+    export inspect-response: func(ctx: context) -> option<verdict>;
+}
