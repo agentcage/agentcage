@@ -113,9 +113,9 @@ Many AI agents need to read or draft emails (e.g. triaging support inboxes). How
 agentcage solves this by running **hardened protocol relays** inside the egress gateway.
 
 ### How Protocol Relays Work
-- The agent connects to a local, unauthenticated relay inside the cage (`localhost:25` for SMTP, `localhost:143` for IMAP).
-- The relay authenticates upstream using real credentials stored in the host's encrypted vault.
-- The relay enforces fine-grained policy gates (folder allowlists, recipient whitelists, rate limits).
+- Each relay listens inside the **egress** container on the `listen` address you configure. The agent connects to it over the cage network, in plaintext and without credentials.
+- The relay authenticates upstream with real credentials from agentcage's secret store. They are delivered only to the egress and never reach the cage.
+- The relay enforces fine-grained policy gates (folder allowlists, IMAP write modes, sender and recipient allowlists, rate limits).
 
 ### Example SMTP Relay in `cage.yaml`:
 
@@ -123,25 +123,63 @@ agentcage solves this by running **hardened protocol relays** inside the egress 
 protocol_relays:
   - name: mail-relay
     type: smtp
-    listen: "127.0.0.1:1025"
+    listen: "0.0.0.0:1025"
     upstream:
       host: "smtp.sendgrid.net"
-      port: 587
+      port: 465 # implicit TLS (SMTPS); STARTTLS on 587 is not supported
       tls: true
     auth:
-      type: plain
-      user_source: "SENDGRID_USER"
-      password_source: "SENDGRID_API_KEY"
+      type: smtp-plain
+      user_source: "env:SENDGRID_USER"
+      password_source: "env:SENDGRID_API_KEY"
     policy:
-      readonly: false
-      sender_allowlist: ["bot@mycompany.com"]
+      sender_allowlist: ["bot@example.com"]
       recipient_allowlist:
-        domains: ["mycompany.com"] # Can only email internal staff
-      send_rate_limit: "10/minute"
+        domains: ["example.com"] # Can only email internal staff
+      send_rate_limit: "10/hour"
       max_message_bytes: 5242880 # 5 MB cap
 ```
 
-Inside the cage, the agent configures its SMTP client to point to `127.0.0.1:1025` with no passwords. If the agent attempts to email external addresses or spam recipients, the relay drops the connection at the proxy.
+Store both credentials before deploying: `agentcage secret set my-agent SENDGRID_USER` and `agentcage secret set my-agent SENDGRID_API_KEY`. Credential sources take the form `scheme:NAME`, where the scheme is `env:` or `systemd-creds:` and `NAME` is the secret's name. A bare name with no scheme is rejected at `cage create`.
+
+### Example IMAP Relay in `cage.yaml`:
+
+```yaml
+protocol_relays:
+  - name: inbox
+    type: imap
+    listen: "0.0.0.0:1143"
+    upstream:
+      host: "imap.example.com"
+      port: 993 # implicit TLS (IMAPS); STARTTLS on 143 is not supported
+      tls: true
+    auth:
+      type: imap-login
+      user_source: "env:IMAP_USER"
+      password_source: "env:IMAP_PASSWORD"
+    policy:
+      write_mode: none # read-only: no flagging, moving or deleting
+      folder_allowlist: ["INBOX"]
+```
+
+### Connecting from the cage
+
+The cage and the egress are separate network namespaces, so a relay listening on `127.0.0.1` is unreachable from the cage. Listen on `0.0.0.0:<port>` and point the agent at the **egress's address** on that port:
+
+- **container and vm cages:** the egress address is the host part of `$HTTPS_PROXY` (`http://<egress-ip>:8080`). The same address is the cage's nameserver in `/etc/resolv.conf`.
+- **apple-container cages:** the egress address is in `$AGENTCAGE_EGRESS_IP`.
+
+For the SMTP example above, the agent's mail client uses host `<egress-ip>`, port `1025`, plain SMTP, no TLS and no password. The relay accepts and ignores any `AUTH` the client sends. For IMAP, the relay greets the client already authenticated (`PREAUTH`).
+
+Choose a listen port that is not in `ports.tcp.allow` (80 and 443 by default) and that the egress does not already use (53, 8080, 8443). The egress redirects connections on inspected ports to its HTTP proxy, so a relay listening there never sees them. Note that `0.0.0.0` also binds the egress's interface on podman's default network, which other rootless containers on the same host can reach. The relay's policy is the only thing gating them.
+
+Rules for both relay types:
+
+- **Upstream TLS is implicit TLS or nothing.** `tls: true` starts the TLS handshake as soon as the connection opens (SMTPS on 465, IMAPS on 993). `tls: false` is plaintext end to end. Neither relay speaks STARTTLS: not upstream, so a submission port like 587 or IMAP on 143 does not work with `tls: true`, and not to the agent either.
+- **Rate limits are `"<count>/<unit>"`.** The unit is lowercase `sec`/`s`, `min`/`m` or `hour`/`h`, for example `"10/min"` or `"20/hour"`. Any other spelling, such as `"10/minute"`, is not accepted. `cage create` does not catch it: the relay refuses to start and logs a `relay_init_failed` audit record. `send_rate_limit` (SMTP) counts messages the upstream accepted and defaults to `"20/hour"`. `conn_rate_limit` (both) defaults to `"30/min"`.
+- **Policy keys are per protocol.** `write_mode`/`readonly`, `folder_allowlist` and `folder_denylist` apply to IMAP. `sender_allowlist`, `recipient_allowlist`, `max_message_bytes` and `max_recipients` apply to SMTP. A key on the wrong relay type is ignored.
+
+If the agent tries to email an address outside `recipient_allowlist`, the relay refuses that `RCPT TO` with a `550`. A message whose body trips an inspector (a leaked secret, for instance) is refused with a `550` at the end of `DATA`. Both refusals are written to the egress audit log as `smtp_command` and `smtp_data` records.
 
 ---
 
