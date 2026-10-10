@@ -1,0 +1,757 @@
+# agentcage: mitmproxy + Python addon → Rust egress plan
+
+Against `origin/master` after v0.50.0 (the Rust host CLI). Scope: replace
+**mitmdump and everything that runs inside it** — the addon, the inspector
+chain, secret injection, audit/capture, the Policy API, the traffic watcher,
+the IMAP/SMTP relays, the `google-jwt-bearer` transform, and the custom
+inspector extension point — with one Rust binary, `agentcage-egress`,
+implementing **only what agentcage uses today**. After the cutover the egress
+image ships no Python and no mitmproxy.
+
+Out of scope, kept as they are: `supervisor-egress.sh` (iptables, dnsmasq
+orchestration, readiness), `dns-audit.sh`, dnsmasq itself, tini, the quadlet /
+apple-container / Lima topology, and every host-side contract except the ones
+listed in §7 as deliberately changing.
+
+This plan is written from four read-only inventories of the current code
+(mitmproxy surface, request pipeline, Policy API + watcher, relays + host
+contracts). The **code and tests are the spec**: `docs/explain/policy-api.md`,
+`docs/reference/policy-api.md`, `docs/explain/traffic-watcher.md`,
+`docs/explain/architecture.md`, `docs/reference/configuration.md` and
+`docs/how-to/custom-inspectors.md` are wrong in many places (§11).
+
+---
+
+## 1. What the replacement has to be
+
+### 1.1 The process boundary
+
+Today the egress container runs `tini → supervisor-egress.sh`, which sets up
+iptables, starts dnsmasq, then starts:
+
+```
+prlimit --as=2G -- setpriv --reuid=acproxy … --bounding-set=-all -- \
+  mitmdump -s /opt/agentcage/addon.py \
+    --mode regular@${AGENTCAGE_REGULAR_BIND:-:8080} \
+    --mode transparent@8443 \
+    [--mode reverse:http://$AGENTCAGE_CAGE_IP:$p@0.0.0.0:$p …] \
+    --set connection_strategy=lazy --set keep_host_header=true
+```
+
+(`supervisor-egress.sh:623-650`). Everything agentcage-specific — relays,
+Policy API, grant sweeper, watcher — is an asyncio task inside that one
+process. That is the clean seam: **the Rust binary replaces exactly that
+command line**, runs as the same uid 200 with the same empty bounding set and
+`prlimit`, and the supervisor's only change is the launch line and the
+`pgrep mitmdump`-style references.
+
+### 1.2 The mitmproxy surface actually used
+
+| Feature | Used | Notes for the port |
+| :-- | :-- | :-- |
+| Forward proxy `:8080` — `CONNECT` and absolute-form HTTP | **yes** | Cage env `HTTP(S)_PROXY` (container/vm; not apple) |
+| Transparent `:8443` behind `iptables REDIRECT` of every `INSPECTED_TCP_PORTS` port (default 80 443) | **yes** | Original port via `SO_ORIGINAL_DST`; upstream is re-targeted to the **Host/SNI name**, not the original IP |
+| Reverse `reverse:http://cage:p@0.0.0.0:p` per inbound port | **yes** | Host header kept, `X-Forwarded-*`/`X-Real-IP`/`Forwarded` stripped, `Origin` rewritten; domain inspector skipped |
+| TLS interception, leaf minted from SNI (or local address if no SNI) | **yes** | `connection_strategy=lazy`: client handshake completes before any upstream connect |
+| HTTP/1.1, chunked, keep-alive | **yes** | |
+| HTTP/2 client side and upstream side (mitmproxy default `http2=True`) | **yes, implicitly** | Not asserted by e2e, but Node/curl/Go negotiate h2 |
+| WebSockets, outbound and inbound (reverse) | **yes** | Message-level hook only |
+| TLS passthrough via `ignore_hosts` (`domains.passthrough`) | **yes** | Raw splice, no hooks |
+| Non-HTTP TCP on an intercepted port | **yes — killed** | `tcp_start` → error + kill + audit `tcp_bypass_blocked` |
+| Content-Encoding decode for inspection (`.content`) | **yes** | gzip/deflate/br/zstd |
+| Streaming bodies / SSE passthrough | **no** | Everything is fully buffered today |
+| HTTP/3/QUIC, DNS mode, SOCKS, upstream, WireGuard modes | **no** | |
+| Upstream TLS verification | **yes** | certifi (Mozilla) store, hostname checked, never insecure |
+| Persistent CA in `/home/acproxy/.mitmproxy` | **yes** | Contract with the cage, `cage verify`, quadlets (§7) |
+
+Hooks implemented by the addon: `load`, `running`, `done`, `request`,
+`response`, `websocket_message`, `tcp_start`, `server_connect`,
+`server_connected`. Nothing else — no `http_connect`, no `error`, no
+`responseheaders`, no TLS hooks.
+
+### 1.3 Size of what is being ported
+
+| Area | Python LOC (file) | Real logic | Character |
+| :-- | --: | --: | :-- |
+| addon pipeline + capture | 1,691 + 243 | ~1,200 | glue on top of mitmproxy flows |
+| secret injector + transforms | 747 + 290 | ~600 | byte-level rewrites, RS256 JWT |
+| inspectors (5 built-ins + chain + loader) | ~1,150 | ~700 | regex/entropy, pure |
+| Policy API + LLM client | 1,607 | ~700 | pure logic + one HTTPS call |
+| traffic watcher | 1,828 | ~900 | intricate pure logic + file tail |
+| relays (IMAP, SMTP, validate, tls) | ~2,340 | ~1,500 | line protocols |
+| **mitmproxy itself** | — | **new work** | listeners, TLS, HTTP/1+2, WS, CA |
+
+The ported agentcage logic is roughly 5–6k lines of Rust. The proxy core that
+mitmproxy provided for free is the new work and the main risk.
+
+---
+
+## 2. Decisions (taken 2026-10-10)
+
+Each of these changes behaviour or scope. They were put to the maintainer on
+2026-10-10; the **Decided** column records the answer, and the rest of the plan
+follows it.
+
+| # | Decision | Decided |
+| :-- | :-- | :-- |
+| D1 | **Fail open vs closed.** mitmproxy's `safecall` logs an addon exception and lets the flow through unfiltered; a bad hot-reload (e.g. `rate_limit.requests_per_second: abc`) makes *every* request fail open until the config is fixed. | **Fail closed** (decided) everywhere: an internal error on a flow is a 502 + audit record; a config that fails to load keeps the last good config and audits `config_reload_failed`. |
+| D2 | **Custom inspectors.** Today: arbitrary Python loaded via `importlib` from `AGENTCAGE_INSPECTOR_DIRS` — but nothing mounts that directory, so the feature is documented and unusable. | **Decided: keep the extension point, ported to Rust, as WebAssembly plugins on wasmtime** (§5.7): an `agentcage-inspector-sdk` crate with the same `configure` / `inspect_request` / `inspect_response` contract, compiled to `wasm32-wasip2`, loaded by the egress under wasmtime with fuel/memory limits; plus a host-side mount so plugins actually reach the egress. |
+| D3 | **Forward-proxy port policy.** `CONNECT host:22` (or absolute-form to any port) is dialled by the proxy itself, past the `FORWARD` port policy; a passthrough domain on `CONNECT …:22` becomes a raw tunnel. | Decided: restrict forward-proxy targets to `INSPECTED_TCP_PORTS`; other ports → 403 + audit. |
+| D4 | **Passthrough SNI spoofing.** A cage can send `SNI=<passthrough domain>` to *any* IP on an inspected port and get an uninspected tunnel to that IP. | Decided: splice only when the original destination IP is in the resolution of the SNI name (resolved through the same dnsmasq); otherwise treat as a normal intercepted flow. |
+| D5 | **Upstream failures.** Today: mitmproxy's HTML 502 page (`Server: mitmproxy <ver>`), no audit record, the request already logged as `allowed`. | Decided: JSON 502 in the block-response shape with `"blocked": false`, plus an `upstream_error` audit record. e2e already accepts 403\|502. |
+| D6 | **Buffering.** Every body, including LLM SSE streams, is buffered in full today, bounded only by `prlimit --as=2G`. | Proposed (technical default, not put to a vote): v1 keeps full buffering (redaction and inspection need whole bodies) **plus a hard cap** (default 256 MiB per body → 502/413 + audit) so a large download is an error, not an OOM kill. Streaming when no rule needs the body is a follow-up (§12). |
+| D7 | **Existing bugs: reproduce or fix.** (a) relays read credentials from env only, so on apple-container (file-only delivery) they start with none; (b) relays and capture are never hot-reloaded though `cage edit` claims they are; (c) IMAP `write_mode: none` allows `CLOSE` (which expunges `\Deleted`); (d) watcher `interval_seconds` default is 300 in the egress vs 900 on the host; (e) every reload resets the decider's rate-limit bucket; (f) `_rl_buckets`/`_cap_pending`/poisoned-peer state grows without bound. | **Decided: fix all of them first, in separate PRs against the current Python egress and the host (Phase 0a, §9), before any Rust is written**, so the Phase 0 oracle records the fixed behaviour and the port never carries the bugs. |
+| D8 | **Trust store.** Proxied upstreams verify against certifi; relays and LLM calls use the system store. | Proposed (technical default): one store: `webpki-roots` (the Mozilla bundle certifi also ships) for everything, plus relay `ca_pem` additions. |
+| D9 | **How the binary reaches the image.** Today the host builds the image from the embedded `data/` tree. The egress is Linux-only but the host may be macOS. | Decided: release builds compile `agentcage-egress` for `{x86_64,aarch64}-unknown-linux-musl` and **embed the matching-arch Linux binary in the host binary** via `agentcage-assets` (a macOS arm64 host embeds linux-aarch64, which is what its VM runs). Dev builds take it from `AGENTCAGE_EGRESS_BIN` or `target/`. The egress content hash covers the binary (§7). |
+| D10 | **Header fidelity.** mitmproxy preserves HTTP/1 header case, order and duplicates on the wire and in audit/capture; `hyper`'s `HeaderMap` does not preserve cross-name order. | Proposed (technical default): own HTTP/1 codec (`httparse` + a small writer; bodies are fully buffered so framing is simple), `h2` crate for HTTP/2. Do not put upstream traffic through `hyper`'s high-level client. |
+
+Settled without a decision: HTTP/3 stays out; the CA file layout and names
+stay (`mitmproxy-ca.pem`, `mitmproxy-ca-cert.pem`) because cages and the host
+depend on them; the policy API and relays keep their wire formats.
+
+---
+
+## 3. Lessons from the CLI port, applied here
+
+1. **Freeze an oracle from the Python while it still exists.** The CLI port
+   worked because the golden corpus and contract fixtures were generated from
+   the live Python first. The egress has *no* language-neutral fixtures for
+   most of its behaviour (Policy API JSON, relay transcripts, injector
+   rewrites, watcher digests, audit line rendering are pinned only by pytest).
+   Phase 0 records them.
+2. **Run both implementations side by side** in CI until cutover (an
+   `egress engine` matrix, like the `cli: [python, rust]` matrix was).
+3. **Delete the oracle in one PR at the end**, with a review pass for tests
+   that were checking shipped assets rather than the Python (PR #425 lost
+   three such files and had to restore them).
+4. **No bless mode was a pain.** Give the new golden tests an
+   `AGENTCAGE_BLESS=1` mode from day one.
+
+---
+
+## 4. Architecture of `agentcage-egress`
+
+New workspace crate `rust/agentcage-egress` (lib + bin). Reuses from
+`agentcage-core`: `valid_domain`, `encoded_private_ip` and the CPython-exact
+`is_global` table (`config/domain.rs`), the never-grant set, the relay
+validator (`relays.rs`), the YAML loader, the Python-compatible JSON writer
+(`har/json.rs`, `DumpOptions`) and CPython `isoformat` timestamps
+(`har/datetime.rs`, `audit.rs`).
+
+```
+agentcage-egress run \
+  --regular <ip>:8080 --transparent :8443 \
+  [--reverse <cage_ip>:<p>@0.0.0.0:<p> …]
+```
+
+### 4.1 Runtime
+
+- `tokio` multi-thread runtime. CPU-bound work (inspector chains over
+  bodies, regex, entropy, wasm plugins) runs on `spawn_blocking`, matching the
+  Python thread-pool executor, so one large body never stalls the accept loop.
+- One `Arc<Engine>` holding an `ArcSwap<Config>` (hot reload swaps it
+  atomically; in-flight flows finish on the config they started with).
+- Shared mutable state, each behind its own lock or as an actor: domain
+  grants, rate buckets (LRU-bounded, as fixed in Phase 0a), poisoned peers,
+  watcher ring (`Mutex<VecDeque>`, cap 5000), leaf-cert cache.
+
+### 4.2 Module layout
+
+| Module | Responsibility |
+| :-- | :-- |
+| `config` | parse `/etc/agentcage/config.yaml` (proxy-config: 12 keys + `agentcage_version`; accept the full cage.yaml too, ignoring unknown keys), defaults, mtime-polled reload (1 s timer **and** per request), last-good retention (D1) |
+| `ca` | load the existing mitmproxy CA (`mitmproxy-ca.pem` = key + cert) or generate one in the same layout; mint leaves (SAN = SNI or address) with one reused ECDSA P-256 leaf key signed by the CA; LRU cache |
+| `listen` | regular, transparent (`SO_ORIGINAL_DST`), reverse listeners |
+| `detect` | peek first bytes: TLS ClientHello (parse SNI + ALPN) / HTTP / other — the `next_layer` decision |
+| `h1`, `h2`, `ws` | HTTP/1 codec (D10), `h2` server+client, WebSocket framing (`tungstenite` frame codec) |
+| `upstream` | resolve via `getaddrinfo` on a blocking thread (honours `/etc/hosts`, no cache — the e2e harness relies on both), peer guard, connect, rustls client (D8), ALPN, small keep-alive pool |
+| `flow` | the per-request pipeline (§5.1), block/429/502 responses |
+| `inspect` | chain runner + `domain`, `secrets`, `body_size`, `entropy`, `content_type`, wasm `plugin` |
+| `inject` | secret injection, `redact_to`, request/response redaction, Basic-auth rewrite, transforms (`google_jwt_bearer`) |
+| `audit` | Python-compatible JSON lines to stderr + `audit.jsonl` (16 MiB cap) + watcher ring |
+| `capture` | `capture.jsonl` writer, rotation, `min_action`/domain filters |
+| `policy` | control-host router, grants overlay, DNS publish, sweeper |
+| `llm` | anthropic / openai / openrouter client, forced tool call, `parse_tool_args` |
+| `watcher` | ring drain, capture tail, digest, dedup, budget, review, revocations, `state.json`, `findings.jsonl` |
+| `relays` | IMAP and SMTP relays |
+
+### 4.3 Crates
+
+`tokio`, `rustls` + `tokio-rustls`, `webpki-roots`, `rcgen` (leaf minting;
+signs with the existing RSA CA key), `h2`, `httparse`, `tungstenite`
+(frame codec only), `flate2`, `brotli`, `zstd` (static under musl),
+`regex` (+ `fancy-regex` only for the one lookaround pattern, or hand-coded
+boundaries), `encoding_rs` (Python `get_text` parity), `arc-swap`,
+`wasmtime` (D2), `rand`. Ring-based RSA (`ring::signature::RsaKeyPair`) for
+the RS256 transform. No OpenSSL, no C beyond zstd.
+
+---
+
+## 5. Functional spec to implement
+
+Each subsection lists what must match the Python and where it lives.
+
+### 5.1 Request pipeline (`addon.py:776-1045`)
+
+In order, and the order is pinned by tests:
+
+1. **Reload check** (mtime of the config path).
+2. **Direction**: reverse listener ⇒ `inbound`, else `outbound`.
+3. **Control host** (outbound only, decider enabled): SNI **and** Host equal
+   `agents.decider.host` (default `agentcage.local`; Host port stripped,
+   lowercased, trailing dot stripped); without SNI, Host alone. Answered
+   in-process before any other step (§5.5).
+4. **Strict SNI == Host** (outbound, SNI non-empty, Host present): case- and
+   trailing-dot-insensitive, Host port stripped, no subdomain tolerance →
+   403, reason `SNI/Host header mismatch: TLS was established with SNI=<repr>
+   but HTTP Host header is <repr>; …`, audit host = pre-rewrite host. Fix the
+   IPv6-literal Host mangling (`[::1]:443`).
+5. **Re-target** (outbound): upstream = `(Host name, original/CONNECT port)`;
+   a port in the Host header is ignored.
+6. **Rate limit**: token bucket per host (default 10 rps, burst 50; rps 0
+   disables; burst 0 with rps>0 ⇒ always 429) → **429**
+   `rate limit exceeded`.
+7. **Poisoned peer** → 403 `granted domain X was observed resolving to a
+   non-global address; refusing further requests`.
+8. **Injection policy** (no mutation): literal real secret value in URL /
+   any header / body → block (`secret-injector`, critical), unless the rule
+   has no transform **and** host ∈ `inject_to`; placeholder bound for a host
+   not in `inject_to` (or `inject_to` empty) → flag (error). `redact_to`
+   hosts skip this.
+9. **Inspection context** built **before** injection (inspectors see
+   placeholders): url, host (re-targeted), method, multi-valued headers in
+   wire order, content type, decoded body bytes, `body_text` with Python
+   `get_text(strict=False)` semantics (charset param → declared; json / html /
+   xml / js / css → utf-8; else latin-1; surrogateescape fallback), size,
+   Shannon entropy (bits/byte, None for empty).
+10. **Reverse-only header handling**: strip the five forwarding headers; if
+    `Origin` present, rewrite to `<https|http>://<Host>` (openclaw ≥ 2026.8
+    depends on it); record `source` = client IP.
+11. **Inspector chain** (§5.2) off-loop; break on first `block`; domain
+    inspector skipped on reverse flows.
+12. **Verdict**: any block ⇒ 403 JSON (first block's reason), no injection,
+    audit `blocked`, capture if `should_capture`. Otherwise: capture snapshot
+    (placeholders) → inject → audit `flagged` (reasons joined `"; "`) or
+    `allowed` with `secrets_injected` → stage capture.
+
+**Block body** (byte-exact, Python default separators):
+`{"blocked": true, "reason": "<r>", "host": "<h>", "by": "agentcage"}`,
+`Content-Type: application/json`, connection kept alive. No `X-Agentcage-*`
+headers exist.
+
+**Response side** (`addon.py:1047-1164`): skip control and blocked flows;
+cosmetic `redact_request` (real → placeholder in the stored request, so
+capture never holds a real secret); response chain (only plugins inspect
+responses — no built-in does) → 403 on block; snapshot, then
+`redact_response` (every rule's real value → its placeholder in headers and
+body, regardless of host, longest first, Basic-aware); capture. No audit for
+allowed responses.
+
+**WebSockets** (`addon.py:1481-1580`): per complete message — outbound:
+injection policy, chain, drop on block, inject only if `inject_body`;
+inbound: response chain, drop on block, redact. Frame type preserved.
+
+**TCP bypass**: any non-HTTP flow on an intercepted port is closed before an
+upstream socket opens; audit `{kind: tcp_bypass_blocked, direction:
+outbound, decision: blocked, reason: "non-http TCP bypass: …", host: SNI |
+ip:port | "<unknown>"}`.
+
+**Passthrough**: regex `^(.+\.)?<escaped d>(:\d+)?$` per domain (Rust side
+already mirrors it in `quadlets/mod.rs:316-329`), matched against SNI,
+plain-HTTP Host, and destination `ip:port`; spliced raw with no hooks — plus
+the D4 resolution check.
+
+**Peer guard** (`addon.py:1239-1430`), grant-only hosts only (a grant
+matches and no baseline suffix does): resolve, refuse if **any** answer is
+non-global (CPython `is_global`, v4-mapped unwrapped), poison the host,
+audit `private_peer_blocked {host, peer_ip, phase}`. The Rust port **connects
+to the vetted address itself**, closing the resolve-twice gap mitmproxy has.
+
+### 5.2 Built-in inspectors (`inspectors/*.py`)
+
+Chain order: legacy-enabled built-ins in registry order `domain, secrets,
+body-size, entropy, content-type`, then built-ins enabled only through
+`inspectors:` in section order, then plugins. A section entry for a loaded
+built-in **replaces** its config wholesale. Built-ins return `block`, `flag`
+or abstain — never `allow`.
+
+- **domain**: suffix-label match (`example.com` covers apex + subdomains; no
+  wildcard syntax; host trailing dot *not* stripped); default-deny when no
+  mode; allowlist = baseline ∪ grants; expiry blocks only if **every**
+  matching suffix is expired (reason names the longest); `fromisoformat`
+  parsing, unparseable/naive fail open; grant/revoke/is_grant_only/
+  matches_baseline/drop_expired (lexical ISO compare — keep, it is part of
+  the overlay contract).
+- **secrets**: 20 built-in patterns (`inspectors/secrets.py:11-44`) incl.
+  `brave` with lookbehind/lookahead (no `regex`-crate support → hand-coded
+  boundary check), `extra_patterns` by regex or by env literal, built-in and
+  user `allow_to_domains`, binary content types skip the body only; default
+  action **flag** on HTTP; `action_explicit` tracked (relays force block
+  unless explicit).
+- **body-size**: `max_bytes`, `host_max_bytes` longest-suffix wins, 0
+  disables.
+- **entropy** (opt-in): body (threshold 7.0, min 256, exempt prefixes, host
+  exemptions), query params, path segments (5.5 / 64), CDN param allowlist
+  merged shallowly, `"*"` skips URL checks.
+- **content-type** (default on): textual CT prefixes; entropy ceiling 6.5;
+  base64 blob `^[A-Za-z0-9+/=\-_\s]{64,}$` multiline, length ≥ 256.
+
+Every reason string, severity and default is carried verbatim; the Phase 0
+fixtures pin them.
+
+### 5.3 Secret injection and transforms (`secret_injector.py`, `transforms/`)
+
+- Secret resolution on every (re)load: staged file
+  `$AGENTCAGE_SECRETS_DIR/<NAME>` (default `/home/acproxy/secrets`) is
+  authoritative, trailing `\n` stripped, **empty file = tombstone**; missing
+  file → env. One lookup order shared with the Policy API, watcher **and
+  relays** (Phase 0a fix D7a): staged file → `$XDG_RUNTIME_DIR/<NAME>` → env.
+- Placeholder grammar is the host's (`agentcage:secret:<ENV>:<32 hex>`); the
+  egress only does literal byte matching. Empty placeholder ⇒ rule skipped.
+- Strict mode (default): only headers whose lowercased name contains `auth`,
+  `key` or `token`, or listed in `inject_headers`; literal replace, else
+  `Authorization: Basic` decode/replace/re-encode. `inject_body: true`: URL
+  (re-parsed — may change routing), all headers, body.
+- `inject_to` empty ⇒ never inject. Suffix match, case-insensitive,
+  `notexample.com` ≠ `example.com`.
+- Setting a header collapses duplicates into one `", "`-joined value
+  (mitmproxy semantics) — keep for parity; document.
+- Modified bodies: decoded, rewritten, and sent **identity-encoded** with
+  `Content-Encoding` removed and `Content-Length` fixed (simpler than
+  re-compressing; servers accept identity). Unmodified bodies are forwarded
+  byte-for-byte.
+- `google-jwt-bearer`: SA JSON (`client_email`, `private_key`), RS256 JWT
+  (`{"alg":"RS256","typ":"JWT"}`, `iss, scope, aud, iat, exp=iat+3600`,
+  compact JSON, base64url no padding), POST to `audience` (must be https on
+  `oauth2.googleapis.com` / `accounts.google.com`), 10 s timeout, cache with
+  `refresh_margin` 300 s, mint bucket `mint_rate_per_hour` 60, single-flight.
+  Fix while here: redact minted tokens too (today only the SA JSON is
+  redacted, so `ya29.` tokens land in capture).
+
+### 5.4 Audit and capture (`addon.py:390-434, 1636-1688`, `capture.py`)
+
+- Audit line = `json.dumps(entry)`: `", "` / `": "` separators,
+  `ensure_ascii`, keys in insertion order: `ts, direction, method, host,
+  port, path, url, decision, reason, [source], [secrets_injected],
+  [secrets_redacted], [inspectors[{name, action, reason, severity}]]`.
+  `ts` = CPython `isoformat()` UTC (`+00:00`, microseconds only when
+  non-zero). Always to stderr (the host reads it from journald — primary
+  contract), and to `audit.jsonl` until 16 MiB. `allowed` with
+  `log_allowed: false` goes only to the watcher ring.
+- Other kinds keep their exact field sets: `tcp_bypass_blocked`,
+  `private_peer_blocked`, `relay_*`, `imap_*`, `smtp_*`, `policy_*`,
+  `watcher_*`, plus new `upstream_error` (D5) and `config_reload_failed` (D1).
+- Capture: compact JSON line per flow `{ts, flow_id, direction, decision,
+  host, method, path, inspectors, inbound:{request,response},
+  outbound:{request,response}}`; request/response snapshots with headers as
+  `[[k,v]…]`, body utf-8 or base64, truncation flags; rotation to `.1` at
+  `max_file_size`. Fix: WS capture (dead today — flushed at the 101) and the
+  `_cap_pending` leak on errored flows.
+
+### 5.5 Policy API (`policy_api.py`)
+
+A synthetic vhost, not a listener. Routes (paths compared exactly):
+
+| Route | Result |
+| :-- | :-- |
+| any, body > 8 KiB | 413 `{"error":"request body too large"}` + audit |
+| `GET /v1/health` | 200 `{status, version, features{introspection,request,removal}, host}`, no audit |
+| `GET /v1/allowlist` | 200 `{mode, baseline, granted, passthrough, requestable, context, version}` + `policy_introspect` |
+| `POST /v1/allowlist/requests` | the decision flow below |
+| `POST /v1/allowlist/removals` | live grant → 200 removed (+`still_allowed_by_baseline`); baseline → 403; else 404 |
+| anything else | 404 `{"error":"not found"}` |
+
+Request flow, order pinned: JSON object → normalise domain/reason (reason
+≤ 1000) → non-empty reason (400) → allowlist mode (400) → `valid_domain`
+(400) → already allowed and unexpired (200 `already_allowed`, no LLM) →
+never-grant floor incl. encoded private IPs (403, `retryable:false`) →
+`max_grants` 32 (409; fix the concurrent overshoot) → shared rate bucket
+1 rps / burst 5 (429) → LLM decider (503 if unconfigured; any failure =
+deny; TTL clamp 86400, negative = deny) → grant: `_apply_grant` (reload
+overlay → grant → persist → publish DNS). All response bodies, reasons and
+suggestions verbatim from `policy_api.py:567-874`. Request ids
+`req_` + 24 hex.
+
+Grants overlay `/var/lib/agentcage/grants.yaml`: YAML list of `{domain,
+granted_at, expires_at ('' = permanent), reason, source}` sorted by domain;
+temp `grants.yaml.<pid>.tmp` then `.<pid>.1.tmp`, `O_EXCL`, never unlink a
+colliding temp, `rename`. Load is lossy (garbage ⇒ `[]`). Reconcile on mtime
+change: drop grants missing on disk, add new ones, never overwrite existing.
+Sweeper every 30 s: reload → drop expired → persist + `policy_grant_expired`.
+Carry the Phase 0a fix (D7e): reload must not rebuild the API or reset its bucket.
+
+DNS publish: sorted valid unexpired grant names, one per line (empty file
+when none) to `/home/acproxy/dns/granted` (stale `<pid>.tmp` unlinked,
+`O_EXCL` 0600, rename), **then** touch `dns/reload`. The supervisor renders
+and SIGHUPs dnsmasq — unchanged.
+
+### 5.6 LLM client and traffic watcher (`policy_api.py:120-265`, `watcher.py`)
+
+- LLM: `anthropic` (`/v1/messages`, `x-api-key`, `anthropic-version:
+  2023-06-01`, `tool_choice {type: tool}`), `openai` and `openrouter`
+  (`/chat/completions`, Bearer, `tool_choice {type: function}`,
+  `temperature: 0`, OpenRouter `X-Title`). `max_tokens` on every wire format.
+  Called **directly from the egress**, not through the proxy. Per-socket
+  timeout; no transport retries. `parse_tool_args` fail-closed, ignores
+  wrong tool names. Fix: do not echo the provider's error body to the caged
+  agent.
+- Watcher: ring drain (≤ 2000, skip `watcher_*`), capture tail with
+  `(dev, ino)` identity, truncation/rotation reset, 16-chunk catch-up skip,
+  windowed reset scans, line cap from `capture.max_body_size`, staged offset
+  committed only on success; samples (inbound excerpts only, sensitive header
+  redaction, code-point lengths); `dedup_samples`; `build_digest` with
+  `evasion_indicators` computed before the budget trim; `_fit_to_budget`;
+  token estimate `len(compact ascii json)//4`; jittered schedule
+  `max(60, interval × U(0.5, 1.5))`; 5 % full-fidelity ×4 budget; quiet scans
+  skip the model; one compliance retry; push-back of failed batches;
+  failure finding throttled to 1st and every 10th; revocation tree;
+  `findings.jsonl` and `state.json`. Prompts, tool schemas and every
+  operator-visible finding string carried verbatim. RNG becomes `rand`
+  (document that `scan_seed` replays only within the Rust implementation).
+  Carry the Phase 0a fix D7d (default 900); also cap `findings.jsonl` (rotate like capture).
+
+### 5.7 Custom inspectors, ported to Rust (D2)
+
+Today's contract (`inspectors/base.py`): a plugin has a `name`,
+`configure(dict)`, `inspect_request(ctx)` and `inspect_response(ctx)`
+returning `InspectionResult(inspector, action: block|flag, reason, severity,
+metadata)` or `None`, runs on worker threads, and is listed in cage.yaml as
+`inspectors: [{name, path, config}]` with `path` confined to the allowed
+directories (symlink escapes rejected).
+
+The Rust form keeps that contract and the cage.yaml shape:
+
+- **`agentcage-inspector-sdk`** (new workspace crate, published): Rust types
+  mirroring `InspectionContext` (url, host, method, headers in order,
+  content type, body bytes, body text, size, entropy, prior results,
+  direction, phase `request|response|websocket`) and `InspectionResult`; a
+  `#[inspector]` macro / trait `Inspector { fn configure(&mut self, cfg:
+  &serde_json::Value) -> Result<()>; fn inspect_request(&self, ctx: &Ctx) ->
+  Option<Verdict>; fn inspect_response(…) }`; builds to
+  `wasm32-wasip2` as a WebAssembly component.
+- **WIT interface** (`agentcage:inspector@1.0.0`) is the stable ABI: plugins
+  built against SDK 1.x keep loading across egress upgrades. No WASI
+  capabilities are granted (no filesystem, network, clock beyond monotonic,
+  env) — an inspector sees only the context it is handed.
+- **Loading**: `inspectors: [{name: header-policy, path:
+  header_policy.wasm, config: {…}}]`. `path` resolves inside the plugin
+  directory; `.wasm` only. The egress compiles each module once (wasmtime,
+  cached by content hash), instantiates per worker, and calls with **fuel**
+  and **memory** limits (defaults: 50 ms-equivalent fuel per call, 64 MiB).
+  A trap, fuel exhaustion or malformed result ⇒ the plugin's verdict is
+  `block` with reason `inspector <name> failed: …` (fail closed, D1),
+  audited. Reload re-instantiates changed modules and re-calls `configure`.
+- **Host side**: the plugin directory finally gets mounted. `cage.yaml`
+  `inspectors[].path` is resolved relative to the cage.yaml directory on the
+  host; `cage create/update` copies the referenced `.wasm` files into
+  `<data>/<name>/inspectors/` and bind-mounts it read-only at
+  `/etc/agentcage/inspectors` (quadlet, Lima push, apple staging). The
+  fingerprint covers the plugin bytes so `cage update` notices a changed
+  plugin. Validation rejects missing files and non-`.wasm` paths (today a
+  Python `path:` silently fails open at load).
+- **Python plugins**: a `.py` path becomes a validation error naming the
+  migration guide. Nobody can be relying on them today (no mount), so this is
+  a documentation change, not a break.
+- **Docs and examples**: rewrite `docs/how-to/custom-inspectors.md` around
+  the SDK (the current page documents a `Verdict`/`Severity`/`flow` API that
+  never existed); ship `examples/inspectors/header-policy` (the doc's example,
+  ported) and a DLP regex example, both built and loaded in CI.
+- **Built-ins stay native Rust**, not wasm: they are on the hot path and
+  part of the security floor.
+
+Why wasm rather than the alternatives: a `cdylib` plugin ABI is unsafe and
+breaks on every compiler upgrade; an exec-a-subprocess hook costs a process
+per request and reintroduces an interpreter-shaped hole; compile-time
+plugins would mean every user rebuilds the egress binary that the host
+embeds. Cost: `wasmtime` (decided) adds roughly 10–15 MB to the egress binary;
+P0.4 measures it. `wasmi` (interpreter, ~1 MB, slower) remains a drop-in
+behind the same WIT interface if the size ever becomes a problem.
+
+### 5.8 Protocol relays (`relays/*.py`)
+
+Start on boot **and on reload** (Phase 0a fix D7b) — diff by relay name, restart changed
+ones, drain removed ones with a `* BYE` / `421`.
+
+- **IMAP**: upstream implicit TLS or plaintext (no STARTTLS — keep, document
+  it), greeting must be `* OK`, `LOGIN "<user>" "<pass>"` quoted, capability
+  capture; client side `* PREAUTH [CAPABILITY … minus COMPRESS=DEFLATE,
+  IMAP4rev1 ensured] agentcage relay ready`; line-based client→upstream with
+  the policy check, raw upstream→client; `LOGIN/AUTHENTICATE` answered
+  locally; `write_mode` none/organise/full exactly as `imap.py:181-191` and
+  the deny tables, **including CLOSE denied in `none`** (Phase 0a fix D7c); folder
+  allow/deny on SELECT/EXAMINE/STATUS (denylist wins, case-insensitive,
+  exact); conn rate limit; idle timeout. Fix the literal-blindness that
+  corrupts APPEND bodies in `full` mode (track `{n}` literals) and the 64 KiB
+  line kill (raise to 1 MiB, then refuse with `BAD`).
+- **SMTP**: the full state machine in the inventory (greeting, EHLO
+  capabilities, AUTH interception for PLAIN/LOGIN, MAIL/RCPT policy,
+  `max_recipients`, `max_message_bytes`, DATA with dot-unstuffing, send-slot
+  reservation and release, inspector chain with bypass set, lazy upstream
+  with implicit TLS, `AUTH PLAIN`, reuse, QUIT), every reply code and text
+  verbatim.
+- Upstream TLS: `webpki-roots` + `ca_pem` additions, `tls_servername` for
+  SNI and name check (D8). The host's `ca_file → ca_pem` resolution stays.
+- Audit kinds and field sets as in the relay inventory §A5. (Separate host
+  issue: `cage audit` drops records without `method`, so relay and policy
+  records never show; fix on the host in the same release.)
+
+---
+
+## 6. Behaviour that must survive (acceptance list)
+
+The Phase 0 fixtures and scenario suite encode these; each is currently
+pinned by a pytest file named in brackets.
+
+- SNI/Host strict match and every exemption [`test_addon_sni_host_match`].
+- TCP bypass kill + audit shape [`test_addon_tcp_bypass`].
+- Peer guard scoping and the non-global list incl. CGNAT, ULA, link-local
+  with scope, v4-mapped [`test_peer_ip_guard`].
+- Chain ordering, short-circuit, off-loop execution, relay secrets-forced-
+  block [`test_addon_inspector_chain`, `test_inspector_chain_executor`].
+- Reload keeps section config, no duplicates, staged secret precedence and
+  tombstones [`test_addon_reload_inspector_config`,
+  `test_live_secret_apply_proxy`].
+- Injector: strict header heuristic incl. the real-world header list, Basic
+  auth, `inject_to`/`redact_to`, literal-value blocking, transforms
+  [`test_secret_injector`, `test_placeholder_entropy_proxy`].
+- No real secret ever reaches `capture.jsonl` [`test_addon_capture_redaction`].
+- Capture schema, filters, rotation [`test_capture`].
+- All inspector semantics incl. the 10k-input regex time bound
+  [`test_inspectors`].
+- Transform minting, caching, rate limit, single-flight
+  [`test_secret_transforms`].
+- Policy API gates, persistence, DNS publish, removal, operator context,
+  prompt substrings [`test_policy_api_*`, `test_egress_dns_apply_proxy`].
+- Watcher dedup, digest, budget, tail, adversarial, retry, push-back,
+  funnel, hot reload [`test_watcher`].
+- Relays: 69 IMAP and 43 SMTP behaviours, 13 upstream TLS cases
+  [`test_protocol_relays*`, `test_relay_upstream_tls`].
+- Contract fixtures already language-neutral: `valid_domain`,
+  `encoded_private_ip`, `is_never_grant`, `validate_relay_entry`,
+  `shared_constants`, `scaffold_inspectors`, `agents_config`.
+
+---
+
+## 7. Host ↔ egress contracts
+
+Unchanged (the Rust egress must honour them exactly):
+
+| Contract | Detail |
+| :-- | :-- |
+| Config | `/etc/agentcage/config.yaml` (bind-mounted proxy-config, rewritten **in place**, mtime = reload trigger); YAML written by the host's emitter |
+| Env | `AGENTCAGE_CONFIG, _CAPTURE, _AUDIT_LOG, _SECRETS_DIR, _GRANTS_DIR, _DNS_PUBLISH, _VERSION, _INSPECTOR_DIRS`, `XDG_RUNTIME_DIR`, `AGENTCAGE_REGULAR_BIND, _INBOUND_PORTS, _CAGE_IP` |
+| CA | `/home/acproxy/.mitmproxy/mitmproxy-ca.pem` (key+cert) and `mitmproxy-ca-cert.pem` in the persistent `<n>-certs` volume — **an existing CA must be loaded, never regenerated**, or every cage that trusts it breaks; the supervisor still publishes only the public cert to `/home/acproxy/public-certs/` |
+| Readiness | supervisor waits for the CA file and a listener on `:8443`, then touches `/var/log/agentcage/ready`; cage `ExecStartPre` polls the CA path |
+| Grants | `grants.yaml` format and temp-file scheme (host merges with the same scheme); `watcher/findings.jsonl`, `watcher/state.json` |
+| DNS | `/home/acproxy/dns/granted` + `reload` flag; supervisor renders and HUPs |
+| Staged secrets | `/home/acproxy/secrets/<NAME>`, tombstones, live apply = stage then bump config mtime |
+| Audit | stderr JSON lines read via journald / `podman logs`; `audit.jsonl` on apple |
+| Capture | `capture.jsonl` + `.1`, read by `cage har` |
+| Ports | `MITMDUMP_RESERVED_PORTS` 8080/8443 (rename the constant, keep the values) |
+
+Deliberately changing:
+
+| Change | Where |
+| :-- | :-- |
+| Egress image: no mitmproxy base, no Python; `debian:trixie-slim` + `dnsmasq iptables tini util-linux iproute2 procps jq libcap2-bin ca-certificates` + the binary | `Containerfile.egress` |
+| Image build context gains the embedded binary; **content hash covers the binary bytes** so a new binary means a new tag | `agentcage-assets` (`egress.rs`, `build.rs`), `egress_hash.json` re-bless |
+| Supervisor launch line and process name (`mitmdump` → `agentcage-egress`) | `supervisor-egress.sh`, `test_egress_image.py` successor |
+| Plugin directory mounted read-only at `/etc/agentcage/inspectors` | quadlet template, Lima push, apple staging, fingerprint |
+| `yaml_pyyaml_crossing` loses its reason to exist (no PyYAML reader left) | delete at cutover |
+| `check-invariants.py` loses its proxy-import check; becomes "no Python anywhere in shipped images" | `scripts/check-invariants.py` |
+
+---
+
+## 8. Testing strategy
+
+**Layer 0 — oracle fixtures, generated from the live Python (Phase 0).**
+New `tests/fixtures/egress/` corpora, each a JSON file of `(input,
+expected)` cases asserted by pytest now and by Rust later, generators deleted
+at cutover:
+
+| Corpus | Content |
+| :-- | :-- |
+| `secrets.json` | pattern × positive/negative inputs → match name or none (incl. the false-positive guards and lookaround edges) |
+| `inspectors.json` | context → verdict for domain (incl. expiry), body-size, entropy, content-type |
+| `get_text.json` | (content-type, bytes) → decoded text (charset rules) |
+| `injection.json` | (rules, request) → (rewritten request, verdict, injected names); redaction both ways; Basic auth |
+| `audit_lines.json` | entry dict → exact line bytes; `isoformat` cases |
+| `capture.json` | flow → capture line |
+| `policy_api.json` | (state, request) → (status, body bytes, audit records, overlay after, dns publish after), with a stubbed decider verdict |
+| `llm_wire.json` | (provider, inputs) → request body bytes; raw replies → parsed tool args |
+| `watcher.json` | sample/excerpt (no RNG), dedup, build_digest, fit_to_budget (stride mode), normalise_finding |
+| `imap.json`, `smtp.json` | scripted transcripts: client lines ↔ relay replies ↔ upstream lines, with audit records |
+
+**Layer 1 — Rust unit tests** per module, against the fixtures, with
+`AGENTCAGE_BLESS=1` rewriting deliberately-changed cases.
+
+**Layer 2 — scenario suite** (`rust/agentcage-egress/tests/scenarios/`):
+starts the egress in-process with a test CA, mock upstreams (HTTP/1, h2,
+WebSocket, TLS with a test root via a hidden `--upstream-ca` test flag, a
+silent TCP server, IMAP/SMTP mocks) and drives real clients (rustls + h2 +
+tungstenite, plus `curl` where present). Covers ALPN negotiation both sides,
+CONNECT, transparent with `SO_ORIGINAL_DST` (Linux, in a network namespace
+via `unshare` in CI), reverse with Origin rewrite, passthrough + D4, TCP
+bypass, peer guard, 429, 502 (D5), WS inject/redact/drop, body caps (D6),
+plugins (example wasm built in CI), reload without dropped connections.
+
+**Layer 3 — differential run.** The scenario suite has a mode that drives an
+external proxy by address; CI runs it against the current mitmproxy egress
+image and the Rust one and diffs normalised transcripts (status, headers,
+bodies, audit lines). Deliberate differences (D1, D3–D6) are listed in an
+allowlist file so every divergence is either expected or a bug.
+
+**Layer 4 — e2e**, phases 1–8 + apple, with an `egress: [mitmproxy, rust]`
+matrix during the transition. Two harness changes are needed because Python
+leaves the egress image: `start_mock` runs `mock-httpbin.py` in a separate
+`python:3-alpine` container joined with `--network container:<n>-egress`
+(so the `/etc/hosts` + `127.0.0.1` trick keeps working), and nothing else in
+the harness may assume `python3` in the egress. Add e2e coverage the suite
+lacks today: WebSocket through the proxy, Policy API grant round trip (with a
+stub decider), one IMAP and one SMTP relay against mock servers, passthrough,
+the 403 body shape, a wasm plugin blocking a request.
+
+---
+
+## 9. Phasing and PR breakdown
+
+### Phase 0a — fix the existing bugs first (≈ 1.5 weeks)
+
+Separate PRs against the **current** Python egress (and the host), each with
+a test that fails before the fix, landed and released (0.50.x) before Phase 0
+records the oracle. The Rust port then reproduces fixed behaviour only.
+
+| PR | Fix | Where |
+| :-- | :-- | :-- |
+| 0a.1 | Relays resolve credentials through the shared lookup (staged file → `$XDG_RUNTIME_DIR` → env); today env-only, so apple-container relays start with none (D7a) | `relays/imap.py:122-136`, `relays/smtp.py:109-118` |
+| 0a.2 | Relays and the capture writer hot-reload; relays diffed by name (D7b) | `addon.py` `_maybe_reload`, `_start_protocol_relays` |
+| 0a.3 | IMAP `write_mode: none` denies `CLOSE` (D7c) | `relays/imap.py` deny table |
+| 0a.4 | Watcher `interval_seconds` default 900, matching the host (D7d) | `watcher.py` |
+| 0a.5 | Reload reconfigures the Policy API in place; no bucket reset (D7e) | `addon.py` `_init_domain_requests` |
+| 0a.6 | Bounded per-host state: LRU rate buckets; `_cap_pending` cleared on errored flows via an `error` hook (D7f) | `addon.py` |
+| 0a.7 | Host: `cage audit` shows relay, policy and `tcp_bypass` records (no `method` field) | `rust/agentcage-core/src/audit.rs` `extract_audit_json` |
+| 0a.8 | Relay how-to errors (`127.0.0.1` listen, 587 with implicit TLS, `10/minute`, scheme-less source) | `docs/how-to/custom-inspectors.md` |
+
+### Phase 0 — oracle and decisions (≈ 1.5 weeks)
+
+| PR | Content | Acceptance |
+| :-- | :-- | :-- |
+| P0.1 | This plan + the D1–D10 decisions recorded | decisions signed off |
+| P0.2 | Fixture generators + corpora (§8 Layer 0), asserted by pytest | pytest green; each corpus has a mutation test that bites |
+| P0.3 | Scenario-suite harness in Rust driving an *external* proxy, run against the mitmproxy image in CI | green against mitmproxy |
+| P0.4 | wasmtime size/latency spike for D2 | numbers recorded |
+| P0.5 | e2e harness: mock upstream moves out of the egress image | e2e green on mitmproxy |
+
+### Phase 1 — pure core, no networking (≈ 2 weeks)
+
+| PR | Content | Acceptance |
+| :-- | :-- | :-- |
+| P1.1 | crate skeleton, config parse/defaults/reload model, CLI args | config fixtures |
+| P1.2 | domain, body-size, entropy, content-type, chain runner | `inspectors.json` |
+| P1.3 | secrets inspector | `secrets.json` incl. timing bound |
+| P1.4 | `get_text`, injection, redaction, Basic auth | `get_text.json`, `injection.json` |
+| P1.5 | audit + capture writers | `audit_lines.json`, `capture.json` byte-exact |
+| P1.6 | `google-jwt-bearer` transform | transform cases (mock token endpoint) |
+
+### Phase 2 — proxy core (≈ 4–5 weeks; the risk)
+
+| PR | Content | Acceptance |
+| :-- | :-- | :-- |
+| P2.1 | CA load/generate (mitmproxy layout), leaf minting, cache | loads a CA written by mitmproxy 12; leaves validate in rustls, curl, Node |
+| P2.2 | listeners, `SO_ORIGINAL_DST`, protocol detection, ClientHello/SNI parse | scenario: detect TLS/HTTP/other |
+| P2.3 | HTTP/1 codec (order/case/duplicates preserved), upstream resolve + connect + rustls client, buffered request/response | scenario: HTTP/1 plain + TLS, transparent + CONNECT |
+| P2.4 | h2 server and client, ALPN both sides, h1↔h2 translation | scenario: h2↔h2, h2↔h1, h1↔h2 |
+| P2.5 | request/response pipeline wired to Phase 1 (steps 1–12), block/429/502 | scenario + differential |
+| P2.6 | reverse mode, passthrough (+D4), TCP bypass, peer guard, forward-proxy port policy (D3) | scenario + differential |
+| P2.7 | WebSockets | scenario: inject/redact/drop, both directions |
+| P2.8 | hot reload (ArcSwap, last-good, timer + per-request), body caps (D6) | reload under load drops no connections |
+
+### Phase 3 — control plane (≈ 3 weeks)
+
+| PR | Content | Acceptance |
+| :-- | :-- | :-- |
+| P3.1 | grants overlay, reconcile, sweeper, DNS publish | `policy_api.json` persistence cases; host `cage grants` interop test against a real overlay |
+| P3.2 | Policy API router and decision flow, LLM client | `policy_api.json`, `llm_wire.json` |
+| P3.3 | watcher: tail, samples, dedup, digest, budget | `watcher.json` |
+| P3.4 | watcher: loop, review, retry, revocations, state/findings files | scenario with a stub LLM |
+
+### Phase 4 — relays and plugins (≈ 2.5 weeks)
+
+| PR | Content | Acceptance |
+| :-- | :-- | :-- |
+| P4.1 | relay framework, TLS upstream, reload diffing | relay TLS cases |
+| P4.2 | IMAP relay | `imap.json` |
+| P4.3 | SMTP relay | `smtp.json` |
+| P4.4 | `agentcage-inspector-sdk` + WIT + loader with fuel/memory limits | example plugins load, verdicts flow, traps fail closed |
+| P4.5 | host side: copy + mount plugin dir, fingerprint, validation, apple/Lima staging | e2e: a wasm plugin blocks a request |
+
+### Phase 5 — image and host integration (≈ 2 weeks)
+
+| PR | Content | Acceptance |
+| :-- | :-- | :-- |
+| P5.1 | release workflow builds `agentcage-egress` for both linux-musl targets; host embeds the matching one (D9); dev override `AGENTCAGE_EGRESS_BIN` | host binary on macOS arm64 carries linux-aarch64 egress |
+| P5.2 | `Containerfile.egress` (no Python) selectable alongside the old one; supervisor launch switch; content hash covers the binary | image builds; `test_egress_image` successor green |
+| P5.3 | `egress: [mitmproxy, rust]` e2e matrix, apple manual run, Lima phase 7 | all green on both |
+| P5.4 | host fixes surfaced by the inventory: `cage audit` shows records without `method`; `cage edit` live-reload claims match reality | e2e |
+
+### Phase 6 — cutover (≈ 1 week)
+
+| PR | Content |
+| :-- | :-- |
+| P6.1 | default to the Rust egress; delete `src/agentcage/data/proxy/`, the mitmproxy Containerfile, `pyproject.toml`, `uv.lock`, the proxy pytest suite, `yaml_pyyaml_crossing`, the Phase 0 generators (fixtures stay as golden files); `check-invariants.py` becomes "no Python in shipped images" — with a review pass for tests that checked shipped assets |
+| P6.2 | docs rewrite: architecture, security model, policy API reference, traffic watcher, configuration reference, custom inspectors (SDK), relays how-to (fix the four errors) |
+| P6.3 | CHANGELOG (every D-decision called out) and a minor-version release |
+
+**Rough total: 16–19 weeks solo, including Phase 0a.** Phase 2 carries most of the variance
+(HTTP/2 and client-compatibility edge cases). Phases 1, 3 and the relays
+are high-confidence because the fixtures make them mechanical.
+
+---
+
+## 10. Risks
+
+| Risk | Mitigation |
+| :-- | :-- |
+| Client TLS/h2 compatibility regressions (Node, Go, curl, Python clients, pinned clients) | Differential layer; scenario matrix with real client binaries; keep mitmproxy selectable until e2e and a soak on a real long-running cage are clean |
+| Header order/case/duplicate fidelity breaking WAF-fronted upstreams | Own HTTP/1 codec (D10); differential diff on raw upstream bytes |
+| CA continuity — a generated CA where one existed breaks every cage | Load-first, generate-only-if-absent; test with a CA directory written by mitmproxy 12 |
+| Regex semantic drift (Python `re` vs Rust `regex`) in the secrets patterns | `secrets.json` corpus with positives, negatives and boundary cases; the one lookaround pattern hand-coded |
+| Charset/`get_text` drift changing inspector verdicts | `get_text.json` corpus |
+| Watcher digest drift (token budget, tie order, RNG) | stride-mode fixtures; RNG change documented |
+| Binary size (wasmtime) | P0.4 measurement; `wasmi` fallback |
+| Fail-closed (D1) exposing latent errors as outages | the differential layer and a soak run before the default flips |
+| Hidden harness dependencies on Python in the egress | P0.5 moves the mock out first |
+
+---
+
+## 11. Docs that are wrong today (fix in P6.2, don't trust while porting)
+
+- `architecture.md`: port 80 goes to 8443 (not 8080); no `x-agentcage-decision`
+  header; redaction is buffered literal replace, not streaming regex; peer-IP
+  check applies to grant-only hosts at connect time; reload is an mtime poll,
+  not a flag file.
+- `security-model.md`: no built-in inspects responses; body-size uses
+  `max_request_body`, not `capture.max_body_size`.
+- `configuration.md`: `inject_headers` is a list; empty `inject_to` means
+  never inject; `capture.min_action` is `all|flag|block`.
+- `policy-api.md` (both): `status` not `decision`; denials are 403; rate
+  limit is 1 rps / burst 5 under `rate_limit.requests_per_second|burst`; the
+  never-grant list; no 502; port 80 not redirected; `grants.yaml` not JSON;
+  default TTL permanent.
+- `traffic-watcher.md`: finding schema; `window_seconds` applies only to
+  reset scans.
+- `custom-inspectors.md`: the whole API section; relay example uses an
+  unreachable `127.0.0.1` listen, port 587 with implicit TLS, `"10/minute"`,
+  and a scheme-less source.
+
+---
+
+## 12. Follow-ups, explicitly not in this plan
+
+- Streaming responses (SSE) when no response rule or redaction applies.
+- STARTTLS for IMAP/SMTP relays.
+- Folding `supervisor-egress.sh` into the Rust binary (PID 1 managing
+  dnsmasq), which would also remove `jq`/`procps` from the image.
+- Proper DNS-block audit on container/vm (dnsmasq runs without
+  `--log-queries` there).
+- HTTP/3.
