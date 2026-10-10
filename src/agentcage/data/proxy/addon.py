@@ -1375,6 +1375,16 @@ class Agentcage:
 
             # Capture blocked flow — both perspectives see the same request
             if self._capture and self._capture.should_capture("blocked", flow.request.host):
+                # A request blocked for carrying a literal secret (a real
+                # value, or a token a transform minted) still holds it.
+                # capture.jsonl is readable by the cage and its inbound
+                # view is the one `cage har` presents as shareable, so
+                # swap every secret for its rule's placeholder first, as
+                # a blocked WebSocket frame is recorded. The flow is
+                # never forwarded (it has its 403), so rewriting it in
+                # place changes nothing on the wire; the audit entry
+                # above already has the block and its reason.
+                self.injector.redact_request(flow)
                 inbound_req = self._capture.snapshot_request(flow)
                 inbound_resp = self._capture.snapshot_response(flow)
                 self._capture.write_entry(
@@ -1388,18 +1398,17 @@ class Agentcage:
                     outbound_req=inbound_req, outbound_resp=inbound_resp,
                 )
         else:
-            # ── SNAPSHOT request for INBOUND (placeholders still present) ──
-            cap_inbound_req = None
+            # ── SNAPSHOT request (placeholders still present) ──
+            # Staged for both perspectives. response() replaces it with
+            # the request redacted after the upstream send (see there);
+            # no snapshot is taken after injection, so the injected
+            # secrets are never held in a staged entry.
+            cap_req = None
             if self._capture:
-                cap_inbound_req = self._capture.snapshot_request(flow)
+                cap_req = self._capture.snapshot_request(flow)
 
             # Inject real secrets only AFTER inspectors have approved
             injected = self.injector.inject_request(flow)
-
-            # ── SNAPSHOT request for OUTBOUND (real secrets on the wire) ──
-            cap_outbound_req = None
-            if self._capture:
-                cap_outbound_req = self._capture.snapshot_request(flow)
 
             flagged = [r for r in results if r.action == "flag"]
             if flagged:
@@ -1409,7 +1418,7 @@ class Agentcage:
                 self._log(flow, "allowed", None, results, direction=direction, source=source, secrets_injected=injected)
 
             # Stage partial capture for completion in response()
-            if self._capture and cap_inbound_req is not None:
+            if self._capture and cap_req is not None:
                 decision = "flagged" if flagged else "allowed"
                 self._cap_pending[flow.id] = {
                     "direction": direction,
@@ -1420,8 +1429,8 @@ class Agentcage:
                     "inspectors": [{"name": r.inspector, "action": r.action,
                                     "reason": r.reason, "severity": r.severity}
                                    for r in results],
-                    "inbound_req": cap_inbound_req,
-                    "outbound_req": cap_outbound_req,
+                    "inbound_req": cap_req,
+                    "outbound_req": cap_req,
                 }
 
     async def response(self, flow: http.HTTPFlow) -> None:
@@ -1439,28 +1448,38 @@ class Agentcage:
         # request bytes (mitmproxy forwarded after the ``request`` hook
         # returned). Now we restore placeholder form on
         # ``flow.request.url`` / ``.headers`` / ``.content`` so the
-        # capture serialization below — both the staged
-        # ``pending["outbound_req"]`` snapshot from the ``request()``
-        # hook AND any fresh snapshot taken here — does NOT write raw
-        # secret bytes to ``capture.jsonl``. The capture file is
-        # bind-mounted into the cage rootfs (mode 0644, world-readable)
-        # so anything serialized post-inject is readable by the cage
-        # workload — defeating the whole placeholder-injection trust
-        # model. The redaction is purely cosmetic for downstream
-        # serializers; the real request is already on the wire.
+        # capture serialization below does NOT write raw secret bytes
+        # to ``capture.jsonl``. The capture file is bind-mounted into
+        # the cage rootfs (mode 0644, world-readable) so anything
+        # serialized post-inject is readable by the cage workload —
+        # defeating the whole placeholder-injection trust model. The
+        # redaction is purely cosmetic for downstream serializers; the
+        # real request is already on the wire.
         self.injector.redact_request(flow)
-        # Refresh the staged outbound-request snapshot with the redacted
-        # form, overwriting the post-inject snapshot the ``request()``
-        # hook stashed (which still held the raw secret bytes — that
-        # snapshot was the leak point).
+        # Replace the staged request snapshot, for both perspectives,
+        # with this redacted form. (A snapshot taken after injection
+        # used to be staged as the outbound one; it held the raw secret
+        # bytes and was the leak point.) The one ``request()`` staged
+        # is what the cage sent, and the cage can send a literal secret
+        # that is allowed through: a static rule's real value, or a
+        # minted token, to a host in the rule's inject_to. The inbound
+        # view is the one ``cage har`` presents as shareable, so it
+        # must not keep it either. Injection only swaps placeholders
+        # for secrets and this redaction swaps every secret back, so
+        # the redacted request is what the cage sent with each secret
+        # as its rule's placeholder. The entry's ``path`` is refreshed
+        # too: ``request()`` read it after injection, so a rule that
+        # injects into the URL put its secret there.
         if self._capture and flow.id in self._cap_pending:
             try:
-                self._cap_pending[flow.id]["outbound_req"] = (
-                    self._capture.snapshot_request(flow)
-                )
+                redacted_req = self._capture.snapshot_request(flow)
+                staged = self._cap_pending[flow.id]
+                staged["outbound_req"] = redacted_req
+                staged["inbound_req"] = redacted_req
+                staged["path"] = flow.request.path
             except Exception as e:  # pragma: no cover
                 ctx.log.warn(
-                    f"agentcage: outbound-request re-snapshot failed: {e}"
+                    f"agentcage: request re-snapshot failed: {e}"
                 )
 
         is_reverse = isinstance(

@@ -269,12 +269,17 @@ agentcage cage audit my-agent -f --decision blocked
 Export captured traffic to standard HTTP Archive (HAR 1.2) JSON, loadable into Chrome DevTools (Network > Import HAR):
 
 ```bash
-# Export the "inbound" perspective (safe to share; contains only placeholders):
-agentcage cage har my-agent --view inbound -o safe-traffic.har
+# Export the "inbound" perspective (what the cage sent and received):
+agentcage cage har my-agent --view inbound -o traffic.har
 
-# Export the "outbound" perspective (wire view with real secrets; handle securely):
+# Export the "outbound" perspective (the wire side, recorded after redaction):
 agentcage cage har my-agent --view outbound -o wire-traffic.har
 ```
+
+Both views show every secret agentcage manages as its placeholder, never the
+injected value. Bodies, cookies and any credential the agent holds itself are
+recorded as is, so review a capture before sharing it. A capture recorded by
+agentcage 0.50.0 or earlier can still hold real secrets in its outbound view.
 
 ---
 

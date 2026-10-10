@@ -248,8 +248,11 @@ In order, and the order is pinned by tests:
 11. **Inspector chain** (§5.2) off-loop; break on first `block`; domain
     inspector skipped on reverse flows.
 12. **Verdict**: any block ⇒ 403 JSON (first block's reason), no injection,
-    audit `blocked`, capture if `should_capture`. Otherwise: capture snapshot
-    (placeholders) → inject → audit `flagged` (reasons joined `"; "`) or
+    audit `blocked`, then if `should_capture`: `redact_request` on the
+    never-forwarded flow (a literal secret the cage sent → its placeholder)
+    and capture it, one snapshot for both views. Otherwise: capture
+    snapshot (placeholders; staged for both views, never one taken after
+    injection) → inject → audit `flagged` (reasons joined `"; "`) or
     `allowed` with `secrets_injected` → stage capture.
 
 **Block body** (byte-exact, Python default separators):
@@ -258,12 +261,15 @@ In order, and the order is pinned by tests:
 headers exist.
 
 **Response side** (`addon.py:1047-1164`): skip control and blocked flows;
-cosmetic `redact_request` (real → placeholder in the stored request, so
-capture never holds a real secret); response chain (only plugins inspect
-responses — no built-in does) → 403 on block; snapshot, then
-`redact_response` (every rule's real value → its placeholder in headers and
-body, regardless of host, longest first, Basic-aware); capture. No audit for
-allowed responses.
+cosmetic `redact_request` (every secret → placeholder in the stored
+request); the redacted request replaces the staged snapshot for **both**
+views, and the entry's `path` (read after injection, so a URL-injecting
+rule's value was in it), so capture never holds a real secret, a minted
+token, or a literal the cage sent; response chain (only plugins inspect
+responses — no built-in does) → 403 on block; `redact_response` (every
+secret → its placeholder in headers and body, regardless of host, longest
+first, Basic-aware), then snapshot, the same for both views; capture. No
+audit for allowed responses. Both views therefore record the same content.
 
 **WebSockets** (`addon.py:1481-1580`): per complete message — outbound:
 injection policy, chain, drop on block, inject only if `inject_body`;

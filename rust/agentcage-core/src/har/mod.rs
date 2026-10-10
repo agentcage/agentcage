@@ -35,16 +35,85 @@ pub mod query;
 use datetime::DateTime;
 use json::{DumpOptions, Json};
 
-/// How severe a decision is, for `--min-action`.
+use crate::config::types::{CAPTURE_MIN_ACTION_ALIASES, VALID_CAPTURE_MIN_ACTIONS};
+
+/// A minimum-action threshold for [`CaptureFilter::min_action`]: keep
+/// every entry, only flagged and blocked ones, or only blocked ones.
 ///
-/// `har.py`'s `_ACTION_ORDER`, spelled as a function so an unknown name
-/// lands on 0 the way `dict.get(name, 0)` does.
-fn action_order(name: &str) -> u8 {
-    match name {
-        "flag" => 1,
-        "block" => 2,
-        // "all", and anything else.
-        _ => 0,
+/// A typed value rather than the string `har.py` took. The Python looked
+/// the string up with `dict.get(name, 0)`, so a misspelled threshold
+/// quietly meant `all` and the filter kept everything. A threshold can
+/// only be built from text by [`MinAction::parse`], which refuses an
+/// unknown value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MinAction {
+    /// Every entry (`all`).
+    All,
+    /// Flagged and blocked entries (`flag`).
+    Flag,
+    /// Blocked entries only (`block`).
+    Block,
+}
+
+impl MinAction {
+    /// Read a threshold: `all`, `flag` or `block`, or one of the old
+    /// spellings `allowed`, `flagged`, `blocked`, which mean the same
+    /// three (as `capture.min_action` accepts them: see
+    /// [`CAPTURE_MIN_ACTION_ALIASES`]).
+    ///
+    /// # Errors
+    ///
+    /// An error naming the accepted values for anything else.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let canonical = CAPTURE_MIN_ACTION_ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == value)
+            .map_or(value, |(_, canonical)| *canonical);
+        match canonical {
+            "all" => Ok(Self::All),
+            "flag" => Ok(Self::Flag),
+            "block" => Ok(Self::Block),
+            _ => Err(format!(
+                "invalid min-action '{value}' (expected one of {}, or the old spellings {})",
+                VALID_CAPTURE_MIN_ACTIONS.join(", "),
+                CAPTURE_MIN_ACTION_ALIASES
+                    .iter()
+                    .map(|(alias, _)| *alias)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )),
+        }
+    }
+
+    /// The canonical spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Flag => "flag",
+            Self::Block => "block",
+        }
+    }
+}
+
+impl std::str::FromStr for MinAction {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+/// The level an entry's `decision` reaches, for [`MinAction`].
+///
+/// `allowed`, and anything unrecognized, is [`MinAction::All`]: Python's
+/// `dict.get(decision, "all")` gives both the same answer, so neither
+/// trips a threshold above `all`.
+fn decision_level(decision: &str) -> MinAction {
+    match decision {
+        "flagged" => MinAction::Flag,
+        "blocked" => MinAction::Block,
+        _ => MinAction::All,
     }
 }
 
@@ -61,9 +130,8 @@ pub struct CaptureFilter {
     pub hosts: Vec<String>,
     /// Keep only these methods, compared case-insensitively.
     pub methods: Vec<String>,
-    /// Keep entries at or above this action level: `all`, `flag` or
-    /// `block`.
-    pub min_action: Option<String>,
+    /// Keep entries at or above this action level.
+    pub min_action: Option<MinAction>,
     /// Keep entries at or after this instant.
     pub since: Option<DateTime>,
 }
@@ -95,20 +163,12 @@ impl CaptureFilter {
                 return false;
             }
         }
-        if let Some(min_action) = &self.min_action {
+        if let Some(min_action) = self.min_action {
             let decision = entry
                 .get("decision")
                 .and_then(Json::as_str)
                 .unwrap_or("allowed");
-            let level = action_order(match decision {
-                "flagged" => "flag",
-                "blocked" => "block",
-                // "allowed", and anything unrecognized: Python's
-                // `dict.get(decision, "all")` gives both the same
-                // answer, so neither trips `--min-action`.
-                _ => "all",
-            });
-            if level < action_order(min_action) {
+            if decision_level(decision) < min_action {
                 return false;
             }
         }
@@ -455,7 +515,7 @@ fn split_relative(since: &str) -> Option<(i64, char)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureFilter, capture_to_har_with, dumps, parse_since};
+    use super::{CaptureFilter, MinAction, capture_to_har_with, dumps, parse_since};
     use crate::har::datetime::DateTime;
     use crate::har::json::{self, Json};
 
@@ -634,6 +694,73 @@ mod tests {
         )
     }
 
+    /// The three thresholds parse, and so do the old spellings
+    /// `capture.min_action` accepts, to the same three.
+    #[test]
+    fn min_action_parses_values_and_old_spellings() {
+        for (text, want) in [
+            ("all", MinAction::All),
+            ("flag", MinAction::Flag),
+            ("block", MinAction::Block),
+            ("allowed", MinAction::All),
+            ("flagged", MinAction::Flag),
+            ("blocked", MinAction::Block),
+        ] {
+            assert_eq!(MinAction::parse(text), Ok(want), "{text}");
+            assert_eq!(text.parse::<MinAction>(), Ok(want), "{text}");
+        }
+        assert_eq!(MinAction::Flag.as_str(), "flag");
+    }
+
+    /// An unknown threshold is an error, never a silent `all` (the
+    /// Python's `dict.get(name, 0)` kept every entry for one).
+    #[test]
+    fn min_action_rejects_unknown_values() {
+        for text in ["nope", "", "Block", "flags", " all"] {
+            let error = MinAction::parse(text).unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "invalid min-action '{text}' (expected one of all, flag, block, \
+                     or the old spellings allowed, flagged, blocked)"
+                ),
+            );
+        }
+    }
+
+    /// An old spelling filters exactly as the value it stands for.
+    #[test]
+    fn min_action_old_spelling_filters_like_its_value() {
+        let entries = [
+            entry_of(&[("decision", Json::string("allowed"))]),
+            entry_of(&[("decision", Json::string("flagged"))]),
+            entry_of(&[("decision", Json::string("blocked"))]),
+        ];
+        for (alias, canonical) in [
+            ("allowed", "all"),
+            ("flagged", "flag"),
+            ("blocked", "block"),
+        ] {
+            let by_alias = CaptureFilter {
+                min_action: Some(MinAction::parse(alias).unwrap()),
+                ..CaptureFilter::default()
+            };
+            let by_value = CaptureFilter {
+                min_action: Some(MinAction::parse(canonical).unwrap()),
+                ..CaptureFilter::default()
+            };
+            for entry in &entries {
+                assert_eq!(by_alias.matches(entry), by_value.matches(entry), "{alias}");
+            }
+        }
+        let flag = CaptureFilter {
+            min_action: Some(MinAction::Flag),
+            ..CaptureFilter::default()
+        };
+        let kept: Vec<bool> = entries.iter().map(|e| flag.matches(e)).collect();
+        assert_eq!(kept, [false, true, true]);
+    }
+
     /// Filter behaviour the corpus does not reach, each expectation read
     /// off `CaptureFilter.matches` in Python.
     #[test]
@@ -659,16 +786,10 @@ mod tests {
         // An unrecognized decision counts as "all", so it is below every
         // threshold above "all" and never above one.
         let block = CaptureFilter {
-            min_action: Some("block".to_string()),
+            min_action: Some(MinAction::Block),
             ..CaptureFilter::default()
         };
         assert!(!block.matches(&entry_of(&[("decision", Json::string("weird"))])));
-        // An unrecognized *threshold* is 0, which nothing is below.
-        let nonsense = CaptureFilter {
-            min_action: Some("nope".to_string()),
-            ..CaptureFilter::default()
-        };
-        assert!(nonsense.matches(&entry_of(&[("decision", Json::string("allowed"))])));
 
         // A missing field can never be in a list of wanted values.
         for filter in [

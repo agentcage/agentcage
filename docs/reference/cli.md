@@ -332,8 +332,10 @@ agentcage cage har my-agent --view inbound -o traffic.har
 
 **Options**:
 - `--view [inbound|outbound]`: Perspective to export:
-  - `inbound` (default): Safe to share; contains only decoy placeholders.
-  - `outbound`: Sensitive wire-view containing real injected credentials.
+  - `inbound` (default): The request as the cage sent it and the response as the cage received it.
+  - `outbound`: The request and response as recorded on the wire side, after the egress redacted them.
+
+  Both views hold every secret agentcage manages as its rule's placeholder: real values, tokens a secret `transform` minted, a server's echo of either, and a literal secret the cage sent itself (including in a blocked request). The injected credentials never appear in either view, so the two views now record the same content. Anything else is recorded as is in both: bodies, cookies, and any credential the agent holds itself, so review a capture before sharing it. Captures recorded by agentcage 0.50.0 or earlier can still hold real secrets: in the `outbound` view (a server's echo of an injected secret, a token a transform minted) and in the `inbound` view of a request blocked for carrying a literal secret.
 - `-d, --decision [blocked|flagged|allowed]`: Filter by decision.
 - `-o, --output PATH`: Target file (default: stdout).
 - `--json-lines`: Output raw JSONL capture format instead of HAR.
