@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 
 _ACTION_ORDER = {"all": 0, "flag": 1, "block": 2}
 
+# ``min_action`` spellings the configuration reference used to show,
+# mapped to the values they mean. Before this they fell through to
+# "record everything"; the host accepts them with a warning, and rejects
+# any other unknown value.
+_MIN_ACTION_ALIASES = {"allowed": "all", "flagged": "flag", "blocked": "block"}
+
 # Per-flow bound on buffered WebSocket frames. A WebSocket's entry is
 # written when the socket ends, so every frame it records sits in memory
 # until then, and a socket can stay open for hours. Each frame's data is
@@ -53,7 +59,8 @@ class CaptureWriter:
     def __init__(self, cfg: dict, path: str) -> None:
         self._cfg = cfg
         self._max_body = int(cfg.get("max_body_size", 10485760))
-        self._min_action = cfg.get("min_action", "all")
+        min_action = str(cfg.get("min_action") or "all")
+        self._min_action = _MIN_ACTION_ALIASES.get(min_action, min_action)
         self._domains: list[str] = cfg.get("domains") or []
         self._exclude_domains: list[str] = cfg.get("exclude_domains") or []
         self._ws_buffers: dict[str, _WsBuffer] = {}

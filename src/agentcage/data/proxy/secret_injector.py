@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -105,6 +106,14 @@ class InjectionRule:
     # block can detect raw key bytes leaking into outbound traffic.
     transform: str = ""
     transform_fn: Optional[Callable[[], str]] = None
+    # Every value the transform produced that may still be in use (its
+    # ``active_values``). Those are secrets too: redaction swaps them back
+    # to ``placeholder`` like ``real_value``, and the policy check blocks
+    # them heading outside ``inject_to`` (see ``minted_values``).
+    transform_values_fn: Optional[Callable[[], list[str]]] = None
+    # The transform object, so a reload can keep it for an unchanged rule
+    # and keep redacting a replaced one's live tokens.
+    transform_instance: Any = field(default=None, repr=False, compare=False)
     # Strict by default: only inject into credential-bearing headers — those
     # whose name matches the ``AUTH_HEADER_KEYWORDS`` heuristic or is listed in
     # ``inject_headers``. When True, also inject into the request URL, every
@@ -114,6 +123,9 @@ class InjectionRule:
     # strict default — for auth headers whose name doesn't match the keyword
     # heuristic (e.g. ``x-honeycomb-team``). Matched case-insensitively.
     inject_headers: list[str] = field(default_factory=list)
+    # Fallback tracking for a transform without ``active_values``: the
+    # last two values ``derive_value`` returned (current and previous).
+    _recent: list[str] = field(default_factory=list, repr=False, compare=False)
 
     def is_auth_header(self, name: str) -> bool:
         """Whether ``name`` is a credential-bearing header this rule injects
@@ -125,6 +137,41 @@ class InjectionRule:
             return True
         return any(n == extra.lower() for extra in self.inject_headers)
 
+    def derive_value(self) -> str:
+        """Call the transform for the value to put on the wire.
+
+        A transform without ``active_values`` has its last two values
+        remembered here instead, so they are still redacted.
+        """
+        assert self.transform_fn is not None
+        value = self.transform_fn()
+        if self.transform_values_fn is None and (
+            not self._recent or self._recent[0] != value
+        ):
+            self._recent = [value, *self._recent[:1]]
+        return value
+
+    def minted_values(self) -> list[str]:
+        """Values the transform produced that may still be on the wire.
+
+        Empty for a rule without a transform. A transform that fails to
+        list them yields none rather than breaking the flow.
+        """
+        if self.transform_fn is None:
+            return []
+        if self.transform_values_fn is None:
+            values = list(self._recent)
+        else:
+            try:
+                values = list(self.transform_values_fn())
+            except Exception as e:
+                log.error(
+                    "secret_injection: transform %s (%s) could not list "
+                    "its minted values: %s", self.transform, self.name, e,
+                )
+                values = []
+        return [v for v in values if v and v != self.real_value]
+
 
 class SecretInjector:
     """Transparent secret injection / redaction for mitmproxy flows."""
@@ -132,6 +179,15 @@ class SecretInjector:
     def __init__(self) -> None:
         self.rules: list[InjectionRule] = []
         self.redact_to: list[str] = []
+        # Live transform objects by (env, transform, config, secret): an
+        # unchanged rule keeps its transform across a reload, with its
+        # cached token, its mint rate bucket and the tokens it minted.
+        self._transforms: dict[tuple[str, str, str, str], Any] = {}
+        # Rules dropped or replaced by a reload whose transform minted a
+        # token that is still valid. The token may be on a flow still in
+        # flight, or echoed back later, so it stays a secret (redacted and
+        # policy-checked) until it expires; then the rule is forgotten.
+        self._retired: list[InjectionRule] = []
 
     def configure(self, config: list[dict] | dict) -> None:
         """Build injection rules from the ``secret_injection`` config.
@@ -149,6 +205,9 @@ class SecretInjector:
             rules_list = config
             self.redact_to = []
 
+        previous = self.rules + self._retired
+        old_transforms = self._transforms
+        self._transforms = {}
         self.rules = []
         for entry in rules_list:
             env_name = entry.get("env", "")
@@ -191,19 +250,34 @@ class SecretInjector:
 
             transform_name = entry.get("transform", "") or ""
             transform_fn: Optional[Callable[[], str]] = None
+            values_fn: Optional[Callable[[], list[str]]] = None
+            instance: Any = None
             if transform_name:
                 transform_config = entry.get("transform_config") or {}
-                try:
-                    transform_fn = self._build_transform(
-                        transform_name, real_value, transform_config
-                    )
-                except Exception as e:
-                    log.error(
-                        "secret_injection: transform %s for %s failed to "
-                        "initialize: %s — skipping rule",
-                        transform_name, env_name, e,
-                    )
-                    continue
+                key = (
+                    env_name,
+                    transform_name,
+                    json.dumps(transform_config, sort_keys=True, default=str),
+                    real_value,
+                )
+                instance = self._transforms.get(key)
+                if instance is None:
+                    instance = old_transforms.pop(key, None)
+                if instance is None:
+                    try:
+                        instance = self._build_transform(
+                            transform_name, real_value, transform_config
+                        )
+                    except Exception as e:
+                        log.error(
+                            "secret_injection: transform %s for %s failed to "
+                            "initialize: %s — skipping rule",
+                            transform_name, env_name, e,
+                        )
+                        continue
+                self._transforms[key] = instance
+                transform_fn = instance.get_value
+                values_fn = getattr(instance, "active_values", None)
 
             self.rules.append(
                 InjectionRule(
@@ -213,33 +287,92 @@ class SecretInjector:
                     inject_to=inject_to,
                     transform=transform_name,
                     transform_fn=transform_fn,
+                    transform_values_fn=values_fn,
+                    transform_instance=instance,
                     inject_body=inject_body,
                     inject_headers=inject_headers,
                 )
             )
 
+        # A rule whose transform was not kept (rule removed, secret
+        # re-staged, config changed) retires while a token it minted is
+        # still valid.
+        live = {id(r.transform_instance) for r in self.rules}
+        self._retired = [
+            r for r in previous
+            if r.transform_instance is not None
+            and id(r.transform_instance) not in live
+            and r.minted_values()
+        ]
+
     @staticmethod
-    def _build_transform(
-        name: str, secret: str, config: dict[str, Any]
-    ) -> Callable[[], str]:
-        """Look up a transform class and return its bound ``get_value``."""
+    def _build_transform(name: str, secret: str, config: dict[str, Any]) -> Any:
+        """Look up a transform class and return an instance of it."""
         # Lazy import — keeps mitmproxy's addon load fast and avoids
         # pulling cryptography unless a transform actually uses it.
         from transforms import get as _get
 
         cls = _get(name)
-        instance = cls(secret, config)
-        return instance.get_value
+        return cls(secret, config)
 
-    def _find_real_value(self, flow: http.HTTPFlow, rule: InjectionRule) -> bool:
-        """Check if a rule's real secret value is present in the flow."""
-        rv = rule.real_value
-        if rv in flow.request.url:
+    def _live_retired(self) -> list[InjectionRule]:
+        """Retired rules that still have a valid minted token; the rest
+        are forgotten here."""
+        if self._retired:
+            self._retired = [r for r in self._retired if r.minted_values()]
+        return self._retired
+
+    def _minted(self) -> list[tuple[InjectionRule, str]]:
+        """``(rule, token)`` for every valid token a transform minted,
+        live rules first, then retired ones."""
+        return [
+            (rule, value)
+            for rule in (*self.rules, *self._live_retired())
+            for value in rule.minted_values()
+        ]
+
+    def _redaction_targets(self) -> list[tuple[str, str, str]]:
+        """``(value, placeholder, name)`` for every value redaction swaps
+        back to a placeholder: each rule's real value and each token its
+        transform minted (also a retired rule's, until it expires).
+
+        Longest value first, so a value that is a substring of another
+        never splits it.
+        """
+        targets: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for rule in self.rules:
+            if rule.real_value and rule.real_value not in seen:
+                seen.add(rule.real_value)
+                targets.append((rule.real_value, rule.placeholder, rule.name))
+        for rule, value in self._minted():
+            if value not in seen:
+                seen.add(value)
+                targets.append((value, rule.placeholder, rule.name))
+        targets.sort(key=lambda t: len(t[0]), reverse=True)
+        return targets
+
+    @staticmethod
+    def _minted_token_block(rule: InjectionRule, where: str) -> InspectionResult:
+        return InspectionResult(
+            inspector="secret-injector",
+            action="block",
+            reason=(
+                f"literal secret value {rule.name} (a token its "
+                f"{rule.transform} transform minted) found in {where}"
+            ),
+            severity="critical",
+        )
+
+    @staticmethod
+    def _find_value(flow: http.HTTPFlow, value: str) -> bool:
+        """Check if a literal secret value is present in the request."""
+        if value in flow.request.url:
             return True
         for v in flow.request.headers.values():
-            if rv in v:
+            if value in v:
                 return True
-        if flow.request.content and rv.encode() in flow.request.content:
+        if flow.request.content and value.encode() in flow.request.content:
             return True
         return False
 
@@ -267,9 +400,10 @@ class SecretInjector:
         """Check domain restrictions without modifying the flow.
 
         Returns an ``InspectionResult`` (flag) if a placeholder is found
-        heading to an unauthorized domain.  Returns ``None`` if ok.
+        heading to an unauthorized domain, (block) if a literal secret
+        value is.  Returns ``None`` if ok.
         """
-        if not self.rules:
+        if not self.rules and not self._retired:
             return None
 
         host = flow.request.host.lower()
@@ -285,7 +419,7 @@ class SecretInjector:
         # (the proxy mints derived values; the raw credential never
         # legitimately appears on the wire to anywhere).
         for rule in self.rules:
-            if self._find_real_value(flow, rule):
+            if self._find_value(flow, rule.real_value):
                 if (
                     not rule.transform_fn
                     and rule.inject_to
@@ -301,6 +435,19 @@ class SecretInjector:
                     ),
                     severity="critical",
                 )
+
+        # A token a transform minted is the value that goes on the wire,
+        # like a static rule's real value, so it is treated like one:
+        # blocked unless the host is in the rule's inject_to, where it is
+        # the credential the proxy puts on the request anyway. The cage
+        # never receives it (responses and capture are redacted), so
+        # holding one at all means it leaked.
+        for rule, token in self._minted():
+            if not self._find_value(flow, token):
+                continue
+            if rule.inject_to and self._domain_matches(host, rule.inject_to):
+                continue
+            return self._minted_token_block(rule, f"outbound request to {host}")
 
         # Flag placeholders heading to unauthorized domains
         for rule in self.rules:
@@ -330,7 +477,7 @@ class SecretInjector:
         Returns a list of secret names that were injected (or redacted for
         ``redact_to`` domains).
         """
-        if not self.rules:
+        if not self.rules and not self._retired:
             return []
 
         host = flow.request.host.lower()
@@ -352,7 +499,7 @@ class SecretInjector:
             # value at request time; otherwise use the static real_value.
             if rule.transform_fn is not None:
                 try:
-                    value = rule.transform_fn()
+                    value = rule.derive_value()
                 except Exception as e:
                     log.error(
                         "secret_injection: transform %s (%s) failed: %s "
@@ -417,89 +564,21 @@ class SecretInjector:
         """Replace real secret values with placeholders in the outbound request.
 
         Used for ``redact_to`` domains — the inverse of injection.
-        Processes rules sorted by real-value length descending to prevent
-        partial matches when one value is a substring of another.
+        Processes values longest first (see ``_redaction_targets``) to
+        prevent partial matches when one value is a substring of another.
 
         Returns a list of secret names that were redacted.
         """
-        sorted_rules = sorted(
-            self.rules, key=lambda r: len(r.real_value), reverse=True
-        )
+        return self._redact_request_values(flow)
 
-        names: list[str] = []
-        for rule in sorted_rules:
-            real = rule.real_value
-            real_bytes = real.encode()
-            ph = rule.placeholder
-            ph_bytes = ph.encode()
-
-            found = False
-
-            # Redact URL
-            if real in flow.request.url:
-                flow.request.url = flow.request.url.replace(real, ph)
-                found = True
-
-            # Redact headers
-            for k in list(flow.request.headers.keys()):
-                v = flow.request.headers[k]
-                if real in v:
-                    flow.request.headers[k] = v.replace(real, ph)
-                    found = True
-                    continue
-                new_v, changed = _rewrite_basic_auth(v, real, ph)
-                if changed:
-                    flow.request.headers[k] = new_v
-                    found = True
-
-            # Redact body
-            if flow.request.content and real_bytes in flow.request.content:
-                flow.request.content = flow.request.content.replace(
-                    real_bytes, ph_bytes
-                )
-                found = True
-
-            if found:
-                names.append(rule.name)
-        return names
-
-    def redact_request(self, flow: http.HTTPFlow) -> list[str]:
-        """Replace real secret values with placeholders in the outbound
-        REQUEST after it has been forwarded upstream — so the capture
-        writer never serializes raw secret bytes to ``capture.jsonl``.
-
-        This is the request-side mirror of ``redact_response``. It must
-        run AFTER ``inject_request`` has put the real secrets on the wire
-        (mitmproxy forwards on ``request`` hook return) and BEFORE any
-        capture serialization reads ``flow.request.url`` /
-        ``flow.request.headers`` / ``flow.request.content``. The capture
-        file is bind-mounted into the cage at mode 0644; without this
-        step the OUTBOUND request snapshot (by design "what went out
-        on the wire") would land the raw ``ANTHROPIC_API_KEY`` on disk
-        where the cage workload can read it.
-
-        Distinct from the ``redact_to`` path: ``_redact_request`` runs
-        at injection time for explicitly tagged ``redact_to`` domains
-        (the cage agent shouldn't see its own secret echoed back from
-        a non-trusted upstream). ``redact_request`` runs for EVERY rule
-        on EVERY domain after the upstream send, purely to scrub the
-        in-memory flow before disk serialization. Rules are processed
-        longest real-value first to avoid partial-match issues.
-
-        Returns the list of secret names that were redacted.
+    def _redact_request_values(self, flow: http.HTTPFlow) -> list[str]:
+        """Swap every secret value (``_redaction_targets``) in the request's
+        URL, headers (also inside a Basic credential) and body back to its
+        placeholder. Returns the names of the rules whose values were found.
         """
-        if not self.rules:
-            return []
-
-        sorted_rules = sorted(
-            self.rules, key=lambda r: len(r.real_value), reverse=True
-        )
-
         names: list[str] = []
-        for rule in sorted_rules:
-            real = rule.real_value
+        for real, ph, name in self._redaction_targets():
             real_bytes = real.encode()
-            ph = rule.placeholder
             ph_bytes = ph.encode()
 
             found = False
@@ -531,31 +610,56 @@ class SecretInjector:
                 )
                 found = True
 
-            if found:
-                names.append(rule.name)
+            if found and name not in names:
+                names.append(name)
         return names
+
+    def redact_request(self, flow: http.HTTPFlow) -> list[str]:
+        """Replace real secret values with placeholders in the outbound
+        REQUEST after it has been forwarded upstream — so the capture
+        writer never serializes raw secret bytes to ``capture.jsonl``.
+
+        This is the request-side mirror of ``redact_response``. It must
+        run AFTER ``inject_request`` has put the real secrets on the wire
+        (mitmproxy forwards on ``request`` hook return) and BEFORE any
+        capture serialization reads ``flow.request.url`` /
+        ``flow.request.headers`` / ``flow.request.content``. The capture
+        file is bind-mounted into the cage at mode 0644; without this
+        step the OUTBOUND request snapshot (by design "what went out
+        on the wire") would land the raw ``ANTHROPIC_API_KEY`` on disk
+        where the cage workload can read it.
+
+        Distinct from the ``redact_to`` path: ``_redact_request`` runs
+        at injection time for explicitly tagged ``redact_to`` domains
+        (the cage agent shouldn't see its own secret echoed back from
+        a non-trusted upstream). ``redact_request`` runs for EVERY rule
+        on EVERY domain after the upstream send, purely to scrub the
+        in-memory flow before disk serialization.
+
+        Every value a transform minted counts as a real value here (and in
+        every other redaction): an injected ``ya29.…`` access token is as
+        much a live credential as a static key. Values are processed
+        longest first to avoid partial-match issues.
+
+        Returns the list of secret names that were redacted.
+        """
+        return self._redact_request_values(flow)
 
     def redact_response(self, flow: http.HTTPFlow) -> list[str]:
         """Replace real secret values with placeholders in the response.
 
-        Processes rules sorted by real-value length descending to prevent
-        partial matches when one value is a substring of another.
+        Covers every value ``_redaction_targets`` lists (real values and
+        minted tokens), longest first to prevent partial matches when one
+        value is a substring of another.
 
         Returns a list of secret names that were redacted.
         """
-        if not self.rules or not flow.response:
+        if not flow.response:
             return []
 
-        # Sort longest real value first to avoid partial-match issues
-        sorted_rules = sorted(
-            self.rules, key=lambda r: len(r.real_value), reverse=True
-        )
-
         names: list[str] = []
-        for rule in sorted_rules:
-            real = rule.real_value
+        for real, ph, name in self._redaction_targets():
             real_bytes = real.encode()
-            ph = rule.placeholder
             ph_bytes = ph.encode()
 
             found = False
@@ -579,8 +683,8 @@ class SecretInjector:
                 )
                 found = True
 
-            if found:
-                names.append(rule.name)
+            if found and name not in names:
+                names.append(name)
         return names
 
     # ── WebSocket (raw bytes) methods ───────────────────────
@@ -593,7 +697,7 @@ class SecretInjector:
         Like ``check_injection_policy`` but operates on raw bytes + host
         instead of an ``http.HTTPFlow``.
         """
-        if not self.rules:
+        if not self.rules and not self._retired:
             return None
 
         host = host.lower()
@@ -622,6 +726,17 @@ class SecretInjector:
                     severity="critical",
                 )
 
+        # Minted tokens: blocked outside inject_to — see
+        # check_injection_policy.
+        for rule, token in self._minted():
+            if token.encode() not in content:
+                continue
+            if rule.inject_to and self._domain_matches(host, rule.inject_to):
+                continue
+            return self._minted_token_block(
+                rule, f"outbound WebSocket frame to {host}"
+            )
+
         # Flag placeholders heading to unauthorized domains
         for rule in self.rules:
             if rule.placeholder.encode() not in content:
@@ -648,7 +763,7 @@ class SecretInjector:
 
         Returns ``(content, names)`` where *names* lists the secrets acted on.
         """
-        if not self.rules:
+        if not self.rules and not self._retired:
             return content, []
 
         host = host.lower()
@@ -671,7 +786,7 @@ class SecretInjector:
                 continue
             if rule.transform_fn is not None:
                 try:
-                    value = rule.transform_fn()
+                    value = rule.derive_value()
                 except Exception as e:
                     log.error(
                         "secret_injection: transform %s (%s) failed on "
@@ -689,24 +804,19 @@ class SecretInjector:
     def redact_ws_content(self, content: bytes) -> tuple[bytes, list[str]]:
         """Replace real secret values with placeholders in WebSocket content.
 
-        Processes rules sorted by real-value length descending to prevent
-        partial matches when one value is a substring of another.
+        Covers every value ``_redaction_targets`` lists (real values and
+        minted tokens), longest first to prevent partial matches when one
+        value is a substring of another.
 
         Returns ``(content, names)`` where *names* lists the secrets redacted.
         """
-        if not self.rules:
-            return content, []
-
-        sorted_rules = sorted(
-            self.rules, key=lambda r: len(r.real_value), reverse=True
-        )
-
         names: list[str] = []
-        for rule in sorted_rules:
-            real_bytes = rule.real_value.encode()
+        for real, ph, name in self._redaction_targets():
+            real_bytes = real.encode()
             if real_bytes in content:
-                content = content.replace(real_bytes, rule.placeholder.encode())
-                names.append(rule.name)
+                content = content.replace(real_bytes, ph.encode())
+                if name not in names:
+                    names.append(name)
 
         return content, names
 

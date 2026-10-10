@@ -305,6 +305,22 @@ pub const MAX_CAPTURE_BODY_BYTES: i64 = 10_485_760;
 /// unable to ever catch up. 0 disables rotation.
 pub const MAX_CAPTURE_FILE_BYTES: i64 = 134_217_728;
 
+/// The `capture.min_action` values, least severe first: record every
+/// flow, only flagged and blocked ones, or only blocked ones.
+pub const VALID_CAPTURE_MIN_ACTIONS: [&str; 3] = ["all", "flag", "block"];
+
+/// Spellings of `capture.min_action` the configuration reference used to
+/// show, each with the value it means. The egress only ever understood
+/// `all | flag | block` and recorded every flow for anything else, so a
+/// config written from the old reference silently captured everything.
+/// They are accepted, with a warning, and the egress maps them, so such a
+/// config gets the meaning its author intended.
+pub const CAPTURE_MIN_ACTION_ALIASES: [(&str, &str); 3] = [
+    ("allowed", "all"),
+    ("flagged", "flag"),
+    ("blocked", "block"),
+];
+
 /// `CaptureConfig` — full request/response capture for `cage har`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureConfig {

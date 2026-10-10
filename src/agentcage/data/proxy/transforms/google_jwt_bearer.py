@@ -127,6 +127,13 @@ class GoogleJwtBearer:
         self._lock = threading.Lock()
         self._cached_token: str | None = None
         self._cached_expiry: float = 0.0
+        # Every token minted that may still be in use, with its expiry:
+        # the cached one and, after a refresh, the previous one (a flow
+        # that took it just before the refresh can still carry it). The
+        # injector redacts these like real values (see active_values).
+        # Each is dropped at its own expiry, so this holds at most the
+        # mints of one token lifetime, which the mint rate limit bounds.
+        self._issued: dict[str, float] = {}
 
     @staticmethod
     def _validate_audience(url: str) -> None:
@@ -173,12 +180,33 @@ class GoogleJwtBearer:
             token, expiry = self._mint(now)
             self._cached_token = token
             self._cached_expiry = expiry
+            self._prune_issued(now)
+            self._issued[token] = expiry
             log.info(
                 "google-jwt-bearer: minted token, scopes=%s, expires_in=%ds",
                 " ".join(self._scopes),
                 int(expiry - now),
             )
             return token
+
+    def active_values(self) -> list[str]:
+        """Every minted token that has not expired yet, oldest first.
+
+        These are secrets as much as the SA key: the injector swaps them
+        back to the rule's placeholder wherever it redacts real values
+        (capture, responses, WebSocket frames) and blocks them heading to
+        a host outside ``inject_to``. A token is listed until the expiry
+        the token endpoint granted, past the point where the cache stops
+        serving it (``refresh_margin`` earlier).
+        """
+        with self._lock:
+            self._prune_issued(time.time())
+            return list(self._issued)
+
+    def _prune_issued(self, now: float) -> None:
+        """Forget minted tokens whose expiry has passed. Caller holds the lock."""
+        for token in [t for t, exp in self._issued.items() if exp <= now]:
+            del self._issued[token]
 
     def _mint(self, now: float) -> tuple[str, float]:
         """Build, sign, and exchange a JWT bearer assertion."""

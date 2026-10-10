@@ -56,6 +56,19 @@ class TestCaptureWriterFiltering:
         assert not w.should_capture("flagged", "example.com")
         assert w.should_capture("blocked", "example.com")
 
+    def test_min_action_old_documented_spellings_are_aliases(self, tmp_path):
+        """The configuration reference used to show allowed | flagged |
+        blocked, which fell through to "record everything"; they now mean
+        what they say."""
+        w = self._writer(tmp_path, min_action="flagged")
+        assert not w.should_capture("allowed", "example.com")
+        assert w.should_capture("flagged", "example.com")
+        w = self._writer(tmp_path, min_action="blocked")
+        assert not w.should_capture("flagged", "example.com")
+        assert w.should_capture("blocked", "example.com")
+        w = self._writer(tmp_path, min_action="allowed")
+        assert w.should_capture("allowed", "example.com")
+
     def test_domain_allowlist(self, tmp_path):
         w = self._writer(tmp_path, domains=["anthropic.com"])
         assert w.should_capture("allowed", "api.anthropic.com")

@@ -1420,6 +1420,31 @@ class TestTransformRules:
         assert content == b"token=ya29.ws-token"
         assert names == ["GOOGLE_SA_KEY"]
 
+    def test_transform_without_active_values_tracks_last_two(self):
+        """A transform that cannot list its minted values still has the
+        values it returned redacted: the injector remembers the current
+        and the previous one."""
+        tokens = iter(["ya29.one-xxxxxxxx", "ya29.two-xxxxxxxx",
+                       "ya29.three-xxxxxx"])
+        rule = InjectionRule(
+            "GOOGLE_SA_KEY", "{{GOOGLE_BEARER}}", "PLAINTEXT_SA_KEY_BYTES",
+            inject_to=["googleapis.com"],
+            transform="google-jwt-bearer",
+            transform_fn=lambda: next(tokens),
+        )
+        inj = _injector_with_rules([rule])
+        for _ in range(3):
+            inj.inject_request(_make_flow(
+                url="https://gmail.googleapis.com/x",
+                host="gmail.googleapis.com",
+                headers={"Authorization": "Bearer {{GOOGLE_BEARER}}"},
+            ))
+        content, names = inj.redact_ws_content(
+            b"ya29.one-xxxxxxxx ya29.two-xxxxxxxx ya29.three-xxxxxx")
+        assert content == (
+            b"ya29.one-xxxxxxxx {{GOOGLE_BEARER}} {{GOOGLE_BEARER}}")
+        assert names == ["GOOGLE_SA_KEY"]
+
     def test_ws_raw_secret_blocked_to_inject_to(self):
         rule = InjectionRule(
             "GOOGLE_SA_KEY", "{{GOOGLE_BEARER}}", "PLAINTEXT_SA_KEY_BYTES",

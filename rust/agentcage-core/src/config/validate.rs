@@ -81,8 +81,8 @@ use super::ConfigError;
 use super::domain::{LabelPolicy, valid_domain};
 use super::placeholder::is_canonical;
 use super::types::{
-    BUILTIN_INSPECTOR_NAMES, Config, EGRESS_RESERVED_PORTS, PLACEHOLDER_PREFIX, VALID_LIFECYCLES,
-    VALID_LOG_LEVELS,
+    BUILTIN_INSPECTOR_NAMES, CAPTURE_MIN_ACTION_ALIASES, Config, EGRESS_RESERVED_PORTS,
+    PLACEHOLDER_PREFIX, VALID_CAPTURE_MIN_ACTIONS, VALID_LIFECYCLES, VALID_LOG_LEVELS,
 };
 use crate::yaml::{Value, python_bool};
 
@@ -277,6 +277,22 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
                 repr_str(value)
             )));
         }
+    }
+
+    // ── Capture ─────────────────────────────────────────
+    //
+    // The egress records every flow for a `min_action` it does not
+    // recognize, so a typo would silently capture everything. The old
+    // documented spellings are accepted (warned about below).
+    let min_action = config.capture.min_action.as_str();
+    if !VALID_CAPTURE_MIN_ACTIONS.contains(&min_action)
+        && capture_min_action_alias(min_action).is_none()
+    {
+        return Err(ConfigError::value(format!(
+            "capture.min_action must be one of {} (got: {})",
+            python_tuple(&VALID_CAPTURE_MIN_ACTIONS),
+            repr_str(min_action)
+        )));
     }
 
     // ── container.ports specs ───────────────────────────
@@ -482,6 +498,14 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         apple_container_warnings(config, &mut warnings);
     }
 
+    if let Some(canonical) = capture_min_action_alias(&config.capture.min_action) {
+        warnings.push(format!(
+            "capture.min_action '{}' is an old spelling of '{canonical}' and is \
+             read as '{canonical}'; write '{canonical}'",
+            config.capture.min_action
+        ));
+    }
+
     // Mirrors the domains.passthrough auto-merge warning below.
     for port in &config.ports.tcp.passthrough {
         if !tcp_allow.contains(port) {
@@ -671,6 +695,15 @@ fn validate_port_list(entries: &[i64], field: &str) -> Validated<BTreeSet<i64>> 
         }
     }
     Ok(seen)
+}
+
+/// The `capture.min_action` value an old documented spelling stands for
+/// (see [`CAPTURE_MIN_ACTION_ALIASES`]), or `None`.
+fn capture_min_action_alias(value: &str) -> Option<&'static str> {
+    CAPTURE_MIN_ACTION_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == value)
+        .map(|(_, canonical)| *canonical)
 }
 
 // ── apple-container parity warnings ──────────────────────
@@ -1244,6 +1277,47 @@ mod tests {
             "protocol_relays[mail].auth.user_source must use the 'source:NAME' scheme \
              (e.g. 'env:NAME' or 'systemd-creds:NAME') — got 'env:'"
         );
+    }
+
+    /// The egress records every flow for a value it does not know, so
+    /// the host refuses one; the spellings the reference used to show
+    /// pass with a warning naming the value they mean.
+    #[test]
+    fn capture_min_action_is_checked_and_old_spellings_warn() {
+        let with = |value: &str| {
+            let mut config = named("cage");
+            config.capture.min_action = value.to_owned();
+            validate(&config, &FixedValidationHost::linux())
+        };
+        for value in ["all", "flag", "block"] {
+            let warnings = with(value).expect("canonical value");
+            assert!(
+                !warnings.iter().any(|w| w.contains("min_action")),
+                "{value}: {warnings:?}"
+            );
+        }
+        for (alias, canonical) in [
+            ("allowed", "all"),
+            ("flagged", "flag"),
+            ("blocked", "block"),
+        ] {
+            let warnings = with(alias).expect("old spelling");
+            assert!(
+                warnings.contains(&format!(
+                    "capture.min_action '{alias}' is an old spelling of '{canonical}' and is \
+                     read as '{canonical}'; write '{canonical}'"
+                )),
+                "{alias}: {warnings:?}"
+            );
+        }
+        for value in ["flagged-only", "Flag", "none"] {
+            assert_eq!(
+                with(value).expect_err("unknown value").message(),
+                format!(
+                    "capture.min_action must be one of ('all', 'flag', 'block') (got: '{value}')"
+                )
+            );
+        }
     }
 
     #[test]

@@ -1502,13 +1502,17 @@ class Agentcage:
                     outbound_resp=resp_snap,
                 )
         else:
-            # ── SNAPSHOT response for OUTBOUND (real secrets from server) ──
+            # Redact real secrets from response before it reaches the cage
+            self.injector.redact_response(flow)
+
+            # ── SNAPSHOT response for OUTBOUND ──
+            # Taken after the redaction, like the outbound request
+            # snapshot: a server echoing a real value or a minted token
+            # would otherwise put it in capture.jsonl, which the cage can
+            # read (see the request-side redaction above).
             cap_outbound_resp = None
             if self._capture and flow.id in self._cap_pending:
                 cap_outbound_resp = self._capture.snapshot_response(flow)
-
-            # Redact real secrets from response before it reaches the cage
-            self.injector.redact_response(flow)
 
             # ── SNAPSHOT response for INBOUND (secrets replaced with placeholders) ──
             # Write complete capture entry
