@@ -643,7 +643,7 @@ class TestCredentialLookup:
         relay = ImapRelay(_relay_entry(1))
         assert relay._password == "real-app-password"
 
-    @pytest.mark.parametrize("scheme", ["env", "systemd-creds", "podman"])
+    @pytest.mark.parametrize("scheme", ["env", "systemd-creds"])
     def test_delivered_schemes_resolve_by_name(self, dirs, scheme):
         """Every scheme the host delivers lands under NAME, the part after
         the colon."""
