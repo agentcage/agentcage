@@ -19,10 +19,13 @@ reach upstream.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import re
 import ssl
 import time
+import unicodedata
 from typing import Callable, Optional
 
 from relays._tls import upstream_connect_kwargs
@@ -171,7 +174,29 @@ _STRIPPED_CAPABILITIES_RESTRICTED = frozenset({"REPLACE"})
 # against folder_allowlist. LIST/LSUB are intentionally excluded —
 # they are metadata-only and the cage may reasonably need them to
 # discover the allowlisted folders.
+#
+# The destinations of COPY, MOVE and APPEND are deliberately not checked
+# either. The folder lists say which folders the cage may read, and filing
+# mail into a folder reads nothing. Checking them would also break the use
+# the denylist exists for: denying Trash so that "delete" can only mean
+# "move to Trash". What may be written where is write_mode's business.
 _MAILBOX_ARG_COMMANDS = frozenset({"SELECT", "EXAMINE", "STATUS"})
+
+# Longest mailbox name the relay reads ahead from a literal to check it
+# against the folder lists. Longer names are refused as unparseable.
+_MAX_MAILBOX_LITERAL = 1024
+
+# Capabilities whose commands report on mailboxes other than the selected
+# one, so the relay refuses them while a folder list is set (see
+# _folder_side_door()): LIST-STATUS (RFC 5819) puts STATUS data in a LIST
+# reply, MULTISEARCH (RFC 7377) searches several mailboxes at once, NOTIFY
+# (RFC 5465) reports on mailboxes the cage names. Hidden like the others.
+_STRIPPED_CAPABILITIES_FOLDERS = frozenset({"LIST-STATUS", "MULTISEARCH", "NOTIFY"})
+
+# ENABLE arguments after which the upstream may read mailbox names as
+# UTF-8 (RFC 6855 UTF8=ACCEPT, RFC 9051 IMAP4rev2) instead of modified
+# UTF-7.
+_UTF8_ENABLES = frozenset({b"UTF8=ACCEPT", b"IMAP4REV2"})
 
 # How much of one upstream response line _ResponseFilter holds back before
 # it stops holding that line and streams the rest raw. It must be well above
@@ -278,17 +303,94 @@ def _valid_tag(tag: bytes) -> bool:
     return bool(tag) and all(b in _TAG_BYTES for b in tag)
 
 
-def _capability_hidden(token: str, write_mode: str) -> bool:
+def _capability_hidden(
+    token: str, write_mode: str, folder_lists: bool = False,
+) -> bool:
     """True when *token* must not be advertised to the cage.
 
     One rule for the PREAUTH greeting and for every capability list the
-    upstream sends later: always hide what _REFUSED_COMMANDS refuses, and
-    unless write_mode is "full", hide what that mode refuses too.
+    upstream sends later: always hide what _REFUSED_COMMANDS refuses,
+    unless write_mode is "full", hide what that mode refuses too, and while
+    a folder list is set, what _folder_side_door() refuses.
     """
     t = token.upper()
     if t in _STRIPPED_CAPABILITIES or t.startswith(_STRIPPED_CAPABILITY_PREFIXES):
         return True
+    if folder_lists and t in _STRIPPED_CAPABILITIES_FOLDERS:
+        return True
     return write_mode != "full" and t in _STRIPPED_CAPABILITIES_RESTRICTED
+
+
+# Modified BASE64 of RFC 3501 §5.1.3: "," stands in for "/".
+_MB64_RE = re.compile(r"[A-Za-z0-9+,]*\Z")
+
+
+def _mutf7_decode(name: str) -> Optional[str]:
+    """Decode a modified UTF-7 mailbox name (RFC 3501 §5.1.3), or None if
+    *name* is not valid modified UTF-7.
+
+    Lenient where the RFC is strict but the meaning is clear (a shifted
+    run that encodes plain ASCII, nonzero padding bits): the result is only
+    ever used to find more names a deny entry should catch.
+    """
+    if not name.isascii():
+        return None
+    out: list[str] = []
+    i = 0
+    while i < len(name):
+        amp = name.find("&", i)
+        if amp < 0:
+            out.append(name[i:])
+            break
+        out.append(name[i:amp])
+        end = name.find("-", amp + 1)
+        if end < 0:
+            return None
+        run = name[amp + 1:end]
+        if not run:
+            out.append("&")
+        else:
+            if not _MB64_RE.match(run) or len(run) % 4 == 1:
+                return None
+            try:
+                raw = base64.b64decode(
+                    run.replace(",", "/") + "=" * (-len(run) % 4),
+                    validate=True,
+                )
+                if len(raw) % 2:
+                    return None
+                out.append(raw.decode("utf-16-be"))
+            except (binascii.Error, UnicodeDecodeError, ValueError):
+                return None
+        i = end + 1
+    return "".join(out)
+
+
+def _fold(name: str) -> str:
+    """The canonical form two spellings of one mailbox name compare in:
+    NFC, case-folded (IMAP servers disagree on the case of special-use
+    names, and RFC 3501 §5.1 makes INBOX case-insensitive), NFC again."""
+    return unicodedata.normalize(
+        "NFC", unicodedata.normalize("NFC", name).casefold(),
+    )
+
+
+def _name_forms(name: str) -> set[str]:
+    """Every canonical name the upstream might take *name* for: as written
+    (UTF-8, how a server reads it after ENABLE UTF8=ACCEPT) and, when it
+    is valid modified UTF-7, decoded (how a server reads it otherwise)."""
+    forms = {_fold(name)}
+    decoded = _mutf7_decode(name)
+    if decoded is not None:
+        forms.add(_fold(decoded))
+    return forms
+
+
+def _server_reading(name: str) -> str:
+    """The canonical name a server not reading UTF-8 names takes *name*
+    for: decoded if it is valid modified UTF-7, as written otherwise."""
+    decoded = _mutf7_decode(name)
+    return _fold(name if decoded is None else decoded)
 
 
 # One grammar for both relays and the validator — see relays._validate.
@@ -411,6 +513,17 @@ class ImapRelay:
         # Filled in once during _authenticate_upstream so the PREAUTH
         # greeting can advertise the same features the upstream does.
         self._upstream_capabilities: list[str] = []
+        # The folder lists in canonical form, every spelling of each entry
+        # included (see _name_forms()).
+        self._folder_lists = bool(
+            self._cfg.folder_allowlist or self._cfg.folder_denylist
+        )
+        self._deny_forms: set[str] = set()
+        for d in self._cfg.folder_denylist:
+            self._deny_forms |= _name_forms(str(d))
+        self._allow_forms: set[str] = set()
+        for a in self._cfg.folder_allowlist:
+            self._allow_forms |= _name_forms(str(a))
 
     async def start(self) -> None:
         host, _, port_s = self._cfg.listen.rpartition(":")
@@ -551,7 +664,9 @@ class ImapRelay:
             # client pipe forwarded.
             tracker = _CommandTracker()
             to_client = _ClientOutput(client_writer, _ResponseFilter(
-                lambda t: _capability_hidden(t, self._cfg.write_mode),
+                lambda t: _capability_hidden(
+                    t, self._cfg.write_mode, self._folder_lists,
+                ),
                 tracker.observe,
             ))
             t1 = asyncio.create_task(
@@ -740,7 +855,9 @@ class ImapRelay:
             return "IMAP4rev1"
         out = [
             t for t in self._upstream_capabilities
-            if not _capability_hidden(t, self._cfg.write_mode)
+            if not _capability_hidden(
+                t, self._cfg.write_mode, self._folder_lists,
+            )
         ]
         if not any(t.upper() == "IMAP4REV1" for t in out):
             out.insert(0, "IMAP4rev1")
@@ -753,12 +870,21 @@ class ImapRelay:
         to_client: _ClientOutput,
         tracker: _CommandTracker,
     ) -> None:
+        # Whether the upstream may read mailbox names as UTF-8 rather than
+        # modified UTF-7: from the start on a server that only speaks
+        # IMAP4rev2 or UTF-8, else once the cage has asked it to.
+        caps = {c.upper() for c in self._upstream_capabilities}
+        state = _SessionState(
+            utf8_names="UTF8=ONLY" in caps
+            or ("IMAP4REV2" in caps and "IMAP4REV1" not in caps),
+        )
         while True:
             line = await client_reader.readline()
             if not line:
                 return
             if not await self._relay_command(
                 line, client_reader, upstream_writer, to_client, tracker,
+                state,
             ):
                 return
 
@@ -769,6 +895,7 @@ class ImapRelay:
         upstream_writer: asyncio.StreamWriter,
         to_client: _ClientOutput,
         tracker: _CommandTracker,
+        state: "_SessionState",
     ) -> bool:
         """Relay one command whose first line is *line*. False ends the
         session.
@@ -803,17 +930,41 @@ class ImapRelay:
         cage, as RFC 3501 §7.5 requires, never sends the payload; if
         ``{n+}``, the relay reads and drops exactly the payload, and so on to
         the end of the command.
+
+        A mailbox name the folder lists must judge may itself be a literal
+        (``SELECT {5}``). The relay then reads it before deciding: for
+        ``{n}`` it sends the cage the ``+`` itself, and swallows the
+        upstream's later one. Such a literal is short (_MAX_MAILBOX_LITERAL)
+        and the cage has sent it either way by the time the relay decides,
+        so a refusal drops the rest of the command as for ``{n+}``.
         """
         try:
             lit = _client_literal(line)
         except _MalformedLiteral:
             lit = None  # _policy_check() refuses the line
-        decision = self._policy_check(line)
+        name: Optional[bytes] = None  # a literal mailbox name, read ahead
+        if lit is not None and self._literal_mailbox(line, lit):
+            await tracker.settle(0)
+            if lit.sync:
+                await to_client.from_relay(b"+ Ready for the mailbox name\r\n")
+            try:
+                name = await client_reader.readexactly(lit.size)
+            except asyncio.IncompleteReadError:
+                return False
+        decision = self._policy_check(
+            line, mailbox=name, utf8_names=state.utf8_names,
+        )
         if decision is not None:
             await self._reply(to_client, decision)
+            if name is not None:
+                return await self._discard_rest(client_reader, to_client)
             return await self._discard_command(
                 client_reader, to_client, lit,
             )
+        if _enables_utf8_names(line):
+            # Set before the upstream has agreed, which errs towards
+            # checking both readings of a name for longer than needed.
+            state.utf8_names = True
 
         tag = (line.split(None, 1) or [b""])[0]
         command = _command_name(line)
@@ -845,7 +996,9 @@ class ImapRelay:
                 )
                 await self._bye(to_client, b"protocol error")
                 return False
-            verdict = tracker.expect_continuation(tag, forward=lit.sync)
+            verdict = tracker.expect_continuation(
+                tag, forward=lit.sync and name is None,
+            )
             if first:
                 tracker.sent(tag)
             upstream_writer.write(_synchronising(line, lit))
@@ -853,10 +1006,16 @@ class ImapRelay:
             if not await verdict:
                 # Refused upstream; its tagged response is on its way to
                 # the cage.
+                if name is not None:
+                    return await self._discard_rest(client_reader, to_client)
                 return await self._discard_command(
                     client_reader, to_client, lit,
                 )
-            if not await _copy_exactly(
+            if name is not None:
+                upstream_writer.write(name)
+                await upstream_writer.drain()
+                name = None
+            elif not await _copy_exactly(
                 client_reader, upstream_writer, lit.size,
             ):
                 return False
@@ -880,6 +1039,37 @@ class ImapRelay:
                 })
                 await self._bye(to_client, b"malformed literal")
                 return False
+
+    async def _discard_rest(
+        self,
+        client_reader: asyncio.StreamReader,
+        to_client: _ClientOutput,
+    ) -> bool:
+        """_discard_command() for a command whose literal the relay has
+        already read: drop the line after it, and on from there."""
+        line = await client_reader.readline()
+        if not line:
+            return False
+        try:
+            lit = _client_literal(line)
+        except _MalformedLiteral:
+            return True
+        return await self._discard_command(client_reader, to_client, lit)
+
+    def _literal_mailbox(self, line: bytes, lit: _Literal) -> bool:
+        """True when *line* is a SELECT/EXAMINE/STATUS whose mailbox
+        argument is the literal it announces, and the folder lists need
+        to see that name."""
+        if not self._folder_lists or lit.size > _MAX_MAILBOX_LITERAL:
+            return False
+        parts = line.split(None, 2)
+        if len(parts) < 3 or not _valid_tag(parts[0]):
+            return False
+        if parts[1].upper().decode("ascii", "replace") \
+                not in _MAILBOX_ARG_COMMANDS:
+            return False
+        # parts[2] runs to the end of the line, so this is where it starts.
+        return lit.start == len(line) - len(parts[2])
 
     async def _discard_command(
         self,
@@ -967,7 +1157,11 @@ class ImapRelay:
                 return
 
     def _policy_check(
-        self, line: bytes
+        self,
+        line: bytes,
+        *,
+        mailbox: Optional[bytes] = None,
+        utf8_names: bool = False,
     ) -> Optional[tuple[bytes, str, bytes]]:
         """Return (tag, reason, fake_status) if denied, else None.
 
@@ -976,6 +1170,10 @@ class ImapRelay:
         no-op for a PREAUTH'd connection), ``NO`` for actual policy
         denials, ``BAD`` for a line the relay won't parse (an invalid
         tag, answered with tag ``*``, or a malformed literal).
+
+        *mailbox* is a mailbox name the cage sent as a literal, read ahead
+        by _relay_command(); *utf8_names* says whether the upstream may
+        read mailbox names as UTF-8 (see _mailbox_denial_reason()).
         """
         # Split on any run of whitespace, not single spaces. RFC 3501 says
         # exactly one SP, but an upstream lenient about tabs, doubled or
@@ -1090,11 +1288,31 @@ class ImapRelay:
                     b"NO",
                 )
 
-        if cmd in _MAILBOX_ARG_COMMANDS and (
-            self._cfg.folder_allowlist or self._cfg.folder_denylist
-        ):
+        if self._folder_lists:
+            why = _folder_side_door(cmd, parts[2] if len(parts) >= 3 else b"")
+            if why is not None:
+                log.warning(
+                    "imap relay %s: blocked %s (%s)", self._cfg.name, cmd, why,
+                )
+                self._audit_log({
+                    "kind": "imap_command",
+                    "relay": self._cfg.name,
+                    "command": cmd,
+                    "decision": "blocked",
+                    "reason": why,
+                })
+                return (tag, f"{cmd} not permitted ({why})", b"NO")
+
+        if cmd in _MAILBOX_ARG_COMMANDS and self._folder_lists:
             args = parts[2] if len(parts) >= 3 else b""
-            mailbox = _extract_mailbox(args)
+            if mailbox is not None:
+                mailbox = _decode_mailbox(mailbox)
+            elif _announces_literal(line):
+                # A literal the relay didn't read ahead: too long, or not
+                # the mailbox argument (where these commands never take one).
+                mailbox = None
+            else:
+                mailbox = _extract_mailbox(args)
             if mailbox is None:
                 log.warning(
                     "imap relay %s: %s with unparseable mailbox: %r",
@@ -1108,7 +1326,7 @@ class ImapRelay:
                     "reason": "mailbox not parseable",
                 })
                 return (tag, f"{cmd} mailbox not parseable", b"NO")
-            reason = self._mailbox_denial_reason(mailbox)
+            reason = self._mailbox_denial_reason(mailbox, utf8_names)
             if reason is not None:
                 log.warning(
                     "imap relay %s: blocked %s on %s (%s)",
@@ -1170,25 +1388,43 @@ class ImapRelay:
             )
         return None
 
-    def _mailbox_denial_reason(self, mailbox: str) -> Optional[str]:
+    def _mailbox_denial_reason(
+        self, mailbox: str, utf8_names: bool = False,
+    ) -> Optional[str]:
         """Why this mailbox may not be selected, or None if it may.
 
         Denial wins over the allowlist: a folder named in both is denied.
-        Matching is case-insensitive because IMAP servers differ on the
-        case they report for special-use mailboxes, and a denylist that
-        misses ``trash`` because the server said ``Trash`` would fail
-        open — the wrong direction for this list to be wrong in.
+        Names compare in canonical form (_fold()): case-insensitive, because
+        IMAP servers differ on the case they report for special-use
+        mailboxes, and a denylist that misses ``trash`` because the server
+        said ``Trash`` would fail open, the wrong direction for this list to
+        be wrong in; and NFC-normalised, so a decomposed ``É`` is the same
+        letter as a precomposed one.
+
+        One folder has two spellings when its name is not ASCII: modified
+        UTF-7 (RFC 3501 §5.1.3, ``&AMk-t&AOk-``) and, once the upstream
+        reads names as UTF-8 (RFC 6855), UTF-8 (``Été``). Both the
+        configured names and the cage's are compared in every spelling the
+        upstream might read them in (_name_forms()). A deny entry matches if
+        any reading of the name matches any reading of the entry. The
+        allowlist admits a name only in the reading the upstream will use:
+        decoded modified UTF-7 until UTF-8 names may be on, and then only
+        if every reading is allowed, since the relay can't tell which one a
+        given server picks.
+
+        Matching is exact otherwise: no wildcards, no hierarchy. Denying
+        ``Trash`` does not deny ``Trash/Old``; list each folder.
         """
-        lowered = mailbox.lower()
-        if any(lowered == d.lower() for d in self._cfg.folder_denylist):
+        forms = _name_forms(mailbox)
+        if forms & self._deny_forms:
             return "denied by folder_denylist"
-        if (
-            self._cfg.folder_allowlist
-            and not any(
-                lowered == a.lower() for a in self._cfg.folder_allowlist
-            )
-        ):
-            return "not in folder_allowlist"
+        if self._cfg.folder_allowlist:
+            if utf8_names:
+                allowed = forms <= self._allow_forms
+            else:
+                allowed = _server_reading(mailbox) in self._allow_forms
+            if not allowed:
+                return "not in folder_allowlist"
         return None
 
 
@@ -1600,6 +1836,66 @@ def _quote(value: str) -> bytes:
     return b'"' + escaped.encode() + b'"'
 
 
+class _SessionState:
+    """What the client pipe remembers about one session's commands."""
+
+    __slots__ = ("utf8_names",)
+
+    def __init__(self, utf8_names: bool = False) -> None:
+        self.utf8_names = utf8_names
+
+
+def _enables_utf8_names(line: bytes) -> bool:
+    """True for an ENABLE asking for UTF-8 mailbox names."""
+    parts = line.split()
+    return (
+        len(parts) >= 3
+        and parts[1].upper() == b"ENABLE"
+        and any(p.upper() in _UTF8_ENABLES for p in parts[2:])
+    )
+
+
+def _announces_literal(line: bytes) -> bool:
+    try:
+        return _client_literal(line) is not None
+    except _MalformedLiteral:
+        return True
+
+
+def _folder_side_door(cmd: str, args: bytes) -> Optional[str]:
+    """Why *cmd* is refused while a folder list is set, or None.
+
+    The folder lists are checked on the commands that open or report on
+    one mailbox (_MAILBOX_ARG_COMMANDS). These report on others: a LIST
+    with ``RETURN (STATUS ...)`` (RFC 5819) gives STATUS data for every
+    folder it lists, ESEARCH (RFC 7377) searches the mailboxes it names,
+    and NOTIFY SET (RFC 5465) watches them. Rather than parse their
+    mailbox specifiers, the relay refuses them; the cage can still STATUS
+    or SELECT each folder the lists allow.
+    """
+    if cmd in ("LIST", "LSUB"):
+        words = re.split(rb"[\s()]+", args.upper())
+        if b"RETURN" in words and \
+                b"STATUS" in words[words.index(b"RETURN"):]:
+            return "STATUS in LIST with folder lists set"
+    elif cmd == "ESEARCH":
+        return "multi-mailbox search with folder lists set"
+    elif cmd == "NOTIFY":
+        if (args.split(None, 1) or [b""])[0].upper() != b"NONE":
+            return "NOTIFY with folder lists set"
+    return None
+
+
+def _decode_mailbox(raw: bytes) -> Optional[str]:
+    """A mailbox name as sent, decoded; None unless it is valid UTF-8 (an
+    upstream reading names as UTF-8 refuses anything else, and the relay
+    won't guess what a lenient one makes of it)."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def _extract_mailbox(args: bytes) -> Optional[str]:
     """Pull the first IMAP atom/quoted-string from *args*."""
     s = args.lstrip().rstrip(b"\r\n")
@@ -1615,7 +1911,7 @@ def _extract_mailbox(args: bytes) -> Optional[str]:
                 i += 2
                 continue
             if c == ord('"'):
-                return buf.decode("utf-8", errors="replace")
+                return _decode_mailbox(bytes(buf))
             buf.append(c)
             i += 1
         return None
@@ -1625,4 +1921,4 @@ def _extract_mailbox(args: bytes) -> Optional[str]:
     end = 0
     while end < len(s) and s[end] not in (ord(" "), ord("\t")):
         end += 1
-    return s[:end].decode("utf-8", errors="replace")
+    return _decode_mailbox(s[:end])

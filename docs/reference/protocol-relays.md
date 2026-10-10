@@ -176,10 +176,16 @@ A line whose tag is not a valid IMAP tag (RFC 3501 §9: printable ASCII except `
 
 ### Folder lists
 
-`folder_allowlist` and `folder_denylist` are checked against the mailbox argument of `SELECT`, `EXAMINE` and `STATUS` only:
-- **Matching:** exact and case-insensitive (`Trash` matches `trash`). There are no wildcards or hierarchy rules.
-- **Not checked:** `LIST` and `LSUB`, so the cage can discover folder names. The destination of `COPY` and `MOVE` is not checked either. Use `write_mode` to stop filing into a folder.
-- **Unparseable names:** while either list is set, a mailbox the relay can't parse (an IMAP literal, `{n}`) is refused.
+`folder_allowlist` and `folder_denylist` are checked against the mailbox argument of `SELECT`, `EXAMINE` and `STATUS`:
+- **Matching:** names are compared in one canonical form: Unicode NFC, case-folded (`Trash` matches `trash`, `INBOX` matches `inbox`). A decomposed `É` matches a precomposed one. There are no wildcards and no hierarchy rules: denying `Trash` does not deny `Trash/Old`, so list each folder.
+- **Non-ASCII names:** a folder has two spellings. One is modified UTF-7 (RFC 3501 §5.1.3, for example `&AMk-t&AOk-`), which clients use by default. The other is UTF-8 (`Été`), used once the client has sent `ENABLE UTF8=ACCEPT` (RFC 6855) or `ENABLE IMAP4rev2`. Configured names may be written either way.
+  - A **deny** entry matches every spelling of its folder, however the cage writes it.
+  - The **allowlist** admits a name in the reading the server will use: the decoded modified UTF-7 until UTF-8 names have been enabled (or from the start, if the server only speaks IMAP4rev2 or `UTF8=ONLY`). After that, a name must be allowed in every reading. For example, `&AMk-t&AOk-` is then refused, because the server may take it as that literal string, while `Été` in UTF-8 passes.
+- **Argument forms:** an atom, a quoted string, or a literal. A literal name of up to 1 KiB is read before the decision: for `{n}` the relay sends the cage the `+` itself. A name that is not valid UTF-8, a longer literal, or a literal anywhere else on the line is refused as unparseable.
+- **Other mailboxes:** while either list is set, the relay also refuses the commands that report on mailboxes other than the selected one. These are `LIST` / `LSUB` with `RETURN (STATUS ...)` (RFC 5819), `ESEARCH` (RFC 7377 multi-mailbox search) and `NOTIFY SET` (RFC 5465); `NOTIFY NONE` is allowed. It also leaves `LIST-STATUS`, `MULTISEARCH` and `NOTIFY` out of the capabilities it advertises.
+- **Not checked:**
+  - Plain `LIST` and `LSUB`, so the cage can discover folder names.
+  - The destination of `COPY`, `MOVE` and `APPEND`. The lists govern which folders the cage may read, and filing mail somewhere reads nothing. Checking destinations would also break the denylist's main use: denying `Trash` so that deleting can only mean moving to `Trash`. Use `write_mode` to stop filing.
 
 ## SMTP (`type: smtp`)
 
