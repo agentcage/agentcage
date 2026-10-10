@@ -91,8 +91,8 @@ fn stage(
 ) -> Result<(), String> {
     services::stage_secret_value(podman, ctx.runner.as_ref(), &ctx.paths, cage, key, value)
         .map_err(|error| error.to_string())?;
-    // AFTER staging: the addon reloads on the next request when
-    // `proxy-config.yaml`'s mtime moves, and it must find the new value
+    // AFTER staging: the addon reloads within about a second of
+    // `proxy-config.yaml`'s mtime moving, and it must find the new value
     // already on disk when it does.
     ctx.paths
         .save_proxy_config(cage, &ctx.version)
