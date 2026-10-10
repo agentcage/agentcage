@@ -112,6 +112,37 @@ from the Python CLI keep their existing image tags, and the fixture's
 input list is there so a review sees exactly which files entered or left
 the image.
 
+### The Rust egress (transition)
+
+While the Rust egress (`rust/agentcage-egress`) replaces the Python one,
+the host can build either image. `AGENTCAGE_EGRESS_ENGINE=rust` selects
+`Containerfile.egress-rust`, which ships the `agentcage-egress` binary and
+no Python; unset (or `python`) keeps today's image. The Rust image's tag
+is `<version>-rust-<hash>`, the hash covering the binary, so both images
+coexist and a cage switches with `cage update`.
+
+The host binary embeds a linux-musl egress for its own architecture
+(`rust/agentcage-egress-embed`). Release builds get it from the publish
+workflow; locally, build it first and then build `agentcage`, which picks
+it up from `target/<arch>-unknown-linux-musl/release/` (or from
+`AGENTCAGE_EGRESS_BIN=<path>`):
+
+```bash
+rustup target add x86_64-unknown-linux-musl   # needs musl-gcc (musl-tools / musl)
+cargo build --release --target x86_64-unknown-linux-musl -p agentcage-egress
+cargo build --release --bin agentcage
+```
+
+Rebuilding the egress means rebuilding `agentcage` too. Without an
+embedded binary everything still builds and the Python engine works;
+only `AGENTCAGE_EGRESS_ENGINE=rust` fails, at image-build time, saying how
+to fix it. To run the container e2e against the Rust egress:
+
+```bash
+AGENTCAGE_EGRESS_ENGINE=rust AGENTCAGE=$PWD/target/release/agentcage \
+  bash tests/e2e/run.sh container
+```
+
 ## Code Style
 
 - Follow existing patterns in the codebase.
