@@ -267,6 +267,14 @@ class TestParseRateLimit:
         with pytest.raises(ValueError):
             _parse_rate_limit("nonsense")
 
+    def test_unit_is_case_insensitive(self):
+        assert _parse_rate_limit("20/HOUR") == (20, 3600)
+        assert _parse_rate_limit("5 / Min") == (5, 60)
+
+    def test_grammar_is_ascii_only(self):
+        with pytest.raises(ValueError):
+            _parse_rate_limit("\u0661\u0660/min")
+
 
 class TestRateLimiter:
     def test_caps(self):
@@ -1910,6 +1918,9 @@ class TestInspectorFlagAction:
                 ]
                 assert flags
                 assert flags[0]["inspector"] == "marker-flag"
+                # `cage audit -d flagged` filters on `decision`; without
+                # it a flagged email body is invisible to that filter.
+                assert flags[0]["decision"] == "flagged"
             finally:
                 upstream.close()
                 await upstream.wait_closed()

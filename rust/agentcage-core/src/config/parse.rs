@@ -546,9 +546,11 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
                 "30/min",
                 &format!("{at}.policy.conn_rate_limit"),
             )?,
+            // The relay's own default, per type: the block reaches the
+            // egress verbatim, so this is what runs when the key is unset.
             idle_timeout_seconds: int_field(
                 policy_raw.get("idle_timeout_seconds"),
-                0,
+                RelayPolicy::default_idle_timeout_seconds(&relay_type),
                 &format!("{at}.policy.idle_timeout_seconds"),
             )?,
             readonly: bool_field(policy_raw.get("readonly"), false),
@@ -1824,6 +1826,33 @@ mod tests {
                 .policy
                 .bypass_inspectors_for_allowlisted,
             ["secrets", "entropy", "content-type"]
+        );
+    }
+
+    /// The idle timeout the host records is the one the egress runs.
+    ///
+    /// `relays/imap.py` defaults it to 1800 (so RFC 2177 IDLE heartbeats,
+    /// every ~29 minutes, do not trip it) and `relays/smtp.py` to 300
+    /// (RFC 5321 §4.5.3.2). The host used to record 0 — "disabled" —
+    /// for an unset key while the relay enforced its own default, so
+    /// the parsed config said the opposite of what ran.
+    #[test]
+    fn an_unset_idle_timeout_defaults_to_what_the_relay_enforces() {
+        let relay = |kind: &str, policy: &str| {
+            parse(&format!(
+                "name: c\nprotocol_relays:\n- name: mail\n  type: {kind}\n  listen: 0.0.0.0:1025\n  upstream:\n    host: mail.example.com\n    port: 465\n{policy}"
+            ))
+            .protocol_relays[0]
+                .policy
+                .idle_timeout_seconds
+        };
+        assert_eq!(relay("imap", ""), 1800);
+        assert_eq!(relay("smtp", ""), 300);
+        // An explicit value, 0 included, is the operator's.
+        assert_eq!(relay("imap", "  policy:\n    idle_timeout_seconds: 0\n"), 0);
+        assert_eq!(
+            relay("smtp", "  policy:\n    idle_timeout_seconds: 60\n"),
+            60
         );
     }
 

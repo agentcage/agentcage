@@ -15,6 +15,7 @@ available inside the proxy container.
 
 from __future__ import annotations
 
+import re
 from typing import Callable, Optional
 
 KNOWN_RELAY_TYPES = frozenset({"imap", "smtp"})
@@ -22,6 +23,19 @@ KNOWN_RELAY_TYPES = frozenset({"imap", "smtp"})
 # IMAP write policy. "organise" permits filing and flagging but
 # refuses anything that destroys mail — see relays/imap.py.
 _WRITE_MODES = frozenset({"none", "organise", "full"})
+
+# The rate grammar both relays parse ``conn_rate_limit`` and
+# ``send_rate_limit`` with: a count, "/", and a unit. ASCII-only, so a
+# "digit" and a "space" mean the same thing here as in the host's copy of
+# this check (a Unicode ``\d`` accepts Arabic-Indic digits, and a Unicode
+# IGNORECASE folds U+017F to "s"). Case-insensitive: the relays have
+# always lowercased the unit after matching, so "10/MIN" was meant to work
+# and only the case-sensitive pattern refused it.
+RATE_LIMIT_RE = re.compile(
+    r"^\s*(\d+)\s*/\s*(sec|s|min|m|hour|h)\s*$", re.ASCII | re.IGNORECASE
+)
+RATE_UNIT_SECS = {"sec": 1, "s": 1, "min": 60, "m": 60, "hour": 3600, "h": 3600}
+_RATE_KEYS = ("conn_rate_limit", "send_rate_limit")
 
 
 def validate_relay_type(name: str) -> None:
@@ -192,6 +206,21 @@ def validate_relay_entry(
                 raise ValueError(
                     f"protocol_relays[{name}].policy.{key} must be a list "
                     f"(got {type(value).__name__})"
+                )
+        # The relays read these as `str(policy.get(key) or default)`, so a
+        # falsy value is "absent" and gets the default. Anything else that
+        # misses the grammar used to pass here and then fail at egress
+        # start with `relay_init_failed`, after `cage create` had
+        # reported success.
+        for key in _RATE_KEYS:
+            value = policy.get(key)
+            if value and not (
+                isinstance(value, str) and RATE_LIMIT_RE.match(value)
+            ):
+                raise ValueError(
+                    f"protocol_relays[{name}].policy.{key} must be a rate "
+                    f"like '30/min': a count, '/', then a unit of sec, s, "
+                    f"min, m, hour or h (got {value!r})"
                 )
 
     auth = entry.get("auth") or {}

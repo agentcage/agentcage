@@ -53,13 +53,15 @@ from inspectors._chain import run_inspector_chain
 from inspectors.base import InspectionContext, InspectionResult, Inspector
 from inspectors.util import shannon_entropy
 from relays._tls import upstream_connect_kwargs
+from relays._validate import RATE_LIMIT_RE, RATE_UNIT_SECS
 from secret_lookup import resolve_credential
 
 log = logging.getLogger("agentcage.relays.smtp")
 
 
-_RATE_LIMIT_RE = re.compile(r"^\s*(\d+)\s*/\s*(sec|s|min|m|hour|h)\s*$")
-_RATE_UNIT_SECS = {"sec": 1, "s": 1, "min": 60, "m": 60, "hour": 3600, "h": 3600}
+# One grammar for both relays and the validator — see relays._validate.
+_RATE_LIMIT_RE = RATE_LIMIT_RE
+_RATE_UNIT_SECS = RATE_UNIT_SECS
 
 
 def _parse_rate_limit(spec: str) -> tuple[int, int]:
@@ -922,6 +924,10 @@ class SmtpRelay:
             self._audit_log({
                 "kind": "smtp_data_flag",
                 "relay": self._cfg.name,
+                # What `cage audit -d flagged` filters on, as an HTTP flag
+                # and a watcher finding already carry it. The delivery
+                # itself is the separate `smtp_data` record.
+                "decision": "flagged",
                 "inspector": r.inspector,
                 "reason": r.reason,
                 "severity": r.severity,
