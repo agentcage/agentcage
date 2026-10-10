@@ -70,10 +70,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/containers/storage
-          key: podman-node22slim-${{ runner.os }}
+          key: podman-node22slim-${{ runner.os }}-${{ hashFiles('tests/e2e/mock-image.ref') }}
 
+      # The e2e mock upstream runs in its own stock-python container joined
+      # to the egress's network namespace (tests/e2e/lib.sh start_mock); its
+      # pinned reference lives in tests/e2e/mock-image.ref.
       - name: Pull base images (if not cached)
-        run: podman image exists docker.io/library/node:22-slim 2>/dev/null || podman pull docker.io/library/node:22-slim
+        run: |
+          podman image exists docker.io/library/node:22-slim 2>/dev/null || podman pull docker.io/library/node:22-slim
+          MOCK_IMAGE=$(tr -d '[:space:]' < tests/e2e/mock-image.ref)
+          podman image exists "$MOCK_IMAGE" 2>/dev/null || podman pull "$MOCK_IMAGE"
 
       - name: Run E2E container tests
         run: bash tests/e2e/run.sh container

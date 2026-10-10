@@ -68,7 +68,7 @@ fi
 
 # ── host guard: container phases are Linux-only (issue #317) ─────────
 # Phases 1-6 and 8 are "container phases": they drive rootless podman
-# directly (start_mock, the mock container, `podman images`) and their
+# directly (start_mock, the mock container, `podman exec`) and their
 # configs pin no `isolation:` key.
 #
 # On macOS that combination silently runs the WRONG backend:
@@ -77,7 +77,7 @@ fi
 #   * `default_isolation()` resolves an unpinned config to
 #     apple-container (macOS 26+ Apple Silicon) or vm (anything else).
 # `cage create` then builds the egress image into the apple-container
-# image store while start_mock looks for it via `podman images` — a
+# store while start_mock looks for the egress container via podman — a
 # different, empty store — and the phase dies somewhere unrelated.
 #
 # Refuse up front with the real constraint instead. Deliberately scoped:
@@ -126,7 +126,7 @@ cleanup_all() {
   echo ""
   echo "Final cleanup..."
   for name in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened e2e-vm e2e-openclaw; do
-    podman rm -f "${name}-mock" >/dev/null 2>&1 || true
+    podman rm -f -t 0 "${name}-mock" >/dev/null 2>&1 || true
     "$AGENTCAGE" cage destroy "$name" -y >/dev/null 2>&1 || true
   done
   # Phase 8 uses user-named volumes that aren't cleaned by cage destroy

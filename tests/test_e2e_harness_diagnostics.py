@@ -225,12 +225,14 @@ class TestCreateCageFailureDiagnostics:
 
 
 class TestStartMockDiagnostics:
-    """``start_mock`` must not die mutely when podman has no egress image."""
+    """``start_mock`` must not die mutely when podman cannot see the egress."""
 
     @pytest.fixture
     def bindir(self, tmp_path):
         b = tmp_path / "fakebin"
         b.mkdir()
+        # start_mock polls for the egress for up to 30s; don't actually wait.
+        _write_shim(b, "sleep", "exit 0")
         return b
 
     def _start_mock(self, bindir):
@@ -242,25 +244,24 @@ class TestStartMockDiagnostics:
         )
         return _run_bash(script, bindir)
 
-    def test_empty_image_store_does_not_kill_the_phase_silently(self, bindir):
-        """`podman images | grep` finding nothing used to abort the whole
-        phase through `set -e`/`pipefail` before printing anything — the
-        exact `FAIL (0/0)` with no output from #317."""
+    def test_invisible_egress_does_not_kill_the_phase_silently(self, bindir):
+        """An egress podman cannot see (the cage was built by a vm or
+        apple-container backend) must yield an explanation and a non-zero
+        return, never a bare `FAIL (0/0)` from `set -e` (#317)."""
         _write_shim(
             bindir, "podman",
             'case "$1" in\n'
-            "  images) exit 0 ;;\n"
-            '  run) echo "Error: no such image" >&2; exit 125 ;;\n'
+            '  inspect) echo "Error: no such container" >&2; exit 125 ;;\n'
+            '  run) echo "run must not be reached" >&2; exit 99 ;;\n'
             "  *) exit 0 ;;\n"
             "esac",
         )
         result = self._start_mock(bindir)
-        # It returned an error instead of aborting the caller...
         assert "RC=1" in result.stdout, result.stdout + result.stderr
-        # ...and said why, naming the cross-image-store cause.
-        assert "no localhost/agentcage-egress:* image" in result.stderr
-        assert "different image store" in result.stderr
+        assert "e2e-fake-egress is not running in the podman store" in result.stderr
+        assert "different container store" in result.stderr
         assert "#317" in result.stderr
+        assert "run must not be reached" not in result.stderr
 
     def test_podman_run_error_is_surfaced(self, bindir):
         """A failed `podman run` reports podman's own message, not just a
@@ -268,17 +269,137 @@ class TestStartMockDiagnostics:
         _write_shim(
             bindir, "podman",
             'case "$1" in\n'
-            '  images) echo "localhost/agentcage-egress:0.32.0" ;;\n'
-            '  run) echo "Error: network e2e-fake-net not found" >&2; exit 125 ;;\n'
+            "  inspect) echo /run/user/1000/netns/netns-egress ;;\n"
+            '  run) echo "Error: initializing source docker://python: '
+            'pull rate limit" >&2; exit 125 ;;\n'
             "  *) exit 0 ;;\n"
             "esac",
         )
         result = self._start_mock(bindir)
         assert "RC=1" in result.stdout, result.stdout + result.stderr
         assert "failed to start mock container" in result.stderr
-        assert "localhost/agentcage-egress:0.32.0" in result.stderr
+        assert "python:" in result.stderr  # names the mock image
         assert "podman run FAILED (exit 125)" in result.stderr
-        assert "network e2e-fake-net not found" in result.stderr
+        assert "pull rate limit" in result.stderr
+
+
+def _netns_podman_shim(bindir: Path, log: Path, mock_netns: str) -> None:
+    """A podman stand-in for the mock lifecycle.
+
+    The egress reports namespace ``/run/netns/egress-new``; the mock
+    reports *mock_netns*. ``run`` invocations are appended to *log*.
+    """
+    _write_shim(
+        bindir, "podman",
+        'case "$1" in\n'
+        "  inspect)\n"
+        '    for a; do last="$a"; done\n'
+        '    case "$last" in\n'
+        "      *-egress) echo /run/netns/egress-new ;;\n"
+        f"      *-mock) echo '{mock_netns}' ;;\n"
+        "    esac ;;\n"
+        f'  run) echo "$*" >> "{log}"; echo cid ;;\n'
+        # _patch_egress_hosts pipes into `exec -i`; drain it so the
+        # writer never sees EPIPE (pipefail would turn that into a fail).
+        '  exec) case " $* " in *" -i "*) cat >/dev/null ;; esac; exit 0 ;;\n'
+        "  *) exit 0 ;;\n"
+        "esac",
+    )
+
+
+class TestMockSharesEgressNetns:
+    """The mock runs in its own container inside the egress's network
+    namespace, joined by namespace path, and follows the egress across
+    restarts."""
+
+    @pytest.fixture
+    def bindir(self, tmp_path):
+        b = tmp_path / "fakebin"
+        b.mkdir()
+        _write_shim(b, "sleep", "exit 0")
+        return b
+
+    def _run(self, bindir, call: str):
+        script = (
+            f'source "{LIB_SH}"\n'
+            "rc=0\n"
+            f"{call} || rc=$?\n"
+            'echo "RC=$rc"\n'
+        )
+        return _run_bash(script, bindir)
+
+    def test_start_joins_egress_netns_by_path(self, bindir, tmp_path):
+        log = tmp_path / "runlog"
+        _netns_podman_shim(bindir, log, "")
+        result = self._run(bindir, "start_mock e2e-fake httpbin.org")
+        assert "RC=0" in result.stdout, result.stdout + result.stderr
+        run = log.read_text()
+        assert "--network ns:/run/netns/egress-new" in run
+        assert "agentcage.e2e.netns=/run/netns/egress-new" in run
+        # Bound to loopback inside the shared namespace.
+        assert "python3 /mock.py 127.0.0.1" in run
+        # Never the egress image, never a container: join (see below).
+        assert "agentcage-egress" not in run
+        assert "container:" not in run
+
+    def test_repatch_rehomes_mock_after_egress_restart(self, bindir, tmp_path):
+        """A restarted egress has a new namespace; the mock must follow."""
+        log = tmp_path / "runlog"
+        _netns_podman_shim(bindir, log, "/run/netns/egress-old")
+        result = self._run(bindir, "repatch_mock e2e-fake httpbin.org")
+        assert "RC=0" in result.stdout, result.stdout + result.stderr
+        assert "--network ns:/run/netns/egress-new" in log.read_text()
+
+    def test_repatch_leaves_mock_alone_when_netns_unchanged(
+        self, bindir, tmp_path
+    ):
+        log = tmp_path / "runlog"
+        _netns_podman_shim(bindir, log, "/run/netns/egress-new")
+        result = self._run(bindir, "repatch_mock e2e-fake httpbin.org")
+        assert "RC=0" in result.stdout, result.stdout + result.stderr
+        assert not log.exists(), log.read_text()
+
+    def test_no_container_join(self):
+        """Static: `--network container:<cage>-egress` makes the mock a
+        dependent of the egress, and podman then refuses to remove or
+        --replace the egress — every egress restart would fail."""
+        code = [
+            line for line in LIB_SH.read_text().splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        assert not [line for line in code if "container:" in line], code
+
+    def test_mock_image_is_pinned(self):
+        ref = (E2E_DIR / "mock-image.ref").read_text().strip()
+        name, _, digest = ref.partition("@sha256:")
+        assert len(digest) == 64, ref
+        tag = name.rsplit(":", 1)[1]
+        assert tag[0].isdigit() and "alpine" in tag, ref  # exact, not :3-alpine
+
+
+class TestNoPythonInEgress:
+    """Static: nothing in the harness may run an interpreter in the egress
+    container — the replacement egress image ships none."""
+
+    SCRIPTS = sorted(E2E_DIR.glob("*.sh"))
+
+    @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+    def test_no_interpreter_exec_in_egress(self, script):
+        offenders = []
+        lines = script.read_text().splitlines()
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith("#"):
+                continue
+            # Commands targeting the egress sibling, including a
+            # continuation line or two after them.
+            if not ("-egress" in line or "-s egress" in line) or not any(
+                k in line for k in ("podman exec", "cage exec", "container exec")
+            ):
+                continue
+            window = " ".join(lines[i:i + 3])
+            if any(k in window for k in ("python", "node ", "perl")):
+                offenders.append(f"{script.name}:{i + 1}: {line.strip()}")
+        assert not offenders, "\n".join(offenders)
 
 
 class TestPhaseCallersKeepStderr:
