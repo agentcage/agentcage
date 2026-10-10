@@ -796,6 +796,15 @@
       ]
     },
     {
+      "case": "err-capture-min-action-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
       "case": "err-config-not-a-mapping",
       "error_type": "ValueError",
       "kind": "invalid",
@@ -2707,9 +2716,9 @@
   ],
   "schema": 1,
   "stats": {
-    "distinct_error_messages": 124,
-    "invalid": 129,
-    "total": 257,
+    "distinct_error_messages": 125,
+    "invalid": 130,
+    "total": 258,
     "valid": 128
   }
 }

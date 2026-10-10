@@ -98,13 +98,13 @@ pub use placeholder::{
 pub use secret::{KNOWN_BACKENDS, KNOWN_SOURCE_SCHEMES};
 pub use types::{
     AUTO_MAX_GRANTS, AUTO_NEVER_GRANT, AUTO_REQUIRE_ALLOWLIST_MODE, AUTO_TTL_SECONDS, AgentsConfig,
-    BUILTIN_INSPECTOR_NAMES, BuildConfig, CaptureConfig, Config, ContainerConfig,
-    DEFAULT_TCP_ALLOW_PORTS, DeciderAgentConfig, DomainConfig, EGRESS_RESERVED_PORTS,
-    IcmpPortsConfig, KNOWN_TRANSFORMS, LlmAgentConfig, LoggingConfig, MAX_CAPTURE_BODY_BYTES,
-    MAX_CAPTURE_FILE_BYTES, OrderedMap, PLACEHOLDER_PREFIX, PortsConfig, ProtocolRelay, RelayAuth,
-    RelayPolicy, RelayRecipientAllowlist, RelayUpstream, SecretInjectionRule, SecretsConfig,
-    TcpPortsConfig, UdpPortsConfig, VALID_LIFECYCLES, VALID_LOG_LEVELS, VALID_SECRET_SCOPES,
-    VmConfig, WatcherAgentConfig,
+    BUILTIN_INSPECTOR_NAMES, BuildConfig, CAPTURE_MIN_ACTION_ALIASES, CaptureConfig, Config,
+    ContainerConfig, DEFAULT_TCP_ALLOW_PORTS, DeciderAgentConfig, DomainConfig,
+    EGRESS_RESERVED_PORTS, IcmpPortsConfig, KNOWN_TRANSFORMS, LlmAgentConfig, LoggingConfig,
+    MAX_CAPTURE_BODY_BYTES, MAX_CAPTURE_FILE_BYTES, OrderedMap, PLACEHOLDER_PREFIX, PortsConfig,
+    ProtocolRelay, RelayAuth, RelayPolicy, RelayRecipientAllowlist, RelayUpstream,
+    SecretInjectionRule, SecretsConfig, TcpPortsConfig, UdpPortsConfig, VALID_CAPTURE_MIN_ACTIONS,
+    VALID_LIFECYCLES, VALID_LOG_LEVELS, VALID_SECRET_SCOPES, VmConfig, WatcherAgentConfig,
 };
 pub use validate::{FixedValidationHost, ValidationHost, validate};
 

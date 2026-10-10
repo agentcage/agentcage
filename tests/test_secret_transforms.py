@@ -346,3 +346,55 @@ class TestGetValue:
 
         assert all(r == "ya29.shared" for r in results)
         assert mint_count[0] == 1
+
+
+# ── Minted values (what redaction must treat as secret) ──
+
+
+class TestActiveValues:
+    """``active_values()`` lists every token the transform minted that
+    may still be in use: the cached one and, after a refresh, the
+    previous one until its own expiry (a flow that took it just before
+    the refresh can still carry it). Expired tokens are dropped, so the
+    list is bounded by the mint rate over one token lifetime."""
+
+    def test_empty_before_first_mint(self, sa_key_json):
+        t = GoogleJwtBearer(sa_key_json, {"scopes": ["a"]})
+        assert t.active_values() == []
+
+    def test_lists_cached_token(self, sa_key_json):
+        t = GoogleJwtBearer(sa_key_json, {"scopes": ["a"]})
+        with patch(
+            "transforms.google_jwt_bearer.urllib.request.urlopen",
+            return_value=_fake_oauth_response("ya29.first", 3600),
+        ):
+            t.get_value()
+        assert t.active_values() == ["ya29.first"]
+
+    def test_refresh_keeps_previous_until_it_expires(
+        self, sa_key_json, monkeypatch
+    ):
+        import types
+
+        import transforms.google_jwt_bearer as gjb
+
+        now = [1_000_000.0]
+        monkeypatch.setattr(gjb, "time", types.SimpleNamespace(
+            time=lambda: now[0], monotonic=time.monotonic,
+        ))
+        t = GoogleJwtBearer(sa_key_json, {"scopes": ["a"], "refresh_margin": 300})
+        with patch(
+            "transforms.google_jwt_bearer.urllib.request.urlopen",
+            side_effect=[
+                _fake_oauth_response("ya29.first", 3600),
+                _fake_oauth_response("ya29.second", 3600),
+            ],
+        ):
+            assert t.get_value() == "ya29.first"
+            now[0] += 3400  # inside the refresh margin
+            assert t.get_value() == "ya29.second"
+        assert sorted(t.active_values()) == ["ya29.first", "ya29.second"]
+        now[0] += 201  # the first token's expiry has passed
+        assert t.active_values() == ["ya29.second"]
+        now[0] += 3600
+        assert t.active_values() == []

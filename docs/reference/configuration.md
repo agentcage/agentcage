@@ -307,7 +307,7 @@ capture:
   enable_har: true # Record HTTP flows for HAR export
   max_body_size: 1048576 # 1 MB maximum body capture per request
   max_file_size: 104857600 # 100 MB max capture.jsonl before rotation
-  min_action: allowed # Minimum action to record (allowed | flagged | blocked)
+  min_action: all # Least severe outcome to record (all | flag | block)
   domains: [] # Capture only these domains (empty = all)
   exclude_domains: [] # Skip capturing for high-volume endpoints
 
@@ -317,6 +317,12 @@ logging:
   proxy_connections: true # Log TCP connection events
   allowed_requests: false # Log successful HTTP requests (requests that injected or redacted a secret are always logged)
 ```
+
+`min_action` filters by the flow's outcome: `all` records every flow, `flag`
+only flagged and blocked ones, `block` only blocked ones. Any other value is
+rejected. Earlier versions of this page showed `allowed | flagged | blocked`;
+the egress never understood those and recorded every flow for them. They are
+now read as `all`, `flag` and `block`, with a warning to change the spelling.
 
 A WebSocket is captured as one entry, written when the socket closes: the
 upgrade request and its `101` response, then the messages of both directions

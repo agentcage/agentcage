@@ -1,0 +1,1 @@
+ValueError: capture.min_action must be one of ('all', 'flag', 'block') (got: 'flagged-only')

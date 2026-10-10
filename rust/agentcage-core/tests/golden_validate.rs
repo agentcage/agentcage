@@ -332,6 +332,7 @@ const REPRODUCED: &[&str] = &[
     "err-agents-watcher-context-not-string",
     "err-agents-watcher-number-not-number",
     "err-agents-watcher-wrapper-decider",
+    "err-capture-min-action-invalid",
     "err-container-port-not-a-number",
     "err-container-port-out-of-range",
     "err-container-port-spec-shape",

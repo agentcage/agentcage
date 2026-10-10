@@ -1,7 +1,7 @@
 """Secret-injection transforms — produce a substitution value at request
 time instead of using a static ``real_value``.
 
-A transform is a callable object with two requirements:
+A transform is a callable object with three requirements:
 
 1. ``__init__(self, secret: str, config: dict)`` — receives the raw
    credential (loaded from the proxy container's environment by the
@@ -9,6 +9,14 @@ A transform is a callable object with two requirements:
 2. ``get_value(self) -> str`` — called every time a placeholder is about
    to be substituted on an outbound request to an authorized domain.
    May cache, rate-limit, and emit audit events internally.
+3. ``active_values(self) -> list[str]`` — every value ``get_value`` has
+   returned that may still be in use (the cached one, and a previous one
+   until it expires). The injector treats these as secrets exactly like
+   the raw credential: swapped back to the placeholder wherever real
+   values are redacted (capture, responses, WebSocket frames) and blocked
+   when they head to a host outside ``inject_to``. List a value only
+   while it is valid, so memory stays bounded. A transform without it
+   gets best-effort tracking of the last two values it returned.
 
 Transforms exist so that long-lived high-privilege credentials (SA
 private keys, refresh tokens) never leave the proxy container — only
