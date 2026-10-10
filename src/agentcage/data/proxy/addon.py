@@ -8,7 +8,7 @@ import os
 import socket
 import sys
 import time
-from collections import defaultdict
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -33,6 +33,12 @@ from inspectors.util import load_inspector_from_file, shannon_entropy
 from secret_injector import SecretInjector
 CONFIG_PATH = os.environ.get("AGENTCAGE_CONFIG", "/etc/agentcage/config.yaml")
 CAPTURE_PATH = os.environ.get("AGENTCAGE_CAPTURE", "")
+
+# Capacity of the per-host rate-limit table (see _check_rate_limit). The
+# limiter runs before the allowlist, so every distinct Host a cage sends —
+# plain HTTP lets it pick any — would otherwise add an entry for the life
+# of the process.
+_RL_MAX_HOSTS = 4096
 
 
 # ── Built-in inspector registry ──────────────────────────
@@ -115,9 +121,9 @@ class Agentcage:
         rl_cfg = self.cfg.get("rate_limit") or {}
         self._rl_rate: float = float(rl_cfg.get("requests_per_second", 10))
         self._rl_burst: int = int(rl_cfg.get("burst", 50))
-        self._rl_buckets: dict[str, list] = defaultdict(
-            lambda: [self._rl_burst, time.monotonic()]
-        )  # {host: [tokens, last_time]}
+        # {host: [tokens, last_time]}, least recently used first; bounded
+        # at _RL_MAX_HOSTS by _check_rate_limit.
+        self._rl_buckets: OrderedDict[str, list] = OrderedDict()
 
         self._load_builtin_inspectors()
         self._load_custom_inspectors()
@@ -782,11 +788,28 @@ class Agentcage:
     # ── Request handling ─────────────────────────────────
 
     def _check_rate_limit(self, host: str) -> bool:
-        """Token-bucket rate limiter per host. Returns True if allowed."""
+        """Token-bucket rate limiter per host. Returns True if allowed.
+
+        The bucket table is an LRU capped at ``_RL_MAX_HOSTS``: a new host
+        past the cap evicts the least recently used one. Trade-off: an
+        evicted host's bucket restarts full when it comes back, so a cage
+        that churns through ``_RL_MAX_HOSTS`` other names can reset one
+        host's bucket. Each reset costs it thousands of requests and buys
+        back one burst: the limiter stays a throttle on runaway loops, not
+        a hard ceiling against a cage set on evading it (it never was one —
+        it is per host). Unbounded, the same churn could grow the table
+        until the egress hit its memory limit.
+        """
         if not self._rl_rate:
             return True
-        bucket = self._rl_buckets[host]
         now = time.monotonic()
+        bucket = self._rl_buckets.get(host)
+        if bucket is None:
+            bucket = self._rl_buckets[host] = [self._rl_burst, now]
+            while len(self._rl_buckets) > _RL_MAX_HOSTS:
+                self._rl_buckets.popitem(last=False)
+        else:
+            self._rl_buckets.move_to_end(host)
         elapsed = now - bucket[1]
         bucket[1] = now
         bucket[0] = min(self._rl_burst, bucket[0] + elapsed * self._rl_rate)
@@ -1184,6 +1207,30 @@ class Agentcage:
                         outbound_resp=cap_outbound_resp,
                         ws_messages=ws_msgs or None,
                     )
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Release the capture state of a flow that ended in an error.
+
+        ``request()`` stages a capture entry that ``response()`` completes
+        and pops. A flow that errors before a response (upstream refused or
+        reset the connection, the client went away, mitmproxy's
+        ``body_size_limit``, a killed flow) never reaches ``response()``, so
+        without this hook each one left its staged snapshots — request
+        bodies up to ``max_body_size`` apiece — in memory for the life of
+        the process.
+
+        The entry is dropped, not written: there is no response half to
+        pair it with, the audit log already holds the request's decision,
+        and a half entry would be a new shape for ``cage har`` and the
+        watcher to read.
+        """
+        self._release_flow_capture(flow)
+
+    def _release_flow_capture(self, flow: http.HTTPFlow) -> None:
+        """Drop everything capture holds for this flow (no-op if nothing)."""
+        self._cap_pending.pop(flow.id, None)
+        if self._capture:
+            self._capture.pop_ws_messages(flow.id)
 
     # ── Non-HTTP TCP bypass guard ────────────────────────
     #
@@ -1606,6 +1653,17 @@ class Agentcage:
             # Redact real secrets before content reaches the cage
             content, _redacted = self.injector.redact_ws_content(body_bytes)
             msg.content = content
+
+    def websocket_end(self, flow: http.HTTPFlow) -> None:
+        """Release a WebSocket flow's capture state when it closes.
+
+        Fires on every close, clean or abnormal. ``response()`` runs for the
+        101 before the first frame and pops the staged entry, so on the
+        normal path nothing is buffered by now; but if that hook bailed out
+        before its pop (an exception mid-way), ``websocket_message`` would
+        buffer every frame of the socket and nothing would ever release it.
+        """
+        self._release_flow_capture(flow)
 
     # ── Context building ─────────────────────────────────
 
