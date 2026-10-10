@@ -1,0 +1,80 @@
+# agentcage-egress, Rust engine: the per-cage egress image with the
+# `agentcage-egress` binary in place of the Python proxy. Built when the
+# host selects AGENTCAGE_EGRESS_ENGINE=rust; becomes Containerfile.egress
+# at the cutover (EGRESS-PORT-PLAN.md Phase 6).
+#
+# Same process model as Containerfile.egress:
+#   uid 200 (acproxy) -> agentcage-egress
+#   uid 201 (acdns)   -> dnsmasq
+# tini -> /opt/agentcage/supervisor at PID 1 drops CapBnd via setpriv on
+# each child. See supervisor-egress.sh for the security rationale; it
+# picks the Rust launch line because /opt/agentcage/agentcage-egress
+# exists in this image and not in the other one.
+#
+# No Python, no pip: the binary is static (linux-musl) and carries its
+# own TLS stack and Mozilla roots. ca-certificates stays for anything in
+# the image that does TLS through the system store.
+#
+# update-from: docker.io/library/debian:trixie-slim
+FROM docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+
+#   ca-certificates  — system trust store (the binary embeds its own roots)
+#   dnsmasq          — recursive DNS forwarder + allowlist enforcer
+#   libcap2-bin      — capsh + setcap (we setcap dnsmasq for :53 bind)
+#   iptables         — egress FORWARD-chain shape (egress as router)
+#   jq               — utility for parsing JSON config in scripts
+#   procps           — pgrep/pkill for the smoke test + general debug
+#   tini             — PID 1 -> SIGCHLD reaping + SIGTERM forwarding
+#   util-linux       — setpriv (CapBnd drop) + prlimit (memory caps)
+#   iproute2         — ss for the supervisor's listener readiness check
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        dnsmasq \
+        libcap2-bin \
+        iptables \
+        jq \
+        procps \
+        tini \
+        util-linux \
+        iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Per-component users, the same uids as Containerfile.egress and the
+# apple-container wrapper (see there for why acproxy/acdns and not
+# proxy/dns).
+RUN useradd --uid 200 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acproxy \
+    && useradd --uid 201 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acdns
+
+# setcap so uid 201 can bind :53; see Containerfile.egress.
+RUN setcap cap_net_bind_service=+ep /usr/sbin/dnsmasq
+
+# The egress binary, staged into the build context by the host
+# (agentcage-egress-embed carries the linux-musl build matching the
+# host's architecture). Its bytes are a content-hash input, so a new
+# binary is a new image tag.
+COPY bin/agentcage-egress /opt/agentcage/agentcage-egress
+
+# Supervisor + DNS audit wrapper, shared with Containerfile.egress.
+COPY containers/supervisor-egress.sh /opt/agentcage/supervisor
+COPY containers/dns-audit.sh /opt/agentcage/dns-audit.sh
+RUN chmod 0755 /opt/agentcage/agentcage-egress /opt/agentcage/supervisor /opt/agentcage/dns-audit.sh
+
+# Home + log dirs, identical to Containerfile.egress (see there for the
+# 1777 on /var/log/agentcage and the empty private CA mount point at
+# /home/acproxy/ca: each cage's egress generates its own CA on first
+# start into its own `<name>-certs` volume).
+RUN mkdir -p /home/acproxy/ca /var/log/agentcage \
+    && chown -R acproxy:acproxy /home/acproxy /var/log/agentcage \
+    && chmod 755 /home/acproxy \
+    && chmod 1777 /var/log/agentcage
+RUN mkdir -p /home/acdns \
+    && chown acdns:acdns /home/acdns
+
+# Egress-local DNS apply dir (granted zone list + reload flag), pre-chowned
+# so the supervisor never needs CAP_CHOWN at runtime.
+RUN mkdir -p /home/acproxy/dns \
+    && chown acproxy:acproxy /home/acproxy/dns \
+    && chmod 0700 /home/acproxy/dns
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/agentcage/supervisor"]
+CMD []
