@@ -39,8 +39,12 @@ log = logging.getLogger("agentcage.relays.imap")
 # mailbox. STORE being denied stops the relay from setting the flag, but not
 # another client sharing the mailbox, so allowing CLOSE would let a readonly
 # relay destroy mail.
+#
+# REPLACE is here because RFC 8508 defines it as an atomic APPEND of a new
+# message plus an EXPUNGE of the old one, both of which this mode refuses.
 _DENY_COMMANDS_READONLY = frozenset({
     "APPEND",
+    "REPLACE",
     "DELETE",
     "STORE",
     "EXPUNGE",
@@ -76,10 +80,15 @@ _DENY_COMMANDS_READONLY = frozenset({
 #
 # APPEND is denied because it injects new messages — the way you would
 # fabricate mail in someone's mailbox.
+#
+# REPLACE (RFC 8508) is APPEND and EXPUNGE in one atomic command: it writes a
+# new message and permanently removes the old one. Both halves are refused
+# here on their own, so the combination is too.
 _DENY_COMMANDS_ORGANISE = frozenset({
     "EXPUNGE",
     "CLOSE",
     "APPEND",
+    "REPLACE",
     "DELETE",
     "RENAME",
     "SETMETADATA",
@@ -88,8 +97,9 @@ _DENY_COMMANDS_ORGANISE = frozenset({
 })
 
 # UID variants denied in "organise". UID STORE/COPY/MOVE stay allowed; the
-# \Deleted flag is filtered separately by _store_adds_deleted().
-_UID_DENY_ORGANISE = frozenset({"EXPUNGE"})
+# \Deleted flag is filtered separately by _store_adds_deleted(). UID REPLACE
+# is the UID form of RFC 8508 REPLACE (append + expunge).
+_UID_DENY_ORGANISE = frozenset({"EXPUNGE", "REPLACE"})
 
 # UID is a prefix that turns the next token into a UID-aware variant.
 # UID FETCH and UID SEARCH are reads (and clients use them for everything
@@ -99,6 +109,7 @@ _UID_WRITE_SUBCOMMANDS = frozenset({
     "COPY",
     "MOVE",
     "EXPUNGE",
+    "REPLACE",
 })
 
 # Capability tokens that break the relay's command-level visibility.
@@ -106,6 +117,11 @@ _UID_WRITE_SUBCOMMANDS = frozenset({
 # can't policy-check what we can't read. Strip it from the forwarded
 # CAPABILITY list so the client never tries.
 _STRIPPED_CAPABILITIES = frozenset({"COMPRESS=DEFLATE"})
+
+# Capability tokens also stripped when write_mode is "none" or "organise",
+# because the command they advertise is refused there. REPLACE (RFC 8508) is
+# APPEND + EXPUNGE; advertising it would only steer a client into a NO.
+_STRIPPED_CAPABILITIES_RESTRICTED = frozenset({"REPLACE"})
 
 # Commands whose first argument is a mailbox name we want to filter
 # against folder_allowlist. LIST/LSUB are intentionally excluded —
@@ -539,14 +555,19 @@ class ImapRelay:
         Forwards upstream capabilities, removing any token in
         ``_STRIPPED_CAPABILITIES`` (currently COMPRESS=DEFLATE, which
         would prevent the relay from reading the byte stream and
-        applying policy). Falls back to ``IMAP4rev1`` if the upstream
-        never advertised anything we could parse.
+        applying policy) and, unless write_mode is "full", any token in
+        ``_STRIPPED_CAPABILITIES_RESTRICTED`` (commands the mode refuses).
+        Falls back to ``IMAP4rev1`` if the upstream never advertised
+        anything we could parse.
         """
         if not self._upstream_capabilities:
             return "IMAP4rev1"
+        stripped = _STRIPPED_CAPABILITIES
+        if self._cfg.write_mode != "full":
+            stripped = stripped | _STRIPPED_CAPABILITIES_RESTRICTED
         out = [
             t for t in self._upstream_capabilities
-            if t.upper() not in _STRIPPED_CAPABILITIES
+            if t.upper() not in stripped
         ]
         if not any(t.upper() == "IMAP4REV1" for t in out):
             out.insert(0, "IMAP4rev1")

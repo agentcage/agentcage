@@ -4,8 +4,8 @@
   "containerfile_rel": "containers/Containerfile.egress",
   "build_context": "{{CONTEXT}}",
   "version": "{{VERSION}}",
-  "content_hash": "b51389415daa",
-  "image_name": "localhost/agentcage-egress:{{VERSION}}-b51389415daa",
+  "content_hash": "7b38a29e333d",
+  "image_name": "localhost/agentcage-egress:{{VERSION}}-7b38a29e333d",
   "synthetic_context": {
     "why": "one Containerfile, one COPY source, one byte changed — the tag moves. A version-only tag would not, which is how the #186 proxy-log fix failed to reach hosts that already held `agentcage-egress:0.32.0`.",
     "containerfile": "FROM scratch\nCOPY containers/seed.sh /seed.sh\nRUN echo not-a-copy-source\n",
@@ -23,7 +23,7 @@
     "plain": [
       "build",
       "-t",
-      "localhost/agentcage-egress:{{VERSION}}-b51389415daa",
+      "localhost/agentcage-egress:{{VERSION}}-7b38a29e333d",
       "-f",
       "{{CONTEXT}}/containers/Containerfile.egress",
       "{{CONTEXT}}"
@@ -31,7 +31,7 @@
     "no_cache": [
       "build",
       "-t",
-      "localhost/agentcage-egress:{{VERSION}}-b51389415daa",
+      "localhost/agentcage-egress:{{VERSION}}-7b38a29e333d",
       "-f",
       "{{CONTEXT}}/containers/Containerfile.egress",
       "--no-cache",
@@ -40,7 +40,7 @@
     "pull": [
       "build",
       "-t",
-      "localhost/agentcage-egress:{{VERSION}}-b51389415daa",
+      "localhost/agentcage-egress:{{VERSION}}-7b38a29e333d",
       "-f",
       "{{CONTEXT}}/containers/Containerfile.egress",
       "--pull",
@@ -49,7 +49,7 @@
     "no_cache_and_pull": [
       "build",
       "-t",
-      "localhost/agentcage-egress:{{VERSION}}-b51389415daa",
+      "localhost/agentcage-egress:{{VERSION}}-7b38a29e333d",
       "-f",
       "{{CONTEXT}}/containers/Containerfile.egress",
       "--no-cache",

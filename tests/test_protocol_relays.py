@@ -1275,6 +1275,130 @@ class TestWriteModeOrganise:
         assert b"Deleted" in line or b"organise" in line, line
 
 
+class TestReplaceRefused:
+    """RFC 8508 REPLACE / UID REPLACE append a new message and expunge the
+    old one in a single command. `none` and `organise` refuse APPEND and
+    EXPUNGE individually, so they must refuse the combination too —
+    otherwise an upstream advertising REPLACE hands the cage a way to
+    rewrite (and so destroy) mail behind one unlisted verb."""
+
+    _COMMANDS = [
+        (b'a1 REPLACE 1 "Drafts" {12}\r\n', "REPLACE"),
+        (b'a1 UID REPLACE 5 "Drafts" {12}\r\n', "UID REPLACE"),
+        (b'a1 uid replace 5 "Drafts" {12}\r\n', "UID REPLACE"),  # case
+    ]
+
+    @staticmethod
+    def _exchange(policy: dict, command: bytes):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                entry = _relay_entry(up_port)
+                entry["policy"] = {**entry["policy"], **policy}
+                relay = ImapRelay(entry, audit_log=entries.append)
+                await relay.start()
+                try:
+                    port = relay._server.sockets[0].getsockname()[1]
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()  # PREAUTH
+                        writer.write(command)
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                    await asyncio.sleep(0.05)
+                finally:
+                    await relay.stop()
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+            return line, recorder.commands, entries
+
+        return _run(_go())
+
+    @pytest.mark.parametrize("policy,wire,reason", [
+        ({"write_mode": "none"}, b"readonly", "readonly policy"),
+        ({"readonly": True}, b"readonly", "readonly policy"),
+        ({"write_mode": "organise"}, b"write_mode organise",
+         "write_mode organise"),
+    ], ids=["write_mode-none", "legacy-readonly", "organise"])
+    @pytest.mark.parametrize("command,label", _COMMANDS,
+                             ids=["REPLACE", "UID-REPLACE", "lowercase"])
+    def test_refused(self, policy, wire, reason, command, label):
+        line, cmds, entries = self._exchange(policy, command)
+        expected = (
+            b"a1 NO " + label.encode() + b" not permitted (" + wire + b")"
+        )
+        assert line.rstrip(b"\r\n") == expected, line
+        assert not any(b"REPLACE" in c.upper() for c in cmds), \
+            "REPLACE reached upstream"
+        blocks = [
+            e for e in entries
+            if e.get("kind") == "imap_command"
+            and e.get("decision") == "blocked"
+        ]
+        assert [b["command"] for b in blocks] == [label], entries
+        assert blocks[0]["reason"] == reason
+
+    @pytest.mark.parametrize("command,label", _COMMANDS,
+                             ids=["REPLACE", "UID-REPLACE", "lowercase"])
+    def test_allowed_in_full(self, command, label):
+        line, cmds, entries = self._exchange({"write_mode": "full"}, command)
+        assert line.startswith(b"a1 OK"), line
+        assert any(b"REPLACE" in c.upper() for c in cmds), cmds
+        assert not any(e.get("decision") == "blocked" for e in entries)
+
+    # -- advertised capabilities ----------------------------------------
+
+    @staticmethod
+    def _preauth(policy: dict) -> bytes:
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder,
+                "real-user@example.com",
+                "real-app-password",
+                greeting=(
+                    b"* OK [CAPABILITY IMAP4rev1 IDLE REPLACE MOVE "
+                    b"COMPRESS=DEFLATE] upstream ready\r\n"
+                ),
+            )
+            try:
+                entry = _relay_entry(up_port)
+                entry["policy"] = {**entry["policy"], **policy}
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, _w):
+                        return await reader.readline()
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        return _run(_go())
+
+    @pytest.mark.parametrize("policy", [
+        {"write_mode": "none"},
+        {"readonly": True},
+        {"write_mode": "organise"},
+    ], ids=["write_mode-none", "legacy-readonly", "organise"])
+    def test_replace_not_advertised_where_refused(self, policy):
+        """Like COMPRESS=DEFLATE: don't advertise what the client can't
+        use, so a well-behaved client never tries it."""
+        greeting = self._preauth(policy)
+        assert greeting.startswith(b"* PREAUTH [CAPABILITY "), greeting
+        tokens = greeting.split(b"]", 1)[0].split()[3:]
+        assert b"REPLACE" not in tokens, greeting
+        assert b"COMPRESS=DEFLATE" not in tokens, greeting
+        assert b"IDLE" in tokens and b"MOVE" in tokens, greeting
+
+    def test_replace_still_advertised_in_full(self):
+        greeting = self._preauth({"write_mode": "full"})
+        tokens = greeting.split(b"]", 1)[0].split()[3:]
+        assert b"REPLACE" in tokens, greeting
+        assert b"COMPRESS=DEFLATE" not in tokens, greeting
+
+
 class TestFolderDenylist:
     def _entry(self, upstream_port, **policy):
         entry = _relay_entry(upstream_port)
