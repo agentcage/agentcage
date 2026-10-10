@@ -21,7 +21,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use agentcage_core::config::{Config, ConfigError};
-use agentcage_core::quadlets::{GenerateOptions, Quadlets, generate_quadlets};
+use agentcage_core::quadlets::{
+    GenerateOptions, Quadlets, certs_volume, generate_quadlets, podman_storage_volume,
+    public_certs_volume,
+};
 use agentcage_exec::tools::podman::{BuildOptions, Podman, secret_env_names};
 use agentcage_exec::{CommandRunner, ExecError};
 use agentcage_state::{Paths, Units};
@@ -59,10 +62,7 @@ pub const SERVICE_NAMES: [&str; 2] = ["cage", "egress"];
 /// (`EGRESS-PORT-PLAN.md` D11: a new CA per cage).
 #[must_use]
 pub fn ca_volumes(name: &str) -> [String; 2] {
-    [
-        format!("agentcage-certs-{name}"),
-        format!("agentcage-public-certs-{name}"),
-    ]
+    [certs_volume(name), public_certs_volume(name)]
 }
 
 /// What went wrong deploying.
@@ -437,7 +437,7 @@ impl<'a> ContainerBackend<'a> {
             removed.push(format!("network:{name}-net"));
         }
         let [certs, public_certs] = ca_volumes(name);
-        for volume in [certs, public_certs, format!("agentcage-podman-{name}")] {
+        for volume in [certs, public_certs, podman_storage_volume(name)] {
             match self.remove_volume(&volume) {
                 Ok(true) => removed.push(format!("volume:{volume}")),
                 Ok(false) => {}

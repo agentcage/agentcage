@@ -245,6 +245,94 @@ pub fn vm_local_watcher_dir(name: &str) -> String {
     format!("{}/watcher", vm_local_grants_dir(name))
 }
 
+// ── agentcage's own volumes ──────────────────────────────
+
+/// The egress's private CA store: the key and certificate it generated
+/// on its first start (`EGRESS-PORT-PLAN.md` D11).
+#[must_use]
+pub fn certs_volume(name: &str) -> String {
+    format!("{CERTS_VOLUME_PREFIX}{name}")
+}
+
+/// The public half of the CA, which the cage mounts at `/certs`.
+#[must_use]
+pub fn public_certs_volume(name: &str) -> String {
+    format!("{PUBLIC_CERTS_VOLUME_PREFIX}{name}")
+}
+
+/// The inner podman's storage, for a cage with `nested_containers`.
+#[must_use]
+pub fn podman_storage_volume(name: &str) -> String {
+    format!("{PODMAN_STORAGE_VOLUME_PREFIX}{name}")
+}
+
+const CERTS_VOLUME_PREFIX: &str = "agentcage-certs-";
+const PUBLIC_CERTS_VOLUME_PREFIX: &str = "agentcage-public-certs-";
+const PODMAN_STORAGE_VOLUME_PREFIX: &str = "agentcage-podman-";
+
+/// Why a cage may not mount the volume `name`, or `None` when it may.
+///
+/// Every podman volume agentcage creates belongs to exactly one cage
+/// and is made by one of [`certs_volume`], [`public_certs_volume`] and
+/// [`podman_storage_volume`] — on the host for `container`, in the
+/// cage's own Lima guest for `vm`. A `cage.yaml` that names one in
+/// `container.named_volumes` (or as the source of a `container.volumes`
+/// entry) would mount it into its cage, and for `agentcage-certs-*`
+/// that is another cage's CA private key — or its own, which belongs
+/// to the egress and never to the agent. Neither may happen (D11), so
+/// those three prefixes are reserved.
+///
+/// Only those three, and not all of `agentcage-*`: the cage name is
+/// free, and scaffolds name their volumes after it (`openclaw` mounts
+/// `<name>-workspace` and `<name>-state`), so a blanket prefix would
+/// refuse the stock scaffold for any cage whose name starts with
+/// `agentcage-`.
+///
+/// A name ending in `.volume` is reserved too, whole: in a quadlet
+/// `Volume=` line it is not a volume name but a reference to a
+/// `.volume` unit, and every cage's units share one directory — so
+/// `<other>-certs.volume` resolves to `agentcage-certs-<other>`.
+#[must_use]
+pub fn reserved_volume(name: &str) -> Option<&'static str> {
+    if name.starts_with(CERTS_VOLUME_PREFIX) {
+        Some("agentcage-certs-<cage> is a cage's private CA store, key included")
+    } else if name.starts_with(PUBLIC_CERTS_VOLUME_PREFIX) {
+        Some("agentcage-public-certs-<cage> is where a cage's egress publishes its CA certificate")
+    } else if name.starts_with(PODMAN_STORAGE_VOLUME_PREFIX) {
+        Some("agentcage-podman-<cage> is a cage's nested container storage")
+    } else if name.ends_with(".volume") {
+        Some(
+            "a name ending in .volume is a quadlet unit reference, and \
+             <cage>-certs.volume is a cage's private CA store",
+        )
+    } else {
+        None
+    }
+}
+
+/// The refusal for a `container.volumes` entry whose source is one of
+/// agentcage's own volumes, or `None`.
+///
+/// A source with no `/` in it is not a host path to podman but the
+/// name of a named volume (or, ending in `.volume`, of a quadlet
+/// unit), so `agentcage-certs-<cage>:/certs` reaches the same volume a
+/// `container.named_volumes` key would. Asked of the entry as written,
+/// by validation, and again of the source after `~`/`$VAR` expansion,
+/// by [`generate_quadlets`], which is the form podman is handed.
+#[must_use]
+pub fn reserved_volume_entry(entry: &str, source: &str) -> Option<String> {
+    if source.contains('/') {
+        return None;
+    }
+    let reason = reserved_volume(source)?;
+    Some(format!(
+        "container.volumes entry {}: {} is reserved for agentcage ({reason}); \
+         a cage must not mount it",
+        crate::python::repr_str(entry),
+        crate::python::repr_str(source)
+    ))
+}
+
 // Note: a `render_dns_quadlet()` helper used to live here for the
 // 3-service shape so `domain add` / `domain rm` could regenerate just
 // the dns sidecar's quadlet when its `--servers-file` shape changed. In

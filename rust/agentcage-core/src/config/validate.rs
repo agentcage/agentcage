@@ -71,6 +71,7 @@
 use std::collections::BTreeSet;
 
 use crate::python::{repr, repr_str};
+use crate::quadlets::{reserved_volume, reserved_volume_entry};
 use crate::volume_mounts::{
     self, MountTarget, TMPFS_COPYUP_OPTIONS, is_non_persistent_volume, mask_copyup_entries,
     split_volume_spec, tmpfs_wants_copyup, validate_non_persistent_volume,
@@ -186,6 +187,28 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
             "invalid container image reference: {}",
             repr_str(&config.container.image)
         )));
+    }
+
+    // ── Volumes agentcage owns ──────────────────────────
+    //
+    // Not a `config.py` check: it came with the per-cage CA guarantee
+    // (`EGRESS-PORT-PLAN.md` D11). A cage mounting `agentcage-certs-*`
+    // reads a CA private key, so every name agentcage creates volumes
+    // under is refused here, on every backend.
+    for name in config.container.named_volumes.keys() {
+        if let Some(reason) = reserved_volume(name) {
+            return Err(ConfigError::value(format!(
+                "container.named_volumes: {} is reserved for agentcage ({reason}); \
+                 a cage must not mount it",
+                repr_str(name)
+            )));
+        }
+    }
+    for volume in &config.container.volumes {
+        let (source, _target, _options) = split_volume_spec(volume);
+        if let Some(refusal) = reserved_volume_entry(volume, source) {
+            return Err(ConfigError::value(refusal));
+        }
     }
 
     // ── Backend ─────────────────────────────────────────
@@ -1234,5 +1257,84 @@ mod tests {
             "invalid domain syntax: '.example.com' — expected a plain lowercase hostname \
              (e.g. 'api.example.com', or a bare LAN name like 'fcos-vm-home-01')"
         );
+    }
+
+    /// A cage never mounts a volume agentcage made for a cage — above
+    /// all `agentcage-certs-<cage>`, which holds that cage's CA private
+    /// key (`EGRESS-PORT-PLAN.md` D11). On every backend: validation is
+    /// shared, so `vm` and `apple-container` refuse it too.
+    #[test]
+    fn a_named_volume_in_agentcages_namespace_is_refused() {
+        for isolation in ["container", "vm"] {
+            for volume in [
+                "agentcage-certs-other",
+                "agentcage-certs-cage",
+                "agentcage-public-certs-other",
+                "agentcage-podman-other",
+                "other-certs.volume",
+                "anything.volume",
+            ] {
+                let mut config = named("cage");
+                config.isolation = isolation.to_owned();
+                config
+                    .container
+                    .named_volumes
+                    .insert(volume.to_owned(), "/data".to_owned());
+                let error = validate(&config, &FixedValidationHost::linux())
+                    .expect_err("a reserved volume name");
+                let message = error.message();
+                assert!(
+                    message.starts_with(&format!(
+                        "container.named_volumes: '{volume}' is reserved for agentcage ("
+                    )),
+                    "{message}"
+                );
+                assert!(message.contains("a cage must not mount it"), "{message}");
+            }
+        }
+    }
+
+    /// The same volume reached as the bare-name source of a
+    /// `container.volumes` entry, which podman reads as a named volume.
+    #[test]
+    fn a_volume_entry_sourced_from_agentcages_namespace_is_refused() {
+        let mut config = named("cage");
+        config.container.volumes = vec!["agentcage-certs-other:/certs:ro".to_owned()];
+        let error =
+            validate(&config, &FixedValidationHost::linux()).expect_err("a reserved volume source");
+        assert_eq!(
+            error.message(),
+            "container.volumes entry 'agentcage-certs-other:/certs:ro': \
+             'agentcage-certs-other' is reserved for agentcage \
+             (agentcage-certs-<cage> is a cage's private CA store, key included); \
+             a cage must not mount it"
+        );
+    }
+
+    /// Only agentcage's own prefixes are reserved, not every name that
+    /// starts with `agentcage-`: the stock `openclaw` scaffold names its
+    /// volumes `<cage>-workspace`, and `agentcage-dev` is a legal cage
+    /// name. A host path that merely *contains* a reserved name is a
+    /// bind mount, not a named volume.
+    #[test]
+    fn user_volumes_outside_the_reserved_prefixes_are_accepted() {
+        let mut config = named("agentcage-dev");
+        for volume in [
+            "agentcage-dev-workspace",
+            "agentcage-dev-state",
+            "npm-cache",
+            "my-certs",
+            "agentcage-certs",
+        ] {
+            config
+                .container
+                .named_volumes
+                .insert(volume.to_owned(), format!("/mnt/{volume}"));
+        }
+        config.container.volumes = vec![
+            "/home/someone/agentcage-certs-x:/x:ro".to_owned(),
+            "${HOME}/agentcage-podman-y:/y".to_owned(),
+        ];
+        validate(&config, &FixedValidationHost::linux()).expect("accepted");
     }
 }

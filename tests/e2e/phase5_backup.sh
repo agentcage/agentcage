@@ -121,6 +121,31 @@ else
   e2e_fail "5.4" "Destroy original"
 fi
 
+# 5.4b: A restore refuses an archive that carries a CA volume. `cage
+# backup` never writes agentcage-certs-<name>.tar; a hand-made one would
+# seed the restored cage with a CA of its author's choosing. The
+# refusal comes before anything is deployed, so no cage is left behind.
+e2e_timer_start
+TAMPER_DIR=$(mktemp -d /tmp/e2e-tamper-XXXXXX)
+TAMPERED_FILE="$TAMPER_DIR/tampered.tar.gz"
+if tar -xzf "$BACKUP_FILE" -C "$TAMPER_DIR" \
+   && mkdir -p "$TAMPER_DIR/agentcage-backup/volumes" \
+   && tar -cf "$TAMPER_DIR/agentcage-backup/volumes/agentcage-certs-$CAGE.tar" -T /dev/null \
+   && tar -czf "$TAMPERED_FILE" -C "$TAMPER_DIR" agentcage-backup; then
+  if _tamper_out=$(AGENT_DIR="$AGENT_DIR" "$AGENTCAGE" cage restore "$TAMPERED_FILE" 2>&1); then
+    e2e_fail "5.4b" "Restore refuses a CA volume in the archive" "restore accepted it"
+    destroy_cage "$CAGE"
+  elif echo "$_tamper_out" | grep -q "reserved for agentcage" \
+       && ! "$AGENTCAGE" cage list 2>/dev/null | grep -qw "$CAGE"; then
+    e2e_pass "5.4b" "Restore refuses a CA volume in the archive"
+  else
+    e2e_fail "5.4b" "Restore refuses a CA volume in the archive" "$_tamper_out"
+  fi
+else
+  e2e_fail "5.4b" "Restore refuses a CA volume in the archive" "could not build the archive"
+fi
+rm -rf "$TAMPER_DIR"
+
 # 5.5: Restore cage
 e2e_timer_start
 # Note: restore may fail if the original config used env vars like ${AGENT_DIR}

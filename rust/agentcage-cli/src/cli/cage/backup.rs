@@ -79,6 +79,7 @@ use std::process::ExitCode;
 use agentcage_core::config::Config;
 use agentcage_core::har::datetime::DateTime;
 use agentcage_core::har::json::{DumpOptions, Json, dumps, parse as parse_json};
+use agentcage_core::quadlets::reserved_volume;
 use clap::ArgMatches;
 
 use crate::cli::context::{Ctx, EXIT_FAILURE, ensure_v022_cage};
@@ -950,6 +951,10 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
     check_restore_build_context(&manifest, &config_src)?;
+    let volumes = volumes_to_import(&manifest, &backup_dir).map_err(|message| {
+        eprintln!("error: invalid backup — {message}");
+        ExitCode::from(EXIT_FAILURE)
+    })?;
 
     // `cli.py:3786` branches on the *manifest's* `isolation`, not on
     // the archived `cage.yaml`'s and not on anything installed on this
@@ -1039,7 +1044,7 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     // ── Build and deploy ────────────────────────────────
     if no_start {
         println!("Cage state restored. Run: agentcage cage update {target} to build and start.");
-        if !manifest.named_volumes.is_empty() {
+        if !volumes.is_empty() {
             println!(
                 "Note: Named volumes will be imported when the cage is \
                  started for the first time."
@@ -1098,23 +1103,10 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         //
         // After the deploy and with the cage stopped again: podman
         // refuses to import into a volume a running container holds.
-        let volumes_dir = backup_dir.join("volumes");
-        let mut exported: Vec<PathBuf> = std::fs::read_dir(&volumes_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "tar"))
-            .collect();
-        exported.sort();
-        if !exported.is_empty() {
+        if !volumes.is_empty() {
             println!("Importing volumes...");
             backend.stop(&target);
-            for archive_path in exported {
-                let volume = archive_path
-                    .file_stem()
-                    .map(|stem| stem.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+            for (volume, archive_path) in volumes {
                 if let Err(error) =
                     podman.volume_import(&volume, &archive_path.display().to_string())
                 {
@@ -1598,6 +1590,90 @@ fn copy_restored_entry(source: &Path, dest: &Path) {
     }
 }
 
+/// The named volumes a restore imports, as `(volume, tar)` pairs, in
+/// name order.
+///
+/// A volume is imported when the manifest lists it **and** the archive
+/// carries its `volumes/<name>.tar`, which is exactly what `cage
+/// backup` writes: one tar per listed volume. Restore used to import
+/// every `*.tar` it found instead, so an archive was a way to write
+/// into any podman volume on the host — and the volumes are imported
+/// *after* the deploy, so a hand-made `agentcage-certs-<name>.tar`
+/// would have replaced the CA the restored cage's egress had just
+/// generated with one the archive's author chose
+/// (`EGRESS-PORT-PLAN.md` D11).
+///
+/// * A name in agentcage's own namespace
+///   ([`agentcage_core::quadlets::reserved_volume`]), as a tar or as a
+///   manifest entry, refuses the restore. `cage backup` never writes
+///   one — `named_volumes` cannot name one — so the archive was
+///   altered, and nothing in it is to be trusted.
+/// * A tar the manifest does not list is not imported, with a warning.
+///   It is not part of the backup, and ignoring it costs nothing.
+/// * A listed volume with no tar is skipped with a warning.
+///
+/// Called in the preflight, so a refusal comes before `--force`
+/// destroys anything.
+///
+/// # Errors
+///
+/// The refusal, naming the reserved volume, phrased to follow
+/// `invalid backup — `.
+fn volumes_to_import(
+    manifest: &Manifest,
+    backup_dir: &Path,
+) -> Result<Vec<(String, PathBuf)>, String> {
+    let refusal = |what: String, reason: &str| {
+        format!(
+            "{what}, a volume reserved for agentcage ({reason}). `cage backup` \
+             never writes one, so this archive was altered; refusing to restore it"
+        )
+    };
+    for volume in &manifest.named_volumes {
+        if let Some(reason) = reserved_volume(volume) {
+            return Err(refusal(format!("manifest.json lists '{volume}'"), reason));
+        }
+    }
+    let mut carried: Vec<(String, PathBuf)> = std::fs::read_dir(backup_dir.join("volumes"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tar"))
+        .map(|path| {
+            let volume = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (volume, path)
+        })
+        .collect();
+    carried.sort();
+    let mut import = Vec::new();
+    for (volume, path) in carried {
+        if let Some(reason) = reserved_volume(&volume) {
+            return Err(refusal(format!("it carries volumes/{volume}.tar"), reason));
+        }
+        if manifest.named_volumes.contains(&volume) {
+            import.push((volume, path));
+        } else {
+            eprintln!(
+                "warning: volumes/{volume}.tar is not listed in the backup's \
+                 manifest.json; not importing it"
+            );
+        }
+    }
+    for volume in &manifest.named_volumes {
+        if !import.iter().any(|(name, _)| name == volume) {
+            eprintln!(
+                "warning: the backup's manifest.json lists volume '{volume}' \
+                 but the archive has no volumes/{volume}.tar; skipping it"
+            );
+        }
+    }
+    Ok(import)
+}
+
 /// Copy the archived `capture.jsonl` back into the cage's data dir.
 ///
 /// Last, and best-effort: the cage is already running by the time this
@@ -1714,7 +1790,7 @@ mod tests {
         Manifest, ROOT, backup_inner, build_context_included, carried_containerfile,
         check_restore_build_context, file_timestamp, is_valid_cage_name, merge_at_rest_keys,
         restore_build_context, restore_capture, restore_config, restore_inner, restore_secrets,
-        stage_backup_config,
+        stage_backup_config, volumes_to_import,
     };
     use crate::cli::context::Ctx;
     use agentcage_cli::archive::{self, Member};
@@ -2514,6 +2590,159 @@ container:
             })
             .collect();
         assert!(verbs.is_empty(), "{verbs:?}");
+    }
+
+    /// A container backup of a cage with no build step, its manifest
+    /// listing `listed` and its `volumes/` holding one (empty) tar per
+    /// entry of `tars`.
+    fn backup_with_volumes(tarball: &Path, listed: &[&str], tars: &[&str]) {
+        let listed: Vec<String> = listed.iter().map(|name| format!("\"{name}\"")).collect();
+        let mut members = vec![
+            Member::Dir(format!("{ROOT}/config")),
+            Member::File(
+                format!("{ROOT}/config/cage.yaml"),
+                CAGE_YAML_NO_BUILD.as_bytes().to_vec(),
+            ),
+            Member::File(
+                format!("{ROOT}/manifest.json"),
+                format!(
+                    "{{\"format_version\": 1, \"cage_name\": \"{RICH}\", \
+                      \"isolation\": \"container\", \"named_volumes\": [{}]}}\n",
+                    listed.join(", ")
+                )
+                .into_bytes(),
+            ),
+            Member::Dir(format!("{ROOT}/volumes")),
+        ];
+        for tar in tars {
+            members.push(Member::File(
+                format!("{ROOT}/volumes/{tar}.tar"),
+                Vec::new(),
+            ));
+        }
+        archive::write_targz(tarball, &members).unwrap();
+    }
+
+    /// **A restore never seeds a cage with a CA from an archive**
+    /// (`EGRESS-PORT-PLAN.md` D11). `cage backup` never writes a volume
+    /// in agentcage's own namespace, so an archive that carries one —
+    /// as a tar, or as a manifest entry — was made by hand, and an
+    /// `agentcage-certs-<name>.tar` in it would replace the CA the
+    /// restored cage's egress generated with one of the archive
+    /// author's choosing. The whole restore is refused, in the
+    /// preflight: before `--force` destroys the existing cage and
+    /// before anything is asked of podman.
+    #[test]
+    fn a_restore_refuses_an_archive_carrying_a_reserved_volume() {
+        let cases: [(&str, &[&str], &[&str]); 4] = [
+            ("unlisted-ca-tar", &[], &["agentcage-certs-acme-agent"]),
+            (
+                "listed-ca-tar",
+                &["agentcage-certs-acme-agent"],
+                &["agentcage-certs-acme-agent"],
+            ),
+            ("listed-only", &["agentcage-public-certs-acme-agent"], &[]),
+            ("unit-reference", &[], &["acme-agent-certs.volume"]),
+        ];
+        for (label, listed, tars) in cases {
+            let dir = TestDir::new(&format!("restore-reserved-{label}"));
+            plant_ca(&dir);
+            let fake = FakeRunner::new();
+            fake.assume_installed();
+            fake.default_reply(Reply::status(1));
+            let ctx = ctx(&dir, fake.clone());
+
+            // An existing cage, which `--force` must not get to destroy.
+            let source = dir.join("cage.yaml");
+            fs::write(
+                &source,
+                fixture_state(&format!("xdg-config/agentcage/cages/{RICH}/cage.yaml")),
+            )
+            .unwrap();
+            ctx.paths.save_deployment(RICH, &source).unwrap();
+            let before = fs::read_to_string(ctx.paths.stored_config_path(RICH)).unwrap();
+
+            let tarball = dir.join("tampered.tar.gz");
+            backup_with_volumes(&tarball, listed, tars);
+            let matches = leaf_matches(&[
+                "agentcage",
+                "cage",
+                "restore",
+                &tarball.display().to_string(),
+                "--force",
+                "--no-start",
+            ]);
+            assert!(restore_inner(&ctx, &matches).is_err(), "{label}");
+
+            assert_eq!(
+                fs::read_to_string(ctx.paths.stored_config_path(RICH)).unwrap(),
+                before,
+                "{label}"
+            );
+            assert!(
+                fake.calls().is_empty(),
+                "{label}: {:?}",
+                fake.argv_sequence()
+            );
+        }
+    }
+
+    /// Which tars a restore imports: the ones the manifest lists, and
+    /// nothing else. A tar the manifest does not list is not imported
+    /// (a warning names it) — `cage backup` lists every volume it
+    /// writes, so an unlisted one is not part of the backup — and a
+    /// listed volume the archive does not carry is skipped with a
+    /// warning, as a missing volume always was. A reserved name in
+    /// either place is a refusal, naming it.
+    #[test]
+    fn a_restore_imports_only_the_volumes_the_manifest_lists() {
+        let dir = TestDir::new("restore-volume-plan");
+        let tarball = dir.join("backup.tar.gz");
+        backup_with_volumes(
+            &tarball,
+            &[
+                "acme-agent-workspace",
+                "acme-agent-state",
+                "acme-agent-gone",
+            ],
+            &["acme-agent-workspace", "acme-agent-state", "stray-volume"],
+        );
+        let staging = dir.join("staging");
+        archive::extract_into(&tarball, &staging).unwrap();
+        let backup_dir = staging.join(ROOT);
+        let manifest =
+            Manifest::parse(&fs::read_to_string(backup_dir.join("manifest.json")).unwrap())
+                .unwrap();
+
+        let plan = volumes_to_import(&manifest, &backup_dir).expect("nothing reserved");
+        assert_eq!(
+            plan,
+            [
+                (
+                    "acme-agent-state".to_owned(),
+                    backup_dir.join("volumes/acme-agent-state.tar")
+                ),
+                (
+                    "acme-agent-workspace".to_owned(),
+                    backup_dir.join("volumes/acme-agent-workspace.tar")
+                ),
+            ]
+        );
+
+        // And a reserved name, listed or not, is refused by name.
+        backup_with_volumes(&tarball, &[], &["agentcage-podman-acme-agent"]);
+        let staging = dir.join("staging-reserved");
+        archive::extract_into(&tarball, &staging).unwrap();
+        let backup_dir = staging.join(ROOT);
+        let manifest =
+            Manifest::parse(&fs::read_to_string(backup_dir.join("manifest.json")).unwrap())
+                .unwrap();
+        let error = volumes_to_import(&manifest, &backup_dir).expect_err("reserved");
+        assert!(
+            error.contains("volumes/agentcage-podman-acme-agent.tar"),
+            "{error}"
+        );
+        assert!(error.contains("reserved for agentcage"), "{error}");
     }
 
     /// The same ordering, exercised through the whole command: a real
