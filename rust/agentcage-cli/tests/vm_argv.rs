@@ -1066,6 +1066,147 @@ fn an_unresolvable_source_warns_and_the_deploy_goes_on() {
     assert_eq!(runner.call_count(), 0);
 }
 
+/// A store over a fixed map, for the store pass.
+#[derive(Debug)]
+struct MapStore(Vec<(&'static str, &'static str)>);
+
+impl agentcage_cli::secrets::SecretStore for MapStore {
+    fn name(&self) -> &'static str {
+        "map"
+    }
+    fn runtime_decrypts(&self) -> bool {
+        false
+    }
+    fn available(&self) -> bool {
+        true
+    }
+    fn set(
+        &self,
+        _cage: &str,
+        _key: &str,
+        _value: &str,
+        _state_dir: &Path,
+    ) -> Result<(), agentcage_cli::secrets::SecretError> {
+        unreachable!("the store pass only reads")
+    }
+    fn delete(
+        &self,
+        _cage: &str,
+        _key: &str,
+        _state_dir: &Path,
+    ) -> Result<(), agentcage_cli::secrets::SecretError> {
+        unreachable!("the store pass only reads")
+    }
+    fn get(
+        &self,
+        _cage: &str,
+        key: &str,
+        _state_dir: &Path,
+    ) -> Result<Option<String>, agentcage_cli::secrets::SecretError> {
+        Ok(self
+            .0
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| (*value).to_owned()))
+    }
+}
+
+/// The vm half of "a relay or agent credential is the secret store's
+/// entry NAME, whatever its scheme, on every backend".
+///
+/// The source pass used to resolve relay and agent credentials too, so
+/// on this backend alone `env:NAME` read the **host's** environment
+/// (the container backend leaves relays to the store and
+/// apple-container stages everything from it), and a host variable of
+/// that name overrode the stored value. Worse, a name the source pass
+/// failed on was in the store pass's `skip`, so on a Mac, where there is
+/// no host podman store for `bridge_secrets` to mirror, a value held
+/// only in the keychain never reached the guest, and the relay started
+/// with no credentials. A `systemd-creds:` name with no `.cred` blob
+/// (every one on a Mac) went the same way.
+///
+/// Now neither pass reads the host environment for them, and the store
+/// pass delivers them like a `secret_injection` rule without a
+/// `source:`.
+#[test]
+fn relay_and_agent_credentials_are_not_read_from_the_host_env_on_vm() {
+    let home = Home::new("relay-agent-store");
+    let paths = home.paths();
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+
+    let source = "name: demo\ncontainer:\n  image: alpine\n\
+                  domains:\n  allow: [api.example.com]\n\
+                  protocol_relays:\n- name: mail\n  type: imap\n  listen: 0.0.0.0:1143\n  \
+                  upstream:\n    host: imap.example.com\n    port: 993\n  \
+                  auth:\n    type: imap-login\n    user_source: env:MAIL_USER\n    \
+                  password_source: systemd-creds:MAIL_PW\n\
+                  agents:\n  decider:\n    enable: true\n    provider: openrouter\n    \
+                  model: m\n    api_key: env:DECIDER_KEY\n";
+    let config = agentcage_core::config::load(
+        "cage.yaml",
+        source,
+        &agentcage_core::config::FixedHost {
+            isolation: "vm".to_owned(),
+            dns_servers: Ok(vec!["192.0.2.53".to_owned()]),
+        },
+    )
+    .expect("loads");
+
+    // Every name is also set in the host environment, to a value that
+    // must not reach the guest.
+    let env = agentcage_cli::secrets::MapEnv::new()
+        .with("MAIL_USER", "from-host-env")
+        .with("MAIL_PW", "from-host-env")
+        .with("DECIDER_KEY", "from-host-env");
+    let host = agentcage_cli::secrets::SecretHost::new(&runner, &env, true);
+    let backend = vm(&paths, &runner);
+
+    let sourced = backend
+        .resolve_source_secrets("demo", Some(&config), &host)
+        .expect("resolves");
+    assert_eq!(sourced, agentcage_cli::vm::Bridged::default());
+    assert_eq!(runner.call_count(), 0, "the host env reached the guest");
+
+    // So the store pass is not told to skip them …
+    let skip = agentcage_cli::vm::source_secret_env_names(&config);
+    assert!(skip.is_empty(), "{skip:?}");
+
+    // … and delivers the stored values, each on stdin.
+    runner.default_reply(Reply::success());
+    let store = MapStore(vec![
+        ("MAIL_USER", "stored-user"),
+        ("MAIL_PW", "stored-password"),
+        ("DECIDER_KEY", "stored-key"),
+    ]);
+    let stored = backend
+        .bridge_store_secrets("demo", &config, &store, &skip)
+        .expect("bridges");
+    assert!(stored.warnings.is_empty(), "{:?}", stored.warnings);
+    let creates: Vec<(String, Option<String>)> = runner
+        .calls()
+        .iter()
+        .filter(|call| call.raw_argv().iter().any(|arg| arg == "create"))
+        .map(|call| {
+            (
+                call.raw_argv()[call.raw_argv().len() - 2].clone(),
+                call.stdin_text(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        creates,
+        [
+            ("demo.MAIL_USER".to_owned(), Some("stored-user".to_owned())),
+            (
+                "demo.MAIL_PW".to_owned(),
+                Some("stored-password".to_owned())
+            ),
+            ("demo.DECIDER_KEY".to_owned(), Some("stored-key".to_owned())),
+        ]
+    );
+}
+
 // ─── the E4 argv, built here ─────────────────────────────────
 
 #[test]
