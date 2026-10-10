@@ -389,12 +389,19 @@ fn secret_set(home: &Path, cage: &str, key: &str, value: &str) -> std::process::
         .stderr(Stdio::piped())
         .spawn()
         .expect("the binary is built by `cargo test`");
-    child
+    // A command that fails before reading stdin (a missing cage, say)
+    // can exit while the value is still being written; the write then
+    // sees a closed pipe. That is the case under test, not a failure.
+    match child
         .stdin
         .as_mut()
         .expect("piped")
         .write_all(value.as_bytes())
-        .expect("write the value");
+    {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(error) => panic!("write the value: {error}"),
+    }
     child.wait_with_output().expect("wait")
 }
 
