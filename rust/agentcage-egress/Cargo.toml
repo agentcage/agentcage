@@ -1,0 +1,35 @@
+[package]
+name = "agentcage-egress"
+description = "The per-cage egress proxy: TLS interception, inspection, secret injection, audit, Policy API, traffic watcher and protocol relays."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# One binary, run inside the egress container by `supervisor-egress.sh`
+# as uid 200 with an empty bounding set. It is Linux-only at runtime
+# (`SO_ORIGINAL_DST`, iptables REDIRECT), but the library half builds and
+# tests everywhere so the pure modules run on a macOS laptop too.
+[[bin]]
+name = "agentcage-egress"
+path = "src/main.rs"
+
+[dependencies]
+# The pure helpers the host already ported byte-for-byte from Python:
+# `valid_domain`, `encoded_private_ip`, the never-grant floor, the relay
+# validator, the PyYAML-compatible loader, the `json.dumps`-compatible
+# writer and CPython `isoformat` timestamps. Reused, not copied, so the
+# host and the egress cannot drift apart on any of them.
+agentcage-core = { path = "../agentcage-core" }
+
+# The config tree `agentcage_core::yaml::load` returns.
+serde_norway = "0.9.42"
+indexmap = "2"
+
+[dev-dependencies]
+
+[lints]
+workspace = true

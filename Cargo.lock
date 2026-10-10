@@ -50,6 +50,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentcage-egress"
+version = "0.50.1"
+dependencies = [
+ "agentcage-core",
+ "indexmap",
+ "serde_norway",
+]
+
+[[package]]
 name = "agentcage-exec"
 version = "0.50.1"
 dependencies = [

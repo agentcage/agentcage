@@ -17,6 +17,7 @@ members = [
     "rust/agentcage-exec",
     "rust/agentcage-state",
     "rust/agentcage-cli",
+    "rust/agentcage-egress",
 ]
 
 # ── Shared package metadata ──────────────────────────────────
