@@ -1,0 +1,1 @@
+ValueError: container.volumes entry 'other-cage-certs.volume:/certs:ro': 'other-cage-certs.volume' is reserved for agentcage (a name ending in .volume is a quadlet unit reference, and <cage>-certs.volume is a cage's private CA store); a cage must not mount it

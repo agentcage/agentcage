@@ -1178,6 +1178,15 @@
       ]
     },
     {
+      "case": "err-named-volume-reserved",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
       "case": "err-nested-containers-on-vm",
       "error_type": "ValueError",
       "kind": "invalid",
@@ -1575,6 +1584,15 @@
         "x86_64"
       ],
       "stage": "render"
+    },
+    {
+      "case": "err-volume-reserved-source",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
     },
     {
       "case": "err-watcher-api-key-cmd",
@@ -2689,9 +2707,9 @@
   ],
   "schema": 1,
   "stats": {
-    "distinct_error_messages": 122,
-    "invalid": 127,
-    "total": 255,
+    "distinct_error_messages": 124,
+    "invalid": 129,
+    "total": 257,
     "valid": 128
   }
 }

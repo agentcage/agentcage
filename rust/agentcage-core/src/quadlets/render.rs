@@ -13,8 +13,9 @@ use serde::Serialize;
 use crate::config::{Config, ConfigError};
 use crate::python::repr_str;
 use crate::quadlets::{
-    CageNetworkAddrs, b64, cage_network_addrs, effective_port_policy, passthrough_regex, templates,
-    vm_local_cage_env_dir, vm_local_dns_allowlist_path, vm_local_grants_dir,
+    CageNetworkAddrs, b64, cage_network_addrs, certs_volume, effective_port_policy,
+    passthrough_regex, podman_storage_volume, public_certs_volume, reserved_volume_entry,
+    templates, vm_local_cage_env_dir, vm_local_dns_allowlist_path, vm_local_grants_dir,
     vm_local_placeholders_env_path, vm_local_proxy_config_path,
 };
 use crate::volume_mounts::{
@@ -496,6 +497,14 @@ pub fn generate_quadlets(
             continue;
         }
 
+        // Validation refused a reserved volume name as written; this is
+        // the same refusal for one that only appears after expansion
+        // (`${VOL}:/x` with `VOL=agentcage-certs-other`), since the
+        // expanded form is what podman reads (D11).
+        if let Some(refusal) = reserved_volume_entry(volume, &host_path) {
+            return Err(ConfigError::value(refusal));
+        }
+
         // Validate host path portion (before first ':') resolves safely
         let real = host.realpath(&host_path);
         if !(real.starts_with(&format!("{home}/")) || real == home) {
@@ -888,7 +897,7 @@ pub fn generate_quadlets(
         render(
             "volume.j2",
             &VolumeContext {
-                volume_name: &format!("agentcage-certs-{name}"),
+                volume_name: &certs_volume(name),
             },
         )?,
     );
@@ -897,7 +906,7 @@ pub fn generate_quadlets(
         render(
             "volume.j2",
             &VolumeContext {
-                volume_name: &format!("agentcage-public-certs-{name}"),
+                volume_name: &public_certs_volume(name),
             },
         )?,
     );
@@ -1034,7 +1043,7 @@ pub fn generate_quadlets(
             render(
                 "volume.j2",
                 &VolumeContext {
-                    volume_name: &format!("agentcage-podman-{name}"),
+                    volume_name: &podman_storage_volume(name),
                 },
             )?,
         );
@@ -1471,6 +1480,7 @@ mod tests {
             match name {
                 "HOME" => Some("/home/tester".to_owned()),
                 "SET" => Some("value".to_owned()),
+                "CA_VOLUME" => Some("agentcage-certs-other".to_owned()),
                 "EMPTY" => Some(String::new()),
                 _ => None,
             }
@@ -1740,6 +1750,55 @@ agents:
             );
             assert!(vm.contains(&format!("/secrets/{name}\"")), "{name}: {vm}");
         }
+    }
+
+    /// A `container.volumes` source that becomes one of agentcage's own
+    /// volume names only once `$VAR` is expanded is refused here, where
+    /// validation — which reads the entry as written — cannot see it
+    /// (`EGRESS-PORT-PLAN.md` D11).
+    #[test]
+    fn a_volume_source_that_expands_to_a_reserved_name_is_refused() {
+        let yaml = r"
+name: c
+container:
+  image: busybox
+  volumes: ['${CA_VOLUME}:/certs:ro']
+domains:
+  allow: [api.example.com]
+dns_servers: [192.0.2.53]
+";
+        let config = crate::config::load(
+            "cage.yaml",
+            yaml,
+            &crate::config::FixedHost::linux(&["192.0.2.53"]),
+        )
+        .expect("valid config");
+        let state = StatePaths {
+            config_root: "/cfg/agentcage".to_owned(),
+            data_root: "/data/agentcage".to_owned(),
+        };
+        let error = generate_quadlets(
+            &config,
+            &GenerateOptions {
+                config_host_path: "/cfg/agentcage/cages/c/cage.yaml",
+                patches_host_dir: "/data/patches",
+                deploy_name: "c",
+                rootless: true,
+                used_octets: None,
+                network_octet: None,
+                store_secrets: None,
+                state: &state,
+                version: "9.9.9",
+            },
+            &TestHost,
+        )
+        .expect_err("a reserved volume after expansion");
+        assert_eq!(
+            error.message(),
+            "container.volumes entry '${CA_VOLUME}:/certs:ro': 'agentcage-certs-other' \
+             is reserved for agentcage (agentcage-certs-<cage> is a cage's private CA \
+             store, key included); a cage must not mount it"
+        );
     }
 
     #[test]

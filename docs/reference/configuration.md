@@ -101,7 +101,7 @@ container:
 - **`memory`** *(string, optional)*: Memory limit (e.g. `"2g"`, `"4096m"`).
 - **`cpus`** *(string, optional)*: Maximum CPU cores allocated (e.g. `"2.0"`).
 - **`volumes`** *(list[string], default: [])*: Host directory bind mounts in `source:target[:flags]` format (e.g. `".:/workspace:rw"`). Mounts to `/workspace` automatically have `.git/hooks` and `.claude/` masked via tmpfs overlays.
-- **`named_volumes`** *(map[string, string], default: {})*: Persistent Podman named volumes mapped to container mount paths.
+- **`named_volumes`** *(map[string, string], default: {})*: Persistent Podman named volumes mapped to container mount paths. Names agentcage creates volumes under are refused, because each belongs to one cage and one of them holds that cage's CA private key: `agentcage-certs-*`, `agentcage-public-certs-*`, `agentcage-podman-*`, and any name ending in `.volume` (a quadlet unit reference). The same applies to a `volumes` entry whose source is a bare volume name rather than a path.
 - **`tmpfs`** *(list[string], default: [])*: Tmpfs mounts in `target[:options]` format (e.g. `"/tmp:rw,noexec,nosuid,size=512m"`).
 - **`env`** *(map[string, string], default: {})*: Environment variables injected into the container. *Never place real secrets here; use `secret_injection`.*
 

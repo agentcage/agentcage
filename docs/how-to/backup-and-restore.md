@@ -14,6 +14,8 @@ When you create a backup archive using `agentcage cage backup`, agentcage packag
 - **Volumes**: Persistent Podman named volume data (tarred from the container storage layer).
 - **Secrets (Optional)**: If `--include-secrets` is specified, encrypted credentials stored on the host are included in the archive.
 
+A backup never contains the cage's CA. The restored cage's egress generates a new one, as every new cage's does. `cage restore` imports only the volumes listed in the backup's `manifest.json`, and refuses an archive that carries a volume agentcage manages (`agentcage-certs-*`, `agentcage-public-certs-*`, `agentcage-podman-*`), since `cage backup` never writes one.
+
 ---
 
 ## 1. Creating a Backup

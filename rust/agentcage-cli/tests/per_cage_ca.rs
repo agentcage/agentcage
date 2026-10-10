@@ -13,6 +13,14 @@
 //! * `cage destroy` reports a certs volume it could not remove instead
 //!   of reporting success over it.
 //!
+//! Two more guards keep a store from being *reached* from outside its
+//! cage, and are tested where they live: validation refuses a
+//! `named_volumes` key (or bare `volumes` source) in agentcage's own
+//! volume namespace (`agentcage_core::quadlets::reserved_volume`, the
+//! `err-named-volume-reserved` / `err-volume-reserved-source` golden
+//! cases), and `cage restore` refuses an archive carrying such a volume
+//! and imports only what the manifest lists (`cli::cage::backup`).
+//!
 //! The e2e half — two cages, two fingerprints; destroy + create, a new
 //! fingerprint — is in `tests/e2e/phase1_lifecycle.sh` and
 //! `phase5_backup.sh`.

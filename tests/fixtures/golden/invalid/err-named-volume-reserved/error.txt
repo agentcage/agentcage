@@ -1,0 +1,1 @@
+ValueError: container.named_volumes: 'agentcage-certs-other-cage' is reserved for agentcage (agentcage-certs-<cage> is a cage's private CA store, key included); a cage must not mount it
