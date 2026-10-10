@@ -22,4 +22,4 @@ proxy/secret_injector.py 30234
 proxy/secret_lookup.py 3770
 proxy/transforms/__init__.py 1604
 proxy/transforms/google_jwt_bearer.py 9144
-proxy/watcher.py 91884
+proxy/watcher.py 92227

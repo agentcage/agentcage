@@ -1,0 +1,97 @@
+{
+  "contract": "agents_defaults",
+  "summary": "The value each side assumes for a key an operator leaves out of an enabled agents block. The host copies the block into proxy-config.yaml as written, without filling defaults in, so an omitted key runs at the EGRESS default while the host validates, warns about and documents its own. The two must be the same value.",
+  "implementations": {
+    "host": "rust/agentcage-core/src/config/{parse,types}.rs",
+    "proxy": "src/agentcage/data/proxy/{policy_api,watcher}.py"
+  },
+  "fields": {
+    "config": "(top level) the minimal agents block both sides are built from: each agent enabled with only its required LLM fields set",
+    "id": "the omitted key, dotted from the agent block",
+    "value": "the default both sides must resolve the omitted key to"
+  },
+  "notes": "Every key either side reads with a fallback belongs here. Both halves map each case id to a field by hand and fail on an id they cannot map; the proxy half also fails on a mapped field with no case, so the table and the mappings move together.",
+  "config": {
+    "agents": {
+      "decider": {
+        "enable": true,
+        "provider": "openrouter",
+        "model": "m",
+        "api_key": "env:TESTKEY"
+      },
+      "watcher": {
+        "enable": true,
+        "provider": "openrouter",
+        "model": "m",
+        "api_key": "env:WATCHKEY"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "decider.host",
+      "why": "the reserved control host the cage reaches the Policy API on; the host adds it to never_grant and keeps it out of the domain lists, so the egress must answer on the same name",
+      "value": "agentcage.local"
+    },
+    {
+      "id": "decider.timeout_seconds",
+      "why": "per-call LLM timeout for the decider; a request held open past it fails closed",
+      "value": 15.0
+    },
+    {
+      "id": "decider.max_tokens",
+      "why": "the decider's completion budget; too small starves a reasoning model before its forced tool call",
+      "value": 8192
+    },
+    {
+      "id": "decider.rate_limit.requests_per_second",
+      "why": "the control-plane request rate, which bounds what the caged agent can spend on decider calls",
+      "value": 1.0
+    },
+    {
+      "id": "decider.rate_limit.burst",
+      "why": "the burst allowance of the same limiter",
+      "value": 5
+    },
+    {
+      "id": "watcher.interval_seconds",
+      "why": "the scan cadence, one LLM call per interval. The host documents and budgets 900; the egress used to fall back to 300, so an operator who omitted the key paid for three times the scans the host's spend warning described",
+      "value": 900.0
+    },
+    {
+      "id": "watcher.window_seconds",
+      "why": "how far back into capture.jsonl the first scan after an egress (re)start reaches",
+      "value": 3600.0
+    },
+    {
+      "id": "watcher.max_flows",
+      "why": "the per-scan sample cap that bounds the digest prompt",
+      "value": 200
+    },
+    {
+      "id": "watcher.auto_revoke",
+      "why": "whether the watcher applies revocations itself or only records them; the host's validation messages and docs assume this value",
+      "value": true
+    },
+    {
+      "id": "watcher.dedup_samples",
+      "why": "whether repeated polling flows collapse in the digest; off is the expensive mode",
+      "value": true
+    },
+    {
+      "id": "watcher.max_digest_tokens",
+      "why": "the per-scan input-token ceiling the host's daily spend warning is computed from",
+      "value": 8000
+    },
+    {
+      "id": "watcher.timeout_seconds",
+      "why": "per-call LLM timeout for the watcher, which differs from the decider's on purpose",
+      "value": 30.0
+    },
+    {
+      "id": "watcher.max_tokens",
+      "why": "the watcher's completion budget for its forced review call",
+      "value": 8192
+    }
+  ]
+}
