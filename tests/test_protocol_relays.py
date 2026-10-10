@@ -2439,6 +2439,28 @@ class TestClientLiterals:
         assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
         assert [b["reason"] for b in _blocked(entries)] == ["invalid tag"]
 
+    def test_invalid_tag_text_not_logged(self, caplog):
+        """A bare base64 SASL line from the cage (a credential: ``+`` makes
+        it an invalid tag) is refused, and the warning names only its
+        length, never its text."""
+        caplog.set_level(logging.DEBUG)
+        sasl = base64.b64encode(b"\0cage-user\0cage-pass>>>?").decode()
+        assert "+" in sasl
+        line = sasl.encode() + b"\r\n"
+
+        async def _client(reader, writer):
+            writer.write(line)
+            await writer.drain()
+            return [await asyncio.wait_for(reader.readline(), 5)]
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert got == [b"* BAD invalid command tag\r\n"], got
+        assert f"invalid tag ({len(sasl)} bytes)" in caplog.text
+        for text in (caplog.text, json.dumps(entries)):
+            assert sasl[:8] not in text, text
+
     @pytest.mark.parametrize("marker", [b"{5-}", b"{ 5}", b"{}", b"{5+ }"])
     def test_malformed_literal_refused(self, marker):
         async def _client(reader, writer):
