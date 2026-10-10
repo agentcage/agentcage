@@ -213,9 +213,10 @@ _SERVER_MAILBOX_COMMANDS = frozenset({
     "GETMETADATA", "SETMETADATA", "GETANNOTATION", "SETANNOTATION",
 })
 
-# Why a line from the cage with a CR in it other than the one ending it is
-# refused (see _has_bare_cr()).
+# Why a line from the cage is refused for a byte it may not hold outside a
+# literal (see _line_fault()).
 _BARE_CR = "bare CR in command line"
+_NUL = "NUL in command line"
 
 # Longest mailbox name the relay reads ahead from a literal to check it
 # against the folder lists. Longer names are refused as unparseable.
@@ -338,19 +339,28 @@ def _valid_tag(tag: bytes) -> bool:
     return bool(tag) and all(b in _TAG_BYTES for b in tag)
 
 
-def _has_bare_cr(line: bytes) -> bool:
-    """True when a line from the cage, as read up to its LF, holds a CR
-    that is not the one right before that LF.
+def _line_fault(line: bytes) -> Optional[str]:
+    """Why a line from the cage, as read up to its LF, may not be relayed
+    at all, or None.
 
-    The relay finds the end of a line at its LF. RFC 3501 ends lines with
-    CRLF and allows no CR inside one, but a server lenient enough to end a
-    line at a bare CR as well would run ``a1 NOOP<CR>b EXPUNGE`` as two
-    commands where the relay checked one. So a command line holding a
-    bare CR is refused, never forwarded. Literal bytes are data and may
-    hold anything; they are never passed through here.
+    Two bytes RFC 3501 allows nowhere in a command line outside a literal,
+    and on which servers disagree about where the line ends:
+      - a CR that is not the one right before the LF. The relay finds the
+        end of a line at its LF, but a server lenient enough to end a line
+        at a bare CR as well would run ``a1 NOOP<CR>b EXPUNGE`` as two
+        commands where the relay checked one.
+      - NUL, which §9 leaves out of CHAR and CHAR8 (only a literal8 may
+        hold it). A server that reads lines as C strings stops at the
+        NUL, so it and the relay would not agree on what the line says.
+    Such a line is refused, never forwarded. Literal bytes are data and
+    may hold anything; they are never passed through here.
     """
     body = line[:-2] if line.endswith(b"\r\n") else line
-    return b"\r" in body
+    if b"\r" in body:
+        return _BARE_CR
+    if b"\0" in body:
+        return _NUL
+    return None
 
 
 def _crlf(line: bytes) -> bytes:
@@ -1113,21 +1123,22 @@ class ImapRelay:
             if not line:
                 return False
             first = False
-            if _has_bare_cr(line):
+            fault = _line_fault(line)
+            if fault is not None:
                 # The rest of a command already partly upstream: there is
                 # no refusing this line on its own.
                 log.warning(
                     "imap relay %s: %s inside a command, closing session",
-                    self._cfg.name, _BARE_CR,
+                    self._cfg.name, fault,
                 )
                 self._audit_log({
                     "kind": "imap_command",
                     "relay": self._cfg.name,
                     "command": command,
                     "decision": "blocked",
-                    "reason": _BARE_CR,
+                    "reason": fault,
                 })
-                await self._bye(to_client, _BARE_CR.encode())
+                await self._bye(to_client, fault.encode())
                 return False
             try:
                 lit = _client_literal(line)
@@ -1168,7 +1179,7 @@ class ImapRelay:
         to see that name."""
         if not self._folder_lists or lit.size > _MAX_MAILBOX_LITERAL:
             return False
-        if _has_bare_cr(line):
+        if _line_fault(line) is not None:
             return False  # _policy_check() refuses the line
         parts = line.split(None, 2)
         if len(parts) < 3 or not _valid_tag(parts[0]):
@@ -1280,25 +1291,27 @@ class ImapRelay:
         to the client: ``OK`` for "already authenticated" (semantic
         no-op for a PREAUTH'd connection), ``NO`` for actual policy
         denials, ``BAD`` for a line the relay won't parse (an invalid
-        tag, answered with tag ``*``, a bare CR, or a malformed literal).
+        tag, answered with tag ``*``, a bare CR or NUL, or a malformed
+        literal).
 
         *mailbox* is a mailbox name the cage sent as a literal, read ahead
         by _relay_command(); *utf8_names* says whether the upstream may
         read mailbox names as UTF-8 (see _mailbox_denial_reason()).
         """
-        # Before anything else reads the line: past a bare CR, the relay
-        # and the upstream may not agree on what the line is.
-        if _has_bare_cr(line):
+        # Before anything else reads the line: past a bare CR or a NUL, the
+        # relay and the upstream may not agree on what the line is.
+        fault = _line_fault(line)
+        if fault is not None:
             tag = (line.split(None, 1) or [b""])[0]
-            log.warning("imap relay %s: blocked %s", self._cfg.name, _BARE_CR)
+            log.warning("imap relay %s: blocked %s", self._cfg.name, fault)
             self._audit_log({
                 "kind": "imap_command",
                 "relay": self._cfg.name,
                 "command": _command_name(line),
                 "decision": "blocked",
-                "reason": _BARE_CR,
+                "reason": fault,
             })
-            return (tag if _valid_tag(tag) else b"*", _BARE_CR, b"BAD")
+            return (tag if _valid_tag(tag) else b"*", fault, b"BAD")
 
         # Split on any run of whitespace, not single spaces. RFC 3501 says
         # exactly one SP, but an upstream lenient about tabs, doubled or

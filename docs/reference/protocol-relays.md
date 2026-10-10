@@ -147,8 +147,8 @@ After that the relay checks each command line from the cage and forwards it or a
 
 | Mode | Refused (answered `NO <command> not permitted`) | Typical use |
 | :-- | :-- | :-- |
-| `none` | `APPEND`, `CLOSE`, `COPY`, `CREATE`, `DELETE`, `DELETEACL`, `EXPUNGE`, `MOVE`, `RENAME`, `REPLACE`, `SETACL`, `SETMETADATA`, `STORE`, and `UID COPY`, `UID EXPUNGE`, `UID MOVE`, `UID REPLACE`, `UID STORE` | Read-only access. `FETCH`, `SEARCH`, `UID FETCH` and `UID SEARCH` still work. |
-| `organise` | `APPEND`, `CLOSE`, `DELETE`, `DELETEACL`, `EXPUNGE`, `RENAME`, `REPLACE`, `SETACL`, `SETMETADATA`, `UID EXPUNGE`, `UID REPLACE`, and any `STORE` / `UID STORE` that sets `\Deleted` with `FLAGS` or `+FLAGS` (including `.SILENT`) | Filing and flagging without destroying mail. Allowed: `COPY`, `MOVE`, `CREATE`, the other flags, and `-FLAGS (\Deleted)`, which un-deletes. |
+| `none` | `APPEND`, `CLOSE`, `COPY`, `CREATE`, `DELETE`, `DELETEACL`, `EXPUNGE`, `MOVE`, `RENAME`, `REPLACE`, `SETACL`, `SETANNOTATION`, `SETMETADATA`, `SETQUOTA`, `STORE`, and `UID COPY`, `UID EXPUNGE`, `UID MOVE`, `UID REPLACE`, `UID STORE` | Read-only access. `FETCH`, `SEARCH`, `UID FETCH` and `UID SEARCH` still work. |
+| `organise` | `APPEND`, `CLOSE`, `DELETE`, `DELETEACL`, `EXPUNGE`, `RENAME`, `REPLACE`, `SETACL`, `SETANNOTATION`, `SETMETADATA`, `SETQUOTA`, `UID EXPUNGE`, `UID REPLACE`, any `STORE` / `UID STORE` that sets `\Deleted` with `FLAGS` or `+FLAGS` (including `.SILENT`), and any `STORE` / `UID STORE` with an `ANNOTATION` item (RFC 5257 message annotations) | Filing and flagging without destroying mail. Allowed: `COPY`, `MOVE`, `CREATE`, the other flags, and `-FLAGS (\Deleted)`, which un-deletes. |
 | `full` | nothing | No write restrictions. Folder lists still apply. |
 
 The reasons behind the `organise` list:
@@ -156,6 +156,7 @@ The reasons behind the `organise` list:
 - **`APPEND`** would put fabricated mail into the mailbox.
 - **`REPLACE`** (RFC 8508) is an `APPEND` and an `EXPUNGE` in one command. In these two modes the relay also leaves `REPLACE` out of the capabilities it advertises, so clients don't try it.
 - **`RENAME`** can silently break server-side filing rules that refer to folders by name.
+- **`SETQUOTA`** (RFC 9208), **`SETMETADATA`** (RFC 5464), Cyrus's **`SETANNOTATION`** and **`STORE ... ANNOTATION`** (RFC 5257) change account, mailbox or message settings rather than file or flag mail. `STORE ... ANNOTATION` is refused wherever the `ANNOTATION` token appears in the arguments, so a keyword flag literally named `ANNOTATION` is refused too.
 
 A command that isn't listed for a mode is forwarded.
 
@@ -178,6 +179,7 @@ A line whose tag is not a valid IMAP tag (RFC 3501 §9: printable ASCII except `
 
 RFC 3501 ends every line with CRLF and allows no other CR or LF outside a literal. Implementations disagree on what to do with the others, and wherever the relay and a server or client end a line in different places, they read different commands or responses from the same bytes. Literal bytes are never touched.
 - **Bare CR from the cage:** a command line holding a CR that is not the one right before its LF is refused with `BAD bare CR in command line` (tagged, or `*` when the tag isn't valid) and a `blocked` audit entry, and not forwarded. A server that also ends a line at a bare CR would otherwise run `a1 NOOP<CR>b EXPUNGE` as two commands, the second never checked. If the line is the rest of a command after a literal, part of which has already been forwarded, the relay closes the session with `* BYE bare CR in command line` instead.
+- **NUL from the cage:** RFC 3501 §9 leaves NUL out of `CHAR` and `CHAR8`, so only a literal8 (`~{n}`) may hold one. A command line holding a NUL is refused the same way, with `BAD NUL in command line` (or `* BYE NUL in command line` after a literal). A server that reads lines as C strings stops at the NUL and would act on less of the line than the relay checked.
 - **Bare LF from the cage:** ends the line, as it does for most servers, and the line is forwarded ending in CRLF. Splitting at every LF, the relay sees every command boundary a server might, and the rewrite makes a server that ends lines only at CRLF see the same ones.
 - **Server responses:** outside literals, each line reaches the cage ending in CRLF (a bare LF ending it is rewritten) with every other CR replaced by a space. Otherwise a client that ends lines at a bare CR, or only at CRLF, could read a literal where the relay saw none, and take a relay reply, or the server's next response, for part of it.
 
@@ -247,7 +249,7 @@ Relays write structured records to the egress audit stream, the same one HTTP de
 | `relay_init_failed` | none | The relay could not be built, for example because a credential did not resolve. `error` says why. |
 | `relay_start_failed` | none | The listener could not start: port in use, or a malformed `listen`. |
 | `imap_command` | `intercepted` | The cage sent `LOGIN` / `AUTHENTICATE`. |
-| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list, or because of its form: `reason` is `invalid tag`, `bare CR in command line`, `malformed literal` or `literal too large`. Carries `command`, `reason`, and `mailbox` for folder refusals. |
+| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list, or because of its form: `reason` is `invalid tag`, `bare CR in command line`, `NUL in command line`, `malformed literal` or `literal too large`. Carries `command`, `reason`, and `mailbox` for folder refusals. |
 | `imap_command` | `allowed` | A forwarded command, recorded only while allowed-request logging is on (`logging.allowed_requests`). The egress currently treats an absent key as on, so set `false` explicitly if IMAP sync traffic is too noisy. |
 | `imap_upstream_unreachable` | none | The upstream connection failed. Carries `upstream` and `error`. |
 | `smtp_command` | `intercepted` | The cage sent `AUTH`. |

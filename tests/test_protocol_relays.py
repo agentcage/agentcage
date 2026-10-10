@@ -3153,6 +3153,95 @@ class TestBareCarriageReturn:
         assert not _blocked(entries)
 
 
+class TestNulInCommandLine:
+    """RFC 3501 §9 leaves NUL out of CHAR and CHAR8: outside a literal8 it
+    can't appear in a command. The relay forwarded it, and a server that
+    reads lines as C strings stops at the NUL, so the relay and the
+    server would disagree on what the line holds."""
+
+    @pytest.mark.parametrize("line,tag", [
+        (b"a1 NOOP\x00b EXPUNGE\r\n", b"a1"),
+        (b"a1 SELECT INBOX\x00\r\n", b"a1"),
+        (b"a1\x00EXPUNGE\r\n", b"*"),      # the NUL makes the tag invalid
+        (b'a1 SELECT "IN\x00BOX"\r\n', b"a1"),
+        (b"a1 NOOP\x00\n", b"a1"),
+        (b"*\x00 EXPUNGE\r\n", b"*"),
+    ], ids=["mid-line", "line-end", "after-tag", "quoted", "bare-lf-end",
+            "invalid-tag"])
+    def test_refused_and_never_forwarded(self, line, tag):
+        async def _client(reader, writer):
+            writer.write(line)
+            await writer.drain()
+            got = [await asyncio.wait_for(reader.readline(), 5)]
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "none"}, _client,
+        ))
+        assert got == [
+            tag + b" BAD NUL in command line\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+        assert [b["reason"] for b in _blocked(entries)] == [
+            "NUL in command line",
+        ]
+
+    def test_refused_line_drops_its_non_sync_literal(self):
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 NOOP\x00b APPEND INBOX {6+}\r\n", b"c NOOP", b"\r\n",
+            ])
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, _ = _run(_literal_session({"write_mode": "full"}, _client))
+        assert got == [
+            b"a1 BAD NUL in command line\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+
+    def test_nul_after_a_literal_closes_the_session(self):
+        async def _client(reader, writer):
+            try:
+                await _send_command(reader, writer, [
+                    b"a1 SEARCH CHARSET UTF-8 TEXT {5}\r\n", b"hello",
+                    b" \x00b EXPUNGE\r\n",
+                ])
+            except EOFError as e:
+                return e.args[0]
+            return None
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "none"}, _client,
+        ))
+        assert got == [
+            b"+ go ahead\r\n", b"* BYE NUL in command line\r\n",
+        ], got
+        assert b"EXPUNGE" not in rec.raw, rec.raw
+        assert [b["reason"] for b in _blocked(entries)] == [
+            "NUL in command line",
+        ]
+
+    @pytest.mark.parametrize("marker", [b"{%d}", b"{%d+}", b"~{%d}"],
+                             ids=["sync", "non-sync", "binary"])
+    def test_nul_inside_a_literal_is_data(self, marker):
+        body = b"one\x00two\r\n\x00\x00a1 NOOP\x00b EXPUNGE\x00"
+        head = b"a1 APPEND INBOX " + marker % len(body) + b"\r\n"
+
+        async def _client(reader, writer):
+            return await _send_command(reader, writer, [head, body, b"\r\n"])
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert got[-1] == b"a1 OK APPEND completed\r\n", got
+        assert _without_login(rec.commands) == [
+            head.replace(b"+}", b"}") + body + b"\r\n",
+        ]
+        assert not _blocked(entries)
+
+
 class TestBareLineFeed:
     """A line from the cage that ends in a bare LF is still a line, as
     most servers and the relay's literal parser have always taken it, but
