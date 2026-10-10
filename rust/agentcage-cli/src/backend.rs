@@ -50,6 +50,21 @@ pub const EGRESS_BUILD_CAPS: [&str; 6] = [
 /// against it.
 pub const SERVICE_NAMES: [&str; 2] = ["cage", "egress"];
 
+/// The two podman volumes that hold a cage's CA.
+///
+/// `agentcage-certs-<name>` is the egress's private CA store — the key
+/// and certificate it generated on its first start — and
+/// `agentcage-public-certs-<name>` the public certificate the cage
+/// mounts. Both belong to one cage and neither outlives it
+/// (`EGRESS-PORT-PLAN.md` D11: a new CA per cage).
+#[must_use]
+pub fn ca_volumes(name: &str) -> [String; 2] {
+    [
+        format!("agentcage-certs-{name}"),
+        format!("agentcage-public-certs-{name}"),
+    ]
+}
+
 /// What went wrong deploying.
 #[derive(Debug)]
 pub enum BackendError {
@@ -405,7 +420,8 @@ impl<'a> ContainerBackend<'a> {
     ///
     /// [`BackendError::State`] if a quadlet file cannot be unlinked or
     /// the reload fails. Podman removals are best-effort and report
-    /// only what actually went away.
+    /// only what actually went away; a volume that is still there
+    /// afterwards is a warning (see [`Self::remove_volume`]).
     pub fn destroy_resources(
         &self,
         name: &str,
@@ -420,13 +436,12 @@ impl<'a> ContainerBackend<'a> {
         {
             removed.push(format!("network:{name}-net"));
         }
-        for volume in [
-            format!("agentcage-certs-{name}"),
-            format!("agentcage-public-certs-{name}"),
-            format!("agentcage-podman-{name}"),
-        ] {
-            if self.podman.volume_remove(&volume).unwrap_or(false) {
-                removed.push(format!("volume:{volume}"));
+        let [certs, public_certs] = ca_volumes(name);
+        for volume in [certs, public_certs, format!("agentcage-podman-{name}")] {
+            match self.remove_volume(&volume) {
+                Ok(true) => removed.push(format!("volume:{volume}")),
+                Ok(false) => {}
+                Err(warning) => eprintln!("warning: {warning}"),
             }
         }
 
@@ -437,6 +452,75 @@ impl<'a> ContainerBackend<'a> {
                     removed.push(format!("secret:{secret}"));
                 }
             }
+        }
+        Ok(removed)
+    }
+
+    /// `podman volume rm`, telling "already gone" apart from "still
+    /// there".
+    ///
+    /// `volume rm` exits non-zero for both, and `destroy_resources`
+    /// used to read both as "nothing to remove". For the certs volumes
+    /// that is the one answer that must not be silent: they hold the
+    /// cage's CA, private key included (D11), and a failed removal — a
+    /// container still holding the volume, a podman error — left it
+    /// behind while `cage destroy` reported success. So a failed `rm`
+    /// is followed by `volume exists`, and a volume that is still there
+    /// is reported.
+    ///
+    /// A podman that cannot be run answers `Ok(false)`: there is no
+    /// telling what is left, which is the same best-effort every other
+    /// podman removal here has.
+    ///
+    /// # Errors
+    ///
+    /// A warning naming the volume and the command that removes it by
+    /// hand, when the volume survived the `rm`.
+    pub fn remove_volume(&self, volume: &str) -> Result<bool, String> {
+        if self.podman.volume_remove(volume).unwrap_or(false) {
+            return Ok(true);
+        }
+        if self.podman.volume_exists(volume).unwrap_or(false) {
+            return Err(format!(
+                "could not remove volume {volume}; remove it by hand: podman volume rm {volume}"
+            ));
+        }
+        Ok(false)
+    }
+
+    /// Remove a CA left behind by an earlier cage of this name (D11).
+    ///
+    /// For `cage create`, `run` and `cage restore`, on a name that has
+    /// no deployment, before anything of the new cage exists. A certs
+    /// volume found then is a leftover — from a `cage destroy` that
+    /// could not remove it, or a failed `run`, which discards its state
+    /// but not its podman resources — and podman would hand it, CA and
+    /// all, to the new cage's egress, which generates a CA only into an
+    /// *empty* store. A cage never inherits another cage's CA, so the
+    /// leftover goes first.
+    ///
+    /// Returns what was removed, for the caller's notice.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Failed`] when a leftover volume could not be
+    /// removed — the create must not go ahead on top of it — and
+    /// [`BackendError::Exec`] when podman could not be asked.
+    pub fn purge_stale_ca(&self, name: &str) -> Result<Vec<String>, BackendError> {
+        let mut removed = Vec::new();
+        for volume in ca_volumes(name) {
+            if !self.podman.volume_exists(&volume)? {
+                continue;
+            }
+            if !self.podman.volume_remove(&volume)? {
+                return Err(BackendError::Failed(format!(
+                    "volume {volume} is left over from an earlier cage named \
+                     '{name}' and could not be removed, and a new cage must \
+                     not inherit its CA. Remove it with `agentcage cage \
+                     destroy {name}` or `podman volume rm {volume}`, then retry"
+                )));
+            }
+            removed.push(format!("volume:{volume}"));
         }
         Ok(removed)
     }

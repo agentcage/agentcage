@@ -92,6 +92,18 @@ else
   dump_cage_diagnostics "$CAGE2" "5.2 failure (second)"
 fi
 
+# 5.2b: Each cage has a CA of its own — the egress generates one per
+# cage, in that cage's own certs volume, and never shares it.
+e2e_timer_start
+CA_BASIC=$(cage_ca_fingerprint "$CAGE")
+CA_SECOND=$(cage_ca_fingerprint "$CAGE2")
+if [ -n "$CA_BASIC" ] && [ -n "$CA_SECOND" ] && [ "$CA_BASIC" != "$CA_SECOND" ]; then
+  e2e_pass "5.2b" "Each cage has its own CA"
+else
+  e2e_fail "5.2b" "Each cage has its own CA" \
+    "basic=${CA_BASIC:-<none>} second=${CA_SECOND:-<none>}"
+fi
+
 # 5.3: Backup cage
 e2e_timer_start
 if "$AGENTCAGE" cage backup "$CAGE" -o "$BACKUP_FILE" >/dev/null 2>&1 && [ -f "$BACKUP_FILE" ]; then
@@ -138,8 +150,20 @@ if [ "$_restore_ok" = true ]; then
     e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got ${CODE:-000} after 120s"
     dump_cage_diagnostics "$CAGE" "5.6 failure"
   fi
+
+  # 5.6b: A backup does not carry the CA, so the restored cage — a
+  # destroy + create under the same name — has a new one.
+  e2e_timer_start
+  CA_RESTORED=$(cage_ca_fingerprint "$CAGE")
+  if [ -n "$CA_BASIC" ] && [ -n "$CA_RESTORED" ] && [ "$CA_BASIC" != "$CA_RESTORED" ]; then
+    e2e_pass "5.6b" "Restored cage has a new CA"
+  else
+    e2e_fail "5.6b" "Restored cage has a new CA" \
+      "before=${CA_BASIC:-<none>} restored=${CA_RESTORED:-<none>}"
+  fi
 else
   e2e_skip "5.6" "Restored cage works" "depends on 5.5"
+  e2e_skip "5.6b" "Restored cage has a new CA" "depends on 5.5"
 fi
 
 # Cleanup

@@ -78,6 +78,35 @@ impl Ctx {
         self.backend_for(&isolation)
     }
 
+    /// Make sure a cage about to be deployed under a fresh name starts
+    /// with a CA of its own (`EGRESS-PORT-PLAN.md` D11).
+    ///
+    /// The one path `cage create`, `run` and `cage restore` share, run
+    /// after their own "already exists" refusal and before any state is
+    /// written: a refusal here leaves nothing behind that a later
+    /// `cage update` would deploy on top of the leftover. Anything that
+    /// was removed is announced in one line, because a CA the operator
+    /// may have trusted somewhere is going away.
+    ///
+    /// # Errors
+    ///
+    /// The message to print, phrased for the operator, when a leftover
+    /// could not be removed.
+    pub(crate) fn purge_stale_ca(&self, isolation: &str, name: &str) -> Result<(), String> {
+        let removed = self
+            .backend_for(isolation)
+            .purge_stale_ca(name)
+            .map_err(|error| error.to_string())?;
+        if !removed.is_empty() {
+            println!(
+                "Removed a CA left by an earlier cage named '{name}' ({}); \
+                 this cage gets a new one.",
+                removed.join(", ")
+            );
+        }
+        Ok(())
+    }
+
     /// `_ensure_backend_ready` — recover what can be recovered, then
     /// gate on prerequisites.
     ///

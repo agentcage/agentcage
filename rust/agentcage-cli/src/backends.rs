@@ -325,6 +325,25 @@ impl<'a> AnyBackend<'a> {
         }
     }
 
+    /// Remove a CA an earlier cage of this name left behind, before a
+    /// new cage is deployed under it (`EGRESS-PORT-PLAN.md` D11).
+    ///
+    /// Only for a name with no deployment — `cage create`, `run`,
+    /// `cage restore` — never for `cage update`, which keeps the
+    /// cage's own CA. Returns what was removed, for the caller's
+    /// notice.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError`] when a leftover could not be removed.
+    pub fn purge_stale_ca(&self, name: &str) -> Result<Vec<String>, BackendError> {
+        match self {
+            Self::Container(backend) => backend.purge_stale_ca(name),
+            Self::Vm(backend) => backend.purge_stale_ca(name),
+            Self::Apple(backend) => backend.purge_stale_ca(name),
+        }
+    }
+
     /// `exec_argv` — the argv that runs a command inside a service.
     ///
     /// Fallible for the apple arm alone, which is why the protocol

@@ -15,6 +15,24 @@ register_cage "$CAGE"
 # Setup
 echo "Creating cage..."
 create_cage "$CONFIGS/basic.yaml" >/dev/null
+
+# 1.0b: destroy + create under the same name yields a new CA. The cage
+# unit only starts once the egress has published its cert, so the
+# fingerprint is readable as soon as `cage create` returns. Done here,
+# before any traffic, so the later tests (and phases 2/4, which reuse
+# this cage) run against the recreated cage exactly as they would have.
+e2e_timer_start
+CA_FIRST=$(cage_ca_fingerprint "$CAGE")
+"$AGENTCAGE" cage destroy "$CAGE" -y >/dev/null 2>&1 || true
+create_cage "$CONFIGS/basic.yaml" >/dev/null
+CA_SECOND=$(cage_ca_fingerprint "$CAGE")
+if [ -n "$CA_FIRST" ] && [ -n "$CA_SECOND" ] && [ "$CA_FIRST" != "$CA_SECOND" ]; then
+  e2e_pass "1.0b" "Recreated cage gets a new CA"
+else
+  e2e_fail "1.0b" "Recreated cage gets a new CA" \
+    "first=${CA_FIRST:-<none>} second=${CA_SECOND:-<none>}"
+fi
+
 echo "Starting mock server..."
 start_mock "$CAGE" httpbin.org example.com
 
