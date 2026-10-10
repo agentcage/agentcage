@@ -191,6 +191,92 @@ _LITERAL_TAIL_BYTES = 64
 # carries free text, never a literal.
 _STATUS_WORDS = frozenset({b"OK", b"NO", b"BAD", b"BYE", b"PREAUTH"})
 
+# Status words that complete a command in a tagged response (RFC 3501 §7.1).
+_COMPLETION_WORDS = frozenset({b"OK", b"NO", b"BAD"})
+
+# A literal announced at the end of a line from the cage (RFC 3501 §4.3):
+# "{n}" (synchronising), "{n+}" (non-synchronising, RFC 7888 LITERAL+ and
+# LITERAL-, which share the syntax), each optionally "~"-prefixed (RFC 3516
+# literal8). The count is matched loosely here and range-checked by
+# _client_literal(), so a 30-digit count is "too large", not "malformed".
+_CLIENT_LITERAL_RE = re.compile(rb"(~?)\{(\d+)(\+?)\}\r?\n\Z")
+
+# Anything else in braces at the end of a line ("{5-}", "{ 5}", "{}"). Not a
+# literal in IMAP's grammar, but close enough that a lenient upstream might
+# read one as a literal while the relay reads a complete command line, so the
+# relay refuses it rather than guess. A brace can't end a line otherwise:
+# atoms and tags can't contain "{", and a quoted string ends in '"'.
+_LITERAL_LIKE_RE = re.compile(rb"\{[^{}\r\n]*\}\r?\n\Z")
+
+# Largest literal the cage may send, in bytes. A literal is a message being
+# uploaded (APPEND, REPLACE, CATENATE) or a string argument; the relay streams
+# literal bytes through without holding them, so this bounds what one command
+# can push at the upstream, not the relay's memory. 64 MiB is well above
+# the message size most providers accept by default, so an ordinary upload
+# meets the upstream's own limit first.
+_MAX_LITERAL_BYTES = 64 * 1024 * 1024
+
+# Bytes allowed in a command tag: RFC 3501 §9, tag = 1*<any ASTRING-CHAR
+# except "+">, i.e. printable ASCII except "(", ")", "{", "%", "*", '"', "\"
+# and "+". Refusing other tags keeps the relay's view of the stream and the
+# upstream's in step: a "+" or "*" tag echoed back by the upstream would read
+# as a continuation request or an untagged response.
+_TAG_BYTES = frozenset(range(0x21, 0x7F)) - frozenset(b'(){%*"\\+')
+
+
+class _Literal:
+    """A literal announced at the end of one line from the cage."""
+
+    __slots__ = ("size", "sync", "start")
+
+    def __init__(self, size: int, sync: bool, start: int) -> None:
+        self.size = size    # payload bytes that follow the line
+        self.sync = sync    # synchronising: the cage waits for "+" first
+        self.start = start  # offset of "{" in the line
+
+
+class _MalformedLiteral(Exception):
+    """A line ends in something brace-shaped that is not a literal."""
+
+
+def _client_literal(line: bytes) -> Optional[_Literal]:
+    """The literal *line* announces at its end, or None.
+
+    Raises _MalformedLiteral for a brace-shaped tail that is not one; the
+    size is not range-checked here (see _MAX_LITERAL_BYTES).
+    """
+    if not line.endswith(b"}\r\n") and not line.endswith(b"}\n"):
+        return None
+    # Neither form has a "{" inside it, so the last one on the line is
+    # where the tail starts, however long the count.
+    brace = line.rfind(b"{")
+    if brace < 0:
+        return None
+    tail = line[max(0, brace - 1):]
+    m = _CLIENT_LITERAL_RE.search(tail)
+    if m is None:
+        if _LITERAL_LIKE_RE.search(tail):
+            raise _MalformedLiteral(tail)
+        return None
+    digits = m.group(2)
+    # A count with more digits than any sane size is simply too large. Not
+    # parsed, since int() refuses very long digit strings.
+    size = int(digits) if len(digits) <= 18 else _MAX_LITERAL_BYTES + 1
+    return _Literal(size, not m.group(3), brace)
+
+
+def _synchronising(line: bytes, lit: _Literal) -> bytes:
+    """*line* with its literal announced as synchronising ("{n+}" -> "{n}")."""
+    if lit.sync:
+        return line
+    head = line[:lit.start]
+    eol = b"\r\n" if line.endswith(b"\r\n") else b"\n"
+    return head + b"{%d}" % lit.size + eol
+
+
+def _valid_tag(tag: bytes) -> bool:
+    return bool(tag) and all(b in _TAG_BYTES for b in tag)
+
 
 def _capability_hidden(token: str, write_mode: str) -> bool:
     """True when *token* must not be advertised to the cage.
@@ -451,14 +537,15 @@ class ImapRelay:
             # Run both pipes concurrently. When one finishes (typically
             # because the client disconnected), cancel the other so we
             # don't hang on a half-open upstream connection.
+            tracker = _CommandTracker()
             t1 = asyncio.create_task(
                 self._pipe_client_to_upstream(
-                    client_reader, upstream_writer, client_writer,
+                    client_reader, upstream_writer, client_writer, tracker,
                 )
             )
             t2 = asyncio.create_task(
                 self._pipe_upstream_to_client(
-                    upstream_reader, client_writer
+                    upstream_reader, client_writer, tracker,
                 )
             )
             done, pending = await asyncio.wait(
@@ -650,34 +737,214 @@ class ImapRelay:
         client_reader: asyncio.StreamReader,
         upstream_writer: asyncio.StreamWriter,
         client_writer: asyncio.StreamWriter,
+        tracker: _CommandTracker,
     ) -> None:
         while True:
             line = await client_reader.readline()
             if not line:
                 return
-            decision = self._policy_check(line)
-            if decision is None:
+            if not await self._relay_command(
+                line, client_reader, upstream_writer, client_writer, tracker,
+            ):
+                return
+
+    async def _relay_command(
+        self,
+        line: bytes,
+        client_reader: asyncio.StreamReader,
+        upstream_writer: asyncio.StreamWriter,
+        client_writer: asyncio.StreamWriter,
+        tracker: _CommandTracker,
+    ) -> bool:
+        """Relay one command whose first line is *line*. False ends the
+        session.
+
+        A command is one line unless it carries literals (RFC 3501 §4.3):
+        a line ending in ``{n}`` is followed by n bytes of payload and then
+        the rest of the command, which may announce another literal, and so
+        on. Payload is data, never commands: it is streamed through byte for
+        byte and never policy-checked, while the line that starts a command
+        always is, before anything of the command is forwarded.
+
+        That only holds while the relay and the upstream agree on where each
+        literal starts and ends, so every literal goes upstream as a
+        synchronising one, and its payload is forwarded only after the
+        upstream has answered that very line with ``+``:
+          - ``{n}``: the cage itself waits for ``+``, which the relay passes
+            on. A tagged response instead means the upstream refused the
+            literal; the cage sends no payload, and the relay reads what
+            follows as a new command, as the upstream does.
+          - ``{n+}`` (LITERAL+/LITERAL-, RFC 7888): the cage sends the
+            payload without waiting. The relay announces it upstream as
+            ``{n}``, swallows the upstream's ``+``, then forwards it; if the
+            upstream refuses instead, the relay drops the payload and the
+            rest of the command, as a server would. Rewriting costs a round
+            trip per literal, and buys this: the relay never has to predict
+            whether the upstream would have parsed a non-synchronising
+            literal where the cage put it (it may lack LITERAL+, or the
+            ``{n+}`` may sit inside an unterminated quoted string), which
+            is where a cage could otherwise get payload read as commands.
+        A command the relay refuses itself never reaches the upstream. If it
+        announced ``{n}``, the relay answers in place of the ``+`` and the
+        cage, as RFC 3501 §7.5 requires, never sends the payload; if
+        ``{n+}``, the relay reads and drops exactly the payload, and so on to
+        the end of the command.
+        """
+        try:
+            lit = _client_literal(line)
+        except _MalformedLiteral:
+            lit = None  # _policy_check() refuses the line
+        decision = self._policy_check(line)
+        if decision is not None:
+            await self._reply(client_writer, decision)
+            return await self._discard_command(
+                client_reader, client_writer, lit,
+            )
+
+        tag = (line.split(None, 1) or [b""])[0]
+        command = _command_name(line)
+        counted = len(line.split(None, 2)) >= 2
+        first = True
+        while True:
+            if lit is None:
                 upstream_writer.write(line)
                 await upstream_writer.drain()
-                continue
+                if first and counted:
+                    tracker.sent(tag)
+                return True
+            if not first and lit.size > _MAX_LITERAL_BYTES:
+                # Part of this command is already upstream, so there is no
+                # refusing it cleanly any more.
+                self._audit_literal_too_large(command)
+                await self._bye(client_writer, b"literal too large")
+                return False
+            # Make sure the next "+" or tagged response is this literal's:
+            # no other command may be outstanding. A later literal of the
+            # same command finds just this one outstanding, unless the
+            # upstream has already answered it, which leaves the two sides
+            # disagreeing about where the command ends.
+            await tracker.settle(0 if first else 1)
+            if not first and tracker.outstanding != 1:
+                log.warning(
+                    "imap relay %s: upstream completed a command before "
+                    "its last literal, closing session", self._cfg.name,
+                )
+                await self._bye(client_writer, b"protocol error")
+                return False
+            verdict = tracker.expect_continuation(tag, forward=lit.sync)
+            if first:
+                tracker.sent(tag)
+            upstream_writer.write(_synchronising(line, lit))
+            await upstream_writer.drain()
+            if not await verdict:
+                # Refused upstream; its tagged response is on its way to
+                # the cage.
+                return await self._discard_command(
+                    client_reader, client_writer, lit,
+                )
+            if not await _copy_exactly(
+                client_reader, upstream_writer, lit.size,
+            ):
+                return False
+            line = await client_reader.readline()
+            if not line:
+                return False
+            first = False
+            try:
+                lit = _client_literal(line)
+            except _MalformedLiteral:
+                log.warning(
+                    "imap relay %s: malformed literal inside a command, "
+                    "closing session", self._cfg.name,
+                )
+                self._audit_log({
+                    "kind": "imap_command",
+                    "relay": self._cfg.name,
+                    "command": command,
+                    "decision": "blocked",
+                    "reason": "malformed literal",
+                })
+                await self._bye(client_writer, b"malformed literal")
+                return False
 
-            tag, reason, fake_status = decision
-            client_writer.write(
-                tag + b" " + fake_status + b" " + reason.encode() + b"\r\n"
-            )
+    async def _discard_command(
+        self,
+        client_reader: asyncio.StreamReader,
+        client_writer: asyncio.StreamWriter,
+        lit: Optional[_Literal],
+    ) -> bool:
+        """Drop the rest of a command that will not reach the upstream.
+
+        Only payload the cage sends unasked needs dropping: a ``{n+}``
+        literal, then the line after it, and so on while those lines end
+        in ``{n+}`` too. At a ``{n}`` the cage waits for a ``+`` that never
+        comes (it has its tagged response), so whatever follows is the
+        cage's next command. False when the session must end: the payload
+        is larger than the relay will read, or the cage hung up.
+        """
+        while lit is not None and not lit.sync:
+            if lit.size > _MAX_LITERAL_BYTES:
+                await self._bye(client_writer, b"literal too large")
+                return False
+            if not await _copy_exactly(client_reader, None, lit.size):
+                return False
+            line = await client_reader.readline()
+            if not line:
+                return False
+            try:
+                lit = _client_literal(line)
+            except _MalformedLiteral:
+                return True
+        return True
+
+    async def _reply(
+        self,
+        client_writer: asyncio.StreamWriter,
+        decision: tuple[bytes, str, bytes],
+    ) -> None:
+        tag, reason, fake_status = decision
+        client_writer.write(
+            tag + b" " + fake_status + b" " + reason.encode() + b"\r\n"
+        )
+        await client_writer.drain()
+
+    async def _bye(
+        self, client_writer: asyncio.StreamWriter, reason: bytes,
+    ) -> None:
+        try:
+            client_writer.write(b"* BYE " + reason + b"\r\n")
             await client_writer.drain()
+        except Exception:
+            pass
+
+    def _audit_literal_too_large(self, command: str) -> None:
+        log.warning(
+            "imap relay %s: blocked literal over %d bytes",
+            self._cfg.name, _MAX_LITERAL_BYTES,
+        )
+        self._audit_log({
+            "kind": "imap_command",
+            "relay": self._cfg.name,
+            "command": command,
+            "decision": "blocked",
+            "reason": "literal too large",
+        })
 
     async def _pipe_upstream_to_client(
         self,
         upstream_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
+        tracker: _CommandTracker,
     ) -> None:
         # The PREAUTH greeting is not the only place capabilities reach the
         # cage: the reply to a CAPABILITY command, and a [CAPABILITY ...]
         # code in any status response, carry the upstream's list too.
-        # Filter them with the same rule as the greeting.
+        # Filter them with the same rule as the greeting. The tracker sees
+        # every response, to match continuation requests and completions to
+        # what the client pipe forwarded.
         filt = _ResponseFilter(
-            lambda t: _capability_hidden(t, self._cfg.write_mode)
+            lambda t: _capability_hidden(t, self._cfg.write_mode),
+            tracker.observe,
         )
         while True:
             chunk = await upstream_reader.read(8192)
@@ -708,16 +975,34 @@ class ImapRelay:
         ``fake_status`` is the IMAP status word the relay forges back
         to the client: ``OK`` for "already authenticated" (semantic
         no-op for a PREAUTH'd connection), ``NO`` for actual policy
-        denials.
+        denials, ``BAD`` for a line the relay won't parse (an invalid
+        tag, answered with tag ``*``, or a malformed literal).
         """
         # Split on any run of whitespace, not single spaces. RFC 3501 says
         # exactly one SP, but an upstream lenient about tabs, doubled or
         # leading spaces would run `a1  EXPUNGE` as EXPUNGE, and a
         # single-space split would have seen command "" and let it through.
         parts = line.split(None, 2)
-        if len(parts) < 2:
+        if not parts:
             return None
         tag = parts[0]
+        if not _valid_tag(tag):
+            # Answered untagged: echoing a "+" or "*" tag back would itself
+            # read as a continuation request or an untagged response.
+            log.warning(
+                "imap relay %s: blocked line with invalid tag %r",
+                self._cfg.name, tag[:32],
+            )
+            self._audit_log({
+                "kind": "imap_command",
+                "relay": self._cfg.name,
+                "command": _command_name(line),
+                "decision": "blocked",
+                "reason": "invalid tag",
+            })
+            return (b"*", "invalid command tag", b"BAD")
+        if len(parts) < 2:
+            return None
         cmd_b = parts[1].upper()
         cmd = cmd_b.decode("ascii", errors="replace")
 
@@ -725,13 +1010,7 @@ class ImapRelay:
         # `UID FETCH`/`UID SEARCH` are reads (clients use them for
         # everything because UIDs are stable), the rest mutate state.
         # Bare `UID` blocking would break every modern IMAP client.
-        effective_cmd = cmd
-        if cmd == "UID":
-            sub_b = b""
-            if len(parts) >= 3:
-                sub_b = (parts[2].split(None, 1) or [b""])[0]
-            sub = sub_b.upper().decode("ascii", errors="replace")
-            effective_cmd = f"UID {sub}" if sub else "UID"
+        effective_cmd = _command_name(line)
 
         if cmd in ("LOGIN", "AUTHENTICATE"):
             log.info(
@@ -845,6 +1124,30 @@ class ImapRelay:
                     "reason": reason,
                 })
                 return (tag, f"{cmd} {mailbox} {reason}", b"NO")
+
+        # The literal this line announces, if any (see _relay_command).
+        try:
+            lit = _client_literal(line)
+        except _MalformedLiteral:
+            log.warning(
+                "imap relay %s: blocked %s with malformed literal",
+                self._cfg.name, effective_cmd,
+            )
+            self._audit_log({
+                "kind": "imap_command",
+                "relay": self._cfg.name,
+                "command": effective_cmd,
+                "decision": "blocked",
+                "reason": "malformed literal",
+            })
+            return (tag, "malformed literal", b"BAD")
+        if lit is not None and lit.size > _MAX_LITERAL_BYTES:
+            self._audit_literal_too_large(effective_cmd)
+            return (
+                tag,
+                f"[TOOBIG] literal larger than {_MAX_LITERAL_BYTES} bytes",
+                b"NO",
+            )
 
         # Allowed-command logging. Per-command volume can be high under
         # IDLE/sync flows, so default to DEBUG and only emit at INFO
@@ -964,8 +1267,16 @@ class _ResponseFilter:
     wave the next n bytes through unfiltered.
     """
 
-    def __init__(self, hidden: Callable[[str], bool]) -> None:
+    def __init__(
+        self,
+        hidden: Callable[[str], bool],
+        observe: Optional[Callable[[bytes], bool]] = None,
+    ) -> None:
         self._hidden = hidden
+        # Shown the first line of every response (a whole line, or the first
+        # _HELD_LINE_LIMIT bytes of a longer one); returns False to drop
+        # that response instead of forwarding it. See _CommandTracker.
+        self._observe = observe
         self._held = bytearray()   # current line so far, not yet forwarded
         self._streaming = False    # current line overflowed: rest goes raw
         self._tail = b""           # last bytes of the line being streamed
@@ -998,17 +1309,27 @@ class _ResponseFilter:
             if nl >= 0:
                 line = bytes(self._held)
                 self._held.clear()
-                out += self._rewrite(line, self._classify(line))
+                starting = not self._continuing
+                kind = self._classify(line)
+                if not starting or self._observe is None or self._observe(line):
+                    out += self._rewrite(line, kind)
                 self._end_line(line)
             elif len(self._held) > _HELD_LINE_LIMIT:
                 line = bytes(self._held)
                 self._held.clear()
+                starting = not self._continuing
                 kind = self._classify(line)
                 if kind == "capability" or (
                     kind == "status" and b"[CAPABILITY" in line.upper()
                 ):
                     raise _UnfilterableResponse(
                         "upstream capability line longer than "
+                        f"{_HELD_LINE_LIMIT} bytes"
+                    )
+                if starting and self._observe is not None \
+                        and not self._observe(line):
+                    raise _UnfilterableResponse(
+                        "upstream continuation request longer than "
                         f"{_HELD_LINE_LIMIT} bytes"
                     )
                 out += line
@@ -1078,6 +1399,118 @@ class _ResponseFilter:
         return (
             body[:start] + b"".join(b" " + t for t in kept) + body[close:] + eol
         )
+
+
+class _CommandTracker:
+    """What the upstream still owes the relay, shared by the two pipes.
+
+    The client -> upstream pipe needs to know, for each literal it forwards,
+    whether the upstream answered the line announcing it with a ``+``
+    continuation request (send the literal) or a tagged response (the
+    command is over: no literal follows). Only the upstream -> client pipe
+    sees responses, so it shows every response's first line to observe(),
+    and the client pipe waits on the future expect_continuation() returns.
+
+    A ``+`` carries no tag, so it is only unambiguous when nothing else the
+    upstream is still working on could ask for one: an IDLE (RFC 2177),
+    another command's literal, or an extension the relay doesn't know. So
+    before forwarding a line that announces a literal, the client pipe waits
+    (settle()) until every other command it has forwarded has had its
+    tagged response. The relay never forwards AUTHENTICATE, the other
+    command that asks for continuations.
+    """
+
+    def __init__(self) -> None:
+        self._outstanding: dict[bytes, int] = {}
+        self._count = 0
+        self._changed = asyncio.Event()
+        # (tag, future, forward the "+" to the cage)
+        self._waiter: Optional[tuple[bytes, asyncio.Future, bool]] = None
+
+    @property
+    def outstanding(self) -> int:
+        return self._count
+
+    def sent(self, tag: bytes) -> None:
+        """A command with *tag* was forwarded; the upstream owes a reply."""
+        self._outstanding[tag] = self._outstanding.get(tag, 0) + 1
+        self._count += 1
+
+    async def settle(self, allowed: int) -> None:
+        """Wait until at most *allowed* forwarded commands are unanswered."""
+        while self._count > allowed:
+            self._changed.clear()
+            await self._changed.wait()
+
+    def expect_continuation(self, tag: bytes, forward: bool) -> asyncio.Future:
+        """A future for the upstream's answer to a literal of command *tag*:
+        True for ``+`` (forwarded to the cage only when *forward*, i.e. the
+        cage itself is waiting for it), False for the tagged response."""
+        fut = asyncio.get_running_loop().create_future()
+        self._waiter = (tag, fut, forward)
+        return fut
+
+    def observe(self, line: bytes) -> bool:
+        """See the first line of an upstream response; False drops it."""
+        waiter = self._waiter
+        if line[:1] == b"+":
+            if waiter is None:
+                return True  # IDLE's, or one the cage asked for itself
+            self._waiter = None
+            waiter[1].set_result(True)
+            return waiter[2]
+        words = line.split(None, 2)
+        if (
+            len(words) < 2
+            or words[0] == b"*"
+            or words[1].upper() not in _COMPLETION_WORDS
+        ):
+            return True
+        tag = words[0]
+        n = self._outstanding.get(tag, 0)
+        if n:
+            if n == 1:
+                del self._outstanding[tag]
+            else:
+                self._outstanding[tag] = n - 1
+            self._count -= 1
+            self._changed.set()
+        if waiter is not None and waiter[0] == tag:
+            self._waiter = None
+            waiter[1].set_result(False)
+        return True
+
+
+def _command_name(line: bytes) -> str:
+    """The command a line from the cage starts, as audit records name it:
+    upper-cased, with ``UID`` resolved to its subcommand (``UID STORE``)."""
+    parts = line.split(None, 2)
+    if len(parts) < 2:
+        return ""
+    cmd = parts[1].upper().decode("ascii", errors="replace")
+    if cmd == "UID":
+        sub_b = (parts[2].split(None, 1) or [b""])[0] if len(parts) >= 3 else b""
+        sub = sub_b.upper().decode("ascii", errors="replace")
+        return f"UID {sub}" if sub else "UID"
+    return cmd
+
+
+async def _copy_exactly(
+    reader: asyncio.StreamReader,
+    writer: Optional[asyncio.StreamWriter],
+    n: int,
+) -> bool:
+    """Move exactly *n* bytes from *reader* to *writer* (None drops them),
+    a chunk at a time. False if the reader hits EOF first."""
+    while n > 0:
+        chunk = await reader.read(min(n, 65536))
+        if not chunk:
+            return False
+        n -= len(chunk)
+        if writer is not None:
+            writer.write(chunk)
+            await writer.drain()
+    return True
 
 
 def _quote(value: str) -> bytes:
