@@ -133,7 +133,7 @@ If the cage sends `LOGIN` or `AUTHENTICATE` anyway, the relay answers `OK` witho
 
 The relay's own replies (the `NO` to a refused command, that `OK`, a `BAD`) are only ever sent between complete server responses. With pipelined commands, a reply that is ready while the server is half way through a response, for example inside a `FETCH` literal, waits for that response to end. Replies keep their order among themselves, but one can arrive before the server's reply to a command the cage sent earlier, as from a server running pipelined commands concurrently.
 
-After that the relay checks each command line from the cage and forwards it or answers it itself (see [Literals](#literals) for commands that carry data). Server responses are passed through unchanged, apart from the capability filtering above and the `+` the relay holds back when it rewrites a `{n+}` literal.
+After that the relay checks each command line from the cage and forwards it or answers it itself (see [Literals](#literals) for commands that carry data, and [Line endings](#line-endings)). Server responses are passed through unchanged, apart from the capability filtering above, the line endings, and the `+` the relay holds back when it rewrites a `{n+}` literal.
 
 | Key | Default | Accepted values |
 | :-- | :-- | :-- |
@@ -174,18 +174,27 @@ The relay only forwards a literal's bytes after the upstream has answered the li
 
 A line whose tag is not a valid IMAP tag (RFC 3501 §9: printable ASCII except `(`, `)`, `{`, `%`, `*`, `"`, `\` and `+`) is answered `* BAD invalid command tag` and not forwarded. An upstream echoing a `+` or `*` tag back would make its reply read as a continuation request or an untagged response.
 
+### Line endings
+
+RFC 3501 ends every line with CRLF and allows no other CR or LF outside a literal. Implementations disagree on what to do with the others, and wherever the relay and a server or client end a line in different places, they read different commands or responses from the same bytes. Literal bytes are never touched.
+- **Bare CR from the cage:** a command line holding a CR that is not the one right before its LF is refused with `BAD bare CR in command line` (tagged, or `*` when the tag isn't valid) and a `blocked` audit entry, and not forwarded. A server that also ends a line at a bare CR would otherwise run `a1 NOOP<CR>b EXPUNGE` as two commands, the second never checked. If the line is the rest of a command after a literal, part of which has already been forwarded, the relay closes the session with `* BYE bare CR in command line` instead.
+- **Bare LF from the cage:** ends the line, as it does for most servers, and the line is forwarded ending in CRLF. Splitting at every LF, the relay sees every command boundary a server might, and the rewrite makes a server that ends lines only at CRLF see the same ones.
+- **Server responses:** outside literals, each line reaches the cage ending in CRLF (a bare LF ending it is rewritten) with every other CR replaced by a space. Otherwise a client that ends lines at a bare CR, or only at CRLF, could read a literal where the relay saw none, and take a relay reply, or the server's next response, for part of it.
+
 ### Folder lists
 
-`folder_allowlist` and `folder_denylist` are checked against the mailbox argument of `SELECT`, `EXAMINE` and `STATUS`:
+`folder_allowlist` and `folder_denylist` are checked against the mailbox argument of every command that names a folder:
+- **Commands:** `SELECT`, `EXAMINE` and `STATUS`; `GETQUOTAROOT` (RFC 9208); `GETMETADATA` and `SETMETADATA` (RFC 5464, the argument after `GETMETADATA`'s options list if it has one); `GETANNOTATION` and `SETANNOTATION`; `GETACL`, `MYRIGHTS`, `LISTRIGHTS`, `SETACL` and `DELETEACL` (RFC 4314); `SUBSCRIBE` and `UNSUBSCRIBE`; `DELETE`; and `RENAME`, judged on the folder being renamed (renaming a denied folder would open it under the new name). Each one reports on the folder or changes it, and even a reply about its quota or ACL confirms that a denied folder exists. A refusal reads `NO <command> <mailbox> denied by folder_denylist` (or `not in folder_allowlist`), the same as for `SELECT`. In `GETMETADATA`, `SETMETADATA`, `GETANNOTATION` and `SETANNOTATION` the mailbox `""` means the server's own annotations and is not checked.
 - **Matching:** names are compared in one canonical form: Unicode NFC, case-folded (`Trash` matches `trash`, `INBOX` matches `inbox`). A decomposed `É` matches a precomposed one. There are no wildcards and no hierarchy rules: denying `Trash` does not deny `Trash/Old`, so list each folder.
 - **Non-ASCII names:** a folder has two spellings. One is modified UTF-7 (RFC 3501 §5.1.3, for example `&AMk-t&AOk-`), which clients use by default. The other is UTF-8 (`Été`), used once the client has sent `ENABLE UTF8=ACCEPT` (RFC 6855) or `ENABLE IMAP4rev2`. Configured names may be written either way.
   - A **deny** entry matches every spelling of its folder, however the cage writes it.
   - The **allowlist** admits a name in the reading the server will use: the decoded modified UTF-7 until UTF-8 names have been enabled (or from the start, if the server only speaks IMAP4rev2 or `UTF8=ONLY`). After that, a name must be allowed in every reading. For example, `&AMk-t&AOk-` is then refused, because the server may take it as that literal string, while `Été` in UTF-8 passes.
-- **Argument forms:** an atom, a quoted string, or a literal. A literal name of up to 1 KiB is read before the decision: for `{n}` the relay sends the cage the `+` itself. A name that is not valid UTF-8, a longer literal, or a literal anywhere else on the line is refused as unparseable.
+- **Argument forms:** an atom, a quoted string, or a literal. A literal name of up to 1 KiB is read before the decision: for `{n}` the relay sends the cage the `+` itself. A name that is not valid UTF-8 or a longer literal is refused as unparseable. So is a literal anywhere else on the line, except in the commands whose later arguments are strings (`GETMETADATA`, `SETMETADATA`, `GETANNOTATION`, `SETANNOTATION`, `LISTRIGHTS`, `SETACL`, `DELETEACL`, `RENAME`), where an annotation value, an identifier or a new name may be a literal once the mailbox has been written out in front of it as a quoted string or an atom with no `{` in it.
 - **Other mailboxes:** while either list is set, the relay also refuses the commands that report on mailboxes other than the selected one. These are `LIST` / `LSUB` with `RETURN (STATUS ...)` (RFC 5819), `ESEARCH` (RFC 7377 multi-mailbox search) and `NOTIFY SET` (RFC 5465); `NOTIFY NONE` is allowed. It also leaves `LIST-STATUS`, `MULTISEARCH` and `NOTIFY` out of the capabilities it advertises.
 - **Not checked:**
   - Plain `LIST` and `LSUB`, so the cage can discover folder names.
-  - The destination of `COPY`, `MOVE` and `APPEND`. The lists govern which folders the cage may read, and filing mail somewhere reads nothing. Checking destinations would also break the denylist's main use: denying `Trash` so that deleting can only mean moving to `Trash`. Use `write_mode` to stop filing.
+  - The destination of `COPY`, `MOVE` and `APPEND`. The lists govern which folders the cage may read, and filing mail somewhere reads nothing. Checking destinations would also break the denylist's main use: denying `Trash` so that deleting can only mean moving to `Trash`. Use `write_mode` to stop filing. The new name in `RENAME` and the folder `CREATE` makes are destinations in the same sense.
+  - The quota root of `GETQUOTA` and `SETQUOTA`, which is not a mailbox name.
 
 ## SMTP (`type: smtp`)
 
@@ -238,7 +247,7 @@ Relays write structured records to the egress audit stream, the same one HTTP de
 | `relay_init_failed` | none | The relay could not be built, for example because a credential did not resolve. `error` says why. |
 | `relay_start_failed` | none | The listener could not start: port in use, or a malformed `listen`. |
 | `imap_command` | `intercepted` | The cage sent `LOGIN` / `AUTHENTICATE`. |
-| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list, or because of its form: `reason` is `invalid tag`, `malformed literal` or `literal too large`. Carries `command`, `reason`, and `mailbox` for folder refusals. |
+| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list, or because of its form: `reason` is `invalid tag`, `bare CR in command line`, `malformed literal` or `literal too large`. Carries `command`, `reason`, and `mailbox` for folder refusals. |
 | `imap_command` | `allowed` | A forwarded command, recorded only while allowed-request logging is on (`logging.allowed_requests`). The egress currently treats an absent key as on, so set `false` explicitly if IMAP sync traffic is too noisy. |
 | `imap_upstream_unreachable` | none | The upstream connection failed. Carries `upstream` and `error`. |
 | `smtp_command` | `intercepted` | The cage sent `AUTH`. |

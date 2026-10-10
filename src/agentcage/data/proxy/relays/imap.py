@@ -170,17 +170,52 @@ _STRIPPED_CAPABILITY_PREFIXES = ("COMPRESS=",)
 # APPEND + EXPUNGE; advertising it would only steer a client into a NO.
 _STRIPPED_CAPABILITIES_RESTRICTED = frozenset({"REPLACE"})
 
-# Commands whose first argument is a mailbox name we want to filter
-# against folder_allowlist. LIST/LSUB are intentionally excluded —
-# they are metadata-only and the cage may reasonably need them to
-# discover the allowlisted folders.
+# Commands whose mailbox argument names a folder the folder lists judge:
+# the commands that open or report on that folder (quota, ACL, annotations,
+# subscription included, since each confirms the folder exists and tells
+# something about it), and those that change or remove it. RENAME is judged
+# on the folder it renames: renaming a denied folder to an unlisted name
+# would open it under that name. The argument is the first one, except that
+# GETMETADATA (RFC 5464) may put a parenthesised options list in front of
+# it (see _mailbox_offset()).
+#
+# LIST/LSUB are intentionally excluded — they are metadata-only and the
+# cage may reasonably need them to discover the allowlisted folders.
 #
 # The destinations of COPY, MOVE and APPEND are deliberately not checked
 # either. The folder lists say which folders the cage may read, and filing
 # mail into a folder reads nothing. Checking them would also break the use
 # the denylist exists for: denying Trash so that "delete" can only mean
-# "move to Trash". What may be written where is write_mode's business.
-_MAILBOX_ARG_COMMANDS = frozenset({"SELECT", "EXAMINE", "STATUS"})
+# "move to Trash". What may be written where is write_mode's business. The
+# new name of a RENAME and the folder a CREATE makes are destinations in the
+# same sense; a quota root (GETQUOTA, SETQUOTA) is not a mailbox name.
+_MAILBOX_ARG_COMMANDS = frozenset({
+    "SELECT", "EXAMINE", "STATUS",
+    "GETQUOTAROOT",
+    "GETMETADATA", "SETMETADATA",
+    "GETANNOTATION", "SETANNOTATION",
+    "GETACL", "MYRIGHTS", "LISTRIGHTS", "SETACL", "DELETEACL",
+    "SUBSCRIBE", "UNSUBSCRIBE",
+    "DELETE", "RENAME",
+})
+
+# Of those, the commands whose later arguments are strings, which a client
+# may send as literals (an annotation value, an ACL identifier, a RENAME's
+# new name). A literal on any other one of them can only be the mailbox.
+_LATER_STRING_ARGS = frozenset({
+    "GETMETADATA", "SETMETADATA", "GETANNOTATION", "SETANNOTATION",
+    "LISTRIGHTS", "SETACL", "DELETEACL", "RENAME",
+})
+
+# Commands in which the mailbox "" names the server itself (server
+# annotations, RFC 5464 §3.2), not a folder.
+_SERVER_MAILBOX_COMMANDS = frozenset({
+    "GETMETADATA", "SETMETADATA", "GETANNOTATION", "SETANNOTATION",
+})
+
+# Why a line from the cage with a CR in it other than the one ending it is
+# refused (see _has_bare_cr()).
+_BARE_CR = "bare CR in command line"
 
 # Longest mailbox name the relay reads ahead from a literal to check it
 # against the folder lists. Longer names are refused as unparseable.
@@ -301,6 +336,45 @@ def _synchronising(line: bytes, lit: _Literal) -> bytes:
 
 def _valid_tag(tag: bytes) -> bool:
     return bool(tag) and all(b in _TAG_BYTES for b in tag)
+
+
+def _has_bare_cr(line: bytes) -> bool:
+    """True when a line from the cage, as read up to its LF, holds a CR
+    that is not the one right before that LF.
+
+    The relay finds the end of a line at its LF. RFC 3501 ends lines with
+    CRLF and allows no CR inside one, but a server lenient enough to end a
+    line at a bare CR as well would run ``a1 NOOP<CR>b EXPUNGE`` as two
+    commands where the relay checked one. So a command line holding a
+    bare CR is refused, never forwarded. Literal bytes are data and may
+    hold anything; they are never passed through here.
+    """
+    body = line[:-2] if line.endswith(b"\r\n") else line
+    return b"\r" in body
+
+
+def _crlf(line: bytes) -> bytes:
+    """*line* ending in CRLF where it ends in a bare LF.
+
+    A bare LF ends a line from the cage, as it does for most servers and
+    for the literal parser above, but the line goes upstream ending in
+    CRLF. Splitting at every LF, the relay never sees fewer command
+    boundaries than a server does; rewriting the ending makes a server
+    that ends lines at CRLF only see the same ones, instead of reading two
+    of the relay's commands as one and never answering the second.
+    """
+    if line.endswith(b"\n") and not line.endswith(b"\r\n"):
+        return line[:-1] + b"\r\n"
+    return line
+
+
+def _printable(name: str) -> str:
+    """*name* with control characters replaced by ``?``, for echoing a
+    mailbox name the cage sent (a literal may hold CR and LF) inside one
+    reply line or log line."""
+    return "".join(
+        "?" if ord(c) < 0x20 or ord(c) == 0x7F else c for c in name
+    )
 
 
 def _capability_hidden(
@@ -988,7 +1062,7 @@ class ImapRelay:
         first = True
         while True:
             if lit is None:
-                upstream_writer.write(line)
+                upstream_writer.write(_crlf(line))
                 await upstream_writer.drain()
                 if first and counted:
                     tracker.sent(tag)
@@ -1017,7 +1091,7 @@ class ImapRelay:
             )
             if first:
                 tracker.sent(tag)
-            upstream_writer.write(_synchronising(line, lit))
+            upstream_writer.write(_crlf(_synchronising(line, lit)))
             await upstream_writer.drain()
             if not await verdict:
                 # Refused upstream; its tagged response is on its way to
@@ -1039,6 +1113,22 @@ class ImapRelay:
             if not line:
                 return False
             first = False
+            if _has_bare_cr(line):
+                # The rest of a command already partly upstream: there is
+                # no refusing this line on its own.
+                log.warning(
+                    "imap relay %s: %s inside a command, closing session",
+                    self._cfg.name, _BARE_CR,
+                )
+                self._audit_log({
+                    "kind": "imap_command",
+                    "relay": self._cfg.name,
+                    "command": command,
+                    "decision": "blocked",
+                    "reason": _BARE_CR,
+                })
+                await self._bye(to_client, _BARE_CR.encode())
+                return False
             try:
                 lit = _client_literal(line)
             except _MalformedLiteral:
@@ -1073,19 +1163,24 @@ class ImapRelay:
         return await self._discard_command(client_reader, to_client, lit)
 
     def _literal_mailbox(self, line: bytes, lit: _Literal) -> bool:
-        """True when *line* is a SELECT/EXAMINE/STATUS whose mailbox
+        """True when *line* is one of _MAILBOX_ARG_COMMANDS whose mailbox
         argument is the literal it announces, and the folder lists need
         to see that name."""
         if not self._folder_lists or lit.size > _MAX_MAILBOX_LITERAL:
             return False
+        if _has_bare_cr(line):
+            return False  # _policy_check() refuses the line
         parts = line.split(None, 2)
         if len(parts) < 3 or not _valid_tag(parts[0]):
             return False
-        if parts[1].upper().decode("ascii", "replace") \
-                not in _MAILBOX_ARG_COMMANDS:
+        cmd = parts[1].upper().decode("ascii", "replace")
+        if cmd not in _MAILBOX_ARG_COMMANDS:
+            return False
+        offset = _mailbox_offset(cmd, parts[2])
+        if offset is None:
             return False
         # parts[2] runs to the end of the line, so this is where it starts.
-        return lit.start == len(line) - len(parts[2])
+        return lit.start == len(line) - len(parts[2]) + offset
 
     async def _discard_command(
         self,
@@ -1185,12 +1280,26 @@ class ImapRelay:
         to the client: ``OK`` for "already authenticated" (semantic
         no-op for a PREAUTH'd connection), ``NO`` for actual policy
         denials, ``BAD`` for a line the relay won't parse (an invalid
-        tag, answered with tag ``*``, or a malformed literal).
+        tag, answered with tag ``*``, a bare CR, or a malformed literal).
 
         *mailbox* is a mailbox name the cage sent as a literal, read ahead
         by _relay_command(); *utf8_names* says whether the upstream may
         read mailbox names as UTF-8 (see _mailbox_denial_reason()).
         """
+        # Before anything else reads the line: past a bare CR, the relay
+        # and the upstream may not agree on what the line is.
+        if _has_bare_cr(line):
+            tag = (line.split(None, 1) or [b""])[0]
+            log.warning("imap relay %s: blocked %s", self._cfg.name, _BARE_CR)
+            self._audit_log({
+                "kind": "imap_command",
+                "relay": self._cfg.name,
+                "command": _command_name(line),
+                "decision": "blocked",
+                "reason": _BARE_CR,
+            })
+            return (tag if _valid_tag(tag) else b"*", _BARE_CR, b"BAD")
+
         # Split on any run of whitespace, not single spaces. RFC 3501 says
         # exactly one SP, but an upstream lenient about tabs, doubled or
         # leading spaces would run `a1  EXPUNGE` as EXPUNGE, and a
@@ -1323,12 +1432,8 @@ class ImapRelay:
             args = parts[2] if len(parts) >= 3 else b""
             if mailbox is not None:
                 mailbox = _decode_mailbox(mailbox)
-            elif _announces_literal(line):
-                # A literal the relay didn't read ahead: too long, or not
-                # the mailbox argument (where these commands never take one).
-                mailbox = None
             else:
-                mailbox = _extract_mailbox(args)
+                mailbox = _line_mailbox(cmd, line, args)
             if mailbox is None:
                 log.warning(
                     "imap relay %s: %s with unparseable mailbox: %r",
@@ -1342,11 +1447,15 @@ class ImapRelay:
                     "reason": "mailbox not parseable",
                 })
                 return (tag, f"{cmd} mailbox not parseable", b"NO")
-            reason = self._mailbox_denial_reason(mailbox, utf8_names)
+            if mailbox == "" and cmd in _SERVER_MAILBOX_COMMANDS:
+                reason = None  # the server's own annotations
+            else:
+                reason = self._mailbox_denial_reason(mailbox, utf8_names)
             if reason is not None:
+                shown = _printable(mailbox)
                 log.warning(
                     "imap relay %s: blocked %s on %s (%s)",
-                    self._cfg.name, cmd, mailbox, reason,
+                    self._cfg.name, cmd, shown, reason,
                 )
                 self._audit_log({
                     "kind": "imap_command",
@@ -1356,7 +1465,7 @@ class ImapRelay:
                     "decision": "blocked",
                     "reason": reason,
                 })
-                return (tag, f"{cmd} {mailbox} {reason}", b"NO")
+                return (tag, f"{cmd} {shown} {reason}", b"NO")
 
         # The literal this line announces, if any (see _relay_command).
         try:
@@ -1483,6 +1592,16 @@ def _store_writes_annotation(args: bytes) -> bool:
     return b"ANNOTATION" in re.split(rb"[\s()]+", args.upper())
 
 
+def _clean_line(line: bytes) -> bytes:
+    """A response line, or the start of one, as the cage gets it: ending
+    in CRLF if it ends in LF at all, with no other CR (see
+    _ResponseFilter)."""
+    if not line.endswith(b"\n"):
+        return line.replace(b"\r", b" ")
+    body = line[:-2] if line.endswith(b"\r\n") else line[:-1]
+    return body.replace(b"\r", b" ") + b"\r\n"
+
+
 class _UnfilterableResponse(Exception):
     """An upstream line the relay must filter but will not hold to filter."""
 
@@ -1516,6 +1635,20 @@ class _ResponseFilter:
     text, which may echo what the cage sent; a ``{n}`` at the end of one is
     text, and treating it as a literal would let the cage make the filter
     wave the next n bytes through unfiltered.
+
+    The filter finds the end of a line at its LF, and clients differ on
+    what ends one: some end a line at a bare CR as well, some only at CRLF.
+    RFC 3501 allows neither a bare CR nor a bare LF outside a literal, but
+    given one, such a client would read a different structure from the same
+    bytes than the filter does. ``a1 NO x<CR>* 1 FETCH (BODY[] {9}`` is one
+    status line to the filter, and to a client that ends lines at CR a
+    FETCH whose literal swallows the next 9 bytes, which may be a relay
+    reply the filter placed between responses; the upstream may echo text
+    the cage chose into such a line. So outside literals every line goes to
+    the cage ending in CRLF, a bare LF ending it rewritten, and every other
+    CR in it replaced by a space. A CR at the end of what has arrived of a
+    line is held back until the next byte shows whether it starts the CRLF.
+    Literal bytes are never touched.
     """
 
     def __init__(
@@ -1531,6 +1664,7 @@ class _ResponseFilter:
         self._held = bytearray()   # current line so far, not yet forwarded
         self._streaming = False    # current line overflowed: rest goes raw
         self._tail = b""           # last bytes of the line being streamed
+        self._cr = False           # streamed line's last CR, held back
         self._literal = 0          # literal bytes still to pass through
         self._continuing = False   # line continues a response after a literal
         self._data = False         # current response may carry literals
@@ -1578,6 +1712,7 @@ class _ResponseFilter:
             piece = chunk[i:end]
             i = end
             if self._streaming:
+                piece = self._stream_piece(piece, nl >= 0)
                 out += piece
                 self._tail = (self._tail + piece)[-_LITERAL_TAIL_BYTES:]
                 if nl >= 0:
@@ -1587,7 +1722,7 @@ class _ResponseFilter:
                 continue
             self._held += piece
             if nl >= 0:
-                line = bytes(self._held)
+                line = _clean_line(bytes(self._held))
                 self._held.clear()
                 starting = not self._continuing
                 kind = self._classify(line)
@@ -1596,7 +1731,7 @@ class _ResponseFilter:
                 self._end_line(line)
                 self._flush_inserts(out)
             elif len(self._held) > _HELD_LINE_LIMIT:
-                line = bytes(self._held)
+                line = self._stream_piece(bytes(self._held), False)
                 self._held.clear()
                 starting = not self._continuing
                 kind = self._classify(line)
@@ -1623,12 +1758,29 @@ class _ResponseFilter:
         relay replies still held, if the stream ends where they fit."""
         out = bytearray()
         if not self._streaming and self._held:
-            line = bytes(self._held)
+            line = _clean_line(bytes(self._held))
             self._held.clear()
             out += self._rewrite(line, self._classify(line))
             self._end_line(line)
+        elif self._streaming and self._cr:
+            self._cr = False
+            out += b" "  # no LF came after it
         self._flush_inserts(out)
         return bytes(out)
+
+    def _stream_piece(self, piece: bytes, ends_line: bool) -> bytes:
+        """_clean_line() for one piece of a line streamed raw: a CR the
+        last piece ended in goes in front, and a CR this one ends in is
+        held back unless the piece ends the line."""
+        if self._cr:
+            piece = b"\r" + piece
+            self._cr = False
+        if ends_line:
+            return _clean_line(piece)
+        if piece.endswith(b"\r"):
+            self._cr = True
+            piece = piece[:-1]
+        return piece.replace(b"\r", b" ")
 
     def _classify(self, line: bytes) -> str:
         """``capability``, ``data`` or ``status``: the response this line
@@ -1900,6 +2052,50 @@ def _folder_side_door(cmd: str, args: bytes) -> Optional[str]:
         if (args.split(None, 1) or [b""])[0].upper() != b"NONE":
             return "NOTIFY with folder lists set"
     return None
+
+
+def _mailbox_offset(cmd: str, args: bytes) -> Optional[int]:
+    """Where the mailbox argument of *cmd* starts in *args* (its arguments,
+    from their first non-blank byte), or None if what comes before it does
+    not parse.
+
+    That is the start, except for GETMETADATA, whose RFC 5464 grammar puts
+    an optional options list first: ``GETMETADATA (DEPTH 1) INBOX ...``.
+    The options are atoms and numbers, so the list ends at the first
+    ``)``; one holding a quote, backslash, brace or parenthesis is refused
+    rather than guess where a lenient server would end it, as is one not
+    followed by a space.
+    """
+    if cmd != "GETMETADATA" or not args.startswith(b"("):
+        return 0
+    close = args.find(b")")
+    if close < 0 or any(c in b'"\\{(' for c in args[1:close]):
+        return None
+    rest = args[close + 1:]
+    if rest[:1] not in (b" ", b"\t"):
+        return None
+    return len(args) - len(rest.lstrip(b" \t"))
+
+
+def _line_mailbox(cmd: str, line: bytes, args: bytes) -> Optional[str]:
+    """The mailbox argument of *cmd* as written on *line* (*args* being
+    its arguments), or None if it isn't there to read."""
+    offset = _mailbox_offset(cmd, args)
+    if offset is None:
+        return None
+    rest = args[offset:]
+    if _announces_literal(line):
+        # A literal the relay didn't read ahead: longer than any name it
+        # reads, or not the mailbox argument. Where a later argument can be
+        # a string, it can be that, as long as the mailbox is written out
+        # in front of it. An atom with a "{" in it is not: a server might
+        # end the atom there and read the rest as the literal.
+        if cmd not in _LATER_STRING_ARGS:
+            return None
+        if not rest.startswith(b'"') and \
+                b"{" in re.split(rb"[ \t]", rest, maxsplit=1)[0]:
+            return None
+    return _extract_mailbox(rest)
 
 
 def _decode_mailbox(raw: bytes) -> Optional[str]:

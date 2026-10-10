@@ -2096,7 +2096,7 @@ async def _send_command(reader, writer, pieces: list[bytes]) -> list[bytes]:
         await writer.drain()
         if i + 1 == len(pieces):
             break
-        if not pieces[i].endswith(b"+}\r\n"):
+        if not pieces[i].rstrip(b"\r\n").endswith(b"+}"):
             while True:
                 line = await _line()
                 if line.startswith(b"+"):
@@ -3054,3 +3054,443 @@ class TestFolderNameNormalisation:
             assert not hidden & set(tokens), tokens
         else:
             assert hidden <= set(tokens), tokens
+
+
+# ── Line endings: bare CR, bare LF ───────────────────────
+
+
+class TestBareCarriageReturn:
+    """The relay found the end of each line from the cage at its LF only,
+    so `a1 NOOP<CR>b EXPUNGE<CRLF>` was one command to it, a NOOP, and
+    was forwarded. RFC 3501 ends a line with CRLF and allows no CR inside
+    one, but an upstream that also ends a line at a bare CR runs that as
+    two commands, the EXPUNGE unchecked, even in write_mode none."""
+
+    @pytest.mark.parametrize("line,tag", [
+        (b"a1 NOOP\rb EXPUNGE\r\n", b"a1"),
+        (b"a1 NOOP\r\rb EXPUNGE\r\n", b"a1"),
+        (b"a1 NOOP\r\r\n", b"a1"),
+        (b"a1\rEXPUNGE\r\n", b"a1"),
+        (b"a1 SELECT INBOX\rb DELETE Trash\r\n", b"a1"),
+        (b"a1 NOOP\rb EXPUNGE\n", b"a1"),
+        (b"*\rb EXPUNGE\r\n", b"*"),
+    ], ids=["mid-line", "two-crs", "cr-before-crlf", "after-tag",
+            "select", "bare-lf-end", "invalid-tag"])
+    def test_refused_and_never_forwarded(self, line, tag):
+        async def _client(reader, writer):
+            writer.write(line)
+            await writer.drain()
+            got = [await asyncio.wait_for(reader.readline(), 5)]
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "none"}, _client,
+        ))
+        assert got == [
+            tag + b" BAD bare CR in command line\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+        assert [b["reason"] for b in _blocked(entries)] == [
+            "bare CR in command line",
+        ]
+
+    def test_refused_line_drops_its_non_sync_literal(self):
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 NOOP\rb APPEND INBOX {6+}\r\n", b"c NOOP", b"\r\n",
+            ])
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, _ = _run(_literal_session({"write_mode": "full"}, _client))
+        assert got == [
+            b"a1 BAD bare CR in command line\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+
+    def test_bare_cr_after_a_literal_closes_the_session(self):
+        """The line after a literal is the rest of a command already partly
+        upstream, so it can't be refused on its own: the relay closes the
+        session without forwarding any of it."""
+        async def _client(reader, writer):
+            try:
+                await _send_command(reader, writer, [
+                    b"a1 SEARCH CHARSET UTF-8 TEXT {5}\r\n", b"hello",
+                    b"\rb EXPUNGE\r\n",
+                ])
+            except EOFError as e:
+                return e.args[0]
+            return None
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "none"}, _client,
+        ))
+        assert got == [
+            b"+ go ahead\r\n", b"* BYE bare CR in command line\r\n",
+        ], got
+        assert b"EXPUNGE" not in rec.raw, rec.raw
+        assert [b["reason"] for b in _blocked(entries)] == [
+            "bare CR in command line",
+        ]
+
+    @pytest.mark.parametrize("marker", [b"{%d}", b"{%d+}"],
+                             ids=["sync", "non-sync"])
+    def test_bare_cr_inside_a_literal_is_data(self, marker):
+        body = b"one\rtwo\r\rthree\r\na1 NOOP\rb EXPUNGE\r"
+        head = b"a1 APPEND INBOX " + marker % len(body) + b"\r\n"
+
+        async def _client(reader, writer):
+            return await _send_command(reader, writer, [head, body, b"\r\n"])
+
+        got, rec, entries = _run(_literal_session(
+            {"write_mode": "full"}, _client,
+        ))
+        assert got[-1] == b"a1 OK APPEND completed\r\n", got
+        assert _without_login(rec.commands) == [
+            head.replace(b"+}", b"}") + body + b"\r\n",
+        ]
+        assert not _blocked(entries)
+
+
+class TestBareLineFeed:
+    """A line from the cage that ends in a bare LF is still a line, as
+    most servers and the relay's literal parser have always taken it, but
+    it now reaches the upstream ending in CRLF. A server that ends lines
+    at CRLF only would otherwise see two of the relay's lines as one
+    command, and the relay would wait for a reply that never comes."""
+
+    def test_forwarded_with_crlf(self):
+        body = b"a\nb\rc"
+
+        async def _client(reader, writer):
+            got = await _command(reader, writer, b"a1 NOOP\n")
+            got += await _send_command(reader, writer, [
+                b"a2 APPEND INBOX {5}\n", body, b"\n",
+            ])
+            got += await _send_command(reader, writer, [
+                b"a3 APPEND INBOX {5+}\n", body, b" {2+}\n", b"xy", b"\n",
+            ])
+            return got
+
+        got, rec, _ = _run(_literal_session({"write_mode": "full"}, _client))
+        assert got[-1] == b"a3 OK APPEND completed\r\n", got
+        assert _without_login(rec.commands) == [
+            b"a1 NOOP\r\n",
+            b"a2 APPEND INBOX {5}\r\n" + body + b"\r\n",
+            b"a3 APPEND INBOX {5}\r\n" + body + b" {2}\r\nxy\r\n",
+        ]
+
+
+class TestResponseLineEndings:
+    """The response filter found line ends at LF only. RFC 3501 allows no
+    CR or LF in a response outside a literal except the CRLF ending each
+    line, and a client that also ends a line at a bare CR, or only at
+    CRLF, could read a different structure from the same bytes than the
+    filter did: `a1 NO x<CR>* 1 FETCH (BODY[] {9}` is one status line to
+    the filter, but to such a client a FETCH whose literal swallows the
+    next 9 bytes, a relay reply the filter placed between responses
+    included. Outside literals the filter now forwards every line ending
+    in CRLF with no other CR in it; literal bytes stay byte-exact."""
+
+    REPLY = b"a9 NO refused\r\n"
+
+    @staticmethod
+    def _filter():
+        from relays.imap import _ResponseFilter, _capability_hidden
+        return _ResponseFilter(lambda t: _capability_hidden(t, "none"))
+
+    @pytest.mark.parametrize("raw,clean", [
+        (b"a1 NO no such mailbox x\r* 1 FETCH (BODY[] {9}\r\n",
+         b"a1 NO no such mailbox x * 1 FETCH (BODY[] {9}\r\n"),
+        (b"* 1 FETCH (BODY[] {5}\rXYZ)\r\n",
+         b"* 1 FETCH (BODY[] {5} XYZ)\r\n"),
+        (b"* 1 FETCH (BODY[] {5}\r\r\n",
+         b"* 1 FETCH (BODY[] {5} \r\n"),
+        (b"* OK [CAPABILITY IMAP4rev1]\r* CAPABILITY COMPRESS=DEFLATE\r\n",
+         b"* OK [CAPABILITY IMAP4rev1] * CAPABILITY COMPRESS=DEFLATE\r\n"),
+        (b"a1 OK done\n", b"a1 OK done\r\n"),
+    ], ids=["status-hides-fetch", "data", "cr-before-crlf", "capability",
+            "bare-lf"])
+    def test_one_line_for_every_client(self, raw, clean):
+        f = self._filter()
+        assert f.feed(raw) == clean
+        # Not inside a literal: a reply goes straight after the line.
+        assert f.insert(self.REPLY) == self.REPLY
+
+    def test_literals_stay_byte_exact(self):
+        f = self._filter()
+        stream = (
+            b"* 1 FETCH (BODY[] {5}\n" + b"a\nb\rc" + b")\n"
+            b"* 2 FETCH (BODY[] {6}\r\n" + b"\r\r\n\n\r\n" + b")\r\n"
+            b"a1 OK done\n"
+        )
+        assert f.feed(stream) + f.finish() == (
+            b"* 1 FETCH (BODY[] {5}\r\n" + b"a\nb\rc" + b")\r\n"
+            b"* 2 FETCH (BODY[] {6}\r\n" + b"\r\r\n\n\r\n" + b")\r\n"
+            b"a1 OK done\r\n"
+        )
+
+    STREAM = (
+        b"* 1 FETCH (BODY[] {5}\n" + b"a\nb\rc" + b" FLAGS ()\r)\n"
+        b"a1 NO x\r* 2 FETCH (BODY[] {4}\r\n"
+        b"* 3 FETCH (BODY[] {2}\r\r\n"
+        b"a2 OK done\r\n"
+    )
+    EXPECTED = (
+        b"* 1 FETCH (BODY[] {5}\r\n" + b"a\nb\rc" + b" FLAGS () )\r\n"
+        b"a1 NO x * 2 FETCH (BODY[] {4}\r\n"
+        b"* 3 FETCH (BODY[] {2} \r\n"
+        b"a2 OK done\r\n"
+    )
+
+    def test_every_two_chunk_split(self):
+        for cut in range(1, len(self.STREAM)):
+            f = self._filter()
+            got = (
+                f.feed(self.STREAM[:cut]) + f.feed(self.STREAM[cut:])
+                + f.finish()
+            )
+            assert got == self.EXPECTED, cut
+
+    def test_byte_at_a_time(self):
+        f = self._filter()
+        got = b"".join(
+            f.feed(self.STREAM[i:i + 1]) for i in range(len(self.STREAM))
+        )
+        assert got + f.finish() == self.EXPECTED
+
+    @pytest.mark.parametrize("cut_back", [0, 1, 2],
+                             ids=["after-lf", "between-cr-lf", "before-cr"])
+    def test_overlong_line_streamed_raw(self, cut_back):
+        """A line too long to hold is streamed in pieces; a CR at the end
+        of one piece may be the first half of the CRLF ending the line."""
+        from relays.imap import _HELD_LINE_LIMIT
+        line = b"* SEARCH" + b" 1\r2" * (_HELD_LINE_LIMIT // 3) + b"\r\n"
+        cut = len(line) - cut_back
+        f = self._filter()
+        out = b""
+        for i in range(0, cut, 8192):
+            out += f.feed(line[i:min(i + 8192, cut)])
+        out += f.feed(line[cut:])
+        assert out == line[:-2].replace(b"\r", b" ") + b"\r\n"
+        assert f.insert(self.REPLY) == self.REPLY
+
+    def test_last_line_at_eof(self):
+        f = self._filter()
+        assert f.feed(b"* BYE gone\r") == b""
+        assert f.finish() == b"* BYE gone "
+
+
+# ── Folder lists on every command naming a folder ───────
+
+
+# Commands that report on the folder their mailbox argument names.
+_FOLDER_READS = [
+    b"GETQUOTAROOT %s",
+    b"GETMETADATA %s /private/comment",
+    b"GETMETADATA (DEPTH 1 MAXSIZE 1024) %s (/private/comment /shared/x)",
+    b'GETANNOTATION %s "/comment" "value.shared"',
+    b"GETACL %s",
+    b"MYRIGHTS %s",
+    b"LISTRIGHTS %s anyone",
+    b"SUBSCRIBE %s",
+    b"UNSUBSCRIBE %s",
+]
+# Commands that change it; write_mode none and organise refuse them anyway.
+_FOLDER_WRITES = [
+    b'SETMETADATA %s (/private/comment "x")',
+    b'SETANNOTATION %s "/comment" ("value.shared" "x")',
+    b"SETACL %s bob lrs",
+    b"DELETEACL %s bob",
+    b"DELETE %s",
+    b"RENAME %s Elsewhere",
+]
+_FOLDER_COMMANDS = pytest.mark.parametrize(
+    "command", _FOLDER_READS + _FOLDER_WRITES,
+    ids=lambda c: c.split()[0].decode() + ("-options" if b"DEPTH" in c else ""),
+)
+
+
+class TestFolderListsOnEveryMailboxCommand:
+    """Only SELECT, EXAMINE and STATUS were checked against the folder
+    lists. GETQUOTAROOT, GETMETADATA, GETANNOTATION, GETACL, MYRIGHTS,
+    LISTRIGHTS, SUBSCRIBE and UNSUBSCRIBE went through for a denied or
+    unlisted folder, confirming it exists and handing over its quota,
+    ACL and annotations; in write_mode full so did DELETE, RENAME (rename
+    a denied folder and open it under the new name) and the ACL and
+    annotation writes."""
+
+    @staticmethod
+    def _session(policy, client, **kw):
+        return _run(_literal_session(policy, client, **kw))
+
+    @_FOLDER_COMMANDS
+    @pytest.mark.parametrize("mailbox", [
+        b"Trash", b'"trash"', _ETE_MUTF7, b'"' + _ETE_NFD + b'"',
+    ], ids=["atom", "quoted", "mutf7", "utf8-nfd"])
+    def test_denied_folder_refused(self, command, mailbox):
+        line = b"a1 " + command % mailbox + b"\r\n"
+
+        async def _client(reader, writer):
+            return await _command(reader, writer, line)
+
+        got, rec, entries = self._session(
+            {"folder_denylist": ["Trash", "Été"]}, _client,
+        )
+        cmd = command.split()[0]
+        assert len(got) == 1, got
+        assert got[0].startswith(b"a1 NO " + cmd + b" "), got
+        assert got[0].endswith(b" denied by folder_denylist\r\n"), got
+        assert _without_login(rec.commands) == []
+        assert [(b["command"], b["reason"]) for b in _blocked(entries)] == [
+            (cmd.decode(), "denied by folder_denylist"),
+        ]
+        assert "mailbox" in _blocked(entries)[0]
+
+    @_FOLDER_COMMANDS
+    def test_allowlist(self, command):
+        async def _client(reader, writer):
+            got = await _command(
+                reader, writer, b"a1 " + command % b"Trash" + b"\r\n",
+            )
+            return got + await _command(
+                reader, writer, b"a2 " + command % b'"inbox"' + b"\r\n",
+            )
+
+        got, rec, entries = self._session(
+            {"folder_allowlist": ["INBOX"]}, _client,
+        )
+        cmd = command.split()[0]
+        assert got[0] == (
+            b"a1 NO " + cmd + b" Trash not in folder_allowlist\r\n"
+        ), got
+        assert got[1].startswith(b"a2 OK"), got
+        assert _without_login(rec.commands) == [
+            b"a2 " + command % b'"inbox"' + b"\r\n",
+        ]
+
+    @pytest.mark.parametrize("pieces", [
+        [b"a1 GETACL {5}\r\n", b"Trash", b"\r\n"],
+        [b"a1 MYRIGHTS {5+}\r\n", b"trash", b"\r\n"],
+        [b"a1 GETMETADATA (DEPTH 1) {5+}\r\n", b"Trash",
+         b" /private/comment\r\n"],
+        [b"a1 SUBSCRIBE {11}\r\n", _ETE_MUTF7, b"\r\n"],
+        [b"a1 SETMETADATA {5}\r\n", b"Trash",
+         b" (/private/comment {3}\r\n", b"abc", b")\r\n"],
+    ], ids=["getacl", "myrights-non-sync", "getmetadata-options",
+            "subscribe-mutf7", "setmetadata-two-literals"])
+    def test_literal_mailbox_refused(self, pieces):
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, pieces)
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, _ = self._session(
+            {"folder_denylist": ["Trash", "Été"]}, _client,
+        )
+        assert got[-2].startswith(b"a1 NO "), got
+        assert got[-2].endswith(b" denied by folder_denylist\r\n"), got
+        assert got[-1] == b"a2 OK NOOP completed\r\n", got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+
+    @pytest.mark.parametrize("pieces", [
+        [b"a1 SETMETADATA INBOX (/private/comment {3}\r\n", b"abc", b")\r\n"],
+        [b"a1 SETMETADATA {5}\r\n", b"INBOX",
+         b" (/private/comment {3}\r\n", b"abc", b")\r\n"],
+        [b"a1 LISTRIGHTS INBOX {3+}\r\n", b"bob", b"\r\n"],
+        [b'a1 SETACL "INBOX" {3}\r\n', b"bob", b" lrs\r\n"],
+        [b"a1 RENAME INBOX/old {7}\r\n", b"Archive", b"\r\n"],
+    ], ids=["setmetadata-value", "setmetadata-both", "listrights",
+            "setacl-quoted", "rename-new-name"])
+    def test_literal_after_the_mailbox_is_not_the_mailbox(self, pieces):
+        async def _client(reader, writer):
+            return await _send_command(reader, writer, pieces)
+
+        got, rec, _ = self._session(
+            {"folder_allowlist": ["INBOX", "INBOX/old"]}, _client,
+        )
+        assert got[-1].startswith(b"a1 OK"), got
+        assert _without_login(rec.commands) == [
+            b"".join(pieces).replace(b"+}", b"}"),
+        ]
+
+    @pytest.mark.parametrize("line", [
+        b"a1 SETMETADATA Trash (/private/comment {3}\r\n",
+        b"a1 SETACL Trash{3}\r\n",
+        b"a1 GETMETADATA (DEPTH 1 /private/comment\r\n",
+        b'a1 GETMETADATA ("x) INBOX" ) Trash /private/comment\r\n',
+        b"a1 GETMETADATA (DEPTH 1)Trash /private/comment\r\n",
+        b"a1 GETACL {2000}\r\n",
+    ], ids=["denied-before-literal", "brace-in-atom", "unclosed-options",
+            "quoted-options", "no-space-after-options", "too-long"])
+    def test_refused_forms(self, line):
+        async def _client(reader, writer):
+            got = await _command(reader, writer, line)
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, rec, _ = self._session(
+            {"folder_denylist": ["Trash"], "folder_allowlist": ["INBOX"]},
+            _client,
+        )
+        assert got[0].startswith(b"a1 NO "), got
+        assert got[-1] == b"a2 OK NOOP completed\r\n", got
+        assert _without_login(rec.commands) == [b"a2 NOOP\r\n"]
+
+    @pytest.mark.parametrize("line", [
+        b'a1 GETMETADATA "" /shared/comment\r\n',
+        b'a1 GETMETADATA (DEPTH infinity) "" (/shared/comment)\r\n',
+        b'a1 SETMETADATA "" (/shared/comment "x")\r\n',
+        b'a1 GETANNOTATION "" "/comment" "value.shared"\r\n',
+    ], ids=["getmetadata", "getmetadata-options", "setmetadata",
+            "getannotation"])
+    def test_server_annotations_are_not_a_folder(self, line):
+        """`""` in these commands names the server, not a mailbox."""
+        async def _client(reader, writer):
+            return await _command(reader, writer, line)
+
+        got, rec, _ = self._session({"folder_allowlist": ["INBOX"]}, _client)
+        assert got[-1].startswith(b"a1 OK"), got
+        assert _without_login(rec.commands) == [line]
+
+    @pytest.mark.parametrize("line", [
+        b"a1 RENAME Archive Trash\r\n",
+        b"a1 CREATE Trash\r\n",
+        b'a1 GETQUOTA ""\r\n',
+    ], ids=["rename-destination", "create", "getquota-root"])
+    def test_destinations_and_quota_roots_unchecked(self, line):
+        async def _client(reader, writer):
+            return await _command(reader, writer, line)
+
+        got, rec, _ = self._session({"folder_denylist": ["Trash"]}, _client)
+        assert got[-1].startswith(b"a1 OK"), got
+        assert _without_login(rec.commands) == [line]
+
+    @_FOLDER_COMMANDS
+    def test_unaffected_without_folder_lists(self, command):
+        line = b"a1 " + command % b"Trash" + b"\r\n"
+
+        async def _client(reader, writer):
+            return await _command(reader, writer, line)
+
+        got, rec, _ = self._session({}, _client)
+        assert got[-1].startswith(b"a1 OK"), got
+        assert _without_login(rec.commands) == [line]
+
+    def test_refusal_text_keeps_a_literal_name_on_one_line(self):
+        """A literal mailbox name can hold CR and LF; written into the
+        refusal as is, it would end the relay's reply early and start a
+        line of the cage's choosing."""
+        name = b"x\r\n* BYE haha"
+
+        async def _client(reader, writer):
+            got = await _send_command(reader, writer, [
+                b"a1 SELECT {%d}\r\n" % len(name), name, b"\r\n",
+            ])
+            return got + await _command(reader, writer, b"a2 NOOP\r\n")
+
+        got, _, _ = self._session({"folder_allowlist": ["INBOX"]}, _client)
+        assert got == [
+            b"+ Ready for the mailbox name\r\n",
+            b"a1 NO SELECT x??* BYE haha not in folder_allowlist\r\n",
+            b"a2 OK NOOP completed\r\n",
+        ], got
