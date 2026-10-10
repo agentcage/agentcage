@@ -332,7 +332,7 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
             eprintln!("warning: quadlet refresh failed: {error}");
         }
         println!(
-            "  secret_injection: proxy rules apply on the next request; new \
+            "  secret_injection: proxy rules apply within about a second; new \
              exec sessions see the updated placeholders. Restart the cage to \
              refresh the boot process's environment."
         );
@@ -340,8 +340,9 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
 
     if changes.live.contains("protocol_relays") {
         // The egress re-syncs its relays on its next config reload, which
-        // its next proxied request triggers: changed, added and removed
-        // relays restart, unchanged ones keep their sessions. A relay's
+        // it runs within about a second of the edit (it polls the file,
+        // and checks again before each proxied request): changed, added
+        // and removed relays restart, unchanged ones keep their sessions. A relay's
         // credentials, though, reach the egress only as secrets staged
         // at container start (or re-staged live by `secret set`), so a
         // relay naming a credential the running egress was never given
@@ -351,8 +352,8 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
             eprintln!("warning: quadlet refresh failed: {error}");
         }
         println!(
-            "  protocol_relays: changed relays restart on the proxy's next \
-             request; unchanged ones keep their sessions. A relay that names a \
+            "  protocol_relays: changed relays restart within about a \
+             second; unchanged ones keep their sessions. A relay that names a \
              newly added credential starts once `agentcage secret set` stages \
              it, or after `agentcage cage restart`."
         );
@@ -369,8 +370,8 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
             eprintln!("warning: quadlet refresh failed: {error}");
         }
         println!(
-            "  capture: limits, filters and disabling apply on the proxy's \
-             next request. Restart the cage if HAR capture was just enabled \
+            "  capture: limits, filters and disabling apply within about a \
+             second. Restart the cage if HAR capture was just enabled \
              (`agentcage cage restart` mounts the capture volume)."
         );
     }

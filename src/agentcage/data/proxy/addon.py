@@ -42,6 +42,12 @@ CAPTURE_PATH = os.environ.get("AGENTCAGE_CAPTURE", "")
 # of the process.
 _RL_MAX_HOSTS = 4096
 
+# How often the background task checks the config file for an edit (see
+# _config_reload_loop). One stat() per tick; a proxied request also checks
+# before it is handled, so this only sets the latency for a cage with no
+# HTTP traffic (relay-only, or idle).
+_CONFIG_POLL_SECONDS = 1.0
+
 
 # ── Built-in inspector registry ──────────────────────────
 # Order matters: domain runs first to short-circuit blocked domains before
@@ -188,6 +194,10 @@ class Agentcage:
         self._peer_dns_cache: dict = {}
         self._poisoned_peers: set = set()
         self._running = False
+        # Config hot-reload: the background poll task (running() → done())
+        # and the single-flight guard shared with the per-request check.
+        self._reload_task: Optional[asyncio.Task] = None
+        self._reloading = False
         self._init_domain_requests()
         self._init_watcher()
 
@@ -304,6 +314,64 @@ class Agentcage:
         self._sync_protocol_relays()
         self._start_policy_sweeper()
         self._start_watcher_task()
+        self._start_reload_task()
+
+    def _start_reload_task(self) -> None:
+        """Start the config-file poll (_config_reload_loop) as a task."""
+        try:
+            self._reload_task = asyncio.get_event_loop().create_task(
+                self._config_reload_loop()
+            )
+        except RuntimeError:
+            # No running loop (test contexts) — best-effort, same as the
+            # policy sweeper; requests still check before they are handled.
+            self._reload_task = None
+
+    async def _config_reload_loop(self) -> None:
+        """Check the config file for an edit every _CONFIG_POLL_SECONDS.
+
+        ``request()`` checks too, but only a proxied HTTP request reaches
+        it: a cage that only talks through protocol relays, or is idle,
+        would otherwise never apply a relay change, a Policy API or
+        watcher reconfiguration, a re-staged secret or a passthrough edit.
+        Each tick is one stat() unless the file moved. A failing tick is
+        logged by _reload_check and the loop carries on.
+        """
+        while True:
+            await asyncio.sleep(_CONFIG_POLL_SECONDS)
+            self._reload_check()
+
+    def _reload_check(self) -> None:
+        """Apply a config edit if there is one; never raises.
+
+        The one entry point for both triggers, the poll task and
+        ``request()``. Single-flight: ``_maybe_reload`` is synchronous and
+        never awaits, so on the event loop one check always runs to the
+        end before the other starts, and the second finds the mtime
+        already recorded and does nothing. ``_reloading`` makes that
+        explicit, and turns a check re-entered from inside a reload into
+        a no-op rather than a nested reload.
+
+        A failure is logged, not raised: raised from the poll task it
+        would end the task (no more live edits), and raised from
+        ``request()`` it would abort the hook before the inspector chain
+        ran, letting that request through uninspected. ``_maybe_reload``
+        records the file's mtime before applying it, so a version that
+        fails part-way is not retried every second; the next edit is.
+        """
+        # getattr: test contexts build the addon without load().
+        if getattr(self, "_reloading", False):
+            return
+        self._reloading = True
+        try:
+            self._maybe_reload()
+        except Exception as e:
+            ctx.log.error(
+                f"agentcage: config reload failed part-way: {e!r}; "
+                "the next config change retries"
+            )
+        finally:
+            self._reloading = False
 
     def _start_policy_sweeper(self) -> None:
         """Start the Policy API grant-TTL sweeper as an asyncio task."""
@@ -433,8 +501,19 @@ class Agentcage:
         A reload's stop/start task still in flight is awaited first:
         stopping a relay whose start() has not bound yet is a no-op, and
         the listener would then come up after shutdown.
+
+        The config poll is cancelled before anything else, so no reload
+        can schedule a relay start while the relays are being drained.
         """
         self._running = False
+        reload_task = getattr(self, "_reload_task", None)
+        if reload_task is not None:
+            reload_task.cancel()
+            try:
+                await reload_task
+            except asyncio.CancelledError:
+                pass
+            self._reload_task = None
         apply_task = getattr(self, "_relay_apply_task", None)
         if apply_task is not None and not apply_task.done():
             await asyncio.wait([apply_task])
@@ -921,7 +1000,10 @@ class Agentcage:
     # ── Hot-reload ────────────────────────────────────────
 
     def _maybe_reload(self) -> None:
-        """Re-read config if the file has been modified since last load."""
+        """Re-read config if the file has been modified since last load.
+
+        Called through _reload_check (the poll task and ``request()``).
+        """
         try:
             mtime = os.stat(CONFIG_PATH).st_mtime
         except OSError:
@@ -932,9 +1014,19 @@ class Agentcage:
             with open(CONFIG_PATH) as f:
                 new_cfg = yaml.safe_load(f) or {}
         except Exception as e:
-            ctx.log.warn(f"agentcage: config reload failed, keeping old config: {e}")
+            # Retried on every check, so a read that caught a write in
+            # progress succeeds on the next one; but logged once per file
+            # version, since the poll checks every second.
+            if mtime != getattr(self, "_config_bad_mtime", None):
+                self._config_bad_mtime = mtime
+                ctx.log.warn(
+                    f"agentcage: config reload failed, keeping old config: {e}")
             return
         self.cfg = new_cfg
+        # Recorded before applying: a step that raises part-way leaves
+        # this version applied up to that step, and retrying it every
+        # second would only repeat the failure. The next edit retries.
+        self._config_mtime = mtime
 
         # Reconfigure built-in inspectors in-place
         legacy_map = self._build_legacy_config()
@@ -1002,7 +1094,6 @@ class Agentcage:
         # its interval/model/key, takes effect on the live edit.
         self._init_watcher()
 
-        self._config_mtime = mtime
         names = [i.name for i in self.inspectors]
         ctx.log.info(f"agentcage: config reloaded, inspectors={names}")
 
@@ -1040,7 +1131,9 @@ class Agentcage:
         return False
 
     async def request(self, flow: http.HTTPFlow) -> None:
-        self._maybe_reload()
+        # The poll task applies an edit within _CONFIG_POLL_SECONDS; this
+        # check makes a request sent right after the edit see it too.
+        self._reload_check()
 
         # Reverse proxy flows are inbound traffic (host → cage via proxy).
         # Detect early so we can guard the transparent-mode host rewrite AND
