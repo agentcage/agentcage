@@ -11,8 +11,8 @@ Environment="HTTP_PROXY=http://10.89.189.10:8080"
 Environment="HTTPS_PROXY=http://10.89.189.10:8080"
 Environment="http_proxy=http://10.89.189.10:8080"
 Environment="https_proxy=http://10.89.189.10:8080"
-Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
-Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
+Environment="NODE_EXTRA_CA_CERTS=/certs/agentcage-ca.pem"
+Environment="SSL_CERT_FILE=/certs/agentcage-ca.pem"
 Environment="AGENTCAGE_VERSION=0.0.0-golden"
 Volume=misc-kitchen-sink-public-certs.volume:/certs:ro,Z
 Volume={{WORK}}/patches/resolv-misc-kitchen-sink.conf:/etc/resolv.conf:ro,Z
@@ -54,7 +54,7 @@ ExecStartPre=/bin/bash -c 'mkdir -p %t/agentcage/misc-kitchen-sink/masks && : > 
 # swapped in after start from redirecting a removal outside the bind root, and
 # never-recorded (pre-existing) directories are simply not in the list.
 ExecStopPost=-/bin/bash -c 'f=%t/agentcage/misc-kitchen-sink/masks/root-0; [ -f "$f" ] || exit 0; root=$(echo e3tIT01FfX0vcHJvamVjdA== | base64 -d) && root=$(realpath -m -- "$root") || exit 0; while IFS= read -r d; do [ -n "$d" ] || continue; case "$(realpath -m -- "$d")" in "$root"/*) ;; *) continue ;; esac; [ -L "$d" ] && continue; [ -d "$d" ] || continue; rmdir "$d" 2>/dev/null || echo "agentcage: keeping $d (created as a tmpfs mask mount point, but not empty)" >&2; done < "$f"; rm -f "$f"; exit 0'
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec misc-kitchen-sink-egress test -f /home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec misc-kitchen-sink-egress test -f /home/acproxy/public-certs/agentcage-ca.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
 # Add the cage's default route via the egress container. Retries because
 # the container PID is briefly invalid (0/empty) right after `podman start`
 # returns and before the container's init has fully populated state.

@@ -76,7 +76,7 @@ Every cage consists of a workload sandbox and an egress gateway container operat
 │  │   │  agentcage:secret:KEY:…  │          │                                │  │   │
 │  │   │                          │          │  Proxy Addon & Controls:       │  │   │
 │  │   │  Trusted Per-Cage CA:    │          │  • Inspector Chain             │  │   │
-│  │   │  /certs/ca-cert.pem      │          │    (domain, secrets, entropy,  │  │   │
+│  │   │  /certs/agentcage-ca.pem │          │    (domain, secrets, entropy,  │  │   │
 │  │   └──────────────────────────┘          │     content-type, body-size)   │  │   │
 │  │                │                        │  • Wire Secret Injector        │  │   │
 │  │                │ Default route via      │  • Inbound Response Redactor   │  │   │

@@ -83,9 +83,12 @@ COPY containers/supervisor-egress.sh /opt/agentcage/supervisor
 COPY containers/dns-audit.sh /opt/agentcage/dns-audit.sh
 RUN chmod 0755 /opt/agentcage/supervisor /opt/agentcage/dns-audit.sh
 
-# Home + log dirs. mitmproxy writes its CA into ~/.mitmproxy; the cage
-# trust install path will read it from /home/acproxy/.mitmproxy via a
-# host bind-mount that surfaces in BOTH containers.
+# Home + log dirs. /home/acproxy/ca is the mount point of the cage's
+# private CA store (its own `<name>-certs` volume); the supervisor points
+# mitmproxy at it with `--set confdir=`, and publishes only the public
+# cert to /home/acproxy/public-certs for the cage. Empty in the image:
+# no CA is generated at build time, so a fresh volume starts empty and
+# each cage's egress generates its own on first start.
 #
 # /var/log/agentcage is chmod 1777 (world-writable, sticky bit) so:
 #   * the supervisor (PID 1, root) can `touch /var/log/agentcage/ready`
@@ -96,7 +99,7 @@ RUN chmod 0755 /opt/agentcage/supervisor /opt/agentcage/dns-audit.sh
 #   * mitmproxy (uid 200) can still write audit.jsonl / capture.jsonl
 #     into the same dir, AND
 #   * the sticky bit prevents cross-uid file deletion.
-RUN mkdir -p /home/acproxy/.mitmproxy /var/log/agentcage \
+RUN mkdir -p /home/acproxy/ca /var/log/agentcage \
     && chown -R acproxy:acproxy /home/acproxy /var/log/agentcage \
     && chmod 755 /home/acproxy \
     && chmod 1777 /var/log/agentcage

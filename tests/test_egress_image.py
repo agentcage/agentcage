@@ -389,13 +389,22 @@ def test_supervisor_publishes_public_cert_only():
     script = (
         repo_root / "src/agentcage/data/containers/supervisor-egress.sh"
     ).read_text()
-    # The install line publishes ONLY the public cert. Asserting on
-    # the exact target path keeps a future "let's also copy the .p12"
-    # edit from re-leaking the private key.
+    # The install line publishes ONLY the public cert, under the
+    # neutral name every consumer reads. Asserting on the exact target
+    # path keeps a future "let's also copy the .p12" edit from
+    # re-leaking the private key.
     assert (
-        'install -m 0644 "$CA_PATH" /home/acproxy/public-certs/mitmproxy-ca-cert.pem'
+        'install -m 0644 "$CA_PATH" /home/acproxy/public-certs/agentcage-ca.pem'
         in script
     ), "supervisor-egress.sh missing the public-cert publish step"
+    # Every publish into public-certs copies $CA_PATH (the public cert)
+    # and nothing else — the compatibility alias included.
+    for line in script.splitlines():
+        if line.strip().startswith("install") and "/home/acproxy/public-certs" in line:
+            assert '"$CA_PATH"' in line, (
+                f"supervisor-egress.sh publishes something other than the "
+                f"public cert: {line!r}"
+            )
     # Defense-in-depth: no line in the script should copy the CA
     # private key (.p12 or mitmproxy-ca.pem without the -cert suffix)
     # to the public-certs dir.

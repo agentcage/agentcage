@@ -11,8 +11,8 @@ Environment="HTTP_PROXY=http://10.89.187.10:8080"
 Environment="HTTPS_PROXY=http://10.89.187.10:8080"
 Environment="http_proxy=http://10.89.187.10:8080"
 Environment="https_proxy=http://10.89.187.10:8080"
-Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
-Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
+Environment="NODE_EXTRA_CA_CERTS=/certs/agentcage-ca.pem"
+Environment="SSL_CERT_FILE=/certs/agentcage-ca.pem"
 Environment="AGENTCAGE_VERSION=0.0.0-golden"
 Volume=proxy-keys-rate-limit-public-certs.volume:/certs:ro,Z
 Volume={{WORK}}/patches/resolv-proxy-keys-rate-limit.conf:/etc/resolv.conf:ro,Z
@@ -24,7 +24,7 @@ DropCapability=ALL
 Exec=node /app/agent.js
 
 [Service]
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec proxy-keys-rate-limit-egress test -f /home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec proxy-keys-rate-limit-egress test -f /home/acproxy/public-certs/agentcage-ca.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
 # Add the cage's default route via the egress container. Retries because
 # the container PID is briefly invalid (0/empty) right after `podman start`
 # returns and before the container's init has fully populated state.

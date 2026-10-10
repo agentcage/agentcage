@@ -607,7 +607,7 @@ fn error_precedence_matches_python() {
                    allow: [8080, 1143]\nprotocol_relays:\n- name: mail\n  type: imap\n  \
                    listen: '0.0.0.0:1143'\n  upstream: {host: imap.example.com, port: 993}\n  \
                    auth: {type: plain, user_source: 'env:U', password_source: 'env:P'}\n",
-            python: "ValueError: ports.tcp.allow entry 8080 is reserved by mitmdump (8080 = \
+            python: "ValueError: ports.tcp.allow entry 8080 is reserved by the egress proxy (8080 = \
                      HTTP-proxy listener, 8443 = transparent listener); redirecting it would \
                      loop or break the L7 proxy path. Move it to ports.tcp.passthrough if the \
                      cage needs to reach an upstream service on this port without inspection",

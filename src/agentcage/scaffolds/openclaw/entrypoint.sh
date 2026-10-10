@@ -2,22 +2,22 @@
 set -e
 
 # ── Certificate setup ──
-# Install mitmproxy CA cert so the cage proxy is trusted for HTTPS.
-cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy.crt \
+# Install the egress CA cert so the cage proxy is trusted for HTTPS.
+cp /certs/agentcage-ca.pem /usr/local/share/ca-certificates/agentcage-proxy.crt \
   && update-ca-certificates 2>/dev/null || true
 
 # Add to NSS database for Chromium/Electron. Best-effort: skip if the
 # enclosing path isn't writable (cages with a read-only root FS and no
 # /home/node/.pki tmpfs would otherwise fail hard under `set -e`).
 # Surface the degraded state so operators can see TLS inspection is off
-# for browser traffic (agents relying on mitmproxy cert trust will see
+# for browser traffic (agents relying on egress CA trust will see
 # cert errors until a /home/node/.pki tmpfs is added to cage.yaml).
 if mkdir -p /home/node/.pki/nssdb 2>/dev/null; then
   certutil -d sql:/home/node/.pki/nssdb -N --empty-password 2>/dev/null || true
-  certutil -d sql:/home/node/.pki/nssdb -A -t 'C,,' -n mitmproxy \
-    -i /certs/mitmproxy-ca-cert.pem 2>/dev/null || true
+  certutil -d sql:/home/node/.pki/nssdb -A -t 'C,,' -n agentcage \
+    -i /certs/agentcage-ca.pem 2>/dev/null || true
 else
-  echo "warning: /home/node/.pki not writable; Chromium/Electron in this cage will not trust the mitmproxy CA. Add '/home/node/.pki:rw,size=16M' to tmpfs in cage.yaml to enable TLS inspection for browser traffic." >&2
+  echo "warning: /home/node/.pki not writable; Chromium/Electron in this cage will not trust the egress CA. Add '/home/node/.pki:rw,size=16M' to tmpfs in cage.yaml to enable TLS inspection for browser traffic." >&2
 fi
 
 # ── OpenClaw config ──

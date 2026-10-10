@@ -47,7 +47,7 @@ Every cage consists of two tightly coupled services running on a dedicated priva
 │  │   │  agentcage:secret:KEY:…  │          │              (iptables REDIRECT│  │   │
 │  │   │                          │          │                                │  │   │
 │  │   │  Mounted CA Public Cert: │          │   addon.py                     │  │   │
-│  │   │  /certs/ca-cert.pem      │          │   ├── Inspector Chain          │  │   │
+│  │   │  /certs/agentcage-ca.pem │          │   ├── Inspector Chain          │  │   │
 │  │   └──────────────────────────┘          │   │   (domain, secrets, entropy│  │   │
 │  │                │                        │   │    content-type, body-size)│  │   │
 │  │                │ Default Gateway via    │   │   ├── Secret Wire Injector │  │   │
@@ -116,9 +116,9 @@ The DNS engine rejects:
 ## 3. Transparent TLS Interception
 
 ### A. Per-Cage Certificate Authority
-During cage initialization (`agentcage cage create`), agentcage generates a dedicated 4096-bit RSA Certificate Authority (CA) specific to that cage:
-- The private key stays inside the egress container filesystem and is never shared.
-- The public certificate is mounted read-only into the workload container at `/certs/mitmproxy-ca-cert.pem`.
+Each cage's egress generates a Certificate Authority (CA) of its own on its first start:
+- The private key stays in the egress's private CA store (`/home/acproxy/ca`, backed by that cage's own certs volume) and is never shared — not with the workload, not with other cages, and not in backups. It is removed with the cage.
+- The public certificate is mounted read-only into the workload container at `/certs/agentcage-ca.pem`.
 - Environment variables (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`) point to this certificate, enabling Node.js, Python, curl, and git to verify intercepted TLS without certificate warnings.
 
 ### B. Strict SNI ↔ Host Matching

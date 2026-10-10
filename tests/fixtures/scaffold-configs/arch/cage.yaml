@@ -26,7 +26,7 @@ container:
   command:
     - "sh"
     - "-c"
-    - "cp /certs/mitmproxy-ca-cert.pem /etc/ca-certificates/trust-source/anchors/agentcage-proxy.crt && trust extract-compat && exec sleep infinity"
+    - "cp /certs/agentcage-ca.pem /etc/ca-certificates/trust-source/anchors/agentcage-proxy.crt && trust extract-compat && exec sleep infinity"
 
   # Project directory — mount your repo here if you want to poke at it.
   volumes:

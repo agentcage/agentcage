@@ -69,7 +69,7 @@ selection — so nothing here goes through it. See the corpus README,
 - `validate_config._check_port_entry#0` — `ValueError: {…} entries must be integers (got: {…})`
 - `validate_config._check_port_entry#1` — `ValueError: {…} entry {…} out of range (1-65535)`
 - `validate_config._validate_port_list#0` — `ValueError: {…} entry {…} appears more than once`
-- `validate_config#16` — `ValueError: ports.tcp.allow entry {…} is reserved by mitmdump (8080 = HTTP-proxy listener, 8443 = transparent listener); redirecting it would loop or break the L7 proxy path. Move it to ports.tcp.p...`
+- `validate_config#16` — `ValueError: ports.tcp.allow entry {…} is reserved by the egress proxy (8080 = HTTP-proxy listener, 8443 = transparent listener); redirecting it would loop or break the L7 proxy path. Move it to ports.tcp.p...`
 - `validate_config#17` — `ValueError: ports.tcp.allow entry {…} collides with protocol_relays[{…}].listen={…}; the REDIRECT would intercept connections meant for the relay. Move it to ports.tcp.passthrough if the cage also ...`
 - `validate_config#18` — `ValueError: ports.tcp.allow entry {…} collides with container.ports inbound forward {…}; the REDIRECT would intercept connections meant for the cage's reverse-mode listener`
 - `validate_config#19` — `ValueError: domains: cannot specify both 'allow' and 'block' lists`

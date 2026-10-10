@@ -595,6 +595,14 @@ _ensure_log /var/log/agentcage/capture.jsonl acproxy
 _ensure_log /var/log/agentcage/proxy.log acproxy
 log "step D: starting mitmproxy (uid 200, CapBnd=0, prlimit --as=2G)"
 
+# The cage's private CA store: its own `<name>-certs` volume (on
+# apple-container, the per-cage certs dir), mounted here. mitmproxy
+# generates the CA into it on first start and reloads it afterwards;
+# `confdir` points it there instead of its default dot-directory under
+# $HOME, so the mount point carries a neutral name the next egress
+# engine keeps.
+CA_DIR=/home/acproxy/ca
+
 # Build reverse-mode flags for inbound port forwards (legacy proxy's
 # `--mode reverse:http://<ip_cage>:<port>@0.0.0.0:<port>`). The backend
 # stages this via two env vars:
@@ -629,6 +637,7 @@ if [ -f /etc/agentcage/config.yaml ]; then
       --mode "regular@${AGENTCAGE_REGULAR_BIND:-:8080}" \
       --mode transparent@8443 \
       $EXTRA_MODES \
+      --set confdir="$CA_DIR" \
       --set connection_strategy=lazy \
       --set keep_host_header=true \
     &
@@ -645,6 +654,7 @@ else
     mitmdump \
       --mode "regular@${AGENTCAGE_REGULAR_BIND:-:8080}" \
       --mode transparent@8443 \
+      --set confdir="$CA_DIR" \
       --set connection_strategy=lazy \
       --set keep_host_header=true \
     &
@@ -659,7 +669,8 @@ MITMPROXY_PID=$!
 # false-positive window where the cage workload would get
 # "connection refused" from the REDIRECT target.
 log "step E: waiting for mitmproxy listener :8443 AND CA cert (max 30s)"
-CA_PATH=/home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem
+# The file name is mitmproxy's own, inside the private store.
+CA_PATH="$CA_DIR/mitmproxy-ca-cert.pem"
 i=0
 while [ "$i" -lt 30 ]; do
   if [ -s "$CA_PATH" ] && ss -lnt 2>/dev/null | grep -q ':8443 '; then
@@ -676,17 +687,24 @@ ss -lnt 2>/dev/null | grep -q ':8443 ' \
   || die "mitmproxy listener never came up on :8443 within 30s" 52
 log "step E: mitmproxy ready (CA at $CA_PATH, listening on :8443)"
 
-# Publish just the public cert to /home/acproxy/public-certs, which the
-# apple-container backend bind-mounts to the cage at /certs. The cage
-# must NOT see the full ~/.mitmproxy/ dir because it also contains
-# mitmproxy-ca.pem (the CA private key) — exposed to uid 1000 in 0.22.0
-# through 0.22.5, caught as F1 by the CTF re-run on 0.22.5.
-# install(1) handles atomic-rename + permissions in one call; -m 0644
-# matches mitmproxy-ca-cert.pem's default mode. The directory is
-# created by the host backend before the egress is started, so this
+# Publish just the public cert to /home/acproxy/public-certs, which every
+# backend mounts read-only into the cage at /certs. The cage must NOT see
+# the private store ($CA_DIR) because it also holds the CA private key —
+# exposed to uid 1000 in 0.22.0 through 0.22.5, caught as F1 by the CTF
+# re-run on 0.22.5. install(1) handles atomic-rename + permissions in one
+# call; -m 0644 matches the generated cert's default mode. The directory
+# is created by the host backend before the egress is started, so this
 # never runs on a missing mount point.
+#
+# `agentcage-ca.pem` is the contract: the cage's SSL_CERT_FILE /
+# NODE_EXTRA_CA_CERTS, `cage verify`, the cage unit's readiness probe,
+# nested containers.conf and the scaffolds all name it. It is written
+# LAST, so a consumer polling for it finds the alias already in place.
 if [ -d /home/acproxy/public-certs ]; then
+  # Compatibility alias for images and configs that still copy the old
+  # name. Removed at the Rust egress cutover (EGRESS-PORT-PLAN.md D12).
   install -m 0644 "$CA_PATH" /home/acproxy/public-certs/mitmproxy-ca-cert.pem
+  install -m 0644 "$CA_PATH" /home/acproxy/public-certs/agentcage-ca.pem
   log "step E: published public cert to /home/acproxy/public-certs/"
 fi
 

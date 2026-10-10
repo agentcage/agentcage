@@ -67,7 +67,7 @@ const EGRESS_MEMORY: &str = "512M";
 pub struct EgressPaths<'a> {
     /// `logs_dir(name)` → `/var/log/agentcage`.
     pub logs: &'a Path,
-    /// `certs_dir(name)` → `/home/acproxy/.mitmproxy`. Holds the CA
+    /// `certs_dir(name)` → `/home/acproxy/ca`. Holds the CA
     /// **private** key, so it is mounted into this VM and no other.
     pub certs: &'a Path,
     /// `public_certs_dir(name)` → `/home/acproxy/public-certs`.
@@ -137,7 +137,7 @@ pub fn egress_argv(
     argv.push(network.to_owned());
     for (source, target) in [
         (paths.logs, "/var/log/agentcage"),
-        (paths.certs, "/home/acproxy/.mitmproxy"),
+        (paths.certs, "/home/acproxy/ca"),
         (paths.public_certs, "/home/acproxy/public-certs"),
     ] {
         argv.push("--volume".to_owned());
@@ -300,7 +300,7 @@ pub fn cage_argv(
         network,
     ];
     // CTF F1 (0.22.5): this used to bind `certs_dir`, which holds
-    // `mitmproxy-ca.pem` — the CA *private* key. A uid-1000 workload
+    // the CA *private* key. A uid-1000 workload
     // that can read it can mint a trusted certificate for any
     // allowlisted host. It binds `public_certs_dir` now, where the
     // egress supervisor's step E copies only the public cert.
@@ -339,9 +339,9 @@ pub fn cage_argv(
         // Without it, claude-code 2.1.x exits 0 from `-p` when its
         // HTTPS call fails verification, which looks like success.
         "-e",
-        "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem",
+        "SSL_CERT_FILE=/certs/agentcage-ca.pem",
         "-e",
-        "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem",
+        "NODE_EXTRA_CA_CERTS=/certs/agentcage-ca.pem",
         // So an agent can tell it is sandboxed, and which version by.
         "-e",
         &format!("AGENTCAGE_VERSION={version}"),
@@ -651,7 +651,7 @@ mod tests {
             &egress_paths(),
         );
         assert!(
-            pairs(&egress, "--volume").contains(&"/s/certs:/home/acproxy/.mitmproxy".to_owned()),
+            pairs(&egress, "--volume").contains(&"/s/certs:/home/acproxy/ca".to_owned()),
             "{egress:?}"
         );
 
@@ -688,6 +688,15 @@ mod tests {
             !mounts.iter().any(|m| m.contains("secrets")),
             "the cage was handed a secrets mount: {mounts:?}"
         );
+        // And it is told to trust the public cert by its neutral name,
+        // the one the egress publishes into that directory.
+        let env = pairs(&cage, "-e");
+        for var in ["SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"] {
+            assert!(
+                env.contains(&format!("{var}=/certs/agentcage-ca.pem")),
+                "{env:?}"
+            );
+        }
     }
 
     /// A staged secret reaches the cage as its **placeholder**. One

@@ -54,7 +54,7 @@
     "command": [
       "sh",
       "-c",
-      "cp /certs/mitmproxy-ca-cert.pem /etc/ca-certificates/trust-source/anchors/agentcage-proxy.crt && trust extract-compat && exec sleep infinity"
+      "cp /certs/agentcage-ca.pem /etc/ca-certificates/trust-source/anchors/agentcage-proxy.crt && trust extract-compat && exec sleep infinity"
     ],
     "cpus": "1.0",
     "drop_capabilities": [
