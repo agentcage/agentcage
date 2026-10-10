@@ -9,4 +9,4 @@
 # it is a project. `CPython` is there for the same reason.
 #
 # `..` keeps clippy's own default list rather than replacing it.
-doc-valid-idents = ["PyYAML", "CPython", ".."]
+doc-valid-idents = ["PyYAML", "CPython", "WebSocket", "WebSockets", "WebAssembly", "OAuth", "OpenRouter", "OpenAI", ".."]
