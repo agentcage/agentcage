@@ -1,0 +1,2583 @@
+{
+  "_comment": "Built-in inspector verdicts and the domain inspector's grant API, recorded from the Python egress by gen/inspectors.py. Do not edit by hand; see tests/fixtures/egress/README.md.",
+  "cases": [
+    {
+      "name": "legacy allowlist mode",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "mode": "allowlist",
+            "list": [
+              "api.anthropic.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": "allowlist"
+        },
+        {
+          "op": "inspect",
+          "host": "api.anthropic.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "evil.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: evil.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "sub.api.anthropic.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "anthropic.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: anthropic.com",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "legacy allowlist suffix",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "mode": "allowlist",
+            "list": [
+              "anthropic.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "api.anthropic.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "notanthropic.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: notanthropic.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "anthropic.com.evil",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: anthropic.com.evil",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "legacy blocklist",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "mode": "blocklist",
+            "list": [
+              "evil.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": "blocklist"
+        },
+        {
+          "op": "inspect",
+          "host": "evil.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain in blocklist: evil.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "x.evil.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain in blocklist: x.evil.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "api.anthropic.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "notevil.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "no mode default-deny",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {},
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "anything.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): anything.example.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): a.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): ",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "empty mode default-deny",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "mode": ""
+          },
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": ""
+        },
+        {
+          "op": "inspect",
+          "host": "anything.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): anything.example.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): a.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): ",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown mode default-deny",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "mode": "bogus"
+          },
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": "bogus"
+        },
+        {
+          "op": "inspect",
+          "host": "anything.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): anything.example.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): a.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): ",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "null mode default-deny",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "mode": null,
+            "list": [
+              "a.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "anything.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): anything.example.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): a.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "no domain allowlist configured (default-deny): ",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "empty allowlist blocks everything",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": []
+          },
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": "allowlist"
+        },
+        {
+          "op": "inspect",
+          "host": "anything.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: anything.example.com",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "allow wins over block and mode",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "a.com"
+            ],
+            "block": [
+              "b.com"
+            ],
+            "mode": "blocklist"
+          },
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": "allowlist"
+        },
+        {
+          "op": "baseline_list",
+          "expect": [
+            "a.com"
+          ]
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "b.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: b.com",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "block wins over legacy mode",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "block": [
+              "b.com"
+            ],
+            "mode": "allowlist",
+            "list": [
+              "a.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "mode",
+          "expect": "blocklist"
+        },
+        {
+          "op": "baseline_list",
+          "expect": [
+            "b.com"
+          ]
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "b.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain in blocklist: b.com",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "case and dots",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "Example.COM",
+              "trailing.org.",
+              "a..b.net"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "baseline_list",
+          "expect": [
+            "a..b.net",
+            "example.com",
+            "trailing.org."
+          ]
+        },
+        {
+          "op": "inspect",
+          "host": "EXAMPLE.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "Sub.Example.Com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com.",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: example.com.",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "trailing.org",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: trailing.org",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "trailing.org.",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "x.trailing.org.",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a..b.net",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "b.net",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: b.net",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": ".example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: ",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": ".",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: .",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "matches",
+          "host": "example.com.",
+          "expect": false
+        },
+        {
+          "op": "matches",
+          "host": "x.trailing.org.",
+          "expect": true
+        },
+        {
+          "op": "matches_baseline",
+          "host": "example.com.",
+          "expect": true
+        },
+        {
+          "op": "matches_baseline",
+          "host": "EXAMPLE.COM..",
+          "expect": true
+        },
+        {
+          "op": "matches_baseline",
+          "host": "trailing.org",
+          "expect": false
+        },
+        {
+          "op": "matches_baseline",
+          "host": "x.trailing.org",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "blocklist suffix and case",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "block": [
+              "Evil.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "EVIL.COM",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain in blocklist: EVIL.COM",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "a.evil.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain in blocklist: a.evil.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "evil.com.",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "good.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "matches_baseline",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "api.anthropic.com",
+              "anthropic.org"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "granted.dev",
+          "expect": null
+        },
+        {
+          "op": "matches_baseline",
+          "host": "api.anthropic.com",
+          "expect": true
+        },
+        {
+          "op": "matches_baseline",
+          "host": "x.anthropic.org",
+          "expect": true
+        },
+        {
+          "op": "matches_baseline",
+          "host": "evil.com",
+          "expect": false
+        },
+        {
+          "op": "matches_baseline",
+          "host": "granted.dev",
+          "expect": false
+        },
+        {
+          "op": "matches_baseline",
+          "host": "sub.granted.dev",
+          "expect": false
+        },
+        {
+          "op": "matches",
+          "host": "granted.dev",
+          "expect": true
+        },
+        {
+          "op": "matches",
+          "host": "sub.granted.dev",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "permanent specific unblocked by expired broader",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "api.example.com",
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2000-01-01T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "api.example.com",
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "matched_expired",
+          "host": "other.example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "api.example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "other.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "permanent broader unblocks expired specific",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com",
+              "sub.example.com"
+            ],
+            "expires": {
+              "sub.example.com": "2000-01-01T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "sub.example.com",
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "x.sub.example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "sub.example.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "every matching suffix expired names the longest",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com",
+              "sub.example.com"
+            ],
+            "expires": {
+              "sub.example.com": "2000-01-01T00:00:00+00:00",
+              "example.com": "2000-01-01T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "x.sub.example.com",
+          "expect": "sub.example.com"
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "x.sub.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: sub.example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "y.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "future and expired mixed",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com",
+              "sub.example.com"
+            ],
+            "expires": {
+              "sub.example.com": "2000-01-01T00:00:00+00:00",
+              "example.com": "2999-01-01T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "x.sub.example.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "expires list form and key normalisation",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "a.com",
+              "b.com",
+              "c.com",
+              "d.com"
+            ],
+            "expires": [
+              {
+                "domain": "A.COM.",
+                "expires_at": "2000-01-01T00:00:00+00:00"
+              },
+              {
+                "domain": "b.com",
+                "expires_at": ""
+              },
+              {
+                "domain": "",
+                "expires_at": "2000-01-01T00:00:00+00:00"
+              },
+              "c.com",
+              {
+                "domain": "d.com"
+              }
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: a.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "b.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "c.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "d.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "expires map falsy and non-string values",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "a.com",
+              "b.com",
+              "c.com",
+              "d.com"
+            ],
+            "expires": {
+              "a.com": "",
+              "b.com": null,
+              "c.com": 0,
+              "d.com": 20000101
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "b.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "c.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "d.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "expires of the wrong type is ignored",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "a.com"
+            ],
+            "expires": "a.com"
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "expires keys are dot-stripped, baseline is not",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "a.com."
+            ],
+            "expires": {
+              "a.com.": "2000-01-01T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.com.",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: a.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "a.com.",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: Z suffix past",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T14:19:59Z"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: Z suffix future",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T14:20:01Z"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: exactly now",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T14:20:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: one microsecond later",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T14:20:00.000001+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: positive offset past",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T14:20:00+05:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: negative offset future",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T14:19:00-05:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: same instant other offset",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T09:20:00-05:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: basic format past",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "20260830T142000+0000"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: space separator past",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30 14:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: week date past",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-W35-1T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: fraction comma",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T14:19:59,5+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: seconds offset",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2026-08-30T14:20:00+00:00:30"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": "example.com"
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: lowercase z fails open",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2000-01-01T00:00:00z"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: naive fails open",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2000-01-01T00:00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: date only fails open",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2000-01-01"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: garbage fails open",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "not-a-date"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: non-ascii fails open",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "\uff12\uff10\uff10\uff10-01-01T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expiry parse: offset too large fails open",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ],
+            "expires": {
+              "example.com": "2000-01-01T00:00:00+24:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "example.com",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "example.com",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "expired grant shadowed by permanent baseline",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "sub.example.com",
+          "expires_at": "2000-01-01T00:00:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "sub.example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "sub.example.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "only expired grant is blocked",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "unrelated.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "past.com",
+          "expires_at": "2000-01-01T00:00:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "matched_expired",
+          "host": "past.com",
+          "expect": "past.com"
+        },
+        {
+          "op": "matched_expired",
+          "host": "x.past.com",
+          "expect": "past.com"
+        },
+        {
+          "op": "inspect",
+          "host": "past.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: past.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "x.past.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: past.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "baseline expiry wins over grant expiry",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "x.com"
+            ],
+            "expires": {
+              "x.com": "2000-01-01T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "x.com",
+          "expires_at": "2999-01-01T00:00:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "x.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: x.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "x.com",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "grant lifecycle",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "base.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "New.Example.COM.",
+          "expires_at": "2999-01-01T00:00:00+00:00",
+          "reason": "docs",
+          "source": "decider",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "a.dev",
+          "expires_at": "",
+          "source": "",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "...",
+          "expires_at": "",
+          "expect": null
+        },
+        {
+          "op": "granted_entries",
+          "expect": [
+            {
+              "domain": "a.dev",
+              "granted_at": "2026-08-30T14:20:00+00:00",
+              "expires_at": "",
+              "reason": "",
+              "source": "policy-hook"
+            },
+            {
+              "domain": "new.example.com",
+              "granted_at": "2026-08-30T14:20:00+00:00",
+              "expires_at": "2999-01-01T00:00:00+00:00",
+              "reason": "docs",
+              "source": "decider"
+            }
+          ]
+        },
+        {
+          "op": "is_granted",
+          "host": "new.example.com",
+          "expect": true
+        },
+        {
+          "op": "is_granted",
+          "host": "NEW.example.com.",
+          "expect": true
+        },
+        {
+          "op": "is_granted",
+          "host": "sub.new.example.com",
+          "expect": false
+        },
+        {
+          "op": "is_granted",
+          "host": "a.dev",
+          "expect": true
+        },
+        {
+          "op": "inspect",
+          "host": "new.example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "sub.new.example.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.dev",
+          "expect": null
+        },
+        {
+          "op": "revoke",
+          "domain": "NEW.EXAMPLE.COM",
+          "expect": true
+        },
+        {
+          "op": "revoke",
+          "domain": "new.example.com",
+          "expect": false
+        },
+        {
+          "op": "inspect",
+          "host": "new.example.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: new.example.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "granted_entries",
+          "expect": [
+            {
+              "domain": "a.dev",
+              "granted_at": "2026-08-30T14:20:00+00:00",
+              "expires_at": "",
+              "reason": "",
+              "source": "policy-hook"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "grant is a no-op outside allowlist mode",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "block": [
+              "evil.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "evil.com",
+          "expect": null
+        },
+        {
+          "op": "granted_entries",
+          "expect": []
+        },
+        {
+          "op": "inspect",
+          "host": "evil.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain in blocklist: evil.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "configure",
+          "config": {},
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "a.com",
+          "expect": null
+        },
+        {
+          "op": "granted_entries",
+          "expect": []
+        }
+      ]
+    },
+    {
+      "name": "reconfigure keeps grants",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "a.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "g.com",
+          "expect": null
+        },
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "b.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain not in allowlist: a.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "b.com",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "g.com",
+          "expect": null
+        },
+        {
+          "op": "configure",
+          "config": {
+            "block": [
+              "g.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "g.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain in blocklist: g.com",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "h.com",
+          "expect": null
+        },
+        {
+          "op": "granted_entries",
+          "expect": [
+            {
+              "domain": "g.com",
+              "granted_at": "2026-08-30T14:20:00+00:00",
+              "expires_at": "",
+              "reason": "",
+              "source": "policy-hook"
+            }
+          ]
+        },
+        {
+          "op": "configure",
+          "config": {
+            "allow": []
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "g.com",
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "is_grant_only",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com",
+              "Upper.ORG"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "granted.dev",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "sub.example.com",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "upper.org",
+          "expect": null
+        },
+        {
+          "op": "is_grant_only",
+          "host": "granted.dev",
+          "expect": true
+        },
+        {
+          "op": "is_grant_only",
+          "host": "a.granted.dev",
+          "expect": true
+        },
+        {
+          "op": "is_grant_only",
+          "host": "GRANTED.DEV.",
+          "expect": true
+        },
+        {
+          "op": "is_grant_only",
+          "host": "sub.example.com",
+          "expect": false
+        },
+        {
+          "op": "is_grant_only",
+          "host": "example.com",
+          "expect": false
+        },
+        {
+          "op": "is_grant_only",
+          "host": "upper.org",
+          "expect": false
+        },
+        {
+          "op": "is_grant_only",
+          "host": "nothing.com",
+          "expect": false
+        },
+        {
+          "op": "is_grant_only",
+          "host": "",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "drop_expired is lexical and keeps overlay order",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": []
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "z.com",
+          "expires_at": "2000-01-01T00:00:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "a.com",
+          "expires_at": "2000-01-01T00:00:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "m.com",
+          "expires_at": "2999-01-01T00:00:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "p.com",
+          "expires_at": "",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "lex.com",
+          "expires_at": "2026-08-30T14:19:00-05:00",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "eq.com",
+          "expires_at": "2026-08-30T14:20:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "z.com",
+          "expires_at": "2000-01-01T00:00:00+00:00",
+          "reason": "again",
+          "expect": null
+        },
+        {
+          "op": "drop_expired",
+          "now_iso": "2026-08-30T14:20:00+00:00",
+          "expect": [
+            "z.com",
+            "a.com",
+            "lex.com",
+            "eq.com"
+          ]
+        },
+        {
+          "op": "granted_entries",
+          "expect": [
+            {
+              "domain": "m.com",
+              "granted_at": "2026-08-30T14:20:00+00:00",
+              "expires_at": "2999-01-01T00:00:00+00:00",
+              "reason": "",
+              "source": "policy-hook"
+            },
+            {
+              "domain": "p.com",
+              "granted_at": "2026-08-30T14:20:00+00:00",
+              "expires_at": "",
+              "reason": "",
+              "source": "policy-hook"
+            }
+          ]
+        },
+        {
+          "op": "drop_expired",
+          "now_iso": "3000-01-01T00:00:00+00:00",
+          "expect": [
+            "m.com"
+          ]
+        },
+        {
+          "op": "granted_entries",
+          "expect": [
+            {
+              "domain": "p.com",
+              "granted_at": "2026-08-30T14:20:00+00:00",
+              "expires_at": "",
+              "reason": "",
+              "source": "policy-hook"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "baseline_active_covers",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "example.com",
+              "sub.example.com",
+              "gone.org"
+            ],
+            "expires": {
+              "sub.example.com": "2000-01-01T00:00:00+00:00",
+              "gone.org": "2000-01-01T00:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "granted.dev",
+          "expect": null
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "sub.example.com",
+          "expect": true
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "x.sub.example.com",
+          "expect": true
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "gone.org",
+          "expect": false
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "granted.dev",
+          "expect": false
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "nope.net",
+          "expect": false
+        },
+        {
+          "op": "baseline_active_covers",
+          "domain": "SUB.EXAMPLE.COM",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "set_now moves the clock",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "a.com"
+            ],
+            "expires": {
+              "a.com": "2026-08-30T15:00:00+00:00"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": null
+        },
+        {
+          "op": "set_now",
+          "now": "2026-08-30T15:00:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "host": "a.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: a.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "grant",
+          "domain": "b.com",
+          "expires_at": "2999-01-01T00:00:00+00:00",
+          "expect": null
+        },
+        {
+          "op": "granted_entries",
+          "expect": [
+            {
+              "domain": "b.com",
+              "granted_at": "2026-08-30T15:00:00+00:00",
+              "expires_at": "2999-01-01T00:00:00+00:00",
+              "reason": "",
+              "source": "policy-hook"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_overlay: full entry",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "parse_overlay",
+          "overlay": "- domain: a.com\n  granted_at: '2026-08-30T14:00:00+00:00'\n  expires_at: ''\n  reason: r\n  source: decider\n",
+          "expect": [
+            {
+              "domain": "a.com",
+              "granted_at": "2026-08-30T14:00:00+00:00",
+              "expires_at": "",
+              "reason": "r",
+              "source": "decider"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_overlay: garbage",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "parse_overlay",
+          "overlay": ":\n  - [\n",
+          "expect": []
+        }
+      ]
+    },
+    {
+      "name": "parse_overlay: not a list",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "parse_overlay",
+          "overlay": "domain: a.com\n",
+          "expect": []
+        }
+      ]
+    },
+    {
+      "name": "parse_overlay: empty",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "parse_overlay",
+          "overlay": "",
+          "expect": []
+        }
+      ]
+    },
+    {
+      "name": "parse_overlay: filters entries",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "parse_overlay",
+          "overlay": "- domain: ''\n- 5\n- [a]\n- {reason: x}\n- domain: ok.com\n- domain: null\n",
+          "expect": [
+            {
+              "domain": "ok.com"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "parse_overlay: extra keys and odd values",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "parse_overlay",
+          "overlay": "- domain: Up.COM.\n  extra: 1\n  expires_at: 7\n  note: [x, y]\n",
+          "expect": [
+            {
+              "domain": "Up.COM.",
+              "extra": 1,
+              "expires_at": 7,
+              "note": [
+                "x",
+                "y"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reconcile",
+      "inspector": "domain",
+      "now": "2026-08-30T14:20:00+00:00",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "allow": [
+              "base.com"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "keep.com",
+          "expires_at": "2999-01-01T00:00:00+00:00",
+          "reason": "in memory",
+          "expect": null
+        },
+        {
+          "op": "grant",
+          "domain": "drop.com",
+          "expect": null
+        },
+        {
+          "op": "reconcile",
+          "overlay": "- domain: keep.com\n  granted_at: x\n  expires_at: ''\n  reason: on disk\n  source: host\n- domain: NEW.com.\n  granted_at: y\n  expires_at: '2000-01-01T00:00:00+00:00'\n  reason: added\n  source: host\n  extra: kept\n- domain: dup.com\n  reason: first\n- domain: dup.com\n  reason: second\n",
+          "expect": null
+        },
+        {
+          "op": "granted_entries",
+          "expect": [
+            {
+              "domain": "dup.com",
+              "reason": "second"
+            },
+            {
+              "domain": "keep.com",
+              "granted_at": "2026-08-30T14:20:00+00:00",
+              "expires_at": "2999-01-01T00:00:00+00:00",
+              "reason": "in memory",
+              "source": "policy-hook"
+            },
+            {
+              "domain": "NEW.com.",
+              "granted_at": "y",
+              "expires_at": "2000-01-01T00:00:00+00:00",
+              "reason": "added",
+              "source": "host",
+              "extra": "kept"
+            }
+          ]
+        },
+        {
+          "op": "is_granted",
+          "host": "keep.com",
+          "expect": true
+        },
+        {
+          "op": "is_granted",
+          "host": "drop.com",
+          "expect": false
+        },
+        {
+          "op": "is_granted",
+          "host": "new.com",
+          "expect": true
+        },
+        {
+          "op": "is_granted",
+          "host": "dup.com",
+          "expect": true
+        },
+        {
+          "op": "inspect",
+          "host": "new.com",
+          "expect": {
+            "inspector": "domain",
+            "action": "block",
+            "reason": "domain allowlist entry expired: new.com (was allowed until its TTL elapsed)",
+            "severity": "error"
+          }
+        },
+        {
+          "op": "inspect",
+          "host": "keep.com",
+          "expect": null
+        },
+        {
+          "op": "drop_expired",
+          "now_iso": "2026-08-30T14:20:00+00:00",
+          "expect": [
+            "new.com"
+          ]
+        },
+        {
+          "op": "reconcile",
+          "overlay": "garbage: [",
+          "expect": null
+        },
+        {
+          "op": "granted_entries",
+          "expect": []
+        }
+      ]
+    }
+  ]
+}
