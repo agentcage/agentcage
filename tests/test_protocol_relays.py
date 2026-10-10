@@ -43,8 +43,15 @@ async def _start_fake_upstream(
     expected_pass: str,
     fail_login: bool = False,
     greeting: bytes = b"* OK [CAPABILITY IMAP4rev1] fake upstream ready\r\n",
+    scripted: Optional[dict[bytes, list[bytes]]] = None,
 ) -> tuple[asyncio.AbstractServer, int]:
-    """Start an asyncio TCP server pretending to be a Migadu IMAP host."""
+    """Start an asyncio TCP server pretending to be a Migadu IMAP host.
+
+    ``scripted`` maps an upper-case command to the reply the upstream sends
+    instead of its usual one-line OK: a list of chunks, each written and
+    drained on its own with a pause in between so the relay reads them
+    separately. ``<TAG>`` in a chunk is replaced with the command's tag.
+    """
 
     async def _handle(reader, writer):
         try:
@@ -88,6 +95,12 @@ async def _start_fake_upstream(
                     writer.write(tag + b" OK LOGOUT completed\r\n")
                     await writer.drain()
                     return
+                if scripted and cmd in scripted:
+                    for chunk in scripted[cmd]:
+                        writer.write(chunk.replace(b"<TAG>", tag))
+                        await writer.drain()
+                        await asyncio.sleep(0.02)
+                    continue
                 writer.write(tag + b" OK " + cmd + b" completed\r\n")
                 await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
@@ -1411,6 +1424,402 @@ class TestReplaceRefused:
         tokens = greeting.split(b"]", 1)[0].split()[3:]
         assert b"REPLACE" in tokens, greeting
         assert b"COMPRESS=DEFLATE" not in tokens, greeting
+
+
+async def _relay_session(
+    policy: dict,
+    commands: list[bytes],
+    *,
+    scripted: Optional[dict[bytes, list[bytes]]] = None,
+    greeting: bytes = b"* OK [CAPABILITY IMAP4rev1] fake upstream ready\r\n",
+) -> tuple[list[bytes], list[bytes], list[dict]]:
+    """Send each command (tags a1, a2, ...) through a relay with *policy*.
+
+    Returns every byte the client received for each command (untagged
+    lines included, up to and including its tagged line), what the
+    upstream saw, and the relay's audit entries.
+    """
+    recorder = FakeUpstreamRecorder()
+    upstream, up_port = await _start_fake_upstream(
+        recorder, "real-user@example.com", "real-app-password",
+        greeting=greeting, scripted=scripted,
+    )
+    entries: list[dict] = []
+    replies: list[bytes] = []
+    try:
+        entry = _relay_entry(up_port)
+        entry["policy"] = {**entry["policy"], **policy}
+        relay = ImapRelay(entry, audit_log=entries.append)
+        await relay.start()
+        try:
+            port = relay._server.sockets[0].getsockname()[1]
+            async with _imap_client(port) as (reader, writer):
+                await reader.readline()  # PREAUTH
+                for command in commands:
+                    tag = command.split(None, 1)[0]
+                    writer.write(command)
+                    await writer.drain()
+                    got = b""
+                    while True:
+                        line = await asyncio.wait_for(reader.readline(), 5)
+                        if not line:
+                            raise EOFError(got)
+                        got += line
+                        if line.startswith(tag + b" "):
+                            break
+                    replies.append(got)
+            await asyncio.sleep(0.05)
+        finally:
+            await relay.stop()
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+    return replies, recorder.commands, entries
+
+
+def _blocked(entries: list[dict]) -> list[dict]:
+    return [
+        e for e in entries
+        if e.get("kind") == "imap_command" and e.get("decision") == "blocked"
+    ]
+
+
+_ALL_MODES = pytest.mark.parametrize("policy", [
+    {"write_mode": "none"},
+    {"readonly": True},
+    {"write_mode": "organise"},
+    {"write_mode": "full"},
+], ids=["write_mode-none", "legacy-readonly", "organise", "full"])
+
+
+class TestStreamSwitchingCommandsRefused:
+    """RFC 4978 COMPRESS switches the connection to DEFLATE right after the
+    upstream's OK. From then on every rule the relay applies (write_mode,
+    folders, audit) reads compressed bytes and matches nothing, so a
+    compressed EXPUNGE sails through a readonly relay. It has to be refused
+    in every mode, `full` included: no mode can be enforced, or even
+    audited, over a stream the relay cannot read. STARTTLS and
+    UNAUTHENTICATE are refused for the same reason (see imap.py)."""
+
+    @_ALL_MODES
+    @pytest.mark.parametrize("command", [
+        b"a1 COMPRESS DEFLATE\r\n",
+        b"a1 compress deflate\r\n",
+        b"a1 Compress Deflate\r\n",
+    ], ids=["upper", "lower", "mixed"])
+    def test_compress_refused(self, policy, command):
+        replies, cmds, entries = _run(_relay_session(
+            policy, [command, b"a2 NOOP\r\n"],
+        ))
+        assert replies[0] == (
+            b"a1 NO COMPRESS not permitted "
+            b"(relay cannot inspect a compressed stream)\r\n"
+        ), replies[0]
+        assert not any(b"COMPRESS" in c.upper() for c in cmds), \
+            "COMPRESS reached upstream"
+        blocks = _blocked(entries)
+        assert [b["command"] for b in blocks] == ["COMPRESS"], entries
+        assert blocks[0]["reason"] == "relay cannot inspect a compressed stream"
+        # The session carries on, uncompressed.
+        assert replies[1] == b"a2 OK NOOP completed\r\n", replies[1]
+
+    @pytest.mark.parametrize("command", [
+        b"a1  COMPRESS DEFLATE\r\n",
+        b"a1\tCOMPRESS DEFLATE\r\n",
+        b" a1 COMPRESS DEFLATE\r\n",
+    ], ids=["double-space", "tab", "leading-space"])
+    def test_compress_refused_despite_odd_whitespace(self, command):
+        """A lenient upstream may accept a command the relay split
+        differently: with the old single-space split, `a1  COMPRESS`
+        looked like command "" to the relay and was forwarded."""
+        replies, cmds, entries = _run(_relay_session(
+            {"write_mode": "full"}, [command],
+        ))
+        assert replies[0].startswith(b"a1 NO COMPRESS not permitted"), \
+            replies[0]
+        assert not any(b"COMPRESS" in c.upper() for c in cmds), cmds
+        assert [b["command"] for b in _blocked(entries)] == ["COMPRESS"]
+
+    @_ALL_MODES
+    @pytest.mark.parametrize("command,label,reason", [
+        (b"a1 STARTTLS\r\n", "STARTTLS", "relay cannot inspect a TLS stream"),
+        (b"a1 unauthenticate\r\n", "UNAUTHENTICATE",
+         "relay session stays authenticated"),
+    ], ids=["STARTTLS", "UNAUTHENTICATE"])
+    def test_other_stream_switching_commands_refused(
+        self, policy, command, label, reason,
+    ):
+        replies, cmds, entries = _run(_relay_session(policy, [command]))
+        assert replies[0] == (
+            b"a1 NO " + label.encode() + b" not permitted ("
+            + reason.encode() + b")\r\n"
+        ), replies[0]
+        assert not any(label.encode() in c.upper() for c in cmds), cmds
+        assert [b["command"] for b in _blocked(entries)] == [label], entries
+
+
+class TestUpstreamCapabilityResponsesFiltered:
+    """The PREAUTH greeting hid COMPRESS=DEFLATE (and REPLACE where refused),
+    but the upstream's reply to a CAPABILITY command, and [CAPABILITY ...]
+    codes in later status responses, reached the cage raw."""
+
+    _CAPS = b"IMAP4rev1 IDLE REPLACE MOVE COMPRESS=DEFLATE STARTTLS"
+
+    @staticmethod
+    def _tokens(line: bytes) -> list[bytes]:
+        if line.startswith(b"* CAPABILITY"):
+            return line.split()[2:]
+        return line.split(b"[CAPABILITY", 1)[1].split(b"]", 1)[0].split()
+
+    def _check(self, line: bytes, policy: dict) -> None:
+        tokens = self._tokens(line)
+        assert b"COMPRESS=DEFLATE" not in tokens, line
+        assert b"STARTTLS" not in tokens, line
+        assert b"IDLE" in tokens and b"MOVE" in tokens, line
+        if policy.get("write_mode") == "full":
+            assert b"REPLACE" in tokens, line
+        else:
+            assert b"REPLACE" not in tokens, line
+
+    @_ALL_MODES
+    def test_untagged_capability_reply_filtered(self, policy):
+        replies, _, _ = _run(_relay_session(
+            policy, [b"a1 CAPABILITY\r\n"],
+            scripted={b"CAPABILITY": [
+                b"* CAPABILITY " + self._CAPS + b"\r\n"
+                b"<TAG> OK CAPABILITY completed\r\n",
+            ]},
+        ))
+        lines = replies[0].splitlines(keepends=True)
+        assert lines[1] == b"a1 OK CAPABILITY completed\r\n", replies[0]
+        self._check(lines[0], policy)
+        assert lines[0].endswith(b"\r\n"), lines[0]
+
+    @_ALL_MODES
+    def test_capability_line_split_across_upstream_chunks(self, policy):
+        replies, _, _ = _run(_relay_session(
+            policy, [b"a1 CAPABILITY\r\n"],
+            scripted={b"CAPABILITY": [
+                b"* CAPABILITY IMAP4rev1 IDLE REPLACE MOVE COMPR",
+                b"ESS=DEFLATE STARTTLS\r\n<TAG> OK CAPABILITY completed\r\n",
+            ]},
+        ))
+        lines = replies[0].splitlines(keepends=True)
+        self._check(lines[0], policy)
+        assert lines[1] == b"a1 OK CAPABILITY completed\r\n", replies[0]
+
+    @_ALL_MODES
+    def test_tagged_ok_capability_code_filtered(self, policy):
+        replies, _, _ = _run(_relay_session(
+            policy, [b"a1 NOOP\r\n"],
+            scripted={b"NOOP": [
+                b"<TAG> OK [CAPABILITY " + self._CAPS + b"] NOOP completed\r\n",
+            ]},
+        ))
+        self._check(replies[0], policy)
+        assert replies[0].startswith(b"a1 OK [CAPABILITY IMAP4rev1 IDLE")
+        assert replies[0].endswith(b"] NOOP completed\r\n"), replies[0]
+
+    @_ALL_MODES
+    def test_untagged_ok_capability_code_filtered(self, policy):
+        replies, _, _ = _run(_relay_session(
+            policy, [b"a1 NOOP\r\n"],
+            scripted={b"NOOP": [
+                b"* OK [CAPABILITY " + self._CAPS + b"] still here\r\n",
+                b"<TAG> OK NOOP completed\r\n",
+            ]},
+        ))
+        self._check(replies[0].splitlines()[0], policy)
+
+    def test_large_fetch_literal_passes_byte_exact(self):
+        """The filter must not touch message bodies. This one is bigger
+        than the relay's read size and its line-hold limit, has a line
+        longer than that limit, and contains lines that look like
+        capability responses and literal announcements: all mail, all to be
+        delivered unchanged."""
+        import random
+        rng = random.Random(4978)
+        body = (
+            b"Subject: hi\r\n\r\n"
+            b"* CAPABILITY IMAP4rev1 COMPRESS=DEFLATE REPLACE\r\n"
+            b"a1 OK [CAPABILITY COMPRESS=DEFLATE] fake\r\n"
+            b"* 2 FETCH (BODY[] {99999}\r\n"
+            + b"x" * (300 * 1024) + b"\r\n"
+            + rng.randbytes(700 * 1024).replace(b"<TAG>", b"<tag>")
+            + b"\r\n* CAPABILITY COMPRESS=DEFLATE\r\n"
+        )
+        head = b"* 1 FETCH (UID 7 BODY[] {%d}\r\n" % len(body)
+        tail = b" FLAGS (\\Seen))\r\n"
+        reply = head + body + tail + b"<TAG> OK FETCH completed\r\n"
+        expected = reply.replace(b"<TAG>", b"a1")
+        # Odd-sized chunks, so boundaries fall inside the literal and lines.
+        chunks = [
+            expected[i:i + 70001] for i in range(0, len(expected), 70001)
+        ]
+
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+                scripted={b"FETCH": chunks},
+            )
+            try:
+                entry = _relay_entry(up_port)
+                entry["policy"] = {**entry["policy"], "write_mode": "none"}
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()  # PREAUTH
+                        writer.write(b"a1 FETCH 1 (UID BODY[] FLAGS)\r\n")
+                        await writer.drain()
+                        return await asyncio.wait_for(
+                            reader.readexactly(len(expected)), 10,
+                        )
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        got = _run(_go())
+        assert got == expected
+
+
+class TestResponseFilter:
+    """The upstream -> client filter on its own, fed arbitrary chunkings."""
+
+    STREAM = (
+        b"* CAPABILITY IMAP4rev1 COMPRESS=DEFLATE IDLE REPLACE\r\n"
+        b"a1 OK CAPABILITY completed\r\n"
+        b"* 1 FETCH (BODY[] {54}\r\n"
+        b"* CAPABILITY IMAP4rev1 COMPRESS=DEFLATE IDLE REPLACE\r\n"
+        b" BODY[HEADER] ~{9}\r\n* OK [CA)\r\n"
+        b"a2 OK FETCH completed\r\n"
+        # free text ending in {n}: not a literal
+        b"a3 BAD unknown command {20}\r\n"
+        b"* OK [CAPABILITY IMAP4rev1 COMPRESS=DEFLATE] hi\r\n"
+        b"+ go ahead {3}\r\n"
+        b"a4 OK [CAPABILITY COMPRESS=DEFLATE REPLACE IDLE] done\r\n"
+        b"a5 OK [CAPABILITYX COMPRESS=DEFLATE] other code\r\n"
+    )
+    EXPECTED = (
+        b"* CAPABILITY IMAP4rev1 IDLE\r\n"
+        b"a1 OK CAPABILITY completed\r\n"
+        b"* 1 FETCH (BODY[] {54}\r\n"
+        b"* CAPABILITY IMAP4rev1 COMPRESS=DEFLATE IDLE REPLACE\r\n"
+        b" BODY[HEADER] ~{9}\r\n* OK [CA)\r\n"
+        b"a2 OK FETCH completed\r\n"
+        b"a3 BAD unknown command {20}\r\n"
+        b"* OK [CAPABILITY IMAP4rev1] hi\r\n"
+        b"+ go ahead {3}\r\n"
+        b"a4 OK [CAPABILITY IDLE] done\r\n"
+        b"a5 OK [CAPABILITYX COMPRESS=DEFLATE] other code\r\n"
+    )
+
+    @staticmethod
+    def _filter():
+        from relays.imap import _ResponseFilter, _capability_hidden
+        return _ResponseFilter(lambda t: _capability_hidden(t, "none"))
+
+    def test_whole_stream(self):
+        f = self._filter()
+        assert f.feed(self.STREAM) + f.finish() == self.EXPECTED
+
+    def test_every_two_chunk_split(self):
+        for cut in range(1, len(self.STREAM)):
+            f = self._filter()
+            got = (
+                f.feed(self.STREAM[:cut]) + f.feed(self.STREAM[cut:])
+                + f.finish()
+            )
+            assert got == self.EXPECTED, cut
+
+    def test_byte_at_a_time(self):
+        f = self._filter()
+        got = b"".join(
+            f.feed(self.STREAM[i:i + 1]) for i in range(len(self.STREAM))
+        )
+        assert got + f.finish() == self.EXPECTED
+
+    def test_full_mode_keeps_replace(self):
+        from relays.imap import _ResponseFilter, _capability_hidden
+        f = _ResponseFilter(lambda t: _capability_hidden(t, "full"))
+        assert f.feed(
+            b"* CAPABILITY IMAP4rev1 compress=deflate REPLACE\r\n"
+        ) == b"* CAPABILITY IMAP4rev1 REPLACE\r\n"
+
+    def test_partial_line_is_held_until_its_end(self):
+        f = self._filter()
+        assert f.feed(b"* CAPABILITY IMAP4rev1 COMPRESS=DEF") == b""
+        assert f.feed(b"LATE\r\n") == b"* CAPABILITY IMAP4rev1\r\n"
+
+    def test_overlong_line_streams_raw_with_bounded_hold(self):
+        from relays.imap import _HELD_LINE_LIMIT
+        f = self._filter()
+        line = b"* SEARCH" + b" 12345" * (_HELD_LINE_LIMIT // 3) + b"\r\n"
+        out = b""
+        for i in range(0, len(line), 8192):
+            out += f.feed(line[i:i + 8192])
+            assert len(f._held) <= _HELD_LINE_LIMIT + 8192
+        assert out == line
+        # and the next line is filtered again
+        assert f.feed(b"* CAPABILITY X COMPRESS=DEFLATE\r\n") == \
+            b"* CAPABILITY X\r\n"
+
+    def test_overlong_capability_line_is_refused_not_leaked(self):
+        from relays.imap import _HELD_LINE_LIMIT, _UnfilterableResponse
+        f = self._filter()
+        f.feed(b"a1 OK [CAPABILITY COMPRESS=DEFLATE")
+        with pytest.raises(_UnfilterableResponse):
+            for _ in range(_HELD_LINE_LIMIT // 8192 + 2):
+                f.feed(b"A" * 8192)
+
+
+class TestQuotaAndAnnotationWrites:
+    """SETQUOTA (RFC 9208) and annotation writes (RFC 5257 STORE ...
+    ANNOTATION, Cyrus SETANNOTATION) change account and message settings,
+    not mail filing. `none` refuses all writes and `organise` only files
+    and flags, so both must refuse them; `full` passes them through."""
+
+    _COMMANDS = [
+        (b'a1 SETQUOTA "" (STORAGE 512)\r\n', "SETQUOTA", None),
+        (b'a1 setquota "" (STORAGE 512)\r\n', "SETQUOTA", None),
+        (b'a1 SETANNOTATION INBOX "/comment" ("value.shared" "x")\r\n',
+         "SETANNOTATION", None),
+        (b'a1 STORE 1 ANNOTATION (/comment (value.priv "x"))\r\n',
+         "STORE", "annotation"),
+        (b'a1 UID STORE 5 annotation (/comment (value.priv "x"))\r\n',
+         "UID STORE", "annotation"),
+        (b'a1 STORE 1 (UNCHANGEDSINCE 12) ANNOTATION '
+         b'(/comment (value.priv "x"))\r\n', "STORE", "annotation"),
+    ]
+    _IDS = ["SETQUOTA", "setquota", "SETANNOTATION", "STORE-ANNOTATION",
+            "UID-STORE-ANNOTATION", "STORE-UNCHANGEDSINCE-ANNOTATION"]
+
+    @pytest.mark.parametrize("policy,wire,reason", [
+        ({"write_mode": "none"}, b"readonly", "readonly policy"),
+        ({"readonly": True}, b"readonly", "readonly policy"),
+        ({"write_mode": "organise"}, b"write_mode organise",
+         "write_mode organise"),
+    ], ids=["write_mode-none", "legacy-readonly", "organise"])
+    @pytest.mark.parametrize("command,label,detail", _COMMANDS, ids=_IDS)
+    def test_refused(self, policy, wire, reason, command, label, detail):
+        replies, cmds, entries = _run(_relay_session(policy, [command]))
+        assert replies[0] == (
+            b"a1 NO " + label.encode() + b" not permitted (" + wire + b")\r\n"
+        ), replies[0]
+        assert cmds == [cmds[0]], f"reached upstream: {cmds[1:]}"
+        blocks = _blocked(entries)
+        assert [b["command"] for b in blocks] == [label], entries
+        if detail and policy.get("write_mode") == "organise":
+            reason = f"{reason} ({detail})"
+        assert blocks[0]["reason"] == reason
+
+    @pytest.mark.parametrize("command,label,detail", _COMMANDS, ids=_IDS)
+    def test_allowed_in_full(self, command, label, detail):
+        replies, cmds, entries = _run(_relay_session(
+            {"write_mode": "full"}, [command],
+        ))
+        assert replies[0].startswith(b"a1 OK"), replies[0]
+        assert cmds[1:] == [command], cmds
+        assert not _blocked(entries)
 
 
 class TestFolderDenylist:

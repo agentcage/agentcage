@@ -43,6 +43,11 @@ log = logging.getLogger("agentcage.relays.imap")
 #
 # REPLACE is here because RFC 8508 defines it as an atomic APPEND of a new
 # message plus an EXPUNGE of the old one, both of which this mode refuses.
+#
+# SETQUOTA (RFC 9208) changes the account's storage limits, and SETANNOTATION
+# (the Cyrus command from draft-daboo-imap-annotatemore) writes mailbox
+# annotations, the predecessor of SETMETADATA. RFC 5257 message annotations
+# are written with STORE, which this mode already refuses whole.
 _DENY_COMMANDS_READONLY = frozenset({
     "APPEND",
     "REPLACE",
@@ -54,6 +59,8 @@ _DENY_COMMANDS_READONLY = frozenset({
     "RENAME",
     "MOVE",
     "SETMETADATA",
+    "SETANNOTATION",
+    "SETQUOTA",
     "SETACL",
     "DELETEACL",
     "COPY",
@@ -85,6 +92,11 @@ _DENY_COMMANDS_READONLY = frozenset({
 # REPLACE (RFC 8508) is APPEND and EXPUNGE in one atomic command: it writes a
 # new message and permanently removes the old one. Both halves are refused
 # here on their own, so the combination is too.
+#
+# SETQUOTA, SETANNOTATION and SETMETADATA change account and mailbox settings
+# rather than file or flag mail, so they are outside what this mode is for.
+# The RFC 5257 form of an annotation write, STORE ... ANNOTATION, is refused
+# separately by _store_writes_annotation().
 _DENY_COMMANDS_ORGANISE = frozenset({
     "EXPUNGE",
     "CLOSE",
@@ -93,6 +105,8 @@ _DENY_COMMANDS_ORGANISE = frozenset({
     "DELETE",
     "RENAME",
     "SETMETADATA",
+    "SETANNOTATION",
+    "SETQUOTA",
     "SETACL",
     "DELETEACL",
 })
@@ -113,11 +127,40 @@ _UID_WRITE_SUBCOMMANDS = frozenset({
     "REPLACE",
 })
 
-# Capability tokens that break the relay's command-level visibility.
-# COMPRESS=DEFLATE wraps subsequent traffic in a deflate stream; we
-# can't policy-check what we can't read. Strip it from the forwarded
-# CAPABILITY list so the client never tries.
-_STRIPPED_CAPABILITIES = frozenset({"COMPRESS=DEFLATE"})
+# Commands refused in every write_mode, "full" included, because each one
+# would take the byte stream out of the relay's sight, and every check the
+# relay makes (write_mode, folders, audit) reads that stream as IMAP lines.
+#
+#   COMPRESS (RFC 4978) switches both directions to DEFLATE right after the
+#     server's OK. From then on the relay sees compressed bytes: an EXPUNGE
+#     in readonly, or a SELECT of a denied folder, would pass unseen.
+#   STARTTLS (RFC 3501 §6.2.1) starts TLS on the existing connection. The
+#     relay's own upstream leg is already TLS or deliberately plaintext;
+#     forwarding the cage's STARTTLS would let it negotiate TLS end to end
+#     with a plaintext upstream, leaving the relay relaying ciphertext. It is
+#     only valid before authentication anyway, and the cage is PREAUTH'd.
+#   UNAUTHENTICATE (RFC 8437) drops the upstream session back to the
+#     not-authenticated state, the state where STARTTLS and AUTHENTICATE
+#     with a SASL security layer are valid. The relay's session is meant to
+#     stay authenticated as the relay's own user for its whole life.
+#
+# AUTHENTICATE (whose SASL security layer could also wrap the stream) and
+# LOGIN never reach the upstream either: see the PREAUTH handling in
+# _policy_check().
+_REFUSED_COMMANDS = {
+    "COMPRESS": "relay cannot inspect a compressed stream",
+    "STARTTLS": "relay cannot inspect a TLS stream",
+    "UNAUTHENTICATE": "relay session stays authenticated",
+}
+
+# Capability tokens never advertised to the cage, because the command they
+# announce is in _REFUSED_COMMANDS. Hiding them keeps a well-behaved client
+# from trying; the refusal above is what stops one that tries anyway.
+_STRIPPED_CAPABILITIES = frozenset({"STARTTLS", "UNAUTHENTICATE"})
+
+# Prefixes of capability tokens hidden the same way. COMPRESS=<algorithm>
+# covers DEFLATE and any mechanism a server adds later.
+_STRIPPED_CAPABILITY_PREFIXES = ("COMPRESS=",)
 
 # Capability tokens also stripped when write_mode is "none" or "organise",
 # because the command they advertise is refused there. REPLACE (RFC 8508) is
@@ -129,6 +172,37 @@ _STRIPPED_CAPABILITIES_RESTRICTED = frozenset({"REPLACE"})
 # they are metadata-only and the cage may reasonably need them to
 # discover the allowlisted folders.
 _MAILBOX_ARG_COMMANDS = frozenset({"SELECT", "EXAMINE", "STATUS"})
+
+# How much of one upstream response line _ResponseFilter holds back before
+# it stops holding that line and streams the rest raw. It must be well above
+# the longest line the cage can send (asyncio's StreamReader default limit,
+# 64 KiB): the upstream echoes the cage's tag at the start of a tagged
+# response and the [CAPABILITY ...] response code follows it, so a long tag
+# must not push the code past the limit.
+_HELD_LINE_LIMIT = 256 * 1024
+
+# An IMAP literal announcement at the end of a response line: "{123}" CRLF,
+# or the RFC 3516 literal8 "~{123}" CRLF (same tail). Looked for in the last
+# _LITERAL_TAIL_BYTES of a line only.
+_LITERAL_TAIL_RE = re.compile(rb"\{(\d+)\}\r?\n\Z")
+_LITERAL_TAIL_BYTES = 64
+
+# Status words of an untagged status response (RFC 3501 §7.1). Such a line
+# carries free text, never a literal.
+_STATUS_WORDS = frozenset({b"OK", b"NO", b"BAD", b"BYE", b"PREAUTH"})
+
+
+def _capability_hidden(token: str, write_mode: str) -> bool:
+    """True when *token* must not be advertised to the cage.
+
+    One rule for the PREAUTH greeting and for every capability list the
+    upstream sends later: always hide what _REFUSED_COMMANDS refuses, and
+    unless write_mode is "full", hide what that mode refuses too.
+    """
+    t = token.upper()
+    if t in _STRIPPED_CAPABILITIES or t.startswith(_STRIPPED_CAPABILITY_PREFIXES):
+        return True
+    return write_mode != "full" and t in _STRIPPED_CAPABILITIES_RESTRICTED
 
 
 # One grammar for both relays and the validator — see relays._validate.
@@ -554,22 +628,18 @@ class ImapRelay:
     def _client_capability_string(self) -> str:
         """Build the CAPABILITY token list to advertise to the cage.
 
-        Forwards upstream capabilities, removing any token in
-        ``_STRIPPED_CAPABILITIES`` (currently COMPRESS=DEFLATE, which
-        would prevent the relay from reading the byte stream and
-        applying policy) and, unless write_mode is "full", any token in
-        ``_STRIPPED_CAPABILITIES_RESTRICTED`` (commands the mode refuses).
-        Falls back to ``IMAP4rev1`` if the upstream never advertised
-        anything we could parse.
+        Forwards upstream capabilities minus what _capability_hidden()
+        hides: COMPRESS=*, STARTTLS and UNAUTHENTICATE always (each would
+        take the byte stream out of the relay's sight), and, unless
+        write_mode is "full", commands the mode refuses. Falls back to
+        ``IMAP4rev1`` if the upstream never advertised anything we could
+        parse.
         """
         if not self._upstream_capabilities:
             return "IMAP4rev1"
-        stripped = _STRIPPED_CAPABILITIES
-        if self._cfg.write_mode != "full":
-            stripped = stripped | _STRIPPED_CAPABILITIES_RESTRICTED
         out = [
             t for t in self._upstream_capabilities
-            if t.upper() not in stripped
+            if not _capability_hidden(t, self._cfg.write_mode)
         ]
         if not any(t.upper() == "IMAP4REV1" for t in out):
             out.insert(0, "IMAP4rev1")
@@ -602,12 +672,33 @@ class ImapRelay:
         upstream_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
     ) -> None:
+        # The PREAUTH greeting is not the only place capabilities reach the
+        # cage: the reply to a CAPABILITY command, and a [CAPABILITY ...]
+        # code in any status response, carry the upstream's list too.
+        # Filter them with the same rule as the greeting.
+        filt = _ResponseFilter(
+            lambda t: _capability_hidden(t, self._cfg.write_mode)
+        )
         while True:
             chunk = await upstream_reader.read(8192)
+            try:
+                out = filt.feed(chunk) if chunk else filt.finish()
+            except _UnfilterableResponse as e:
+                log.warning(
+                    "imap relay %s: closing session: %s", self._cfg.name, e,
+                )
+                self._audit_log({
+                    "kind": "imap_response",
+                    "relay": self._cfg.name,
+                    "decision": "blocked",
+                    "reason": str(e),
+                })
+                return
+            if out:
+                client_writer.write(out)
+                await client_writer.drain()
             if not chunk:
                 return
-            client_writer.write(chunk)
-            await client_writer.drain()
 
     def _policy_check(
         self, line: bytes
@@ -619,11 +710,15 @@ class ImapRelay:
         no-op for a PREAUTH'd connection), ``NO`` for actual policy
         denials.
         """
-        parts = line.split(b" ", 2)
+        # Split on any run of whitespace, not single spaces. RFC 3501 says
+        # exactly one SP, but an upstream lenient about tabs, doubled or
+        # leading spaces would run `a1  EXPUNGE` as EXPUNGE, and a
+        # single-space split would have seen command "" and let it through.
+        parts = line.split(None, 2)
         if len(parts) < 2:
             return None
         tag = parts[0]
-        cmd_b = parts[1].rstrip(b"\r\n").upper()
+        cmd_b = parts[1].upper()
         cmd = cmd_b.decode("ascii", errors="replace")
 
         # Resolve UID prefix to its subcommand for policy purposes.
@@ -634,8 +729,7 @@ class ImapRelay:
         if cmd == "UID":
             sub_b = b""
             if len(parts) >= 3:
-                tail = parts[2].lstrip()
-                sub_b = tail.split(b" ", 1)[0].rstrip(b"\r\n")
+                sub_b = (parts[2].split(None, 1) or [b""])[0]
             sub = sub_b.upper().decode("ascii", errors="replace")
             effective_cmd = f"UID {sub}" if sub else "UID"
 
@@ -653,6 +747,22 @@ class ImapRelay:
                 "reason": "client login on PREAUTH'd connection",
             })
             return (tag, "already authenticated (relay handled login)", b"OK")
+
+        # Refused in every write_mode: past this point the relay could no
+        # longer read the stream, so no other rule would hold either.
+        why = _REFUSED_COMMANDS.get(cmd)
+        if why is not None:
+            log.warning(
+                "imap relay %s: blocked %s (%s)", self._cfg.name, cmd, why,
+            )
+            self._audit_log({
+                "kind": "imap_command",
+                "relay": self._cfg.name,
+                "command": cmd,
+                "decision": "blocked",
+                "reason": why,
+            })
+            return (tag, f"{cmd} not permitted ({why})", b"NO")
 
         # Write policy.
         if self._cfg.write_mode != "full":
@@ -680,6 +790,9 @@ class ImapRelay:
                     if _store_adds_deleted(args):
                         denied = True
                         reason = "write_mode organise (\\Deleted flag)"
+                    elif _store_writes_annotation(args):
+                        denied = True
+                        reason = "write_mode organise (annotation)"
 
             if denied:
                 log.warning(
@@ -801,6 +914,170 @@ def _store_adds_deleted(args: bytes) -> bool:
     if m.group("op") == b"-":
         return False
     return b"\\DELETED" in m.group("flags").upper()
+
+
+def _store_writes_annotation(args: bytes) -> bool:
+    """True when a STORE writes RFC 5257 message annotations.
+
+    ``STORE 1 ANNOTATION (/comment (value.priv "x"))`` sets annotation data
+    on a message rather than flags. Any ``ANNOTATION`` token in the
+    arguments counts, wherever it sits, so CONDSTORE modifiers or odd
+    spacing in front of it change nothing. A keyword flag literally named
+    ANNOTATION is refused too; that costs nothing real and keeps the check
+    simple enough to trust.
+    """
+    return b"ANNOTATION" in re.split(rb"[\s()]+", args.upper())
+
+
+class _UnfilterableResponse(Exception):
+    """An upstream line the relay must filter but will not hold to filter."""
+
+
+class _ResponseFilter:
+    """Remove hidden capabilities from the upstream -> client byte stream.
+
+    Capability lists reach the cage in two shapes: an untagged
+    ``* CAPABILITY ...`` response, and a ``[CAPABILITY ...]`` response code
+    in a status response (``* OK [...]``, ``a1 OK [...]``). Both are single
+    lines, so the filter works a line at a time. But the stream is not all
+    lines: a message body arrives as an IMAP literal (``{n}`` CRLF, then n
+    raw bytes), and that body may well contain a line reading
+    ``* CAPABILITY ...``, which is mail, not a response, and must reach the
+    cage byte-exact.
+
+    So the filter tracks literals and passes their bytes through as they
+    arrive, never buffering them: a large FETCH costs no extra memory and no
+    extra latency. Outside literals it holds back only the current partial
+    line until its LF arrives (normally in the same or the next read), then
+    rewrites it if it carries capabilities and forwards it. A line longer
+    than _HELD_LINE_LIMIT is flushed and the rest of it streamed raw, which
+    keeps memory bounded for the occasional huge ``* SEARCH`` line; if that
+    line is one the filter has to rewrite, it raises _UnfilterableResponse
+    and the session is closed instead, rather than leak the list unfiltered.
+
+    Literals are only honoured in untagged data responses (``* 12 FETCH``,
+    ``* LIST`` ...), where the grammar puts strings in quotes or literals,
+    so a ``{n}`` CRLF at the end of a line is always a literal. Status
+    responses, tagged responses and ``+`` continuation requests carry free
+    text, which may echo what the cage sent; a ``{n}`` at the end of one is
+    text, and treating it as a literal would let the cage make the filter
+    wave the next n bytes through unfiltered.
+    """
+
+    def __init__(self, hidden: Callable[[str], bool]) -> None:
+        self._hidden = hidden
+        self._held = bytearray()   # current line so far, not yet forwarded
+        self._streaming = False    # current line overflowed: rest goes raw
+        self._tail = b""           # last bytes of the line being streamed
+        self._literal = 0          # literal bytes still to pass through
+        self._continuing = False   # line continues a response after a literal
+        self._data = False         # current response may carry literals
+
+    def feed(self, chunk: bytes) -> bytes:
+        out = bytearray()
+        i, n = 0, len(chunk)
+        while i < n:
+            if self._literal:
+                take = min(self._literal, n - i)
+                out += chunk[i:i + take]
+                self._literal -= take
+                i += take
+                continue
+            nl = chunk.find(b"\n", i)
+            end = n if nl < 0 else nl + 1
+            piece = chunk[i:end]
+            i = end
+            if self._streaming:
+                out += piece
+                self._tail = (self._tail + piece)[-_LITERAL_TAIL_BYTES:]
+                if nl >= 0:
+                    self._streaming = False
+                    self._end_line(self._tail)
+                continue
+            self._held += piece
+            if nl >= 0:
+                line = bytes(self._held)
+                self._held.clear()
+                out += self._rewrite(line, self._classify(line))
+                self._end_line(line)
+            elif len(self._held) > _HELD_LINE_LIMIT:
+                line = bytes(self._held)
+                self._held.clear()
+                kind = self._classify(line)
+                if kind == "capability" or (
+                    kind == "status" and b"[CAPABILITY" in line.upper()
+                ):
+                    raise _UnfilterableResponse(
+                        "upstream capability line longer than "
+                        f"{_HELD_LINE_LIMIT} bytes"
+                    )
+                out += line
+                self._streaming = True
+                self._tail = line[-_LITERAL_TAIL_BYTES:]
+        return bytes(out)
+
+    def finish(self) -> bytes:
+        """Flush a last line the upstream never terminated (at EOF)."""
+        if self._streaming or not self._held:
+            return b""
+        line = bytes(self._held)
+        self._held.clear()
+        return self._rewrite(line, self._classify(line))
+
+    def _classify(self, line: bytes) -> str:
+        """``capability``, ``data`` or ``status``: the response this line
+        is in. On a line that starts a response, also decides whether that
+        response may carry literals."""
+        if self._continuing:
+            return "data"
+        if line[:13].upper().rstrip(b"\r\n") in (
+            b"* CAPABILITY", b"* CAPABILITY ",
+        ):
+            self._data = False
+            return "capability"
+        words = line.split(None, 2)
+        self._data = (
+            len(words) >= 2
+            and words[0] == b"*"
+            and words[1].upper() not in _STATUS_WORDS
+        )
+        return "data" if self._data else "status"
+
+    def _end_line(self, tail: bytes) -> None:
+        m = None
+        if self._data:
+            m = _LITERAL_TAIL_RE.search(tail[-_LITERAL_TAIL_BYTES:])
+        if m:
+            self._literal = int(m.group(1))
+            self._continuing = True
+        else:
+            self._continuing = False
+            self._data = False
+
+    def _rewrite(self, line: bytes, kind: str) -> bytes:
+        if kind == "data":
+            return line
+        body = line.rstrip(b"\r\n")
+        eol = line[len(body):]
+        if kind == "capability":
+            start, close = len(b"* CAPABILITY"), len(body)
+        else:
+            idx = body.upper().find(b"[CAPABILITY")
+            if idx < 0:
+                return line
+            start = idx + len(b"[CAPABILITY")
+            if body[start:start + 1] not in (b" ", b"]"):
+                return line  # another response code that merely starts alike
+            close = body.find(b"]", start)
+            if close < 0:
+                close = len(body)
+        kept = [
+            t for t in body[start:close].split()
+            if not self._hidden(t.decode("ascii", errors="replace"))
+        ]
+        return (
+            body[:start] + b"".join(b" " + t for t in kept) + body[close:] + eol
+        )
 
 
 def _quote(value: str) -> bytes:
