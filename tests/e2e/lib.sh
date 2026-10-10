@@ -239,6 +239,12 @@ dump_cage_diagnostics() {
   podman exec "${cage}-egress" ss -tlnp 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [mock container]" >&2
   podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" >&2 || true
+  # The mock must live in the CURRENT egress namespace; a mismatch means
+  # the egress restarted and nothing re-homed the mock (repatch_mock).
+  echo "          mock netns:   $(_mock_netns "$cage")" >&2
+  echo "          egress netns: $(_egress_netns "$cage")" >&2
+  echo "        [mock container logs (last 10 lines)]" >&2
+  podman logs --tail 10 "${cage}-mock" 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [cage container logs (last 25 lines)]" >&2
   podman logs --tail 25 "${cage}-cage" 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [cage systemd journal (last 30 lines)]" >&2
@@ -441,21 +447,118 @@ preflight_check() {
 }
 
 # ── mock HTTP server ─────────────────────────────────────────────────
-# Replaces external httpbin.org/example.com with a local container on
-# the cage network. The proxy's /etc/hosts is patched so outbound
-# requests resolve to the mock instead of the real internet.
+# Replaces external httpbin.org/example.com with a local HTTP server so
+# tests don't depend on the internet. The mock runs in its OWN container
+# (a stock python image — the egress image ships no interpreter the
+# harness may rely on) that shares the egress container's network
+# namespace and listens on 127.0.0.1:80 there. The egress's /etc/hosts
+# is patched so the mocked names resolve to 127.0.0.1, i.e. to the mock.
+#
+# Why share the egress netns rather than put the mock on the cage
+# network: only the egress's own outbound connections can reach a
+# loopback listener in its namespace. The cage cannot address it (cage
+# traffic to the egress on :80 is REDIRECTed into the proxy before it
+# could hit a local socket), and nothing outside the pod sees it.
 #
 # IMPORTANT: test cage configs must set AGENT_DEMO=false on the agent
 # container so the example agent's startup demoCycle does not race
 # against the /etc/hosts patch — if the agent resolves the upstream
-# domain first, mitmproxy caches the real IP and never honors the patch.
+# domain first, the proxy caches the real IP and never honors the patch.
 
-MOCK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-httpbin.py"
+_E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOCK_SCRIPT="$_E2E_DIR/mock-httpbin.py"
 
-# start_mock CAGE DOMAIN [DOMAIN...]
-#   Starts a mock HTTP server on the cage's network and patches the
-#   egress container's /etc/hosts so the given domains resolve to it.
-#   v0.22: the egress container replaces the legacy proxy + dns pair.
+# The mock's image: stock python on alpine, pinned by exact tag AND
+# multi-arch index digest so a registry retag can't change what runs.
+# Kept in its own file so CI can key its image cache on it. Override with
+# E2E_MOCK_IMAGE (e.g. a pre-mirrored copy) — anything with python3 on
+# PATH works, the mock is stdlib-only.
+E2E_MOCK_IMAGE="${E2E_MOCK_IMAGE:-$(tr -d '[:space:]' < "$_E2E_DIR/mock-image.ref")}"
+
+# Upstream names are mapped to this address in the egress's /etc/hosts.
+MOCK_IP=127.0.0.1
+
+# Label on the mock container recording which network namespace it was
+# started in (see _egress_netns).
+_MOCK_NETNS_LABEL=agentcage.e2e.netns
+
+# _egress_netns CAGE
+#   Print the network-namespace path of the RUNNING egress container, or
+#   nothing when it is not running (or not visible to podman at all).
+#
+#   The mock joins by this path (`--network ns:<path>`) rather than with
+#   `--network container:<cage>-egress`. Same shared namespace, but the
+#   container: form registers the mock as a DEPENDENT of the egress, and
+#   podman then refuses to remove or `--replace` the egress ("has
+#   dependent containers which must be removed before it") — which is
+#   exactly what every egress restart does (domain add/rm, cage restart,
+#   restore: the quadlet's ExecStop is `podman rm -f`). The ns: form has no
+#   lifecycle link; the price is that a restarted egress gets a fresh
+#   namespace and the mock is left behind in the old one, which
+#   repatch_mock detects through the path changing and fixes by moving
+#   the mock over.
+_egress_netns() {
+  # `|| true`: a missing container must yield empty output, not abort the
+  # caller under `set -e` (#317).
+  podman inspect --format \
+    '{{if .State.Running}}{{.NetworkSettings.SandboxKey}}{{end}}' \
+    "${1}-egress" 2>/dev/null || true
+}
+
+# _mock_netns CAGE — the namespace the RUNNING mock was started in, or
+# nothing when it is gone or exited.
+_mock_netns() {
+  podman inspect --format \
+    "{{if .State.Running}}{{index .Config.Labels \"${_MOCK_NETNS_LABEL}\"}}{{end}}" \
+    "${1}-mock" 2>/dev/null || true
+}
+
+# _run_mock CAGE NETNS
+#   (Re)create the mock container inside NETNS and wait until it listens.
+_run_mock() {
+  local cage="$1" netns="$2"
+  podman rm -f -t 0 "${cage}-mock" >/dev/null 2>&1 || true
+
+  # No --sysctl / --user tweaks needed: binding :80 happens in the
+  # egress's namespace, where the egress quadlet already lowered
+  # ip_unprivileged_port_start, and the image runs as (userns) root anyway.
+  # podman also rejects net.* sysctls on a joined namespace.
+  #
+  # Capture podman's own error (#317): a bare "failed to start mock
+  # container" hides the actual cause (pull failure, stale netns, …).
+  local run_out run_rc=0
+  run_out=$(podman run -d --name "${cage}-mock" \
+    --network "ns:${netns}" \
+    --label "${_MOCK_NETNS_LABEL}=${netns}" \
+    -v "${MOCK_SCRIPT}:/mock.py:ro" \
+    "$E2E_MOCK_IMAGE" python3 /mock.py "$MOCK_IP" 2>&1) || run_rc=$?
+  if [ "$run_rc" -ne 0 ]; then
+    echo "WARNING: failed to start mock container for $cage (image: $E2E_MOCK_IMAGE)" >&2
+    _dump_captured "podman run FAILED (exit $run_rc)" "$run_out"
+    return 1
+  fi
+
+  # Wait for the mock to actually listen. The probe runs in the MOCK
+  # container (which has python), never in the egress: nothing in the
+  # harness may assume an interpreter in the egress image. Both share the
+  # namespace, so this is the same socket the egress will connect to.
+  local i
+  for i in $(seq 1 20); do
+    if podman exec "${cage}-mock" python3 -c "
+import socket; s=socket.socket(); s.settimeout(1); s.connect(('${MOCK_IP}',80)); s.close()
+" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "WARNING: mock not listening on ${MOCK_IP}:80 for $cage" >&2
+  echo "  container status: $(podman inspect "${cage}-mock" --format '{{.State.Status}}' 2>/dev/null || true)" >&2
+  echo "  container logs:" >&2
+  podman logs "${cage}-mock" 2>&1 | tail -10 >&2 || true
+  stop_mock "$cage"
+  return 1
+}
+
 # _patch_egress_hosts CAGE MOCK_IP DOMAIN [DOMAIN...]
 #   Writes a marker-delimited block to the egress container's /etc/hosts.
 #   Replaces any existing block so entries don't accumulate.
@@ -465,14 +568,14 @@ _patch_egress_hosts() {
   # is called every retry inside wait_data_path and across phases that
   # reuse the same cage (phase 4 keeps the basic cage from phase 1),
   # so without a strip step /etc/hosts accumulates stale entries —
-  # e.g. ``10.89.152.3 example.com`` from an earlier phase's mock,
-  # plus ``10.89.152.4 example.com`` from the new mock. NSS returns
-  # the FIRST match, so mitmproxy resolves example.com to the dead
-  # 10.89.152.3 (old mock long gone) and returns 502 Bad Gateway.
+  # and NSS returns the FIRST match, so a stale line would win.
   #
   # Block writes via `cat > /etc/hosts` (NOT a temp file + rename —
   # podman bind-mounts /etc/hosts and the rename fails silently across
   # the bind boundary, leaving the file untouched).
+  #
+  # Only POSIX sh + awk + cat are used inside the egress — no
+  # interpreter — so this works against any egress image.
   local block
   block="# e2e-mock-start"
   for domain in "$@"; do
@@ -487,131 +590,74 @@ ${mock_ip} ${domain}"
       kept=$(awk "/^# e2e-mock-start/{s=1;next} /^# e2e-mock-end/{s=0;next} !s{print}" /etc/hosts) || exit 1
       printf "%s\n%s\n" "$kept" "$new_block" > /etc/hosts
     ' 2>/dev/null || return 1
-  # Note: we do not SIGHUP dnsmasq after the patch. Doing so would
-  # surface the mock IP via DNS resolution, the cage would connect to
-  # a same-subnet host directly, and the outbound flow would bypass
-  # mitmproxy entirely (no audit, no inspection). Instead, dnsmasq
-  # keeps forwarding to the real upstream and mitmproxy's
-  # keep_host_header=true mode reads /etc/hosts at the egress side
-  # to route to the mock.
   # NB: we deliberately do NOT SIGHUP dnsmasq after the patch. If
-  # dnsmasq picked up /etc/hosts → mock-IP, the cage's DNS would
-  # resolve httpbin.org directly to the mock's cage-net IP, the cage
-  # workload would connect to a SAME-SUBNET host and bypass the
-  # gateway-mediated PREROUTING REDIRECT into mitmproxy entirely. The
-  # outbound flow would never be inspected/audited, and Phase 2's
-  # ``cage audit --host httpbin.org`` would show nothing.
-  #
-  # Instead we let dnsmasq keep forwarding httpbin.org to the upstream
-  # (server=/httpbin.org/<upstream>) → returns the REAL public IP. The
-  # cage connects to the real IP, the packet enters the egress on the
-  # cage-net interface, PREROUTING REDIRECT lands it on mitmproxy
-  # transparent at :8443, and mitmproxy with ``keep_host_header=true``
-  # resolves the Host header via getaddrinfo, which reads /etc/hosts
-  # at request time (no caching that needs invalidation) and connects
-  # to the patched mock IP. This is exactly how the legacy 3-service
-  # proxy worked.
+  # dnsmasq picked up /etc/hosts → 127.0.0.1, the cage's DNS would
+  # resolve httpbin.org to loopback and the request would never reach
+  # the egress at all. Instead dnsmasq keeps forwarding httpbin.org to
+  # the upstream (server=/httpbin.org/<upstream>) → returns the REAL
+  # public IP. The cage connects to the real IP, the packet enters the
+  # egress on the cage-net interface, PREROUTING REDIRECT lands it on
+  # the transparent proxy at :8443, and the proxy (keeping the Host
+  # header) resolves the name via getaddrinfo, which reads /etc/hosts at
+  # request time (no caching that needs invalidation) and connects to
+  # the mock on 127.0.0.1. The flow is therefore inspected and audited
+  # exactly like a real upstream request (Phase 2's
+  # ``cage audit --host httpbin.org`` depends on that).
   return 0
 }
 
+# _egress_hosts_patched CAGE MOCK_IP DOMAIN [DOMAIN...]
+#   True when every "MOCK_IP DOMAIN" line is present in the egress's
+#   /etc/hosts. Matches whole lines: 127.0.0.1 is in every /etc/hosts
+#   already (localhost), so grepping for the bare IP proves nothing.
+_egress_hosts_patched() {
+  local cage="$1" mock_ip="$2"; shift 2
+  local lines=() domain
+  for domain in "$@"; do
+    lines+=("${mock_ip} ${domain}")
+  done
+  podman exec "${cage}-egress" sh -c '
+    for l in "$@"; do grep -qxF "$l" /etc/hosts || exit 1; done
+  ' sh "${lines[@]}" 2>/dev/null
+}
+
+# start_mock CAGE DOMAIN [DOMAIN...]
+#   Starts the mock inside the cage's egress network namespace and patches
+#   the egress's /etc/hosts so the given domains resolve to it.
 start_mock() {
   local cage="$1"; shift
 
   # Remove stale mock container if any
-  podman rm -f "${cage}-mock" >/dev/null 2>&1 || true
+  stop_mock "$cage"
 
-  # Pick the agentcage-egress image tag for the running agentcage version
-  # — build_artifacts() tags as ``agentcage-egress:<pkg-version>``. The
-  # mock just needs an image with python3 inside; egress has it (debian
-  # bookworm-slim + the mitmproxy bundle which ships its own python).
-  #
-  # The `|| true` is load-bearing (#317): lib.sh runs under `set -euo
-  # pipefail`, so when the store holds no agentcage-egress image grep exits
-  # 1, pipefail propagates it, and the bare assignment killed the ENTIRE
-  # phase right here — no message, no test results, just `FAIL (0/0)`. That
-  # is precisely what a macOS run hit, because the image had been built into
-  # the apple-container store where podman cannot see it. Tolerate the empty
-  # result so the diagnostic below actually gets a chance to run.
-  local mock_image
-  mock_image=$(podman images --format '{{.Repository}}:{{.Tag}}' \
-    | grep -E '^localhost/agentcage-egress:' | head -n 1 || true)
-  if [ -z "$mock_image" ]; then
-    # Fall back to the unversioned name in case the test runner pre-built
-    # one without a version tag.
-    mock_image=localhost/agentcage-egress
-    # A missing egress image after a successful `cage create` almost always
-    # means the cage was built by a NON-podman backend (vm / apple-container),
-    # whose image store podman cannot see — the exact #317 failure mode.
-    echo "WARNING: no localhost/agentcage-egress:* image in the podman store;" >&2
-    echo "         falling back to '$mock_image'. If the cage was created with a" >&2
-    echo "         vm or apple-container backend its egress image lives in a" >&2
-    echo "         different image store — see issue #317." >&2
-  fi
-
-  # Start mock container (reuses the already-built agentcage-egress image
-  # which ships python3)
-  # --user root: the image defaults to uid 200 (acproxy), which can't
-  #   bind to port 80 without the sysctl below.
-  # --sysctl ip_unprivileged_port_start=80: required on hosts where the
-  #   default unprivileged port range starts at 1024 (e.g. Arch). The
-  #   egress quadlet sets the same sysctl (egress.container.j2).
-  # --entrypoint=python3: agentcage-egress has ENTRYPOINT
-  #   [tini, --, /opt/agentcage/supervisor]. We override here so
-  #   `python3 /mock.py` runs directly instead of being parsed as the
-  #   supervisor's args.
-  # Capture podman's own error (#317): a bare "failed to start mock
-  # container" hides the actual cause (missing image, missing network, …).
-  local run_out run_rc=0
-  run_out=$(podman run -d --name "${cage}-mock" \
-    --user root \
-    --network "${cage}-net" \
-    --sysctl net.ipv4.ip_unprivileged_port_start=80 \
-    --entrypoint=python3 \
-    -v "${MOCK_SCRIPT}:/mock.py:ro" \
-    "$mock_image" /mock.py 2>&1) || run_rc=$?
-  if [ "$run_rc" -ne 0 ]; then
-    echo "WARNING: failed to start mock container for $cage (image: $mock_image)" >&2
-    _dump_captured "podman run FAILED (exit $run_rc)" "$run_out"
-    return 1
-  fi
-
-  # Get mock IP. `|| true` for the same reason as the image lookup above:
-  # a failing inspect must reach the explicit check below, not abort the
-  # phase with no output via `set -e`.
-  local mock_ip
-  mock_ip=$(podman inspect "${cage}-mock" \
-    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true)
-  if [ -z "$mock_ip" ]; then
-    echo "WARNING: mock container has no IP for $cage" >&2
-    stop_mock "$cage"
-    return 1
-  fi
-
-  # Wait for mock to actually listen on port 80
-  local i
-  for i in $(seq 1 10); do
-    if podman exec "${cage}-mock" python3 -c "
-import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',80)); s.close()
-" 2>/dev/null; then
-      break
-    fi
-    if [ "$i" -eq 10 ]; then
-      echo "WARNING: mock not listening on port 80 for $cage" >&2
-      echo "  container status: $(podman inspect "${cage}-mock" --format '{{.State.Status}}' 2>/dev/null)" >&2
-      echo "  container logs:" >&2
-      podman logs "${cage}-mock" 2>&1 | tail -10 >&2
-      stop_mock "$cage"
-      return 1
-    fi
-    sleep 0.5
+  # The egress may still be starting right after `cage create`; wait for
+  # it to be running (it then has a namespace to join).
+  local netns="" i
+  for i in $(seq 1 30); do
+    netns=$(_egress_netns "$cage")
+    [ -n "$netns" ] && break
+    sleep 1
   done
+  if [ -z "$netns" ]; then
+    # A cage that `cage create` reported as created but whose egress podman
+    # cannot see almost always means a NON-podman backend (vm /
+    # apple-container) built it, in a different container store — the exact
+    # #317 failure mode.
+    echo "WARNING: egress container ${cage}-egress is not running in the podman store" >&2
+    echo "         (podman inspect: $(podman inspect --format '{{.State.Status}}' "${cage}-egress" 2>&1 || true))." >&2
+    echo "         If the cage was created with a vm or apple-container backend its" >&2
+    echo "         egress lives in a different container store — see issue #317." >&2
+    return 1
+  fi
+
+  _run_mock "$cage" "$netns" || return 1
 
   # Patch egress's /etc/hosts with marker block.
-  # Retry — the egress container may still be starting after cage create.
+  # Retry — the egress container may still be settling after cage create.
   local _patched=false
   for i in $(seq 1 15); do
-    if _patch_egress_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
-       podman exec "${cage}-egress" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
+    if _patch_egress_hosts "$cage" "$MOCK_IP" "$@" &&
+       _egress_hosts_patched "$cage" "$MOCK_IP" "$@"; then
       _patched=true
       break
     fi
@@ -623,36 +669,41 @@ import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',80)); 
     return 1
   fi
 
-  echo "  mock: $mock_ip → $*"
+  echo "  mock: $MOCK_IP (in ${cage}-egress netns) → $*"
   return 0
 }
 
 # repatch_mock CAGE DOMAIN [DOMAIN...]
-#   Re-applies /etc/hosts after an egress container restart (domain
-#   add/rm, cage restart, etc. recreate the container, losing the patch).
-#   Verifies the patch landed before returning, since the egress
-#   container can be restarted by Restart=on-failure between patch and
-#   verification.
+#   Re-applies the mock after an egress container restart (domain add/rm,
+#   cage restart, etc. recreate the container): moves the mock into the new
+#   egress namespace if it changed, then re-applies /etc/hosts. Verifies
+#   the patch landed before returning, since the egress container can be
+#   restarted by Restart=on-failure between patch and verification.
+#   Returns 1 without starting anything for a cage that never had a mock.
 repatch_mock() {
   local cage="$1"; shift
-  local mock_ip
-  mock_ip=$(podman inspect "${cage}-mock" \
-    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null) || return 1
-  [ -z "$mock_ip" ] && return 1
-  local i
+  podman container exists "${cage}-mock" 2>/dev/null || return 1
+  local i netns
   for i in $(seq 1 15); do
-    if _patch_egress_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
-       podman exec "${cage}-egress" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
-      return 0
+    netns=$(_egress_netns "$cage")
+    if [ -n "$netns" ]; then
+      if [ "$(_mock_netns "$cage")" != "$netns" ]; then
+        _run_mock "$cage" "$netns" >/dev/null 2>&1 || { sleep 1; continue; }
+      fi
+      if _patch_egress_hosts "$cage" "$MOCK_IP" "$@" &&
+         _egress_hosts_patched "$cage" "$MOCK_IP" "$@"; then
+        return 0
+      fi
     fi
     sleep 1
   done
   return 1
 }
 
-# stop_mock CAGE — remove mock container
+# stop_mock CAGE — remove mock container. `-t 0`: python as PID 1 ignores
+# SIGTERM, so a graceful stop would just burn podman's 10s timeout.
 stop_mock() {
-  podman rm -f "${1}-mock" >/dev/null 2>&1 || true
+  podman rm -f -t 0 "${1}-mock" >/dev/null 2>&1 || true
 }
 
 # ── results ──────────────────────────────────────────────────────────
