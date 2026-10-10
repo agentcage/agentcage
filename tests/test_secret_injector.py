@@ -527,11 +527,7 @@ class TestConfigure:
         secrets_dir.mkdir()
         (secrets_dir / "ANTHROPIC_API_KEY").write_text("sk-ant-real-1234\n")
         monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(secrets_dir))
-        # Module reads AGENTCAGE_SECRETS_DIR once at import time, so
-        # reload it to pick up the test override.
-        import importlib, secret_injector
-        importlib.reload(secret_injector)
-        inj = secret_injector.SecretInjector()
+        inj = SecretInjector()
         inj.configure([
             {"env": "ANTHROPIC_API_KEY",
              "placeholder": "{{ANTHROPIC_API_KEY}}",
@@ -549,9 +545,7 @@ class TestConfigure:
         """
         monkeypatch.delenv("MISSING_KEY", raising=False)
         monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(tmp_path))
-        import importlib, secret_injector
-        importlib.reload(secret_injector)
-        inj = secret_injector.SecretInjector()
+        inj = SecretInjector()
         inj.configure([
             {"env": "MISSING_KEY", "placeholder": "{{MISSING_KEY}}"},
         ])
@@ -569,14 +563,49 @@ class TestConfigure:
         secrets_dir.mkdir()
         (secrets_dir / "DUAL_KEY").write_text("from-file\n")
         monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(secrets_dir))
-        import importlib, secret_injector
-        importlib.reload(secret_injector)
-        inj = secret_injector.SecretInjector()
+        inj = SecretInjector()
         inj.configure([
             {"env": "DUAL_KEY", "placeholder": "{{DUAL_KEY}}"},
         ])
         assert len(inj.rules) == 1
         assert inj.rules[0].real_value == "from-file"
+
+    def test_runtime_dir_file_is_ignored(self, monkeypatch, tmp_path):
+        """The injector resolves values through the egress's one secret
+        lookup (``secret_lookup.read_secret``): staged file → env. There
+        is no ``$XDG_RUNTIME_DIR`` step — nothing stages secrets there,
+        and in the egress it would only ever mean ``/run/<NAME>``, where a
+        colliding pid or lock file would be injected as the credential."""
+        staged = tmp_path / "secrets"
+        runtime = tmp_path / "runtime"
+        staged.mkdir()
+        runtime.mkdir()
+        (runtime / "RT_KEY").write_text("from-runtime\n")
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(staged))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+        monkeypatch.delenv("RT_KEY", raising=False)
+        inj = SecretInjector()
+        inj.configure([{"env": "RT_KEY", "placeholder": "{{RT_KEY}}"}])
+        assert inj.rules == []
+        monkeypatch.setenv("RT_KEY", "from-env")
+        inj.configure([{"env": "RT_KEY", "placeholder": "{{RT_KEY}}"}])
+        assert len(inj.rules) == 1
+        assert inj.rules[0].real_value == "from-env"
+
+    def test_secrets_dir_read_per_configure_not_at_import(
+        self, monkeypatch, tmp_path,
+    ):
+        """``AGENTCAGE_SECRETS_DIR`` is read on every configure() (the
+        live-apply reload path), not frozen at module import."""
+        monkeypatch.delenv("LATE_KEY", raising=False)
+        staged = tmp_path / "secrets"
+        staged.mkdir()
+        (staged / "LATE_KEY").write_text("late-value\n")
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(staged))
+        inj = SecretInjector()
+        inj.configure([{"env": "LATE_KEY", "placeholder": "{{LATE_KEY}}"}])
+        assert len(inj.rules) == 1
+        assert inj.rules[0].real_value == "late-value"
 
 
 # ── Domain matching ──────────────────────────────────────

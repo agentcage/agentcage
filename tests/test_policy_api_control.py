@@ -245,6 +245,85 @@ class TestFailClosed:
         assert not dom.is_granted("x.com")
 
 
+class TestSecretLookup:
+    """The decider's ``api_key`` resolves through the egress's one secret
+    lookup (``secret_lookup.read_secret``), the same chain the injector and
+    the relays use: staged file (``$AGENTCAGE_SECRETS_DIR/<NAME>``) → env.
+    Before, the Policy API hardcoded the staged dir, an empty staged file
+    fell through to the boot-time env — so a ``secret rm`` left the decider
+    running on the removed key — and it read ``$XDG_RUNTIME_DIR/<NAME>``,
+    which in the egress only ever meant ``/run/<NAME>``."""
+
+    @pytest.fixture
+    def dirs(self, monkeypatch, tmp_path):
+        staged = tmp_path / "secrets"
+        runtime = tmp_path / "runtime"
+        staged.mkdir()
+        runtime.mkdir()
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(staged))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+        monkeypatch.delenv("K", raising=False)
+        return staged, runtime
+
+    def test_staged_file_honours_secrets_dir(self, dirs, monkeypatch):
+        staged, _ = dirs
+        monkeypatch.setenv("K", "stale-env")
+        (staged / "K").write_text("sk-staged\n")
+        assert PolicyApi._read_secret("env:K") == "sk-staged"
+
+    def test_empty_staged_file_is_a_tombstone(self, dirs, monkeypatch,
+                                              tmp_path, resp_status):
+        staged, runtime = dirs
+        monkeypatch.setenv("K", "stale-env")
+        (runtime / "K").write_text("sk-runtime\n")
+        (staged / "K").write_text("")
+        assert PolicyApi._read_secret("env:K") == ""
+        # End to end (no white-box key): the constructor leaves the key
+        # unresolved, so the decider is unconfigured and denies with 503.
+        grants = tmp_path / "grants"
+        grants.mkdir()
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(grants))
+        dom = DomainInspector()
+        dom.configure({"allow": ["a.com"]})
+        pa = PolicyApi(
+            {"domains": {"allow": ["a.com"]},
+             "agents": {"decider": {"enable": True, "provider": "openrouter",
+                                    "model": "m", "api_key": "env:K"}}},
+            dom, lambda e: None, MagicMock())
+        assert pa._llm_secret == ""
+        _handle(pa, _flow(domain="x.com"))
+        assert resp_status[-1] == 503
+        assert not dom.is_granted("x.com")
+
+    def test_runtime_dir_file_is_ignored(self, dirs, monkeypatch):
+        _, runtime = dirs
+        (runtime / "K").write_text("sk-runtime\n")
+        assert PolicyApi._read_secret("env:K") == ""
+        monkeypatch.setenv("K", "sk-env")
+        assert PolicyApi._read_secret("env:K") == "sk-env"
+
+    def test_env_fallback_when_no_file(self, dirs, monkeypatch):
+        monkeypatch.setenv("K", "sk-env")
+        assert PolicyApi._read_secret("env:K") == "sk-env"
+
+    def test_only_the_trailing_newline_is_stripped(self, dirs):
+        """Same whitespace rule as the injector and the relays: file
+        delivery appends a newline, nothing else is the egress's to
+        trim (the host already trims trailing newlines off ``cmd:`` and
+        ``secret set`` input and keeps everything else)."""
+        staged, _ = dirs
+        (staged / "K").write_text("sk-key \n\n")
+        assert PolicyApi._read_secret("env:K") == "sk-key "
+        (staged / "K").write_text("sk-key\n")
+        inj = SecretInjector()
+        inj.configure([{"env": "K", "placeholder": "{{K}}"}])
+        assert PolicyApi._read_secret("env:K") == inj.rules[0].real_value
+
+    def test_no_name_is_unset(self, dirs):
+        assert PolicyApi._read_secret("") == ""
+        assert PolicyApi._read_secret("env:") == ""
+
+
 class TestTtlClamp:
     def test_ttl_clamped_to_24h(self, tmp_path, monkeypatch):
         import datetime as _dt
