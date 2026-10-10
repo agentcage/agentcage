@@ -32,6 +32,7 @@ pub mod inject;
 pub mod inspect;
 pub mod json;
 pub mod llm;
+pub mod message;
 pub mod plugin;
 pub mod policy;
 pub mod proxy;
