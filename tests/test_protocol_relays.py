@@ -359,6 +359,53 @@ class TestReadOnlyPolicy:
 
         _run(_go())
 
+    @pytest.mark.parametrize("policy", [
+        {"write_mode": "none"},
+        {"readonly": True},  # legacy spelling of write_mode: none
+    ], ids=["write_mode-none", "legacy-readonly"])
+    def test_close_blocked_because_it_expunges(self, policy):
+        """RFC 3501 §6.4.2: CLOSE expunges every \\Deleted message in the
+        selected mailbox. Readonly denies STORE, so the relay cannot set
+        the flag — but another client can, and a readonly relay that let
+        CLOSE through would destroy that mail."""
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                entry = _relay_entry(up_port)
+                entry["policy"] = {**entry["policy"], **policy}
+                relay = ImapRelay(entry, audit_log=entries.append)
+                await relay.start()
+                try:
+                    port = relay._server.sockets[0].getsockname()[1]
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()  # PREAUTH
+                        writer.write(b"a1 CLOSE\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                    await asyncio.sleep(0.05)
+                finally:
+                    await relay.stop()
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+            return line, recorder.commands, entries
+
+        line, cmds, entries = _run(_go())
+        assert line.startswith(b"a1 NO CLOSE not permitted (readonly)"), line
+        assert not any(b"CLOSE" in c.upper() for c in cmds), \
+            "CLOSE reached upstream"
+        blocks = [
+            e for e in entries
+            if e.get("kind") == "imap_command"
+            and e.get("decision") == "blocked"
+        ]
+        assert [b["command"] for b in blocks] == ["CLOSE"], entries
+        assert blocks[0]["reason"] == "readonly policy"
+
 
 class TestFolderAllowlist:
     def test_select_outside_allowlist_blocked(self):
