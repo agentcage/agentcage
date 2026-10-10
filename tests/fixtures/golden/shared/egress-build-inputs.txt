@@ -16,7 +16,7 @@ proxy/policy_api.py 82080
 proxy/relays/__init__.py 2316
 proxy/relays/_tls.py 3630
 proxy/relays/_validate.py 10366
-proxy/relays/imap.py 79936
+proxy/relays/imap.py 89186
 proxy/relays/smtp.py 49242
 proxy/secret_injector.py 36342
 proxy/secret_lookup.py 4384
