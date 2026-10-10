@@ -5,13 +5,30 @@
     "https://evil.example.org/exfil",
     "https://evil.example.org/beacon",
     "http://127.0.0.1:3000/hook",
+    "api.example.com",
     "https://cdn.example.com/a.bin",
     "https://legacy.example.com/",
-    "https://api.example.com/v1/item/9"
+    "https://api.example.com/v1/item/9",
+    "mail",
+    "outbound-mail",
+    "outbound-mail",
+    "outbound-mail",
+    "mail",
+    "policy_introspect",
+    "pypi.org",
+    "policy_request",
+    "192.0.2.10",
+    "granted.example.com",
+    "pypi.org"
   ],
   "decision-blocked": [
     "https://evil.example.org/exfil",
-    "https://evil.example.org/beacon"
+    "https://evil.example.org/beacon",
+    "mail",
+    "outbound-mail",
+    "outbound-mail",
+    "192.0.2.10",
+    "granted.example.com"
   ],
   "direction-inbound": [
     "http://127.0.0.1:3000/hook"
@@ -20,31 +37,58 @@
     "https://evil.example.org/exfil",
     "https://evil.example.org/beacon"
   ],
+  "host-relay-name": [
+    "outbound-mail",
+    "outbound-mail",
+    "outbound-mail"
+  ],
   "inspector-domain": [
     "https://evil.example.org/exfil",
     "https://evil.example.org/beacon"
   ],
+  "inspector-secrets": [
+    "https://evil.example.org/exfil",
+    "outbound-mail"
+  ],
   "method-post-lowercase": [
     "https://upload.example.net/put",
-    "https://evil.example.org/exfil"
+    "https://evil.example.org/exfil",
+    "policy_request"
   ],
   "severity-critical": [
-    "https://evil.example.org/exfil"
+    "https://evil.example.org/exfil",
+    "outbound-mail"
   ],
   "severity-high-watcher": [
     "https://evil.example.org/exfil",
     "https://evil.example.org/beacon",
-    "https://cdn.example.com/a.bin"
+    "https://cdn.example.com/a.bin",
+    "outbound-mail",
+    "pypi.org"
   ],
   "severity-warning": [
     "https://upload.example.net/put",
     "https://evil.example.org/exfil",
     "https://evil.example.org/beacon",
     "https://cdn.example.com/a.bin",
-    "https://api.example.com/v1/item/9"
+    "https://api.example.com/v1/item/9",
+    "outbound-mail",
+    "outbound-mail",
+    "pypi.org"
   ],
   "since-2024-03": [
     "https://cdn.example.com/a.bin",
-    "https://legacy.example.com/"
+    "https://legacy.example.com/",
+    "mail",
+    "outbound-mail",
+    "outbound-mail",
+    "outbound-mail",
+    "mail",
+    "policy_introspect",
+    "pypi.org",
+    "policy_request",
+    "192.0.2.10",
+    "granted.example.com",
+    "pypi.org"
   ]
 }

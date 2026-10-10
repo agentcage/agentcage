@@ -3,7 +3,8 @@
 //! Pure-function module — no subprocess/IO, independently testable.
 //!
 //! This is a port of `src/agentcage/audit.py`. The proxy addon writes one
-//! JSON object per request to stderr; `cage audit` reads them back out of
+//! JSON object per audited event (an HTTP or DNS decision, a relay command,
+//! a Policy API request, ...) to stderr; `cage audit` reads them back out of
 //! `journalctl` (container/vm) or a bind-mounted `audit.jsonl`
 //! (apple-container), filters them, and prints either a table, raw JSON or
 //! a summary. Everything in here is on the "decide" side of that: callers
@@ -60,6 +61,17 @@ pub struct AuditEntry {
     pub secrets_injected: Vec<String>,
     /// Names of secrets redacted out of this request.
     pub secrets_redacted: Vec<String>,
+    /// The record's `kind`, empty on an HTTP or DNS decision. Everything
+    /// else the egress audits names one: relay commands
+    /// (`imap_command`, `smtp_data`, ...), relay lifecycle
+    /// (`relay_start_failed`, ...), the Policy API (`policy_*`), the
+    /// watcher (`watcher_*`) and the addon's non-HTTP blocks
+    /// (`tcp_bypass_blocked`, `private_peer_blocked`).
+    pub kind: String,
+    /// The protocol relay that wrote the record, if one did. A relay
+    /// record has no host, so this stands in for it in the table and
+    /// under `--host`.
+    pub relay: String,
 }
 
 /// Read a string field, defaulting to `""`.
@@ -98,7 +110,12 @@ impl AuditEntry {
     ///
     /// Every field is optional: entries written by older proxy builds are
     /// missing `direction`, `port`, `path`, `source` and the secret lists,
-    /// and `cage audit` must still render them.
+    /// and `cage audit` must still render them. Records that are not HTTP
+    /// decisions lack most of the HTTP fields, so two stand-ins are read:
+    /// a Policy API record's `domain` fills `host`, and a relay's flat
+    /// `inspector`/`severity` verdict becomes a one-item `inspectors`
+    /// list, so `--inspector`, `--severity` and the summary treat it like
+    /// any other. `raw` keeps the record as written either way.
     #[must_use]
     pub fn from_value(d: &Value) -> Self {
         // A non-object cannot reach here through `extract_audit_json`
@@ -106,25 +123,65 @@ impl AuditEntry {
         // so one reads as an object with every field missing.
         let empty = Map::new();
         let obj = d.as_object().unwrap_or(&empty);
+        let mut host = get_str(obj, "host");
+        if host.is_empty() {
+            host = get_str(obj, "domain");
+        }
+        let inspectors = match obj.get("inspectors").and_then(Value::as_array) {
+            Some(list) => list.clone(),
+            None => match obj.get("inspector").and_then(Value::as_str) {
+                Some(name) if !name.is_empty() => {
+                    let mut verdict = Map::new();
+                    verdict.insert("name".to_owned(), Value::from(name));
+                    for key in ["severity", "reason"] {
+                        if let Some(value) = obj.get(key).filter(|v| v.is_string()) {
+                            verdict.insert(key.to_owned(), value.clone());
+                        }
+                    }
+                    vec![Value::Object(verdict)]
+                }
+                _ => Vec::new(),
+            },
+        };
         Self {
             ts: get_str(obj, "ts"),
             direction: get_str(obj, "direction"),
             method: get_str(obj, "method"),
-            host: get_str(obj, "host"),
+            host,
             url: get_str(obj, "url"),
             decision: get_str(obj, "decision"),
             reason: get_str(obj, "reason"),
-            inspectors: obj
-                .get("inspectors")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
+            inspectors,
             raw: d.clone(),
             port: obj.get("port").and_then(Value::as_i64).unwrap_or(0),
             path: get_str(obj, "path"),
             source: get_str(obj, "source"),
             secrets_injected: get_str_list(obj, "secrets_injected"),
             secrets_redacted: get_str_list(obj, "secrets_redacted"),
+            kind: get_str(obj, "kind"),
+            relay: get_str(obj, "relay"),
+        }
+    }
+
+    /// True for a control-plane record: the Policy API's and the
+    /// watcher's own bookkeeping, not traffic.
+    ///
+    /// The same split as `_CONTROL_RECORD_KINDS` in the egress's
+    /// `watcher.py`, which keeps these out of its digest's flow count.
+    /// The discriminator cannot be "has a kind": relay records carry one
+    /// too, and they are traffic.
+    #[must_use]
+    pub fn is_control_plane(&self) -> bool {
+        self.kind.starts_with("policy_") || self.kind.starts_with("watcher_")
+    }
+
+    /// What the HOST column shows and `--host` matches: the host, or
+    /// failing that the relay's name.
+    fn subject(&self) -> &str {
+        if self.host.is_empty() {
+            &self.relay
+        } else {
+            &self.host
         }
     }
 }
@@ -153,6 +210,7 @@ pub struct AuditFilter {
     /// Keep only these directions (exact match).
     pub directions: Vec<String>,
     /// Keep entries whose host *contains* any of these (substring match).
+    /// A relay record, which has no host, is matched on its relay's name.
     pub hosts: Vec<String>,
     /// Keep entries triggered by any of these inspectors (exact name).
     pub inspectors: Vec<String>,
@@ -177,7 +235,7 @@ impl AuditFilter {
         if !self.directions.is_empty() && !self.directions.contains(&entry.direction) {
             return false;
         }
-        if !self.hosts.is_empty() && !self.hosts.iter().any(|h| entry.host.contains(h)) {
+        if !self.hosts.is_empty() && !self.hosts.iter().any(|h| entry.subject().contains(h)) {
             return false;
         }
         if !self.inspectors.is_empty() {
@@ -629,6 +687,15 @@ fn strip_vm_prefix(line: &str) -> Option<&str> {
 ///
 /// Handles both container mode (raw JSON) and VM mode
 /// (`[proxy:level] {json}` prefix). Returns `None` for non-audit lines.
+///
+/// An audit record is what the egress writes through its one funnel,
+/// `_audit_write`: every record there carries a `ts` (the funnel stamps
+/// one if the producer did not) and either a `decision` or a `kind`.
+/// HTTP and DNS decisions have both a decision and a method; relay,
+/// Policy API, watcher and TCP-bypass records have a kind and no method.
+/// The signature used to be `decision` plus `method`, which silently
+/// dropped every one of the latter from `cage audit`. That signature
+/// still qualifies on its own, so nothing it accepted is lost.
 #[must_use]
 pub fn extract_audit_json(line: &str) -> Option<Value> {
     let line = py_strip(line);
@@ -646,9 +713,13 @@ pub fn extract_audit_json(line: &str) -> Option<Value> {
 
     let d: Value = serde_json::from_str(line).ok()?;
 
-    // Must have the audit entry signature
+    // Must have the audit entry signature. The `ts` requirement is what
+    // keeps somebody else's structured log line (a `kind` alone, say) out.
     let obj = d.as_object()?;
-    if !obj.contains_key("decision") || !obj.contains_key("method") {
+    let funnel =
+        obj.contains_key("ts") && (obj.contains_key("decision") || obj.contains_key("kind"));
+    let http = obj.contains_key("decision") && obj.contains_key("method");
+    if !funnel && !http {
         return None;
     }
 
@@ -733,14 +804,24 @@ impl Counter {
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AuditSummary {
-    /// Number of entries summarized.
+    /// Number of traffic entries summarized: everything but the
+    /// control-plane records counted in `control_plane`.
     pub total: usize,
-    /// Count per decision, in first-seen order.
+    /// Control-plane records (`policy_*`, `watcher_*`; see
+    /// [`AuditEntry::is_control_plane`]). Counted here and under `kinds`
+    /// and nowhere else, as the watcher's digest does: they are the
+    /// Policy API's and the watcher's own bookkeeping, and folding them
+    /// into the traffic counts would inflate the total and put a
+    /// decider's `granted` among the request decisions.
+    pub control_plane: usize,
+    /// Count per decision, in first-seen order. A record with no
+    /// decision is not counted at all.
     pub decisions: OrderedCounts,
     /// Count per direction, in first-seen order. Entries with no
     /// `direction` are not counted at all.
     pub directions: OrderedCounts,
-    /// The ten busiest hosts.
+    /// The ten busiest hosts. A record with no host (a relay's) is not
+    /// counted.
     pub top_hosts: OrderedCounts,
     /// The ten most-blocked hosts.
     pub top_blocked_hosts: OrderedCounts,
@@ -749,8 +830,11 @@ pub struct AuditSummary {
     /// Count per method, in first-seen order. Case is not normalized, so a
     /// proxy that wrote `post` and one that wrote `POST` show up as two
     /// rows — visible in the golden corpus, and arguably a bug, but it is
-    /// the Python behaviour.
+    /// the Python behaviour. A record with no method is not counted.
     pub methods: OrderedCounts,
+    /// Count per `kind`, traffic and control plane alike, in first-seen
+    /// order. HTTP and DNS decisions have no kind and are not counted.
+    pub kinds: OrderedCounts,
 }
 
 /// Aggregate statistics from audit entries.
@@ -762,16 +846,34 @@ pub fn compute_summary(entries: &[AuditEntry]) -> AuditSummary {
     let mut blocked_hosts = Counter::default();
     let mut inspector_triggers = Counter::default();
     let mut methods = Counter::default();
+    let mut kinds = Counter::default();
+    let mut control_plane = 0;
 
     for e in entries {
-        decisions.bump(&e.decision);
+        if !e.kind.is_empty() {
+            kinds.bump(&e.kind);
+        }
+        if e.is_control_plane() {
+            control_plane += 1;
+            continue;
+        }
+        // The empties are skipped independently: a relay record has a
+        // decision but no host or method, and a bucket keyed on "" is
+        // noise, not a count anyone can act on.
+        if !e.decision.is_empty() {
+            decisions.bump(&e.decision);
+        }
         if !e.direction.is_empty() {
             directions.bump(&e.direction);
         }
-        hosts.bump(&e.host);
-        methods.bump(&e.method);
-        if e.decision == "blocked" {
-            blocked_hosts.bump(&e.host);
+        if !e.host.is_empty() {
+            hosts.bump(&e.host);
+            if e.decision == "blocked" {
+                blocked_hosts.bump(&e.host);
+            }
+        }
+        if !e.method.is_empty() {
+            methods.bump(&e.method);
         }
         for insp in &e.inspectors {
             // Note the default: `"unknown"` here, but `""` in the
@@ -786,13 +888,15 @@ pub fn compute_summary(entries: &[AuditEntry]) -> AuditSummary {
     }
 
     AuditSummary {
-        total: entries.len(),
+        total: entries.len() - control_plane,
+        control_plane,
         decisions: decisions.into_counts(),
         directions: directions.into_counts(),
         top_hosts: hosts.most_common(10),
         top_blocked_hosts: blocked_hosts.most_common(10),
         inspector_triggers: inspector_triggers.most_common(10),
         methods: methods.into_counts(),
+        kinds: kinds.into_counts(),
     }
 }
 
@@ -851,25 +955,50 @@ pub fn format_table_header() -> String {
     )
 }
 
-/// Format a single audit entry as a table row.
-#[must_use]
-pub fn format_table_row(entry: &AuditEntry, color: bool) -> String {
-    let ts = truncate(&entry.ts, 25);
-    let dir_label = match entry.direction.as_str() {
-        "inbound" => "INBOUND",
-        "outbound" => "OUTBOUND",
-        _ => "",
-    };
-    let method = truncate(&entry.method, 7);
-    let host = truncate(&entry.host, 24);
-    let port = if entry.port == 0 {
-        String::new()
+/// The METHOD column: the method, or for a record with none, the family
+/// of its `kind` (`IMAP`, `SMTP`, `POLICY`, `RELAY`, ...).
+fn method_column(entry: &AuditEntry) -> String {
+    let method = if entry.method.is_empty() && !entry.kind.is_empty() {
+        entry
+            .kind
+            .split('_')
+            .next()
+            .unwrap_or_default()
+            .to_uppercase()
     } else {
-        entry.port.to_string()
+        entry.method.clone()
     };
-    let path = truncate(&entry.path, 19);
-    let decision = entry.decision.as_str();
-    let mut reason = entry.reason.clone();
+    truncate(&method, 7).to_owned()
+}
+
+/// The PATH column: the path, or for a relay record the command it
+/// refused (and the mailbox, for IMAP).
+fn path_column(entry: &AuditEntry) -> String {
+    let raw = |key: &str| entry.raw.get(key).and_then(Value::as_str).unwrap_or("");
+    let path = if !entry.path.is_empty() {
+        entry.path.clone()
+    } else if raw("mailbox").is_empty() {
+        raw("command").to_owned()
+    } else {
+        format!("{} {}", raw("command"), raw("mailbox"))
+    };
+    truncate(&path, 19).to_owned()
+}
+
+/// The REASON column before the source and secret tags: the record's
+/// reason (a relay failure's `error` standing in), else one built from
+/// its inspectors, led by its `kind` when it has one.
+fn reason_column(entry: &AuditEntry) -> String {
+    let mut reason = if entry.reason.is_empty() {
+        entry
+            .raw
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    } else {
+        entry.reason.clone()
+    };
 
     if reason.is_empty() && !entry.inspectors.is_empty() {
         // Build reason from inspector results
@@ -885,6 +1014,44 @@ pub fn format_table_row(entry: &AuditEntry, color: bool) -> String {
         }
         reason = parts.join("; ");
     }
+
+    // Lead with the kind: it is the one field that says what the record
+    // is, and the only way to tell `imap_command` from
+    // `imap_upstream_unreachable` at a glance.
+    if !entry.kind.is_empty() {
+        reason = if reason.is_empty() {
+            entry.kind.clone()
+        } else {
+            format!("{}: {reason}", entry.kind)
+        };
+    }
+    reason
+}
+
+/// Format a single audit entry as a table row.
+///
+/// A record that is not an HTTP decision fills the same columns with
+/// what it has: the family of its `kind` where the method goes, the
+/// relay's name where the host goes when there is no host, the relay
+/// command where the path goes, and the full `kind` leading the reason.
+#[must_use]
+pub fn format_table_row(entry: &AuditEntry, color: bool) -> String {
+    let ts = truncate(&entry.ts, 25);
+    let dir_label = match entry.direction.as_str() {
+        "inbound" => "INBOUND",
+        "outbound" => "OUTBOUND",
+        _ => "",
+    };
+    let method = method_column(entry);
+    let host = truncate(entry.subject(), 24);
+    let port = if entry.port == 0 {
+        String::new()
+    } else {
+        entry.port.to_string()
+    };
+    let path = path_column(entry);
+    let decision = entry.decision.as_str();
+    let mut reason = reason_column(entry);
 
     // Append source IP for inbound requests
     if !entry.source.is_empty() {
@@ -922,10 +1089,10 @@ pub fn format_table_row(entry: &AuditEntry, color: bool) -> String {
             "{} {} {} {} {} {} {} {reason}",
             ljust(ts, 26),
             ljust(dir_label, 10),
-            ljust(method, 8),
+            ljust(&method, 8),
             ljust(host, 25),
             ljust(&port, 5),
-            ljust(path, 20),
+            ljust(&path, 20),
             ljust(decision, 10),
         );
     };
@@ -945,10 +1112,10 @@ pub fn format_table_row(entry: &AuditEntry, color: bool) -> String {
         "{} {} {} {} {} {} {colored_decision} {reason}",
         ljust(ts, 26),
         ljust(dir_label, 10),
-        ljust(method, 8),
+        ljust(&method, 8),
         ljust(host, 25),
         ljust(&port, 5),
-        ljust(path, 20),
+        ljust(&path, 20),
     )
 }
 
@@ -972,6 +1139,12 @@ pub fn format_summary(summary: &AuditSummary) -> String {
     let mut lines: Vec<String> = Vec::new();
     let total = summary.total;
     lines.push(format!("Total entries: {total}"));
+    if summary.control_plane != 0 {
+        lines.push(format!(
+            "Control-plane entries: {} (policy_*/watcher_*, not counted as traffic)",
+            summary.control_plane
+        ));
+    }
     lines.push(String::new());
 
     // Decisions. Printed from a fixed list rather than from the counter, so
@@ -1018,6 +1191,7 @@ pub fn format_summary(summary: &AuditSummary) -> String {
     block("Top hosts:", &summary.top_hosts, 40);
     block("Top blocked hosts:", &summary.top_blocked_hosts, 40);
     block("Inspector triggers:", &summary.inspector_triggers, 30);
+    block("Record kinds:", &summary.kinds, 30);
 
     // Methods, last and with no trailing blank line.
     if !summary.methods.is_empty() {
@@ -1150,7 +1324,7 @@ mod tests {
         // an unknown stream or level is not a prefix, so the `[` sinks it
         assert!(extract_audit_json(&format!("[http:info] {audit}")).is_none());
         assert!(extract_audit_json(&format!("[proxy:trace] {audit}")).is_none());
-        // the signature keys are both required
+        // without a `ts`, the HTTP signature keys are both required
         assert!(extract_audit_json(r#"{"decision":"allowed"}"#).is_none());
         assert!(extract_audit_json(r#"{"method":"GET"}"#).is_none());
         // and the line has to be JSON at all
@@ -1161,6 +1335,196 @@ mod tests {
         // a prefixed line carrying a newline does not match the prefix, and
         // then fails the `{` test — see `strip_vm_prefix`
         assert!(extract_audit_json(&format!("[proxy:info] {audit}\n{audit}")).is_none());
+    }
+
+    /// Every record kind the egress writes through `_audit_write` is an
+    /// audit entry, HTTP-shaped or not. Each one carries `ts` (the funnel
+    /// stamps it) and a `decision` or a `kind`; none of these has a
+    /// `method`, which is what the old signature demanded, so `cage audit`
+    /// never showed a relay, Policy API or TCP-bypass record at all.
+    #[test]
+    fn extract_accepts_every_record_the_egress_writes() {
+        for record in [
+            // relays
+            r#"{"kind": "imap_command", "relay": "mail", "command": "STORE", "decision": "blocked", "reason": "readonly policy", "ts": "2024-01-01T00:00:00+00:00"}"#,
+            r#"{"kind": "smtp_data", "relay": "out", "decision": "blocked", "reason": "secret", "inspector": "secrets", "severity": "critical", "ts": "2024-01-01T00:00:00+00:00"}"#,
+            r#"{"kind": "smtp_data_flag", "relay": "out", "inspector": "entropy", "reason": "high entropy", "severity": "warning", "ts": "2024-01-01T00:00:00+00:00"}"#,
+            r#"{"kind": "smtp_data_bypass", "relay": "out", "bypassed": ["secrets"], "ts": "2024-01-01T00:00:00+00:00"}"#,
+            r#"{"kind": "smtp_session", "relay": "out", "decision": "closed", "ts": "2024-01-01T00:00:00+00:00"}"#,
+            r#"{"kind": "imap_upstream_unreachable", "relay": "mail", "error": "refused", "ts": "2024-01-01T00:00:00+00:00"}"#,
+            r#"{"kind": "relay_start_failed", "relay": "mail", "error": "bind", "ts": "2024-01-01T00:00:00+00:00"}"#,
+            // the Policy API
+            r#"{"kind": "policy_introspect", "ts": "2024-01-01T00:00:00+00:00", "path": "/v1/allowlist"}"#,
+            r#"{"kind": "policy_request", "ts": "2024-01-01T00:00:00+00:00", "domain": "pypi.org", "decision": "granted"}"#,
+            r#"{"kind": "policy_grant_expired", "ts": "2024-01-01T00:00:00+00:00", "domain": "pypi.org"}"#,
+            // the addon's own non-HTTP blocks
+            r#"{"ts": "2024-01-01T00:00:00+00:00", "kind": "tcp_bypass_blocked", "direction": "outbound", "decision": "blocked", "reason": "r", "host": "192.0.2.7"}"#,
+            r#"{"ts": "2024-01-01T00:00:00+00:00", "kind": "private_peer_blocked", "direction": "outbound", "decision": "blocked", "reason": "r", "host": "a.example.com", "peer_ip": "10.0.0.1", "phase": "connect"}"#,
+        ] {
+            assert!(extract_audit_json(record).is_some(), "dropped {record}");
+            assert!(
+                extract_audit_json(&format!("[proxy:info] {record}")).is_some(),
+                "dropped vm-mode {record}"
+            );
+        }
+    }
+
+    /// The same stream carries JSON that is not ours. A `ts` alone, or a
+    /// `kind` without one, is somebody else's structured log line.
+    #[test]
+    fn extract_still_rejects_foreign_json() {
+        assert!(
+            extract_audit_json(r#"{"ts": "2024-01-01T00:00:00Z", "level": "info", "msg": "x"}"#)
+                .is_none()
+        );
+        assert!(extract_audit_json(r#"{"kind": "Pod", "apiVersion": "v1"}"#).is_none());
+        assert!(extract_audit_json(r#"["ts", "decision"]"#).is_none());
+    }
+
+    /// A record with no HTTP fields still fills the row: the kind's
+    /// family where the method goes, the relay where the host goes, the
+    /// command where the path goes, and the full kind leading the reason.
+    #[test]
+    fn table_row_renders_a_relay_record() {
+        let e = entry(
+            r#"{"kind": "imap_command", "relay": "mail", "command": "UID STORE",
+                "mailbox": "INBOX", "decision": "blocked", "reason": "readonly policy",
+                "ts": "2024-01-01T00:00:00+00:00"}"#,
+        );
+        assert_eq!(
+            format_table_row(&e, false),
+            format!(
+                "{:<26} {:<10} {:<8} {:<25} {:<5} {:<20} {:<10} {}",
+                "2024-01-01T00:00:00+00:00",
+                "",
+                "IMAP",
+                "mail",
+                "",
+                "UID STORE INBOX",
+                "blocked",
+                "imap_command: readonly policy"
+            )
+        );
+    }
+
+    /// A relay failure has an `error`, not a `reason`; it is what the
+    /// operator needs to see.
+    #[test]
+    fn table_row_falls_back_to_the_error() {
+        let e = entry(
+            r#"{"kind": "relay_start_failed", "relay": "mail", "error": "address in use",
+                "ts": "2024-01-01T00:00:00+00:00"}"#,
+        );
+        let row = format_table_row(&e, false);
+        assert!(row.contains(" RELAY    mail "), "{row}");
+        assert!(row.ends_with("relay_start_failed: address in use"), "{row}");
+    }
+
+    /// A Policy API record names a domain, not a host, and keeps any HTTP
+    /// method it does carry.
+    #[test]
+    fn table_row_renders_policy_records() {
+        let granted = entry(
+            r#"{"kind": "policy_request", "ts": "2024-01-01T00:00:00+00:00",
+                "domain": "pypi.org", "decision": "granted", "reason": "package index"}"#,
+        );
+        let row = format_table_row(&granted, false);
+        assert!(row.contains(" POLICY   pypi.org "), "{row}");
+        assert!(
+            row.ends_with("granted    policy_request: package index"),
+            "{row}"
+        );
+
+        let rejected = entry(
+            r#"{"kind": "policy_request", "ts": "2024-01-01T00:00:00+00:00",
+                "path": "/v1/allowlist/requests", "method": "POST",
+                "decision": "rejected", "reason": "body too large"}"#,
+        );
+        let row = format_table_row(&rejected, false);
+        assert!(row.contains(" POST     "), "{row}");
+        assert!(row.contains(" /v1/allowlist/reque "), "{row}");
+        assert!(row.ends_with("policy_request: body too large"), "{row}");
+    }
+
+    /// `--host` finds a Policy API record by its domain, and a relay
+    /// record by the relay's name — what the HOST column shows.
+    #[test]
+    fn host_filter_matches_what_the_host_column_shows() {
+        let filt = |h: &str| AuditFilter {
+            hosts: vec![h.to_owned()],
+            ..Default::default()
+        };
+        let policy = entry(
+            r#"{"kind": "policy_request", "ts": "2024-01-01T00:00:00+00:00", "domain": "pypi.org", "decision": "granted"}"#,
+        );
+        let relay = entry(
+            r#"{"kind": "smtp_command", "ts": "2024-01-01T00:00:00+00:00", "relay": "outbound-mail", "command": "RCPT", "decision": "blocked"}"#,
+        );
+        assert!(filt("pypi").matches(&policy));
+        assert!(filt("outbound-mail").matches(&relay));
+        assert!(!filt("pypi").matches(&relay));
+    }
+
+    /// A relay's inspector verdict is a flat `inspector`/`severity` pair.
+    /// `--inspector` and `--severity` must find it like an HTTP one, or a
+    /// secret blocked in an email body is invisible to the very query an
+    /// operator would run for it.
+    #[test]
+    fn inspector_filters_see_a_relay_verdict() {
+        let e = entry(
+            r#"{"kind": "smtp_data", "relay": "out", "decision": "blocked", "reason": "anthropic key",
+                "inspector": "secrets", "severity": "critical", "ts": "2024-01-01T00:00:00+00:00"}"#,
+        );
+        let by_name = AuditFilter {
+            inspectors: vec!["secrets".to_owned()],
+            ..Default::default()
+        };
+        let by_severity = AuditFilter {
+            min_severity: Some("error".to_owned()),
+            ..Default::default()
+        };
+        assert!(by_name.matches(&e));
+        assert!(by_severity.matches(&e));
+    }
+
+    /// The summary counts traffic. Control-plane records (`policy_*`,
+    /// `watcher_*`) are tallied by kind but kept out of the traffic
+    /// totals, as the watcher's own digest does; relay records are
+    /// traffic, but have no host or method to bucket, and an empty
+    /// bucket is noise.
+    #[test]
+    fn summary_keeps_control_plane_records_out_of_the_traffic_counts() {
+        let entries: Vec<AuditEntry> = [
+            r#"{"ts": "2024-01-01T00:00:00+00:00", "method": "GET", "host": "a.example.com", "decision": "allowed", "direction": "outbound"}"#,
+            r#"{"kind": "imap_command", "relay": "mail", "command": "STORE", "decision": "blocked", "ts": "2024-01-01T00:00:00+00:00"}"#,
+            r#"{"kind": "policy_request", "ts": "2024-01-01T00:00:00+00:00", "domain": "pypi.org", "decision": "granted"}"#,
+            r#"{"kind": "policy_introspect", "ts": "2024-01-01T00:00:00+00:00", "path": "/v1/allowlist"}"#,
+            r#"{"kind": "watcher_finding", "ts": "2024-01-01T00:00:00+00:00", "decision": "flagged", "method": "", "host": "a.example.com", "inspectors": [{"name": "watcher", "severity": "high"}]}"#,
+        ]
+        .iter()
+        .map(|r| entry(r))
+        .collect();
+        let text = format_summary(&compute_summary(&entries));
+        assert!(
+            text.starts_with("Total entries: 2\nControl-plane entries: 3 "),
+            "{text}"
+        );
+        assert!(text.contains("  blocked         1  (50%)"), "{text}");
+        assert!(text.contains("  flagged         0  (0%)"), "{text}");
+        assert!(!text.contains("granted"), "{text}");
+        assert!(!text.contains("watcher "), "{text}");
+        assert!(
+            text.contains(
+                "Record kinds:\n  imap_command                        1\n  \
+                 policy_request                      1\n  \
+                 policy_introspect                   1\n  \
+                 watcher_finding                     1\n"
+            ),
+            "{text}"
+        );
+        // No empty-string bucket for the relay record's absent host or method.
+        assert!(text.contains("Top hosts:\n  a.example.com"), "{text}");
+        assert!(text.ends_with("Methods:\n  GET             1"), "{text}");
     }
 
     fn entry(json: &str) -> AuditEntry {

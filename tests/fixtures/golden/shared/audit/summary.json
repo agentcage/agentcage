@@ -1,19 +1,32 @@
 {
+  "control_plane": 4,
   "decisions": {
-    "allowed": 4,
-    "blocked": 2,
+    "allowed": 5,
+    "blocked": 7,
     "flagged": 2
   },
   "directions": {
     "inbound": 1,
-    "outbound": 7
+    "outbound": 9
   },
   "inspector_triggers": {
     "content-type": 1,
     "domain": 2,
-    "entropy": 1,
-    "secrets": 1,
+    "entropy": 2,
+    "secrets": 2,
     "watcher": 2
+  },
+  "kinds": {
+    "imap_command": 1,
+    "imap_upstream_unreachable": 1,
+    "policy_introspect": 1,
+    "policy_request": 2,
+    "private_peer_blocked": 1,
+    "smtp_command": 1,
+    "smtp_data": 1,
+    "smtp_data_flag": 1,
+    "tcp_bypass_blocked": 1,
+    "watcher_finding": 1
   },
   "methods": {
     "DELETE": 1,
@@ -24,15 +37,19 @@
     "post": 1
   },
   "top_blocked_hosts": {
-    "evil.example.org": 2
+    "192.0.2.10": 1,
+    "evil.example.org": 2,
+    "granted.example.com": 1
   },
   "top_hosts": {
     "127.0.0.1": 1,
-    "api.example.com": 2,
+    "192.0.2.10": 1,
+    "api.example.com": 3,
     "cdn.example.com": 1,
     "evil.example.org": 2,
+    "granted.example.com": 1,
     "legacy.example.com": 1,
     "upload.example.net": 1
   },
-  "total": 8
+  "total": 16
 }

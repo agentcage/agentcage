@@ -1,11 +1,14 @@
 //! `audit.py` port, checked against the golden corpus.
 //!
 //! PR A3 recorded what the live Python produced from a fixed
-//! `audit.jsonl`: the raw-line extraction, the parsed entries, ten
+//! `audit.jsonl`: the raw-line extraction, the parsed entries, twelve
 //! filters, and the summary as JSON, as text and as a table in both plain
 //! and coloured form. `scripts/gen-golden-corpus.py` (`_write_shared`) is
 //! the recipe; this file is the same recipe in Rust, and every assertion
-//! is a byte comparison against the committed artifact.
+//! is a byte comparison against the committed artifact. The relay,
+//! Policy API, watcher and TCP-bypass records at the end of the input
+//! were added by hand after the Python was gone, when `cage audit`
+//! started showing records that are not HTTP decisions.
 //!
 //! Nothing here hardcodes an expected string. The fixture is the oracle:
 //! if a `format!` in `audit.rs` loses a space, the file on disk says so.
@@ -81,7 +84,7 @@ fn entries_match_corpus() {
     );
 }
 
-/// The ten filters the corpus records, by the labels it files them under.
+/// The filters the corpus records, by the labels it files them under.
 ///
 /// Kept in the generator's order so the two lists can be diffed by eye;
 /// the artifact itself is keyed and sorted.
@@ -113,9 +116,24 @@ fn corpus_filters() -> Vec<(&'static str, AuditFilter)> {
             },
         ),
         (
+            "host-relay-name",
+            AuditFilter {
+                hosts: of(&["outbound-mail"]),
+                ..Default::default()
+            },
+        ),
+        (
             "inspector-domain",
             AuditFilter {
                 inspectors: of(&["domain"]),
+                ..Default::default()
+            },
+        ),
+        (
+            // A relay's flat `inspector` verdict, found like an HTTP one.
+            "inspector-secrets",
+            AuditFilter {
+                inspectors: of(&["secrets"]),
                 ..Default::default()
             },
         ),
@@ -169,11 +187,13 @@ fn filters_match_corpus() {
                 .iter()
                 .filter(|e| filt.matches(e))
                 .map(|e| {
-                    if e.url.is_empty() {
-                        e.host.as_str()
-                    } else {
-                        e.url.as_str()
-                    }
+                    // The first of these an entry has. A relay record has
+                    // no url or host, and a policy_introspect read has
+                    // only its kind.
+                    [&e.url, &e.host, &e.relay, &e.kind]
+                        .into_iter()
+                        .find(|s| !s.is_empty())
+                        .map_or("", String::as_str)
                 })
                 .collect();
             (label.to_owned(), json!(kept))
