@@ -1,3 +1,236 @@
 # Protocol Relays Reference
 
-Protocol relays (IMAP & SMTP) documentation has been consolidated into **[Custom Inspectors & Protocol Relays](../how-to/custom-inspectors.md#4-hardened-protocol-relays-imap--smtp)** and the **[Configuration Reference](configuration.md)**.
+`protocol_relays` is a list of IMAP and SMTP relays that run inside the egress. The cage connects to a relay in plaintext without credentials. The relay holds the mailbox credentials, opens its own TLS connection to the real server, logs in there for the cage, and applies a policy to every command the cage sends. The cage never sees the password.
+
+For a walkthrough, see [Custom Inspectors & Protocol Relays](../how-to/custom-inspectors.md#4-hardened-protocol-relays-imap--smtp). This page lists every key, its default, and what the relays record.
+
+## Example
+
+```yaml
+protocol_relays:
+  - name: mail-read
+    type: imap
+    listen: "0.0.0.0:1143"
+    upstream:
+      host: imap.example.com
+      port: 993 # implicit TLS; STARTTLS ports do not work
+    auth:
+      user_source: env:MAIL_USER
+      password_source: env:MAIL_PASSWORD
+    policy:
+      write_mode: organise # none | organise | full
+      folder_denylist: [Trash]
+      conn_rate_limit: "30/min"
+
+  - name: mail-send
+    type: smtp
+    listen: "0.0.0.0:1025"
+    upstream:
+      host: smtp.example.com
+      port: 465 # implicit TLS; 587 (STARTTLS) does not work
+    auth:
+      user_source: env:MAIL_USER
+      password_source: env:MAIL_PASSWORD
+    policy:
+      sender_allowlist: [agent@example.com]
+      recipient_allowlist:
+        domains: [example.com]
+      max_recipients: 5
+      send_rate_limit: "10/hour"
+```
+
+Store the credentials before the cage starts. `-s NAME` prompts for the value:
+
+```bash
+agentcage cage create -c cage.yaml -s MAIL_USER -s MAIL_PASSWORD
+# later, to rotate:
+agentcage secret set <cage> MAIL_PASSWORD
+```
+
+## Reaching a relay from the cage
+
+The relay listens inside the egress, which is a separate network namespace from the cage. A loopback `listen` address such as `127.0.0.1:1143` is unreachable from the cage, so use `0.0.0.0:<port>`. The cage connects to the egress's address on that port:
+
+| Backend | Egress address inside the cage |
+| :-- | :-- |
+| `container`, `vm` | The host part of `$HTTPS_PROXY` (`http://<egress>:8080`). It is also the cage's DNS server. |
+| `apple-container` | `$AGENTCAGE_EGRESS_IP` |
+
+Picking the port:
+- **Must not be inspected.** The listen port can't be in the inspected `ports.tcp.allow` set (`allow` minus `passthrough`). Those ports are redirected into the HTTP proxy, and `cage create` refuses the collision.
+- **Must be free in the egress.** Port 53 (DNS) and ports 8080/8443 (the HTTP proxy) are taken, as are any inbound `container.ports` forwards.
+- **No `ports` entry needed.** The cage reaches the egress directly, and `ports.tcp.allow` governs the cage's outbound traffic to the internet, not this connection.
+
+`0.0.0.0` binds every egress interface, including the one on the host-facing podman network.
+
+The relay opens its upstream connection from the egress itself. `domains` and `ports` filter the cage's traffic, so `upstream.host` needs no entry in either.
+
+Point the cage's mail client at that address and port with no TLS and no password:
+- The IMAP relay greets with `* PREAUTH`, so a compliant client skips login.
+- The SMTP relay advertises `AUTH PLAIN LOGIN` because some clients refuse to send without it. It accepts any AUTH the client sends without forwarding it.
+
+## Keys both relay types take
+
+| Key | Default | Accepted values |
+| :-- | :-- | :-- |
+| `name` | required | Non-empty. Used in error messages and as `relay` in audit records. Must be unique: the egress refuses a second entry with the same name. |
+| `type` | required | `imap` or `smtp`, exactly. |
+| `listen` | required | `host:port`, where the relay binds. Use `0.0.0.0:<port>` (see above). An empty host means `0.0.0.0`. |
+| `upstream.host` | required | The mail server's hostname, or an IP literal (with `tls_servername`, see below). |
+| `upstream.port` | required | `1`–`65535`. A quoted number is accepted, but a YAML boolean (`yes`, `no`, `on`, `off`) is not. |
+| `upstream.tls` | `true` | `true`: implicit TLS (IMAPS 993, SMTPS 465). `false`: plaintext, only for an upstream on a trusted local path. No STARTTLS: see [Upstream TLS](#upstream-tls). |
+| `upstream.ca_file` | none | A host path to a PEM certificate to trust in addition to the system store. See [Upstream TLS](#upstream-tls). |
+| `upstream.ca_pem` | none | The same certificate inline, as a PEM string. Use `ca_file` or `ca_pem`, not both. |
+| `upstream.tls_servername` | none | The name to send in SNI and to check the certificate against, when it differs from `upstream.host`. |
+| `auth.user_source` | none | `env:NAME` or `systemd-creds:NAME`. See [Credentials](#credentials). |
+| `auth.password_source` | none | As `auth.user_source`. |
+| `auth.type` | none | Read by neither relay. IMAP always logs in with `LOGIN`, and SMTP always with `AUTH PLAIN`. It is accepted and carried through for compatibility only. |
+| `policy.conn_rate_limit` | `"30/min"` | A [rate string](#rate-strings). Caps new cage connections per window. Over the cap, IMAP answers `* BYE rate limit` and SMTP answers `421`, and the connection closes. |
+| `policy.idle_timeout_seconds` | IMAP `1800`, SMTP `300` | Seconds. `0` disables. What the timeout covers differs per type: see [IMAP](#imap-type-imap) and [SMTP](#smtp-type-smtp). |
+
+The relays ignore the other type's policy keys. Validation still checks `write_mode`, `readonly` and the folder lists on an SMTP relay.
+
+### Credentials
+
+The relay reads each credential by the `NAME` after the colon, from the secret files and environment the egress unit provides:
+
+- **`env:NAME`** reads the secret store's entry `NAME`. Set it with `-s NAME` at `cage create`, or with `agentcage secret set <cage> NAME`. On the vm backend, a host environment variable `NAME` that is set at deploy time is also copied into the guest, and overrides the stored value.
+- **`systemd-creds:NAME`** reads the same entry, decrypted from `NAME.cred` when the egress starts.
+- **`cmd:` and `podman:`** do not work for relays. Nothing runs a relay's `cmd:` command, so the "name" is the command text. A `podman:` name never reaches a vm guest.
+- **A bare `NAME`** with no scheme is refused at `cage create`.
+
+The host removes every relay credential name from the cage's `container.env` and `podman_secrets`, so the values reach the egress only. If either credential resolves to an empty value, the relay doesn't start: the egress records `relay_init_failed` with `credentials not resolved`.
+
+Changing a value with `agentcage secret set` takes effect without a restart. On its next config reload the egress sees the re-staged credential, then stops that relay and starts it again with the new value (see [Changing relays on a running cage](#changing-relays-on-a-running-cage)).
+
+### Upstream TLS
+
+Both relays connect upstream with **implicit TLS** or in plaintext (`tls: false`). Neither speaks STARTTLS, in either direction, so use the TLS-on-connect port: 993 for IMAP and 465 for SMTP. A TLS handshake against a STARTTLS port (143 or 587) fails.
+
+Certificate verification and hostname checking are always on. There is no option to skip them, because the relay sends real credentials to whatever answers.
+
+- **`ca_file`** is read by the host on every `cage create`, `update` and `restart`, and placed into the egress config as `ca_pem`. A certificate that a local daemon regenerates is picked up by the next `cage restart`. `~` and `$VAR` are expanded. The file must contain a `-----BEGIN CERTIFICATE-----` block; if it is missing, unreadable or not PEM, the deploy fails.
+- **`ca_pem`** must contain a `-----BEGIN CERTIFICATE-----` block.
+- **Additive, not a pin.** Both add a certificate to the system CA store. A public CA that issues for the same name is still trusted.
+- **`tls_servername`** is for an upstream addressed by IP, such as a local bridge daemon on a container subnet. A certificate can rarely name that address, so give the name it does carry.
+- **Plaintext refuses them.** `ca_file`, `ca_pem` and `tls_servername` with `tls: false` are an error, since nothing would be verified. Note that YAML reads a bare `tls: no` as `false`, but the quoted string `"false"` is truthy and leaves TLS on.
+
+### Rate strings
+
+`conn_rate_limit` and `send_rate_limit` take `<count>/<unit>`:
+
+- **Count:** a whole number of ASCII digits.
+- **Unit:** one of `sec` or `s` (1 second), `min` or `m` (60 seconds), `hour` or `h` (3600 seconds). Write it in lowercase.
+- **Whitespace:** allowed around the count, the slash and the unit.
+
+For example: `"30/min"`, `"20/hour"`, `"5 / s"`. `"10/minute"` and `"1.5/min"` are not rate strings, and a relay given one does not start. Each limit is a sliding window over the last `<unit>`. A missing, empty or `null` value means the default.
+
+## IMAP (`type: imap`)
+
+When the cage connects, the relay opens the upstream connection and sends `LOGIN` with the stored credentials. It then greets the cage with `* PREAUTH [CAPABILITY ...]`, forwarding the upstream's capabilities. It removes `COMPRESS=DEFLATE`, because the relay can't apply policy to a compressed stream. Outside `write_mode: full` it also removes `REPLACE`. It adds `IMAP4rev1` if the upstream didn't list it.
+
+If the cage sends `LOGIN` or `AUTHENTICATE` anyway, the relay answers `OK` without forwarding it.
+
+After that the relay checks each command line from the cage and forwards it or answers it itself. Server responses are passed through unchanged.
+
+| Key | Default | Accepted values |
+| :-- | :-- | :-- |
+| `policy.write_mode` | `full` (or what `readonly` implies) | `none`, `organise` or `full`, case-insensitive. See the table below. |
+| `policy.readonly` | `false` | The older spelling: `true` means `write_mode: none`, `false` means `full`. Setting both is refused unless they agree. Use `write_mode`. |
+| `policy.folder_allowlist` | `[]` (any folder) | A list of mailbox names. Only these may be opened. |
+| `policy.folder_denylist` | `[]` | A list of mailbox names that may never be opened. Denial wins over the allowlist. |
+| `policy.idle_timeout_seconds` | `1800` | Limits how long the relay waits for the upstream while connecting and logging in. Once the session is bridged there is no timeout, because an IMAP `IDLE` legitimately sits quiet for about 29 minutes between heartbeats. If the upstream greeting does not arrive in time, the cage gets `* BYE upstream silent`. |
+
+### `write_mode`
+
+| Mode | Refused (answered `NO <command> not permitted`) | Typical use |
+| :-- | :-- | :-- |
+| `none` | `APPEND`, `CLOSE`, `COPY`, `CREATE`, `DELETE`, `DELETEACL`, `EXPUNGE`, `MOVE`, `RENAME`, `REPLACE`, `SETACL`, `SETMETADATA`, `STORE`, and `UID COPY`, `UID EXPUNGE`, `UID MOVE`, `UID REPLACE`, `UID STORE` | Read-only access. `FETCH`, `SEARCH`, `UID FETCH` and `UID SEARCH` still work. |
+| `organise` | `APPEND`, `CLOSE`, `DELETE`, `DELETEACL`, `EXPUNGE`, `RENAME`, `REPLACE`, `SETACL`, `SETMETADATA`, `UID EXPUNGE`, `UID REPLACE`, and any `STORE` / `UID STORE` that sets `\Deleted` with `FLAGS` or `+FLAGS` (including `.SILENT`) | Filing and flagging without destroying mail. Allowed: `COPY`, `MOVE`, `CREATE`, the other flags, and `-FLAGS (\Deleted)`, which un-deletes. |
+| `full` | nothing | No write restrictions. Folder lists still apply. |
+
+The reasons behind the `organise` list:
+- **`CLOSE`** is refused in both restricted modes because it expunges every `\Deleted` message in the selected mailbox (RFC 3501 §6.4.2).
+- **`APPEND`** would put fabricated mail into the mailbox.
+- **`REPLACE`** (RFC 8508) is an `APPEND` and an `EXPUNGE` in one command. In these two modes the relay also leaves `REPLACE` out of the capabilities it advertises, so clients don't try it.
+- **`RENAME`** can silently break server-side filing rules that refer to folders by name.
+
+A command that isn't listed for a mode is forwarded.
+
+### Folder lists
+
+`folder_allowlist` and `folder_denylist` are checked against the mailbox argument of `SELECT`, `EXAMINE` and `STATUS` only:
+- **Matching:** exact and case-insensitive (`Trash` matches `trash`). There are no wildcards or hierarchy rules.
+- **Not checked:** `LIST` and `LSUB`, so the cage can discover folder names. The destination of `COPY` and `MOVE` is not checked either. Use `write_mode` to stop filing into a folder.
+- **Unparseable names:** while either list is set, a mailbox the relay can't parse (an IMAP literal, `{n}`) is refused.
+
+## SMTP (`type: smtp`)
+
+The relay greets with `220`. To `EHLO` it advertises `AUTH PLAIN LOGIN`, `8BITMIME`, `SIZE <max_message_bytes>`, `PIPELINING`, `ENHANCEDSTATUSCODES` and `SMTPUTF8`, and never `STARTTLS`. It runs the transaction itself and opens the upstream connection only when a message has passed every check.
+
+The upstream login is `EHLO agentcage.local` followed by `AUTH PLAIN`. That connection is reused for the rest of the cage's session.
+
+| Key | Default | Accepted values |
+| :-- | :-- | :-- |
+| `policy.sender_allowlist` | `[]` (any sender) | A list of addresses. `MAIL FROM` is refused (`550`) unless it matches one exactly, case-insensitive. |
+| `policy.recipient_allowlist` | `{}` (any recipient) | A mapping with `addresses` (exact, case-insensitive) and `domains` (the domain or any subdomain: `example.com` matches `ops.example.com`). A plain list is shorthand for `addresses`. Each `RCPT TO` that matches neither is refused (`550 5.7.1`). |
+| `policy.max_recipients` | `10` | Recipients per message. The one over the cap gets `452 4.5.3`. |
+| `policy.max_message_bytes` | `5242880` (5 MiB) | Message size after dot-unstuffing. Larger messages get `552 5.3.4`. |
+| `policy.send_rate_limit` | `"20/hour"` | A [rate string](#rate-strings). Over the limit, `DATA` gets `451 4.7.0`. A message that is not delivered (too large, blocked by an inspector, refused upstream, or timed out) gives its slot back, so the limit counts deliveries the upstream accepted. |
+| `policy.bypass_inspectors_for_allowlisted` | `[secrets, entropy, content-type]` | Inspector names skipped when a `recipient_allowlist` is set. Recipients outside the allowlist were already refused, so every remaining one matched it. `[]` keeps every inspector on for trusted recipients too. With no recipient allowlist, nothing is skipped. |
+| `policy.idle_timeout_seconds` | `300` | Applies to every read from the cage and from the upstream. An idle cage gets `421 4.4.2` and the connection closes. A stalled `DATA` gets `451 4.4.2`. |
+
+With neither `sender_allowlist` nor `recipient_allowlist` set, the relay sends mail from any sender to any recipient. Set both.
+
+Every message body goes through the egress's inspector chain before it is forwarded. That's the same chain HTTP requests use, minus the domain inspector (`recipient_allowlist` does that job here). The `secrets` inspector blocks on relays unless `secrets.action` says otherwise. A block answers `550 5.7.0 <reason>`. A `flag` delivers the message and records `smtp_data_flag`.
+
+Other commands:
+- `RSET`, `NOOP`: `250`
+- `VRFY`: `252`
+- `QUIT`: `221`
+- anything else: `502`
+
+Commands before `EHLO`/`HELO` get `503`. If the upstream fails during delivery, the cage gets `451 4.4.0` and the next message opens a fresh upstream connection.
+
+## Validation
+
+`cage create` and `cage update` refuse a relay entry when:
+- **Required keys:** `name`, `type` or `listen` is missing or empty, or `type` is not `imap` or `smtp`.
+- **Upstream:** `upstream` has no `host`, its `port` is outside `1`–`65535`, or the port is a YAML boolean.
+- **TLS:** `ca_file` and `ca_pem` are both set, `ca_pem` holds no `-----BEGIN CERTIFICATE-----` block, or `ca_file`, `ca_pem` or `tls_servername` is set with `tls: false`.
+- **Policy:** `policy` is not a mapping, `write_mode` is not one of the three modes, `readonly` contradicts `write_mode`, or a folder list is not a list.
+- **Credentials:** a credential source names an unknown scheme.
+- **Ports:** the listen port collides with an inspected `ports.tcp.allow` port.
+
+The egress runs the same structural checks again when it loads the config. An entry that fails is skipped and recorded as `relay_config_invalid`. Other relays and HTTP traffic are unaffected.
+
+## Audit records
+
+Relays write structured records to the egress audit stream, the same one HTTP decisions go to. `agentcage cage logs <cage> -s egress` shows them. Every record has a `kind` and the `relay` name.
+
+| `kind` | `decision` | When |
+| :-- | :-- | :-- |
+| `relay_config_invalid` | none | The entry failed validation in the egress, or reuses a name. `error` says why. |
+| `relay_init_failed` | none | The relay could not be built, for example because a credential did not resolve. `error` says why. |
+| `relay_start_failed` | none | The listener could not start: port in use, or a malformed `listen`. |
+| `imap_command` | `intercepted` | The cage sent `LOGIN` / `AUTHENTICATE`. |
+| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list. Carries `command`, `reason`, and `mailbox` for folder refusals. |
+| `imap_command` | `allowed` | A forwarded command, recorded only while allowed-request logging is on (`logging.allowed_requests`). The egress currently treats an absent key as on, so set `false` explicitly if IMAP sync traffic is too noisy. |
+| `imap_upstream_unreachable` | none | The upstream connection failed. Carries `upstream` and `error`. |
+| `smtp_command` | `intercepted` | The cage sent `AUTH`. |
+| `smtp_command` | `blocked` | A refused sender or recipient, too many recipients, the send rate limit, an oversize message or a `DATA` timeout. Carries `command`, `reason`, and the `sender` / `recipient` where relevant. |
+| `smtp_session` | `closed` | The cage was idle past `idle_timeout_seconds`. |
+| `smtp_data` | `allowed` | Delivered. Carries `sender`, `recipients` (those the upstream accepted), `recipients_rejected_upstream`, `size` and `upstream_status`. |
+| `smtp_data` | `blocked` | An inspector blocked the body. Carries `inspector`, `reason`, `severity`, `sender`, `recipients` and `size`. |
+| `smtp_data` | `upstream_error` | The upstream refused or failed the delivery. Carries `error`. |
+| `smtp_data_flag` | none | An inspector flagged a body that was delivered anyway. One record per flag, with `inspector`, `reason`, `severity`, `sender` and `recipients`. |
+| `smtp_data_bypass` | none | Inspectors were skipped because every recipient was allowlisted. Carries `bypassed`, `sender` and `recipients`. |
+
+
+## Changing relays on a running cage
+
+The egress applies `protocol_relays` changes without a restart. It picks up a changed config, including a credential re-staged by `agentcage secret set`, on its next proxied request:
+- **Unchanged entry, same credentials:** keeps running, along with its open sessions.
+- **Changed entry, or a re-staged credential:** stopped and started again.
+- **Removed entry:** stopped.
+- **New entry:** validated and started as at boot.
