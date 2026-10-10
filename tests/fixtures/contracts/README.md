@@ -22,7 +22,7 @@ both sides of it:
 | `encoded_private_ip` | `config.encoded_private_ip` | `policy_api._encoded_private_ip` |
 | `is_never_grant` | `cli._is_never_grant` | `policy_api.PolicyApi._is_never_grant` |
 | `shared_constants` | `config.MAX_CAPTURE_FILE_BYTES`, `config._AUTO_NEVER_GRANT`, `config._BUILTIN_INSPECTOR_NAMES`, the relay type/mode sets | `capture.CaptureWriter`'s default, `PolicyApi._effective_never_grant`, `addon._BUILTIN_INSPECTORS`, the same relay sets |
-| `scaffold_inspectors` | `init.render_config` → cage.yaml | `addon._load_builtin_inspectors` reading it back |
+| `scaffold_inspectors` | `init.render_config` → cage.yaml | `addon._load_inspectors` reading it back |
 | `agents_defaults` | `config::parse`'s fallbacks for an omitted `agents.*` key | `PolicyApi.__init__` / `Watcher.__init__` fallbacks for the same key |
 | `logging_defaults` | `config::parse`'s `logging.allowed_requests` / legacy `log_allowed` resolution, and `save_proxy_config`'s copy of those keys | `addon._log_allowed` reading them back |
 

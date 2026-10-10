@@ -600,12 +600,10 @@ class TestKeptRelayFollowsReload:
 
         _run_with_smtp_upstream(_t)
 
-    def test_inspector_removed_from_the_chain_stops_applying(
+    def test_inspector_removed_from_the_section_stops_applying(
             self, env, marker_inspector, smtp_creds):
-        """Reload itself never shrinks the shared chain today (an entry
-        dropped from ``inspectors:`` keeps running on HTTP until restart),
-        but whatever the shared chain is after a reload is what a kept
-        relay runs: here an inspector taken out of it."""
+        """An entry dropped from ``inspectors:`` leaves the shared chain
+        on reload, and so leaves a kept relay's chain too."""
         async def _t(up, recorder):
             entry = _smtp_entry(up)
             addon, _ = _make_addon(env, protocol_relays=[entry],
@@ -615,13 +613,88 @@ class TestKeptRelayFollowsReload:
             relay = _relay(addon, "out")
             assert await _smtp_send(_port(relay), _MARKER) == 550
 
-            addon.inspectors = [i for i in addon.inspectors
-                                if i.name != "reload-marker"]
             _reload(env, addon, protocol_relays=[entry])
             await _settle(addon)
             assert _relay(addon, "out") is relay
+            assert "reload-marker" not in [i.name for i in relay._inspectors]
             assert await _smtp_send(_port(relay), _MARKER) == 250
             assert len(recorder.transactions) == 1
+            await addon.done()
+
+        _run_with_smtp_upstream(_t)
+
+    def test_builtin_disabled_by_legacy_key_stops_applying(
+            self, env, smtp_creds):
+        """``max_request_body: 0`` takes the body-size inspector out of
+        a kept relay's chain, not only the HTTP one."""
+        async def _t(up, recorder):
+            entry = _smtp_entry(up)
+            addon, _ = _make_addon(env, protocol_relays=[entry],
+                                   max_request_body=100)
+            addon.running()
+            await _settle(addon)
+            relay = _relay(addon, "out")
+            assert await _smtp_send(_port(relay), "x" * 200) == 550
+
+            _reload(env, addon, protocol_relays=[entry], max_request_body=0)
+            await _settle(addon)
+            assert _relay(addon, "out") is relay
+            assert "body-size" not in [i.name for i in relay._inspectors]
+            assert await _smtp_send(_port(relay), "x" * 200) == 250
+            assert len(recorder.transactions) == 1
+            await addon.done()
+
+        _run_with_smtp_upstream(_t)
+
+    def test_builtin_enabled_by_legacy_key_applies(self, env, smtp_creds):
+        """A non-zero ``max_request_body`` after a zero adds the
+        body-size inspector to a kept relay's chain."""
+        async def _t(up, recorder):
+            entry = _smtp_entry(up)
+            addon, audit = _make_addon(env, protocol_relays=[entry],
+                                       max_request_body=0)
+            addon.running()
+            await _settle(addon)
+            relay = _relay(addon, "out")
+            assert await _smtp_send(_port(relay), "x" * 200) == 250
+
+            _reload(env, addon, protocol_relays=[entry],
+                    max_request_body=100)
+            await _settle(addon)
+            assert _relay(addon, "out") is relay
+            assert await _smtp_send(_port(relay), "x" * 200) == 550
+            blocked = [e for e in audit if e.get("kind") == "smtp_data"
+                       and e.get("decision") == "blocked"]
+            assert [e["inspector"] for e in blocked] == ["body-size"]
+            assert len(recorder.transactions) == 1
+            await addon.done()
+
+        _run_with_smtp_upstream(_t)
+
+    def test_allowed_requests_flip_reaches_a_kept_smtp_relay(
+            self, env, smtp_creds):
+        def _delivered(audit):
+            return [e for e in audit if e.get("kind") == "smtp_data"
+                    and e.get("decision") == "allowed"]
+
+        async def _t(up, recorder):
+            entry = _smtp_entry(up)
+            addon, audit = _make_addon(
+                env, protocol_relays=[entry],
+                logging={"allowed_requests": False})
+            addon.running()
+            await _settle(addon)
+            relay = _relay(addon, "out")
+            assert await _smtp_send(_port(relay), "one") == 250
+            assert _delivered(audit) == []
+
+            _reload(env, addon, protocol_relays=[entry],
+                    logging={"allowed_requests": True})
+            await _settle(addon)
+            assert _relay(addon, "out") is relay
+            assert await _smtp_send(_port(relay), "two") == 250
+            assert len(_delivered(audit)) == 1
+            assert len(recorder.transactions) == 2
             await addon.done()
 
         _run_with_smtp_upstream(_t)

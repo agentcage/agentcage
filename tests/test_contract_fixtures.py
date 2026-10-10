@@ -232,7 +232,7 @@ class TestScaffoldInspectors:
     """The rendered cage.yaml is a format contract, so split it at the file.
 
     The host's scaffold renderer (Rust) writes the config;
-    ``addon._load_builtin_inspectors`` (egress, Python) reads it
+    ``addon._load_inspectors`` (egress, Python) reads it
     back and decides what to load. Asserting the two halves separately —
     host produces the recorded config, proxy loads the recorded
     inspectors from it — means neither test needs the other side, which
@@ -248,8 +248,7 @@ class TestScaffoldInspectors:
         api.cfg = case["inspector_config"]
         api.inspectors = []
         api.log_allowed = False
-        api._load_builtin_inspectors()
-        api._load_custom_inspectors()
+        api._load_inspectors()
         assert [i.name for i in api.inspectors] == case["loaded_inspectors"], (
             f"scaffold {case['scaffold']!r}: the addon loads a different "
             f"inspector chain than the fixture records — {case['why']}"

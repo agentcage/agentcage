@@ -250,12 +250,12 @@ Relays write structured records to the egress audit stream, the same one HTTP de
 | `relay_start_failed` | none | The listener could not start: port in use, or a malformed `listen`. |
 | `imap_command` | `intercepted` | The cage sent `LOGIN` / `AUTHENTICATE`. |
 | `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list, or because of its form: `reason` is `invalid tag`, `bare CR in command line`, `NUL in command line`, `malformed literal` or `literal too large`. Carries `command`, `reason`, and `mailbox` for folder refusals. |
-| `imap_command` | `allowed` | A forwarded command, recorded only while allowed-request logging is on (`logging.allowed_requests`). The egress currently treats an absent key as on, so set `false` explicitly if IMAP sync traffic is too noisy. |
+| `imap_command` | `allowed` | A forwarded command, recorded only while allowed-request logging is on (`logging.allowed_requests`, off by default). |
 | `imap_upstream_unreachable` | none | The upstream connection failed. Carries `upstream` and `error`. |
 | `smtp_command` | `intercepted` | The cage sent `AUTH`. |
 | `smtp_command` | `blocked` | A refused sender or recipient, too many recipients, the send rate limit, an oversize message or a `DATA` timeout. Carries `command`, `reason`, and the `sender` / `recipient` where relevant. |
 | `smtp_session` | `closed` | The cage was idle past `idle_timeout_seconds`. |
-| `smtp_data` | `allowed` | Delivered. Carries `sender`, `recipients` (those the upstream accepted), `recipients_rejected_upstream`, `size` and `upstream_status`. |
+| `smtp_data` | `allowed` | Delivered. Recorded while allowed-request logging is on (`logging.allowed_requests`, off by default), and always for a message an inspector flagged. Carries `sender`, `recipients` (those the upstream accepted), `recipients_rejected_upstream`, `size` and `upstream_status`. |
 | `smtp_data` | `blocked` | An inspector blocked the body. Carries `inspector`, `reason`, `severity`, `sender`, `recipients` and `size`. |
 | `smtp_data` | `upstream_error` | The upstream refused or failed the delivery. Carries `error`. |
 | `smtp_data_flag` | `flagged` | An inspector flagged a body that was delivered anyway. One record per flag, with `inspector`, `reason`, `severity`, `sender` and `recipients`. |
@@ -264,8 +264,10 @@ Relays write structured records to the egress audit stream, the same one HTTP de
 
 ## Changing relays on a running cage
 
-The egress applies `protocol_relays` changes without a restart. It picks up a changed config, including a credential re-staged by `agentcage secret set`, on its next proxied request:
+The egress applies `protocol_relays` changes without a restart. It picks up a changed config, including a credential re-staged by `agentcage secret set`, within about a second:
 - **Unchanged entry, same credentials:** keeps running, along with its open sessions.
 - **Changed entry, or a re-staged credential:** stopped and started again.
 - **Removed entry:** stopped.
 - **New entry:** validated and started as at boot.
+
+A relay that keeps running takes the new `logging.allowed_requests` and the new inspector chain, so an inspector added to or removed from the config (in `inspectors:` or by its top-level key) applies to its next message.
