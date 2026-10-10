@@ -797,7 +797,7 @@ class TestOperatorContextAllowlist:
 class TestContextHotReload:
     """Round-10 finding 2: the docs promise that editing
     ``agents.decider.context`` + ``cage update`` takes effect on the next
-    domain request — via the addon's mtime-poll rebuild of the PolicyApi
+    domain request — via the addon's mtime-poll reconfigure of the PolicyApi
     (``_maybe_reload`` → ``_init_domain_requests``). The other context
     tests instantiate PolicyApi directly and bypass that chain; this one
     drives the real reload path end to end."""
@@ -836,7 +836,7 @@ class TestContextHotReload:
         assert addon.domain_requests._context == "context-v1"
 
         # cage update rewrites proxy-config.yaml → new mtime → the addon's
-        # next _maybe_reload rebuilds the PolicyApi with the new context.
+        # next _maybe_reload reconfigures the PolicyApi with the new context.
         _write("context-v2")
         os.utime(cfg_path, (0, os.stat(cfg_path).st_mtime + 5))
         addon._maybe_reload()

@@ -269,89 +269,20 @@ class PolicyApi:
     """Control-plane state + request handling for the Policy API."""
 
     def __init__(self, proxy_cfg: dict, domain_inspector, audit_write, log) -> None:
-        self.proxy_cfg = proxy_cfg or {}
-        # agents.decider is the agent block in proxy-config.yaml (rendered
-        # from cage.yaml's ``agents:`` namespace via state._PROXY_KEYS).
-        self.cfg = (self.proxy_cfg.get("agents") or {}).get("decider") or {}
         self.dom = domain_inspector
         self._audit = audit_write  # callable(entry: dict) -> None
         self._log = log  # mitmproxy ctx.log
-        self._passthrough = list(
-            (self.proxy_cfg.get("domains") or {}).get("passthrough") or []
-        )
-
-        self.host = str(self.cfg.get("host", "agentcage.local") or
-                        "agentcage.local").lower().rstrip(".")
-        # Operator-provided free-text context (trusted: authored by the
-        # cage's operator). None → ""; stripped here so whitespace-only is
-        # treated as "off" (matches validate_config's length cap, which
-        # strips before measuring). Flows into the decider's system prompt
-        # via _decider_system_prompt() and into the /v1/allowlist response.
-        #
-        # Defense-in-depth: config.py's parse rejects non-strings and
-        # validate_config caps the length at 4096, but THIS consumer is
-        # built from raw proxy-config.yaml (addon._maybe_reload →
-        # _init_domain_requests), which unvalidated write paths
-        # (clone/restore/_apply_baseline_change re-renders) can produce —
-        # so enforce both layers here too, never trusting the upstream
-        # guarantees for a string that rides the system prompt.
-        _ctx_raw = self.cfg.get("context", "")
-        if not isinstance(_ctx_raw, str):
-            # Mirrors config.py's parse-time rejection rationale: never
-            # str()-coerce a mapping/number into a misleading repr that
-            # would ride the system prompt. Ignore + warn instead.
-            if _ctx_raw is not None:
-                self._log.warn(
-                    "agentcage: agents.decider.context is not a string in "
-                    f"the proxy config (got {type(_ctx_raw).__name__}) — "
-                    "ignoring it")
-            _ctx_raw = ""
-        self._context = _ctx_raw.strip()
-        if len(self._context) > 4096:
-            self._log.warn(
-                f"agentcage: agents.decider.context truncated to 4096 chars "
-                f"(was {len(self._context)}) — validate_config normally "
-                "rejects this; the proxy config was written by an "
-                "unvalidated path")
-            self._context = self._context[:4096]
-        # v1: introspection + request are both on when auto is on.
-        self._introspection_enabled = bool(self.cfg.get("enable", False))
-        self._request_enabled = bool(self.cfg.get("enable", False))
-
-        # The LLM client fields sit flat on the block (one grammar across
-        # the roster); the ``kind:`` discriminator was removed in 0.40 —
-        # the built-in LLM agent is the only implementation.
-        self._llm_timeout = float(self.cfg.get("timeout_seconds", 15.0) or 15.0)
-        # Completion budget for the forced `decide` tool call. Must clear a
-        # reasoning model's thinking tokens or the response comes back
-        # `finish_reason: length` with no tool call and _parse_llm_verdict
-        # fails closed on every request ("llm returned no usable decision").
-        # Host-side validation enforces a 1024 floor; this mirrors the
-        # dataclass default for a hand-written proxy-config.
-        self._llm_max_tokens = int(self.cfg.get("max_tokens", 8192) or 8192)
-        self._llm_provider = str(self.cfg.get("provider", "") or "").lower()
-        self._llm_model = str(self.cfg.get("model", "") or "")
-        self._llm_base_url = str(self.cfg.get("base_url", "") or "").rstrip("/")
-        # The decider agent's API key uses the same source: scheme as
-        # secret_injection.source (env:/systemd-creds:/cmd:). Egress-only.
-        self._llm_secret = self._read_secret(
-            str(self.cfg.get("api_key", "") or "")
-        )
 
         # Grant behavior uses fixed safe defaults (no operator knob in v1).
-        # See config._AUTO_* constants. never_grant = built-ins + control host.
+        # See config._AUTO_* constants. never_grant = built-ins + control
+        # host, so it is derived in _apply_config alongside the host.
         self._ttl_seconds = 0
         self._max_grants = 32
-        self._never_grant = self._effective_never_grant([])
 
-        # Rate limit for control-plane requests. An explicit 0 disables
-        # limiting (matching config.py's parse — absent/null/"" falls back
-        # to the 1 rps / 5 burst defaults, NOT to 0).
-        rl = self.cfg.get("rate_limit") or {}
-        _rps = rl.get("requests_per_second")
-        _burst = rl.get("burst")
-        self._rl_rps = float(_rps if _rps not in (None, "") else 1.0)
-        self._rl_burst = int(_burst if _burst not in (None, "") else 5)
+        self._apply_config(proxy_cfg)
+        # Control-plane token bucket: [tokens, last refill]. Runtime state,
+        # so it starts full HERE and only here — reconfigure() keeps it (a
+        # hot-reload must not hand the cage a fresh burst of decider calls).
         self._rl_bucket = [float(self._rl_burst), time.monotonic()]
 
         self._grants_dir = os.environ.get(
@@ -376,6 +307,129 @@ class PolicyApi:
         self._grants_mtime: float = 0.0
 
         self._reconcile_from_overlay()
+
+    # ── Config (construction + hot-reload) ─────────────────
+
+    def reconfigure(self, proxy_cfg: dict, domain_inspector) -> None:
+        """Apply a hot-reloaded proxy config to this live instance.
+
+        The addon calls this on every config reload while the decider stays
+        enabled, instead of building a new ``PolicyApi``: a rebuild refilled
+        the token bucket (every ``secret set`` / ``domain add`` handed the
+        cage a fresh burst of LLM-decider calls) and restarted the sweeper.
+        Config-derived fields (host, context, LLM client, rate-limit
+        parameters, enable flags) are re-read — the api_key included, since
+        ``secret set`` re-stages it without changing the config value that
+        names it. Runtime state (bucket tokens, grants mtime) is kept.
+
+        A rate-limit parameter change applies like the addon's per-host
+        limiter: the current tokens are kept and clamped to the new burst,
+        never refilled (raising the burst raises the ceiling, not the
+        level). Raises on a malformed block without applying any of it.
+        """
+        self._apply_config(proxy_cfg)
+        self._rl_bucket[0] = min(self._rl_bucket[0], float(self._rl_burst))
+        if domain_inspector is not self.dom:
+            # The addon reconfigures inspectors in place, so this is not
+            # expected — but a replaced inspector starts with an empty
+            # overlay, so replay the grants into it rather than silently
+            # dropping every live grant at L7.
+            self.dom = domain_inspector
+            self._reconcile_from_overlay()
+
+    def _apply_config(self, proxy_cfg: dict) -> None:
+        """Parse the config-derived fields, then assign them all at once.
+
+        Everything that can raise (the numeric casts) runs before the first
+        assignment, so a malformed reload never leaves this instance half
+        old config, half new.
+        """
+        proxy_cfg = proxy_cfg or {}
+        # agents.decider is the agent block in proxy-config.yaml (rendered
+        # from cage.yaml's ``agents:`` namespace via state._PROXY_KEYS).
+        cfg = (proxy_cfg.get("agents") or {}).get("decider") or {}
+        passthrough = list(
+            (proxy_cfg.get("domains") or {}).get("passthrough") or []
+        )
+
+        host = str(cfg.get("host", "agentcage.local") or
+                   "agentcage.local").lower().rstrip(".")
+        # Operator-provided free-text context (trusted: authored by the
+        # cage's operator). None → ""; stripped here so whitespace-only is
+        # treated as "off" (matches validate_config's length cap, which
+        # strips before measuring). Flows into the decider's system prompt
+        # via _decider_system_prompt() and into the /v1/allowlist response.
+        #
+        # Defense-in-depth: config.py's parse rejects non-strings and
+        # validate_config caps the length at 4096, but THIS consumer is
+        # built from raw proxy-config.yaml (addon._maybe_reload →
+        # _init_domain_requests), which unvalidated write paths
+        # (clone/restore/_apply_baseline_change re-renders) can produce —
+        # so enforce both layers here too, never trusting the upstream
+        # guarantees for a string that rides the system prompt.
+        _ctx_raw = cfg.get("context", "")
+        if not isinstance(_ctx_raw, str):
+            # Mirrors config.py's parse-time rejection rationale: never
+            # str()-coerce a mapping/number into a misleading repr that
+            # would ride the system prompt. Ignore + warn instead.
+            if _ctx_raw is not None:
+                self._log.warn(
+                    "agentcage: agents.decider.context is not a string in "
+                    f"the proxy config (got {type(_ctx_raw).__name__}) — "
+                    "ignoring it")
+            _ctx_raw = ""
+        context = _ctx_raw.strip()
+        if len(context) > 4096:
+            self._log.warn(
+                f"agentcage: agents.decider.context truncated to 4096 chars "
+                f"(was {len(context)}) — validate_config normally "
+                "rejects this; the proxy config was written by an "
+                "unvalidated path")
+            context = context[:4096]
+
+        # The LLM client fields sit flat on the block (one grammar across
+        # the roster); the ``kind:`` discriminator was removed in 0.40 —
+        # the built-in LLM agent is the only implementation.
+        llm_timeout = float(cfg.get("timeout_seconds", 15.0) or 15.0)
+        # Completion budget for the forced `decide` tool call. Must clear a
+        # reasoning model's thinking tokens or the response comes back
+        # `finish_reason: length` with no tool call and _parse_llm_verdict
+        # fails closed on every request ("llm returned no usable decision").
+        # Host-side validation enforces a 1024 floor; this mirrors the
+        # dataclass default for a hand-written proxy-config.
+        llm_max_tokens = int(cfg.get("max_tokens", 8192) or 8192)
+
+        # Rate limit for control-plane requests. An explicit 0 disables
+        # limiting (matching config.py's parse — absent/null/"" falls back
+        # to the 1 rps / 5 burst defaults, NOT to 0).
+        rl = cfg.get("rate_limit") or {}
+        _rps = rl.get("requests_per_second")
+        _burst = rl.get("burst")
+        rl_rps = float(_rps if _rps not in (None, "") else 1.0)
+        rl_burst = int(_burst if _burst not in (None, "") else 5)
+
+        # Nothing below raises.
+        self.proxy_cfg = proxy_cfg
+        self.cfg = cfg
+        self._passthrough = passthrough
+        self.host = host
+        self._never_grant = self._effective_never_grant([])
+        self._context = context
+        # v1: introspection + request are both on when auto is on.
+        self._introspection_enabled = bool(cfg.get("enable", False))
+        self._request_enabled = bool(cfg.get("enable", False))
+        self._llm_timeout = llm_timeout
+        self._llm_max_tokens = llm_max_tokens
+        self._llm_provider = str(cfg.get("provider", "") or "").lower()
+        self._llm_model = str(cfg.get("model", "") or "")
+        self._llm_base_url = str(cfg.get("base_url", "") or "").rstrip("/")
+        # The decider agent's API key uses the same source: scheme as
+        # secret_injection.source (env:/systemd-creds:/cmd:). Egress-only.
+        self._llm_secret = self._read_secret(
+            str(cfg.get("api_key", "") or "")
+        )
+        self._rl_rps = rl_rps
+        self._rl_burst = rl_burst
 
     # ── Enabled flags ──────────────────────────────────────
 
@@ -1451,9 +1505,11 @@ class PolicyApi:
     async def sweeper_loop(self) -> None:
         """Drop expired grants periodically + on overlay change.
 
-        Runs as an asyncio task started in ``running()`` (and restarted on
-        config hot-reload by ``_init_domain_requests``) and cancelled in
-        ``done()``. Expiry narrows the in-memory set AND the overlay file.
+        Runs as an asyncio task started in ``running()`` (or by
+        ``_init_domain_requests`` when a hot-reload enables the decider),
+        cancelled in ``done()`` or when a hot-reload disables it. A reload
+        that keeps the decider enabled leaves it running: it polls this
+        instance, which ``reconfigure`` updates in place. Expiry narrows the in-memory set AND the overlay file.
         DNS-layer reachability is NOT applied here — the HOST-side grants
         watcher promotes grants into the baseline via the ``domain add``
         chain; this loop only manages the L7 overlay.

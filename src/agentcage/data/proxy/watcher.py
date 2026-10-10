@@ -901,10 +901,10 @@ class Watcher:
 
         Called on every hot-reload — including when this watcher's own
         config block is unchanged and it is being kept rather than
-        rebuilt (see ``addon._init_watcher``): ``agents.decider`` gets a
-        brand new ``PolicyApi`` on every reload regardless, so an
-        unrefreshed ``_pa`` would keep granting/revoking through a
-        discarded, sweeper-cancelled instance. ``secret set`` re-stages
+        rebuilt (see ``addon._init_watcher``): toggling ``agents.decider``
+        builds or drops the ``PolicyApi`` (other reloads reconfigure it in
+        place), so an unrefreshed ``_pa`` would keep granting/revoking
+        through a discarded, sweeper-cancelled instance. ``secret set`` re-stages
         the key file without changing the config value that names it,
         so the key needs a re-read too.
         """

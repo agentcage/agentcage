@@ -182,25 +182,26 @@ class Agentcage:
         )
 
     def _init_domain_requests(self) -> None:
-        """Build (or rebuild) the Policy API controller from the live config.
+        """Build, reconfigure or drop the Policy API controller.
 
-        Rebuild on hot-reload is safe: grants live in the ``DomainInspector``
-        overlay + the persisted grants file, and ``PolicyApi`` replays the
-        overlay on construction, so a rebuild never drops a live grant.
+        Runs at load and on every config hot-reload. While the decider
+        stays enabled the live ``PolicyApi`` is reconfigured IN PLACE, not
+        rebuilt: a rebuild refilled its token bucket, so every reload
+        (each ``secret set`` / ``domain add`` touches the config) handed the
+        cage a fresh burst of LLM-decider calls, and it cancelled and
+        restarted the sweeper for nothing. A new instance is built only on
+        disabled → enabled (grants survive that too: they live in the
+        ``DomainInspector`` overlay + the persisted grants file, which the
+        constructor replays); enabled → disabled drops it.
 
-        Also owns the sweeper task lifecycle: a rebuild cancels the old
-        task (it polls the OLD controller object) and starts a new one, so
-        ENABLING agents.decider on a live cage actually starts the TTL
-        sweeper and DISABLING it stops the stale one — without this, a
-        hot-enabled feature would leave grants permanently unswept and
-        host overlay changes unreconciled.
+        Also owns the sweeper task lifecycle: enabling agents.decider on a
+        live cage starts the TTL sweeper and disabling it stops it —
+        without this, a hot-enabled feature would leave grants permanently
+        unswept and host overlay changes unreconciled.
         """
-        if self._policy_sweeper is not None:
-            self._policy_sweeper.cancel()
-            self._policy_sweeper = None
         pa_cfg = (self.cfg.get("agents") or {}).get("decider") or {}
         if not isinstance(pa_cfg, dict) or not pa_cfg.get("enable"):
-            self.domain_requests = None
+            self._drop_domain_requests()
             return
         dom = next((i for i in self.inspectors
                     if isinstance(i, DomainInspector)), None)
@@ -209,27 +210,46 @@ class Agentcage:
                 "agentcage: agents.decider enabled but no domain inspector "
                 "loaded; control endpoints disabled"
             )
-            self.domain_requests = None
+            self._drop_domain_requests()
             return
-        try:
-            from policy_api import PolicyApi
-            self.domain_requests = PolicyApi(
-                self.cfg, dom, self._audit_write, ctx.log
-            )
-            ctx.log.info(
-                f"agentcage: agents.decider enabled (host={self.domain_requests.host}, "
-                f"introspection={self.domain_requests.introspection_enabled}, "
-                f"request={self.domain_requests.request_enabled})"
-            )
-        except Exception as e:
-            ctx.log.warn(f"agentcage: agents.decider init failed: {e}")
-            self.domain_requests = None
-            return
-        # Start the sweeper immediately when the proxy is already running
-        # (hot-reload path); at load time running() starts it once the loop
-        # is live.
-        if self._running:
+        if self.domain_requests is not None:
+            try:
+                self.domain_requests.reconfigure(self.cfg, dom)
+            except Exception as e:
+                # Same outcome as a failed init: a malformed block disables
+                # the control endpoints until the next good reload.
+                ctx.log.warn(f"agentcage: agents.decider reconfigure failed: {e}")
+                self._drop_domain_requests()
+                return
+        else:
+            try:
+                from policy_api import PolicyApi
+                self.domain_requests = PolicyApi(
+                    self.cfg, dom, self._audit_write, ctx.log
+                )
+                ctx.log.info(
+                    f"agentcage: agents.decider enabled (host={self.domain_requests.host}, "
+                    f"introspection={self.domain_requests.introspection_enabled}, "
+                    f"request={self.domain_requests.request_enabled})"
+                )
+            except Exception as e:
+                ctx.log.warn(f"agentcage: agents.decider init failed: {e}")
+                self.domain_requests = None
+                return
+        # Start the sweeper when the proxy is already running (hot-reload
+        # path) and none is live — on enable, or if an earlier start found
+        # no loop. A live sweeper polls the reconfigured instance, so it is
+        # left alone. At load time running() starts it once the loop is up.
+        if self._running and (self._policy_sweeper is None
+                              or self._policy_sweeper.done()):
             self._start_policy_sweeper()
+
+    def _drop_domain_requests(self) -> None:
+        """Tear down the Policy API controller and its sweeper task."""
+        if self._policy_sweeper is not None:
+            self._policy_sweeper.cancel()
+            self._policy_sweeper = None
+        self.domain_requests = None
 
     def running(self) -> None:
         """Called after the proxy is fully started — apply TLS passthrough
@@ -283,12 +303,13 @@ class Agentcage:
         if self.traffic_watcher is not None \
                 and self.traffic_watcher.cfg == w_cfg:
             # Unchanged watcher block: keep the loop + scan state, but
-            # still re-point the mutable refs. ``agents.decider`` gets a
-            # FRESH PolicyApi on every reload (_init_domain_requests
-            # above), so an unrefreshed ``_pa`` would keep revoking
-            # through a discarded, sweeper-cancelled instance; ``secret
-            # set`` re-stages the key file without changing the config
-            # value that names it, so the key needs a re-read too.
+            # still re-point the mutable refs. ``agents.decider`` is
+            # reconfigured in place on most reloads, but toggling it
+            # builds or drops the PolicyApi (_init_domain_requests above),
+            # so an unrefreshed ``_pa`` would keep revoking through a
+            # discarded, sweeper-cancelled instance (or miss a new one);
+            # ``secret set`` re-stages the key file without changing the
+            # config value that names it, so the key needs a re-read too.
             self.traffic_watcher.refresh_runtime_refs(
                 self._watcher_domain_inspector(), self.domain_requests)
             return
@@ -743,11 +764,12 @@ class Agentcage:
         # Update TLS passthrough (--ignore-hosts)
         self._apply_passthrough()
 
-        # Rebuild the Policy API (agents.decider) controller: enabling /
-        # disabling auto, or changing the decider/host/rate-limit, must take
-        # effect on live config edit, not only on egress restart. Idempotent
-        # and safe to call every reload (its docstring says so) — it no-ops
-        # when disabled and re-reads the api_key from the re-staged secret.
+        # Reconfigure the Policy API (agents.decider) controller in place:
+        # enabling / disabling auto, or changing the decider/host/rate-limit,
+        # must take effect on live config edit, not only on egress restart.
+        # Safe to call every reload — it keeps the live instance (and its
+        # rate-limit bucket), no-ops when disabled, and re-reads the api_key
+        # from the re-staged secret.
         self._init_domain_requests()
         # Same for the traffic watcher: enabling/disabling it, or changing
         # its interval/model/key, takes effect on the live edit.

@@ -1,13 +1,13 @@
 {
   "_comment": "Pinned digest of the agentcage-egress image build inputs. Regenerate ONLY for a deliberate change to those inputs: AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored. See rust/agentcage-assets/src/egress.rs for the wire format, which is frozen.",
   "algorithm": "sha256 over sorted inputs, each contributing relpath(utf-8) || 0x00 || len(body) as 8-byte big-endian || body; hex digest truncated to the first 12 characters",
-  "hash": "c9db35a2c55e",
+  "hash": "5ffb5de05913",
   "input_count": 25,
   "inputs": {
     "containers/Containerfile.egress": 6144,
     "containers/dns-audit.sh": 3730,
     "containers/supervisor-egress.sh": 40233,
-    "proxy/addon.py": 76929,
+    "proxy/addon.py": 78241,
     "proxy/capture.py": 9036,
     "proxy/inspectors/__init__.py": 213,
     "proxy/inspectors/_chain.py": 4513,
@@ -18,7 +18,7 @@
     "proxy/inspectors/entropy.py": 10474,
     "proxy/inspectors/secrets.py": 8822,
     "proxy/inspectors/util.py": 2177,
-    "proxy/policy_api.py": 79849,
+    "proxy/policy_api.py": 82520,
     "proxy/relays/__init__.py": 2316,
     "proxy/relays/_tls.py": 3630,
     "proxy/relays/_validate.py": 8885,
@@ -28,6 +28,6 @@
     "proxy/secret_lookup.py": 3112,
     "proxy/transforms/__init__.py": 1604,
     "proxy/transforms/google_jwt_bearer.py": 9144,
-    "proxy/watcher.py": 91859
+    "proxy/watcher.py": 91884
   }
 }

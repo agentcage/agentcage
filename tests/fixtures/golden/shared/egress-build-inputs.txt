@@ -1,7 +1,7 @@
 containers/Containerfile.egress 6144
 containers/dns-audit.sh 3730
 containers/supervisor-egress.sh 40233
-proxy/addon.py 76929
+proxy/addon.py 78241
 proxy/capture.py 9036
 proxy/inspectors/__init__.py 213
 proxy/inspectors/_chain.py 4513
@@ -12,7 +12,7 @@ proxy/inspectors/domain.py 16366
 proxy/inspectors/entropy.py 10474
 proxy/inspectors/secrets.py 8822
 proxy/inspectors/util.py 2177
-proxy/policy_api.py 79849
+proxy/policy_api.py 82520
 proxy/relays/__init__.py 2316
 proxy/relays/_tls.py 3630
 proxy/relays/_validate.py 8885
@@ -22,4 +22,4 @@ proxy/secret_injector.py 30864
 proxy/secret_lookup.py 3112
 proxy/transforms/__init__.py 1604
 proxy/transforms/google_jwt_bearer.py 9144
-proxy/watcher.py 91859
+proxy/watcher.py 91884
