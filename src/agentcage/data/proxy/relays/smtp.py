@@ -216,8 +216,28 @@ class SmtpRelay:
         self._log_allowed = log_allowed
         # Inspector chain comes from the proxy addon. Domain-style
         # inspectors aren't meaningful for SMTP — the addon filters
-        # them out before passing this list in.
-        self._inspectors: list[Inspector] = list(inspectors or [])
+        # them out before passing this list in. A tuple, replaced whole
+        # by update_settings() and never mutated: see there.
+        self._inspectors: tuple[Inspector, ...] = tuple(inspectors or ())
+
+    def update_settings(
+        self,
+        *,
+        log_allowed: bool,
+        inspectors: Optional[list[Inspector]] = None,
+    ) -> None:
+        """Take a config reload's settings without restarting.
+
+        The addon calls this, on the event loop, for a relay a reload
+        keeps (its entry unchanged), so open sessions survive while
+        ``logging.allowed_requests`` and the inspector chain still
+        follow the live config. The chain is swapped as one new tuple:
+        a DATA inspection already running in the executor keeps the
+        tuple it snapshotted (``_run_inspectors``), and the next one
+        sees the new chain whole, never a half-updated one.
+        """
+        self._log_allowed = log_allowed
+        self._inspectors = tuple(inspectors or ())
 
     async def start(self) -> None:
         host, _, port_s = self._cfg.listen.rpartition(":")
@@ -865,8 +885,13 @@ class SmtpRelay:
         through the secrets/entropy/content-type inspectors (~50–300 ms
         of CPU work) does not block the event loop and starve every
         other client session / relay on the same asyncio loop.
+
+        The chain is read once, up front: a reload's update_settings()
+        may swap it while the executor runs, and this message is judged
+        (and its bypass audited) against one chain throughout.
         """
-        if not self._inspectors:
+        inspectors = self._inspectors
+        if not inspectors:
             return None
         # "Allowlist matched" = there IS a recipient policy and every
         # surviving recipient passed it. With an empty allowlist
@@ -909,7 +934,7 @@ class SmtpRelay:
         # the original returned immediately without logging the bypass,
         # and we preserve that by returning before the bypass audit log.
         chain_results = await run_inspector_chain(
-            self._inspectors,
+            inspectors,
             ctx,
             method="request",
             skip=lambda insp: insp.name in bypass,
@@ -934,7 +959,7 @@ class SmtpRelay:
                 "sender": txn.sender,
                 "recipients": list(txn.recipients),
             })
-        bypassed = [i.name for i in self._inspectors if i.name in bypass]
+        bypassed = [i.name for i in inspectors if i.name in bypass]
         if bypassed:
             self._audit_log({
                 "kind": "smtp_data_bypass",
