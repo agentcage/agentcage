@@ -2007,7 +2007,7 @@ class Agentcage:
                     self._log(
                         flow, "flagged", f"websocket: {reasons}", results, direction="outbound", secrets_injected=injected
                     )
-                elif self.log_allowed:
+                elif self.log_allowed or injected:
                     self._log(flow, "allowed", "websocket", results, direction="outbound", secrets_injected=injected)
         else:
             # ── Inbound (remote → cage) ───────────────────
@@ -2172,9 +2172,19 @@ class Agentcage:
                 }
                 for r in results
             ]
-        if decision == "allowed" and not self.log_allowed:
-            # The durable/log output is suppressed (journald noise and
-            # disk — the operator's choice via logging.allowed_requests),
+        if (
+            decision == "allowed"
+            and not self.log_allowed
+            and not secrets_injected
+            and not secrets_redacted
+        ):
+            # An allowed request that carried a secret is always logged:
+            # which requests received a credential is the audit trail
+            # that matters, whatever logging.allowed_requests says.
+            #
+            # For plain allowed traffic the durable/log output is
+            # suppressed (journald noise and disk — the operator's choice
+            # via logging.allowed_requests),
             # but the watcher's ring MUST still see ALLOWED traffic:
             # exfiltration and beacons live in traffic that was allowed,
             # so suppressing the watcher's evidence along with the log
