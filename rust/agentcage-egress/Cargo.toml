@@ -29,6 +29,10 @@ agentcage-core = { path = "../agentcage-core" }
 serde_norway = "0.9.42"
 indexmap = "2"
 
+# Capture bodies and WebSocket frames that are not UTF-8 are stored as
+# standard base64 (`base64.b64encode` in the replaced implementation).
+base64 = "0.22"
+
 [dev-dependencies]
 
 [lints]
