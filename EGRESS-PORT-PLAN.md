@@ -621,7 +621,7 @@ the 403 body shape, a wasm plugin blocking a request.
 
 ## 9. Phasing and PR breakdown
 
-### Phase 0a — fix the existing bugs first, neutralise the CA contract (≈ 2.5 weeks)
+### Phase 0a — fix the existing bugs first, neutralise the CA contract (30 items)
 
 Separate PRs against the **current** Python egress (and the host), each with
 a test that fails before the fix, landed and released (0.50.x) before Phase 0
@@ -644,6 +644,21 @@ records the oracle. The Rust port then reproduces fixed behaviour only.
 | 0a.13 | WebSocket capture records frames: today the capture entry is written at the 101 response, before any frame, so `ws_messages` never reaches `capture.jsonl` | `addon.py` `response` / `websocket_message` / `websocket_end`, `capture.py` |
 | 0a.14 | Config reload runs on a timer, not only on proxied HTTP requests, so a relay-only cage picks up edits | `addon.py` (an asyncio task alongside the sweeper) |
 | 0a.15 | IMAP relay: refuse the `COMPRESS` command (once compression is on, every policy check and audit is blind to the compressed stream); filter capabilities in upstream `* CAPABILITY` responses as well as the greeting; deny `SETQUOTA` and annotation writes in `none`/`organise` | `relays/imap.py` |
+| 0a.16 | Relay config correctness: host idle-timeout defaults match the egress (IMAP 1800 / SMTP 300); rate strings validated on both sides with case-insensitive units; `cmd:` / `podman:` relay credentials refused; `smtp_data_flag` carries `decision: flagged` | `relays.rs`, `parse.rs`, `relays/_validate.py`, `relays/smtp.py` |
+| 0a.17 | Docs: agents defaults table; full protocol-relay reference | `docs/reference/configuration.md`, `docs/reference/protocol-relays.md` |
+| 0a.18 | CA isolation: reserved volume namespace (`agentcage-certs-`, `agentcage-public-certs-`, `agentcage-podman-`, `*.volume`) refused in `named_volumes` / `volumes`; restore imports only manifest-listed, non-reserved volumes | `config/validate.rs`, `quadlets/mod.rs`, `cli/cage/backup.rs` |
+| 0a.19 | `logging.allowed_requests` defaults to off in the egress too (legacy `log_allowed` forwarded and honoured); allowed requests that injected or redacted a secret are always logged | `addon.py`, `derived.rs` |
+| 0a.20 | Relay and agent credentials come from the secret store on every backend, never the host environment; vm hosts decrypt `.cred` blobs into the guest | `render.rs`, `secrets/`, `vm.rs` |
+| 0a.21 | Capture never stores transform-minted tokens or server-echoed secrets; `capture.min_action` validated (old spellings aliased) | `secret_injector.py`, `transforms/`, `addon.py`, `validate.rs` |
+| 0a.22 | IMAP relay follows client literals (payload never parsed as commands; forwarded only after the upstream's `+`) | `relays/imap.py` |
+| 0a.23 | IMAP relay replies written only between upstream responses | `relays/imap.py` |
+| 0a.24 | IMAP folder lists match after modified-UTF-7 decoding, NFC and case-folding; LIST-STATUS / ESEARCH / NOTIFY governed | `relays/imap.py` |
+| 0a.25 | Running relays follow reloaded `log_allowed` and inspector chain without restart | `addon.py`, `relays/` |
+| 0a.26 | `cage restore --no-start` imports named volumes; volume names validated and passed after `--` | `cli/cage/backup.rs`, `tools/podman.rs` |
+| 0a.27 | Blocked requests captured with secrets redacted; stale "outbound view has real secrets" docs and `cage har` warning; core min-action parse rejects unknown values | `addon.py`, `har.rs`, `har/mod.rs`, docs |
+| 0a.28 | Reload removes inspectors dropped from `inspectors:` and adds built-ins enabled by top-level keys; SMTP relay honours `log_allowed` | `addon.py`, `relays/smtp.py` |
+| 0a.29 | IMAP relay refuses bare CR in client lines; metadata commands (GETQUOTAROOT/GETMETADATA/GETACL/SUBSCRIBE) respect folder lists | `relays/imap.py` |
+| 0a.30 | `cage restore --name` refuses a clone whose named volumes collide with existing ones | `cli/cage/backup.rs` |
 
 ### Phase 0 — oracle and decisions (≈ 1.5 weeks)
 
