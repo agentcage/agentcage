@@ -315,7 +315,7 @@ logging:
   level: info # debug | info | warning | error | critical
   dns_queries: true # Log all DNS queries to journalctl
   proxy_connections: true # Log TCP connection events
-  allowed_requests: false # Log successful HTTP requests
+  allowed_requests: false # Log successful HTTP requests (requests that injected or redacted a secret are always logged)
 ```
 
 A WebSocket is captured as one entry, written when the socket closes: the

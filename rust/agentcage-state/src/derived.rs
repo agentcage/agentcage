@@ -44,15 +44,21 @@ use crate::error::{Result, StateError};
 use crate::paths::Paths;
 use crate::pyfs::{expanduser, expandvars};
 
-/// `state._PROXY_KEYS` — the twelve keys the egress addon reads.
+/// `state._PROXY_KEYS` — the thirteen keys the egress addon reads.
 ///
 /// Everything else in `cage.yaml` is stripped, so the full config is
 /// never exposed inside the proxy container. Notably absent:
 /// `container`, `dns_servers`, `name`, `isolation` and `ports`.
 ///
+/// `log_allowed` is the legacy spelling of `logging.allowed_requests`,
+/// which the host still honours when the new key is absent. It was
+/// stripped here, so the egress never saw it and ran on its own
+/// fallback instead; it rides along now so both sides resolve the
+/// same value (`tests/fixtures/contracts/logging_defaults.json`).
+///
 /// The order is `state.py`'s, but it is a `frozenset` there and the
 /// filter preserves the *document's* order, not this one.
-pub const PROXY_KEYS: [&str; 12] = [
+pub const PROXY_KEYS: [&str; 13] = [
     "domains",
     "secrets",
     "max_request_body",
@@ -61,6 +67,7 @@ pub const PROXY_KEYS: [&str; 12] = [
     "inspectors",
     "rate_limit",
     "logging",
+    "log_allowed",
     "secret_injection",
     "capture",
     "protocol_relays",

@@ -112,6 +112,24 @@ class _RunningRelay(NamedTuple):
     relay: Any
 
 
+def _log_allowed(cfg: dict) -> bool:
+    """Whether allowed requests reach the durable log (HTTP and relays).
+
+    ``logging.allowed_requests`` wins whenever it is present, even as
+    ``false``; the legacy top-level ``log_allowed`` is the fallback only
+    when it is absent; and with neither the answer is **off** — the
+    host's documented default (``docs/reference/configuration.md``) and
+    the value it validates against. This used to fall back to on, so an
+    operator who never wrote a ``logging`` block got every allowed
+    request and relay command in the log. Pinned to the host by
+    ``tests/fixtures/contracts/logging_defaults.json``.
+    """
+    logging_cfg = cfg.get("logging") or {}
+    if "allowed_requests" in logging_cfg:
+        return bool(logging_cfg["allowed_requests"])
+    return bool(cfg.get("log_allowed", False))
+
+
 def _relay_credentials_digest(entry: dict) -> str:
     """SHA-256 over the values a relay's ``auth.*_source`` resolve to now.
 
@@ -144,11 +162,7 @@ class Agentcage:
         with open(CONFIG_PATH) as f:
             self.cfg = yaml.safe_load(f) or {}
         self._config_mtime = os.stat(CONFIG_PATH).st_mtime
-        logging_cfg = self.cfg.get("logging") or {}
-        if "allowed_requests" in logging_cfg:
-            self.log_allowed = bool(logging_cfg["allowed_requests"])
-        else:
-            self.log_allowed = bool(self.cfg.get("log_allowed", True))
+        self.log_allowed = _log_allowed(self.cfg)
         self.inspectors: list[Inspector] = []
         self.injector = SecretInjector()
 
@@ -1065,11 +1079,7 @@ class Agentcage:
         self._rl_burst = int(rl_cfg.get("burst", 50))
 
         # Update logging settings
-        logging_cfg = self.cfg.get("logging") or {}
-        if "allowed_requests" in logging_cfg:
-            self.log_allowed = bool(logging_cfg["allowed_requests"])
-        else:
-            self.log_allowed = bool(self.cfg.get("log_allowed", True))
+        self.log_allowed = _log_allowed(self.cfg)
 
         # Update TLS passthrough (--ignore-hosts)
         self._apply_passthrough()
@@ -1997,7 +2007,7 @@ class Agentcage:
                     self._log(
                         flow, "flagged", f"websocket: {reasons}", results, direction="outbound", secrets_injected=injected
                     )
-                elif self.log_allowed:
+                elif self.log_allowed or injected:
                     self._log(flow, "allowed", "websocket", results, direction="outbound", secrets_injected=injected)
         else:
             # ── Inbound (remote → cage) ───────────────────
@@ -2162,9 +2172,19 @@ class Agentcage:
                 }
                 for r in results
             ]
-        if decision == "allowed" and not self.log_allowed:
-            # The durable/log output is suppressed (journald noise and
-            # disk — the operator's choice via logging.allowed_requests),
+        if (
+            decision == "allowed"
+            and not self.log_allowed
+            and not secrets_injected
+            and not secrets_redacted
+        ):
+            # An allowed request that carried a secret is always logged:
+            # which requests received a credential is the audit trail
+            # that matters, whatever logging.allowed_requests says.
+            #
+            # For plain allowed traffic the durable/log output is
+            # suppressed (journald noise and disk — the operator's choice
+            # via logging.allowed_requests),
             # but the watcher's ring MUST still see ALLOWED traffic:
             # exfiltration and beacons live in traffic that was allowed,
             # so suppressing the watcher's evidence along with the log

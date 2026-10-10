@@ -39,6 +39,7 @@ from tests.contract_cases import (
     ENCODED_PRIVATE_IP,
     FIXTURE_DIR,
     IS_NEVER_GRANT,
+    LOGGING_DEFAULTS,
     ROOT,
     SCAFFOLD_INSPECTORS,
     SHARED_CONSTANTS,
@@ -315,6 +316,27 @@ class TestAgentsDefaults:
             f"omitted agents.{case['id']} resolves to {got!r} in the egress, "
             f"fixture says {case['value']!r} — {case['why']}"
         )
+
+class TestLoggingDefaults:
+    """The egress resolves ``allowed_requests`` the way the host does.
+
+    Split at the file, like the scaffold contract: the Rust half proves
+    what the host resolves and what it writes into proxy-config.yaml for
+    each ``cage``; this half proves the egress reads the recorded
+    ``proxy_config`` to the same answer.
+    """
+
+    @pytest.mark.parametrize(
+        "case", LOGGING_DEFAULTS["cases"], ids=ids(LOGGING_DEFAULTS))
+    def test_proxy(self, case):
+        from addon import _log_allowed
+
+        got = _log_allowed(json.loads(json.dumps(case["proxy_config"])))
+        assert got is case["allowed_requests"], (
+            f"{case['id']}: the egress resolves allowed_requests to {got!r}, "
+            f"fixture says {case['allowed_requests']!r} — {case['why']}"
+        )
+
 
 class TestFixtureIntegrity:
 

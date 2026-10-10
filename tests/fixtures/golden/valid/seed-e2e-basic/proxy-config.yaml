@@ -3,4 +3,5 @@ domains:
   - httpbin.org
 secrets:
   enabled: true
+log_allowed: true
 agentcage_version: 0.0.0-golden

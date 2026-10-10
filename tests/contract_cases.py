@@ -37,6 +37,7 @@ SHARED_CONSTANTS = _load("shared_constants")
 SCAFFOLD_INSPECTORS = _load("scaffold_inspectors")
 AGENTS_CONFIG = _load("agents_config")
 AGENTS_DEFAULTS = _load("agents_defaults")
+LOGGING_DEFAULTS = _load("logging_defaults")
 
 ALL = {
     "valid_domain": VALID_DOMAIN,
@@ -47,6 +48,7 @@ ALL = {
     "scaffold_inspectors": SCAFFOLD_INSPECTORS,
     "agents_config": AGENTS_CONFIG,
     "agents_defaults": AGENTS_DEFAULTS,
+    "logging_defaults": LOGGING_DEFAULTS,
 }
 
 FIXTURE_DIR = _FIXTURES

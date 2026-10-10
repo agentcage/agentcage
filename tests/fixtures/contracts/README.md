@@ -24,6 +24,7 @@ both sides of it:
 | `shared_constants` | `config.MAX_CAPTURE_FILE_BYTES`, `config._AUTO_NEVER_GRANT`, `config._BUILTIN_INSPECTOR_NAMES`, the relay type/mode sets | `capture.CaptureWriter`'s default, `PolicyApi._effective_never_grant`, `addon._BUILTIN_INSPECTORS`, the same relay sets |
 | `scaffold_inspectors` | `init.render_config` → cage.yaml | `addon._load_builtin_inspectors` reading it back |
 | `agents_defaults` | `config::parse`'s fallbacks for an omitted `agents.*` key | `PolicyApi.__init__` / `Watcher.__init__` fallbacks for the same key |
+| `logging_defaults` | `config::parse`'s `logging.allowed_requests` / legacy `log_allowed` resolution, and `save_proxy_config`'s copy of those keys | `addon._log_allowed` reading them back |
 
 The first four are the docs/history/rust-port-plan.md §2.2 list. The last two came out of
 PR A6's audit of the boundary: a duplicated constant and a *format*
@@ -104,6 +105,7 @@ so a later reader can tell a deliberate adversarial case from noise).
 | `shared_constants.json` | — | `value`, plus `host` / `proxy` naming where each side reads it |
 | `scaffold_inspectors.json` | `scaffold` | `inspector_config` (what the host renders) and `loaded_inspectors` (what the proxy loads from it) |
 | `agents_defaults.json` | `id` (the omitted key) | `value`: what both sides resolve it to from the top-level minimal `config` |
+| `logging_defaults.json` | `cage` (the logging keys of a cage.yaml) | `proxy_config` (what the host writes for the egress) and `allowed_requests` (what both sides resolve) |
 
 `scaffold_inspectors.json` is the one contract split down the middle rather
 than asserted twice. The artifact crossing the boundary is a *file*, so the

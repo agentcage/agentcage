@@ -32,7 +32,7 @@ sys.modules.setdefault("mitmproxy.http", _mitmproxy.http)
 sys.modules.setdefault("mitmproxy.proxy", _proxy)
 sys.modules.setdefault("mitmproxy.proxy.mode_specs", _mode_specs)
 
-from addon import Agentcage  # noqa: E402
+from addon import Agentcage, _log_allowed  # noqa: E402
 
 
 # ── addon.py: entropy + content-type on by default ──────────
@@ -45,11 +45,7 @@ class TestDefaultInspectors:
         """Create a Agentcage addon from YAML without mitmproxy."""
         addon = Agentcage()
         addon.cfg = yaml.safe_load(yaml_content) or {}
-        logging_cfg = addon.cfg.get("logging") or {}
-        if "allowed_requests" in logging_cfg:
-            addon.log_allowed = bool(logging_cfg["allowed_requests"])
-        else:
-            addon.log_allowed = bool(addon.cfg.get("log_allowed", False))
+        addon.log_allowed = _log_allowed(addon.cfg)
         addon.inspectors = []
         addon._load_builtin_inspectors()
         addon._load_custom_inspectors()
@@ -144,22 +140,31 @@ class TestDefaultInspectors:
 
 
 class TestAddonLogAllowed:
-    """Test log_allowed default and logging config precedence."""
+    """``logging.allowed_requests`` resolution in the egress.
+
+    ``load`` and ``configure`` both resolve it through ``_log_allowed``;
+    the host-agreement table is ``logging_defaults.json`` (see
+    ``TestLoggingDefaults`` in ``test_contract_fixtures.py``).
+    """
 
     def _make_addon(self, yaml_content: str) -> Agentcage:
         addon = Agentcage()
         addon.cfg = yaml.safe_load(yaml_content) or {}
-        logging_cfg = addon.cfg.get("logging") or {}
-        if "allowed_requests" in logging_cfg:
-            addon.log_allowed = bool(logging_cfg["allowed_requests"])
-        else:
-            addon.log_allowed = bool(addon.cfg.get("log_allowed", True))
+        addon.log_allowed = _log_allowed(addon.cfg)
         addon.inspectors = []
         return addon
 
-    def test_default_true(self):
-        addon = self._make_addon("name: test\n")
-        assert addon.log_allowed is True
+    def test_default_false(self):
+        """No logging block: off, the host's documented default."""
+        addon = self._make_addon("domains: {}\n")
+        assert addon.log_allowed is False
+
+    def test_default_false_with_an_unrelated_logging_block(self):
+        addon = self._make_addon(textwrap.dedent("""\
+            logging:
+              level: debug
+        """))
+        assert addon.log_allowed is False
 
     def test_legacy_log_allowed_true(self):
         addon = self._make_addon("log_allowed: true\n")
@@ -191,4 +196,50 @@ class TestAddonLogAllowed:
               dns_queries: true
         """))
         assert addon.log_allowed is True
+
+
+class TestAddonLogAllowedLoadAndReload:
+    """The real ``load`` and hot-reload paths, from a config file.
+
+    proxy-config.yaml carries the operator's ``logging`` block as written,
+    so a cage that never mentions it reaches the egress with no
+    ``allowed_requests`` key at all.
+    """
+
+    @staticmethod
+    def _write(path, text: str, bump: int) -> None:
+        import os
+
+        path.write_text(text)
+        st = os.stat(path)
+        os.utime(path, (st.st_atime, st.st_mtime + bump))
+
+    def test_load_without_a_logging_block_is_off_and_reload_follows(
+        self, tmp_path, monkeypatch
+    ):
+        import addon as addon_mod
+
+        monkeypatch.setenv("AGENTCAGE_AUDIT_LOG", "")
+        cfg = tmp_path / "config.yaml"
+        monkeypatch.setattr(addon_mod, "CONFIG_PATH", str(cfg))
+        self._write(cfg, "domains:\n  allow: [example.com]\n", 1)
+
+        addon = addon_mod.Agentcage()
+        addon.load(loader=None)
+        assert addon.log_allowed is False
+
+        self._write(cfg, textwrap.dedent("""\
+            domains:
+              allow: [example.com]
+            logging:
+              allowed_requests: true
+        """), 5)
+        addon._maybe_reload()
+        assert addon.log_allowed is True
+
+        # Dropping the key again is a return to the default, not a
+        # sticky last value.
+        self._write(cfg, "domains:\n  allow: [example.com]\n", 10)
+        addon._maybe_reload()
+        assert addon.log_allowed is False
 

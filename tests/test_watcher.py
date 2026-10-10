@@ -1628,6 +1628,21 @@ class TestAddonAuditFunnel:
         assert len(a._watcher_ring) == 1
         assert a._audit_file.getvalue() == ""  # durable sinks suppressed
 
+    def test_allowed_with_an_injected_secret_is_always_durable(self):
+        """Which requests received a credential is the audit trail that
+        matters: logged even when plain allowed traffic is suppressed."""
+        a = self._addon(log_allowed=False)
+        a._audit_file = StringIO()
+        a._log(self._flow(), "allowed", None, [], secrets_injected=["API_KEY"])
+        assert len(a._watcher_ring) == 1
+        assert '"secrets_injected": ["API_KEY"]' in a._audit_file.getvalue()
+
+    def test_allowed_with_a_redacted_secret_is_always_durable(self):
+        a = self._addon(log_allowed=False)
+        a._audit_file = StringIO()
+        a._log(self._flow(), "allowed", None, [], secrets_redacted=["API_KEY"])
+        assert '"secrets_redacted": ["API_KEY"]' in a._audit_file.getvalue()
+
     def test_flagged_goes_through_the_full_funnel(self):
         a = self._addon(log_allowed=False)
         a._audit_file = StringIO()

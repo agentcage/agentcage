@@ -2,4 +2,5 @@ domains:
   allow:
   - api.example.com
   - cdn.example.com
+log_allowed: true
 agentcage_version: 0.0.0-golden

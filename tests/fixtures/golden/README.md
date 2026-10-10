@@ -29,7 +29,7 @@ produces* from each one:
 | `quadlets/*.container`, `*.network`, `*.volume` | `quadlets.generate_quadlets` + `templates/*.j2` |
 | `quadlets/<cage>.json` (apple-container only) | `AppleContainerBackend.generate_units` |
 | `launchd/io.agentcage.<cage>.plist` (apple-container only) | `AppleContainerBackend._install_launchd_plist` |
-| `proxy-config.yaml` | `state.save_proxy_config` (the 12 keys in `state._PROXY_KEYS`) |
+| `proxy-config.yaml` | `state.save_proxy_config` (the keys in `state._PROXY_KEYS`, now `PROXY_KEYS` in `rust/agentcage-state/src/derived.rs`) |
 | `dns-allowlist.conf` | `state.save_dns_allowlist` |
 | `placeholders.env` | `state.save_placeholders_env` |
 | `stored-cage.yaml` | the cage.yaml as persisted into state, placeholders filled |
