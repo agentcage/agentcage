@@ -33,11 +33,18 @@ log = logging.getLogger("agentcage.relays.imap")
 
 # IMAP commands that mutate mailbox state. Blocked when policy.readonly
 # is true.
+#
+# CLOSE is here for the same reason it is denied in "organise" (see below):
+# RFC 3501 §6.4.2 makes it expunge every \Deleted message in the selected
+# mailbox. STORE being denied stops the relay from setting the flag, but not
+# another client sharing the mailbox, so allowing CLOSE would let a readonly
+# relay destroy mail.
 _DENY_COMMANDS_READONLY = frozenset({
     "APPEND",
     "DELETE",
     "STORE",
     "EXPUNGE",
+    "CLOSE",
     "CREATE",
     "RENAME",
     "MOVE",

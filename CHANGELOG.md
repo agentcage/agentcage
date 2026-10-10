@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **IMAP and SMTP relays read their credentials from staged secret files, not only from the environment.** `auth.user_source` / `auth.password_source` were resolved from env vars alone, so on apple-container (which delivers secrets only as files under `/home/acproxy/secrets`) every relay failed with `relay_init_failed`, and on podman a relay never saw a value changed by `agentcage secret set`. Relays now resolve through one shared egress lookup (`secret_lookup.py`): the staged file `$AGENTCAGE_SECRETS_DIR/<NAME>`, then `$XDG_RUNTIME_DIR/<NAME>`, then env. An existing file wins with its trailing newline stripped, and an existing empty file is a tombstone that does not fall back to a stale env value, as in secret injection.
+- **IMAP `write_mode: none` (and legacy `readonly: true`) now refuses `CLOSE`.** RFC 3501 §6.4.2 makes `CLOSE` expunge every `\Deleted` message in the selected mailbox. `write_mode: organise` already refused it, but the readonly mode let it through, so a "readonly" relay could permanently delete mail that another client had flagged `\Deleted`. `CLOSE` now gets `NO CLOSE not permitted (readonly)` and a `blocked` audit entry with reason `readonly policy`, like the other refused write commands. `EXPUNGE` and `UID EXPUNGE` were already refused. Clients that leave a mailbox with `CLOSE` get a `NO` back; `UNSELECT` (RFC 3691), `SELECT`ing another mailbox and `LOGOUT` all leave a mailbox without expunging.
 
 ## [0.50.0] - 2026-10-09
 
