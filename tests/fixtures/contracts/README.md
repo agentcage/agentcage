@@ -23,10 +23,17 @@ both sides of it:
 | `is_never_grant` | `cli._is_never_grant` | `policy_api.PolicyApi._is_never_grant` |
 | `shared_constants` | `config.MAX_CAPTURE_FILE_BYTES`, `config._AUTO_NEVER_GRANT`, `config._BUILTIN_INSPECTOR_NAMES`, the relay type/mode sets | `capture.CaptureWriter`'s default, `PolicyApi._effective_never_grant`, `addon._BUILTIN_INSPECTORS`, the same relay sets |
 | `scaffold_inspectors` | `init.render_config` → cage.yaml | `addon._load_builtin_inspectors` reading it back |
+| `agents_defaults` | `config::parse`'s fallbacks for an omitted `agents.*` key | `PolicyApi.__init__` / `Watcher.__init__` fallbacks for the same key |
 
 The first four are the docs/history/rust-port-plan.md §2.2 list. The last two came out of
 PR A6's audit of the boundary: a duplicated constant and a *format*
 contract, where the shared artifact is a file rather than a predicate.
+
+`agents_defaults` is a duplicated constant table too. The host writes the
+operator's `agents` block into `proxy-config.yaml` without filling in
+defaults, so a key the operator left out runs at the egress's fallback
+while the host validates and budgets against its own. The watcher's scan
+interval drifted that way (300 in the egress, 900 on the host).
 
 Today they agree for a reason that is about to stop being true. The first
 is *literally one module*, imported from two paths — its own docstring says
@@ -96,6 +103,7 @@ so a later reader can tell a deliberate adversarial case from noise).
 | `validate_relay_entry.json` | `entry` | `ok`, `error` (the `ValueError` message **verbatim**), `source_validator_calls` |
 | `shared_constants.json` | — | `value`, plus `host` / `proxy` naming where each side reads it |
 | `scaffold_inspectors.json` | `scaffold` | `inspector_config` (what the host renders) and `loaded_inspectors` (what the proxy loads from it) |
+| `agents_defaults.json` | `id` (the omitted key) | `value`: what both sides resolve it to from the top-level minimal `config` |
 
 `scaffold_inspectors.json` is the one contract split down the middle rather
 than asserted twice. The artifact crossing the boundary is a *file*, so the

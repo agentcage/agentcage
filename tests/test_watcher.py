@@ -521,6 +521,31 @@ def _flow_entry(host="api.example.com", decision="allowed", ts=None):
             "port": 443, "url": f"https://{host}/v1/x", "reason": ""}
 
 
+class TestConfigDefaults:
+    """An omitted key runs at the host's default, not one of the egress's own.
+
+    proxy-config.yaml carries the operator's block as written, so the
+    egress fallback is what an omitted key actually runs at. The full
+    table is pinned against tests/fixtures/contracts/agents_defaults.json;
+    this is the one that drifted.
+    """
+
+    def test_omitted_interval_is_the_hosts_900(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        cfg = {"agents": {"watcher": {
+            "enable": True, "provider": "openai", "model": "gpt-test",
+            "api_key": "env:TESTKEY"}}}
+        w = Watcher(cfg, None, None, lambda e: None,
+                    SimpleNamespace(warn=lambda *a, **k: None), deque(), "")
+        # 900, not 300: at 300 an operator who left the key out paid for
+        # three times the scans the host's spend warning budgeted.
+        assert w._interval == 900.0
+
+    def test_explicit_interval_is_kept(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch, cfg={"interval_seconds": 120})
+        assert w._interval == 120.0
+
+
 class TestReviewFailClosed:
     def test_llm_error_is_none(self, tmp_path, monkeypatch):
         w, _ = _mk_watcher(tmp_path, monkeypatch)

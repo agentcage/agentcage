@@ -779,8 +779,14 @@ class Watcher:
         # shapes fall back to safe defaults WITH a warning; the watcher
         # then runs fail-closed (an unusable agent config records scan
         # failures, it never widens anything).
+        #
+        # Every fallback here is the host's default, not one of our own:
+        # the host copies the operator's block into proxy-config.yaml as
+        # written, so an omitted key runs at THIS value while the host
+        # validates and budgets against its own. Pinned by
+        # tests/fixtures/contracts/agents_defaults.json.
         self._interval = max(60.0, _num(self.cfg, "interval_seconds",
-                                        300.0, log))
+                                        900.0, log))
         self._window = min(86400.0, max(1.0, _num(
             self.cfg, "window_seconds", 3600.0, log)))
         self._max_flows = max(10, int(_num(self.cfg, "max_flows",

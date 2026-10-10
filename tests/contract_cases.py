@@ -36,6 +36,7 @@ VALIDATE_RELAY_ENTRY = _load("validate_relay_entry")
 SHARED_CONSTANTS = _load("shared_constants")
 SCAFFOLD_INSPECTORS = _load("scaffold_inspectors")
 AGENTS_CONFIG = _load("agents_config")
+AGENTS_DEFAULTS = _load("agents_defaults")
 
 ALL = {
     "valid_domain": VALID_DOMAIN,
@@ -45,6 +46,7 @@ ALL = {
     "shared_constants": SHARED_CONSTANTS,
     "scaffold_inspectors": SCAFFOLD_INSPECTORS,
     "agents_config": AGENTS_CONFIG,
+    "agents_defaults": AGENTS_DEFAULTS,
 }
 
 FIXTURE_DIR = _FIXTURES

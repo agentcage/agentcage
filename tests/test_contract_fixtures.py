@@ -34,6 +34,7 @@ from pathlib import Path  # noqa: F401
 import pytest
 
 from tests.contract_cases import (
+    AGENTS_DEFAULTS,
     ALL,
     ENCODED_PRIVATE_IP,
     FIXTURE_DIR,
@@ -251,6 +252,68 @@ class TestScaffoldInspectors:
         assert [i.name for i in api.inspectors] == case["loaded_inspectors"], (
             f"scaffold {case['scaffold']!r}: the addon loads a different "
             f"inspector chain than the fixture records — {case['why']}"
+        )
+
+class TestAgentsDefaults:
+    """The egress fills an omitted agents key with the host's default.
+
+    The host writes the operator's ``agents`` block into proxy-config.yaml
+    as written, so an omitted key is resolved twice: by the host, which
+    validates and warns against its value, and by the egress, which runs
+    with its own. Both are pinned to the fixture.
+    """
+
+    # Case id -> the attribute the egress resolves that key into.
+    _ATTRS = {
+        "decider.host": "host",
+        "decider.timeout_seconds": "_llm_timeout",
+        "decider.max_tokens": "_llm_max_tokens",
+        "decider.rate_limit.requests_per_second": "_rl_rps",
+        "decider.rate_limit.burst": "_rl_burst",
+        "watcher.interval_seconds": "_interval",
+        "watcher.window_seconds": "_window",
+        "watcher.max_flows": "_max_flows",
+        "watcher.auto_revoke": "_auto_revoke",
+        "watcher.dedup_samples": "_dedup",
+        "watcher.max_digest_tokens": "_max_digest_tokens",
+        "watcher.timeout_seconds": "_timeout",
+        "watcher.max_tokens": "_llm_max_tokens",
+    }
+
+    @pytest.fixture
+    def agents(self, tmp_path, monkeypatch):
+        from collections import deque
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from inspectors.domain import DomainInspector
+        from policy_api import PolicyApi
+        from watcher import Watcher
+
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTKEY", "decider-key")
+        monkeypatch.setenv("WATCHKEY", "watcher-key")
+        cfg = {"domains": {"allow": ["example.com"]},
+               **json.loads(json.dumps(AGENTS_DEFAULTS["config"]))}
+        dom = DomainInspector()
+        dom.configure(cfg["domains"])
+        log = SimpleNamespace(warn=lambda *a, **k: None)
+        return {
+            "decider": PolicyApi(cfg, dom, lambda e: None, MagicMock()),
+            "watcher": Watcher(cfg, dom, None, lambda e: None, log, deque()),
+        }
+
+    def test_every_case_is_mapped_and_every_mapping_has_a_case(self):
+        assert set(ids(AGENTS_DEFAULTS)) == set(self._ATTRS)
+
+    @pytest.mark.parametrize(
+        "case", AGENTS_DEFAULTS["cases"], ids=ids(AGENTS_DEFAULTS))
+    def test_proxy(self, case, agents):
+        agent = agents[case["id"].split(".", 1)[0]]
+        got = getattr(agent, self._ATTRS[case["id"]])
+        assert got == case["value"] and type(got) is type(case["value"]), (
+            f"omitted agents.{case['id']} resolves to {got!r} in the egress, "
+            f"fixture says {case['value']!r} — {case['why']}"
         )
 
 class TestFixtureIntegrity:
