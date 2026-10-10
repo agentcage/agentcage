@@ -12,6 +12,8 @@
 
 pub mod body_size;
 pub mod content_type;
+#[cfg(test)]
+mod corpus;
 pub mod domain;
 pub mod entropy;
 pub mod secrets;
