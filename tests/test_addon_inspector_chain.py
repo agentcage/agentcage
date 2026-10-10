@@ -347,7 +347,7 @@ def test_relay_secrets_honors_action_from_inspectors_list():
     from inspectors.secrets import SecretsInspector
 
     sec = SecretsInspector()
-    # Simulates _load_custom_inspectors reconfiguring the built-in with the
+    # Simulates _load_inspectors reconfiguring the built-in with the
     # inspectors-list `config:` section.
     sec.configure({"enabled": True, "action": "flag"})
     addon = _addon_with_inspectors(

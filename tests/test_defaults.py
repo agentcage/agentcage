@@ -47,8 +47,7 @@ class TestDefaultInspectors:
         addon.cfg = yaml.safe_load(yaml_content) or {}
         addon.log_allowed = _log_allowed(addon.cfg)
         addon.inspectors = []
-        addon._load_builtin_inspectors()
-        addon._load_custom_inspectors()
+        addon._load_inspectors()
         return addon
 
     def test_entropy_not_loaded_by_default(self):

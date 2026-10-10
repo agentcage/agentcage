@@ -704,22 +704,30 @@ class SmtpRelay:
                                 upstream = None
                         txn = _Transaction()
                         continue
-                    self._audit_log({
-                        "kind": "smtp_data",
-                        "relay": self._cfg.name,
-                        "decision": "allowed",
-                        "sender": txn.sender,
-                        # Only the recipients the upstream actually
-                        # accepted — these are the addresses the
-                        # message was delivered to. Recipients the cage
-                        # allowlisted but the upstream refused are
-                        # carried separately below so forensics can
-                        # tell who actually received the message.
-                        "recipients": rcpt_accepted,
-                        "recipients_rejected_upstream": rcpt_rejected,
-                        "size": len(body),
-                        "upstream_status": upstream_status,
-                    })
+                    # Like an allowed IMAP command or HTTP request, the
+                    # delivery record follows ``logging.allowed_requests``;
+                    # a flagged message is not plain allowed traffic, so
+                    # its delivery (who actually received it) is always
+                    # written next to its ``smtp_data_flag`` record. The
+                    # record never carries the relay's credential, so
+                    # there is no "carried a secret" case to keep.
+                    if self._log_allowed or txn.flagged:
+                        self._audit_log({
+                            "kind": "smtp_data",
+                            "relay": self._cfg.name,
+                            "decision": "allowed",
+                            "sender": txn.sender,
+                            # Only the recipients the upstream actually
+                            # accepted — these are the addresses the
+                            # message was delivered to. Recipients the
+                            # cage allowlisted but the upstream refused
+                            # are carried separately below so forensics
+                            # can tell who actually received the message.
+                            "recipients": rcpt_accepted,
+                            "recipients_rejected_upstream": rcpt_rejected,
+                            "size": len(body),
+                            "upstream_status": upstream_status,
+                        })
                     self._write_line(
                         client_writer,
                         f"250 2.0.0 ok ({upstream_status})".encode(),
@@ -945,6 +953,7 @@ class SmtpRelay:
         if block is not None:
             return block
         flagged = [r for r in chain_results if r.action == "flag"]
+        txn.flagged = bool(flagged)
         for r in flagged:
             self._audit_log({
                 "kind": "smtp_data_flag",
@@ -1004,11 +1013,14 @@ class SmtpRelay:
 class _Transaction:
     """SMTP transaction state for one MAIL FROM ... DATA cycle."""
 
-    __slots__ = ("sender", "recipients")
+    __slots__ = ("sender", "recipients", "flagged")
 
     def __init__(self) -> None:
         self.sender: str = ""
         self.recipients: list[str] = []
+        # An inspector flagged this message's body (_run_inspectors):
+        # its delivery record is then written whatever log_allowed says.
+        self.flagged: bool = False
 
 
 class _UpstreamSmtp:

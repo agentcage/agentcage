@@ -917,7 +917,7 @@ pub struct Config {
     /// mappings (not a typed struct) because the container backend's
     /// addon already reads YAML directly and the config flow has to be
     /// byte-identical across backends. See `data/proxy/addon.py`
-    /// `_load_custom_inspectors` for the dispatch.
+    /// `_plan_inspectors` for the dispatch.
     pub inspectors: Vec<Mapping>,
     /// Non-HTTP relays (IMAP, SMTP).
     pub protocol_relays: Vec<ProtocolRelay>,

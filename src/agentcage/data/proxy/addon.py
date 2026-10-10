@@ -163,7 +163,11 @@ class Agentcage:
             self.cfg = yaml.safe_load(f) or {}
         self._config_mtime = os.stat(CONFIG_PATH).st_mtime
         self.log_allowed = _log_allowed(self.cfg)
-        self.inspectors: list[Inspector] = []
+        # Replaced whole on reload, never mutated (see _load_inspectors).
+        self.inspectors: tuple[Inspector, ...] = ()
+        # Path-loaded inspectors by their ``inspectors:`` path, so a
+        # reload reuses the instance instead of importing the file again.
+        self._path_inspectors: dict[str, Inspector] = {}
         self.injector = SecretInjector()
 
         injection_cfg = self.cfg.get("secret_injection", [])
@@ -182,8 +186,7 @@ class Agentcage:
         # at _RL_MAX_HOSTS by _check_rate_limit.
         self._rl_buckets: OrderedDict[str, list] = OrderedDict()
 
-        self._load_builtin_inspectors()
-        self._load_custom_inspectors()
+        self._load_inspectors()
 
         # agents.decider — opt-in auto-managed allowlist (introspection + on-demand requests).
         # Constructed only when ``policy_api.enable`` is set in the proxy
@@ -616,8 +619,8 @@ class Agentcage:
           survive the reload. It is handed the reload's
           ``logging.allowed_requests`` and relay inspector chain
           (``update_settings``): it was built with the old ones, and
-          an inspector the reload added or enabled would otherwise never
-          reach it;
+          an inspector the reload added or dropped would otherwise
+          never reach it;
         * changed entry, or credentials that now resolve to different
           values (``agentcage secret set`` re-stages the file and bumps
           the config mtime; a relay reads its credentials only when it
@@ -649,10 +652,9 @@ class Agentcage:
 
         relay_cfg = self.cfg.get("protocol_relays") or []
         current: dict = getattr(self, "_relays_by_name", None) or {}
-        # Built fresh on every sync — after _maybe_reload reconfigured the
-        # inspectors and re-read the ``inspectors:`` section — so a
-        # (re)started relay gets the current chain, and a kept one is
-        # handed it below.
+        # Built fresh on every sync — after _maybe_reload reconciled the
+        # inspector chain (_load_inspectors) — so a (re)started relay
+        # gets the current chain, and a kept one is handed it below.
         relay_inspectors = self._build_relay_inspectors() if relay_cfg else []
 
         wanted: dict[str, _RunningRelay] = {}
@@ -900,8 +902,115 @@ class Agentcage:
 
     # ── Inspector loading ────────────────────────────────
 
-    def _load_builtin_inspectors(self) -> None:
-        """Load built-in inspectors from legacy and new config styles."""
+    def _load_inspectors(self) -> None:
+        """Make the live inspector chain the one this config describes.
+
+        Runs at load and on every config reload, and builds the same
+        chain either way: what a fresh start with this config builds,
+        in its order, with each inspector configured as at boot (see
+        _plan_inspectors). On a reload the chain is reconciled against
+        the live one rather than rebuilt:
+
+        * an inspector that stays is kept, the same object, and
+          reconfigured in place, so whatever it holds at runtime
+          survives: the domain inspector's live grants (the Policy API
+          and the watcher hold that instance), a custom inspector's own
+          state. A path inspector's file is not re-imported; a changed
+          implementation needs an egress restart;
+        * an inspector the config now enables is built and added: a
+          section entry, or a built-in turned on by its top-level key
+          (``entropy: {}``, a non-zero ``max_request_body``,
+          ``content_type`` no longer ``false``);
+        * an inspector the config no longer enables is dropped: an
+          entry removed from ``inspectors:``, or a built-in turned off
+          by its top-level key. It used to keep running with its last
+          config until a restart.
+
+        The chain is a tuple, built whole and swapped in by one
+        assignment, never mutated: a request whose chain is already
+        running in the executor finishes on the tuple it started with,
+        and the next one sees the new chain whole. Protocol relays get
+        the new chain from _sync_protocol_relays, which runs after this.
+
+        New inspectors are configured before any live one is touched,
+        so a new one whose config raises (or a path that fails to
+        import) leaves the running chain exactly as it was; the reload
+        stops there and _reload_check logs it.
+        """
+        plan = self._plan_inspectors(getattr(self, "inspectors", ()) or ())
+        live = {id(i) for i in getattr(self, "inspectors", ()) or ()}
+        # New instances first: nothing serves traffic with them yet.
+        for slot in sorted(plan, key=lambda s: id(s[0]) in live):
+            slot[0].configure(slot[1])
+        self.inspectors = tuple(slot[0] for slot in plan)
+        self._path_inspectors = {
+            slot[2]: slot[0] for slot in plan if slot[2] is not None}
+
+    def _plan_inspectors(self, pool) -> list[list]:
+        """Work out the chain the config describes, as
+        ``[inspector, config, path]`` slots in chain order, reusing
+        instances from ``pool`` (the live chain) where they fit.
+
+        The order and precedence are the boot ones, unchanged:
+
+        1. built-ins enabled by their legacy top-level keys
+           (_build_legacy_config), in registry order;
+        2. then each ``inspectors:`` entry in turn:
+
+           - a built-in by name::
+
+                 inspectors:
+                   - name: entropy
+                     config:
+                       threshold: 7.5
+
+             If that built-in is already in the chain (legacy-enabled,
+             or listed earlier) its config is replaced by this entry's
+             — the section wins over the legacy key (PR #341: reload
+             once reset section-only config to the legacy defaults).
+             Otherwise it is appended.
+
+           - a custom Python file::
+
+                 inspectors:
+                   - name: my-check
+                     path: /etc/agentcage/my_inspector.py
+                     config:
+                       key: value
+
+             If an inspector of the entry's ``name`` is already in the
+             chain it takes this config instead; otherwise the file's
+             inspector is appended, unless an inspector with the name
+             its class declares is already there, which then takes the
+             config.
+
+        Each slot is configured once, with the config that wins: every
+        inspector's ``configure()`` replaces its whole configuration,
+        so that is what boot's configure-then-reconfigure produced.
+
+        A built-in reuses a pool instance of the same class; a path
+        entry reuses the instance loaded from the same path (so the
+        file is imported once per egress start). Nothing is configured
+        or swapped in here; ``_load_inspectors`` does both.
+        """
+        available = list(pool)
+        path_loaded = list(
+            (getattr(self, "_path_inspectors", None) or {}).items())
+
+        def claim(pred):
+            for idx, insp in enumerate(available):
+                if pred(insp):
+                    return available.pop(idx)
+            return None
+
+        def claim_builtin(cls):
+            return claim(lambda i: type(i) is cls and not any(
+                i is p for _, p in path_loaded)) or cls()
+
+        def slot_named(name):
+            return next((s for s in plan if name and s[0].name == name), None)
+
+        plan: list[list] = []
         # Backwards-compatible: map old top-level config keys to
         # built-in inspector configs so existing config files keep working.
         legacy_map = self._build_legacy_config()
@@ -909,9 +1018,38 @@ class Agentcage:
             cfg_section = legacy_map.get(builtin_name)
             if cfg_section is None:
                 continue
-            inspector = cls()
-            inspector.configure(cfg_section)
-            self.inspectors.append(inspector)
+            plan.append([claim_builtin(cls), cfg_section, None])
+
+        for entry in self.cfg.get("inspectors") or []:
+            name = entry.get("name", "")
+            path = entry.get("path")
+            cfg = entry.get("config", {})
+
+            if not path and name in _BUILTIN_INSPECTORS:
+                slot = slot_named(name)
+                if slot is not None:
+                    slot[1] = cfg
+                    continue
+                inspector = claim_builtin(_BUILTIN_INSPECTORS[name])
+            elif path:
+                slot = slot_named(name)
+                if slot is not None:
+                    slot[1] = cfg
+                    continue
+                inspector = claim(lambda i: any(
+                    p == path and i is loaded for p, loaded in path_loaded))
+                if inspector is None:
+                    inspector = load_inspector_from_file(path)
+                slot = slot_named(inspector.name)
+                if slot is not None:
+                    slot[1] = cfg
+                    continue
+            else:
+                ctx.log.warn(f"skipping unknown inspector: {name}")
+                continue
+
+            plan.append([inspector, cfg, path or None])
+        return plan
 
     def _build_legacy_config(self) -> dict[str, Optional[dict]]:
         """Translate old top-level YAML keys into per-inspector configs."""
@@ -941,69 +1079,6 @@ class Agentcage:
             out["content-type"] = ct_cfg if isinstance(ct_cfg, dict) else {}
 
         return out
-
-    def _load_custom_inspectors(self) -> None:
-        """Load inspectors declared in the ``inspectors:`` config section.
-
-        Each entry can be:
-        - A built-in by name::
-
-              inspectors:
-                - name: entropy
-                  config:
-                    threshold: 7.5
-
-        - A custom Python file::
-
-              inspectors:
-                - name: my-check
-                  path: /etc/agentcage/my_inspector.py
-                  config:
-                    key: value
-        """
-        for entry in self.cfg.get("inspectors", []):
-            name = entry.get("name", "")
-            path = entry.get("path")
-            cfg = entry.get("config", {})
-
-            # Skip if this built-in was already loaded via legacy config
-            if not path and name in _BUILTIN_INSPECTORS:
-                already = any(i.name == name for i in self.inspectors)
-                if already:
-                    # Re-configure with the explicit config section
-                    for i in self.inspectors:
-                        if i.name == name:
-                            i.configure(cfg)
-                            break
-                    continue
-                inspector = _BUILTIN_INSPECTORS[name]()
-            elif path:
-                # Reconfigure-in-place when an inspector of this name is
-                # already loaded (the hot-reload path calls this method on
-                # every config change — appending again would run the
-                # inspector twice per request). Matched by the entry's
-                # declared name falling back to the loaded class's name on
-                # the append below; the file itself is NOT re-imported on
-                # reload — a changed implementation needs an egress restart.
-                existing = next(
-                    (i for i in self.inspectors
-                     if name and i.name == name), None)
-                if existing is not None:
-                    existing.configure(cfg)
-                    continue
-                inspector = load_inspector_from_file(path)
-                existing = next(
-                    (i for i in self.inspectors
-                     if i.name == inspector.name), None)
-                if existing is not None:
-                    existing.configure(cfg)
-                    continue
-            else:
-                ctx.log.warn(f"skipping unknown inspector: {name}")
-                continue
-
-            inspector.configure(cfg)
-            self.inspectors.append(inspector)
 
     # ── TLS passthrough ────────────────────────────────────
 
@@ -1053,31 +1128,19 @@ class Agentcage:
         # second would only repeat the failure. The next edit retries.
         self._config_mtime = mtime
 
-        # Reconfigure built-in inspectors in-place
-        legacy_map = self._build_legacy_config()
-        for inspector in self.inspectors:
-            if inspector.name in legacy_map and legacy_map[inspector.name] is not None:
-                inspector.configure(legacy_map[inspector.name])
-
-        # Re-apply the explicit ``inspectors:`` section AFTER the legacy
-        # map, mirroring the initial-load precedence (legacy first, the
-        # explicit section wins). Without this, every hot reload silently
-        # RESET any builtin configured only via ``inspectors:`` back to
-        # legacy/default config — for a cage whose content-type exemptions
-        # live in that section, the first ``domain add``/``domain rm`` or
-        # agents.decider grant after egress start wiped
-        # ``host_exempt_content_types`` in place and multipart uploads
-        # started 403ing on body entropy (hit in production 2026-09-01:
-        # ElevenLabs STT voice-note uploads). ``_load_custom_inspectors``
-        # is reload-safe: it reconfigures in place and never appends a
-        # duplicate. An entry REMOVED from the section keeps its last
-        # config until restart — acceptable; removal is not a live-reload
-        # operation for any other section either.
-        self._load_custom_inspectors()
+        # Reconcile the inspector chain with the new config: the chain a
+        # restart would build, keeping (and reconfiguring in place) every
+        # inspector that stays, adding the newly enabled ones and dropping
+        # the rest, then swapped in whole. The ``inspectors:`` section
+        # still wins over the legacy keys: re-applying only the legacy
+        # map once RESET section-only config on every reload (2026-09-01:
+        # content-type exemptions wiped by a ``domain add``, multipart
+        # uploads 403ing on body entropy).
+        self._load_inspectors()
 
         # Reconfigure the secret injector too — it is NOT part of the
         # inspector chain (inspectors must see placeholders, injection
-        # happens after them), so the loop above never reaches it. Without
+        # happens after them), so the chain reload never reaches it. Without
         # this, rules declared after start never load and `secret set`'s
         # re-staged values are never re-read: configure() re-reads the
         # staged value files, which is the entire live-update mechanism.

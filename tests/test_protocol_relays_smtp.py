@@ -1561,7 +1561,8 @@ class TestAuditEntries:
             entries: list[dict] = []
             try:
                 async with _running_relay(
-                    _relay_entry(up_port), audit_log=entries.append
+                    _relay_entry(up_port), audit_log=entries.append,
+                    log_allowed=True,
                 ) as (_, port):
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
@@ -1620,7 +1621,7 @@ class TestUpstreamRcptRejectionAudit:
             )
             try:
                 async with _running_relay(
-                    entry, audit_log=entries.append,
+                    entry, audit_log=entries.append, log_allowed=True,
                 ) as (_, port):
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
@@ -1696,6 +1697,7 @@ class TestUpstreamRcptRejectionAudit:
                 async with _running_relay(
                     _relay_entry(up_port, recipient_domains=["example.com"]),
                     audit_log=entries.append,
+                    log_allowed=True,
                 ) as (_, port):
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
@@ -1967,4 +1969,127 @@ class TestInspectorFlagAction:
                 upstream.close()
                 await upstream.wait_closed()
 
+        _run(_go())
+
+
+# ── logging.allowed_requests gates the allowed records ──
+
+
+class TestLogAllowed:
+    """The relay was handed ``log_allowed`` but never read it, so every
+    delivered message wrote an ``allowed`` record whatever
+    ``logging.allowed_requests`` said. Like the IMAP relay (and plain
+    HTTP), an allowed record is now written only when that is on;
+    blocked, flagged and intercepted records always are."""
+
+    @staticmethod
+    async def _session(port: int, bodies: list[bytes]) -> list[int]:
+        codes = []
+        async with _smtp_client(port) as (r, w):
+            await _read_response(r)
+            await _cmd(w, r, b"EHLO cage.local")
+            # Intercepted: always recorded.
+            await _cmd(w, r, b"AUTH PLAIN AGFnZW50AHB3")
+            for body in bodies:
+                await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                # Blocked by the recipient allowlist: always recorded.
+                await _cmd(w, r, b"RCPT TO:<attacker@evil.example>")
+                await _cmd(w, r, b"DATA")
+                w.write(b"Subject: hi\r\n\r\n" + body + b"\r\n.\r\n")
+                await w.drain()
+                code, _ = await _read_response(r)
+                codes.append(code)
+            await _cmd(w, r, b"QUIT")
+        return codes
+
+    def _run_session(self, log_allowed: bool, bodies: list[bytes]):
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(
+                        up_port, recipient_addresses=["friend@example.com"],
+                        bypass_inspectors_for_allowlisted=[],
+                    ),
+                    audit_log=entries.append,
+                    log_allowed=log_allowed,
+                    inspectors=[_MarkerInspector(), _MarkerFlagInspector()],
+                ) as (_, port):
+                    codes = await self._session(port, bodies)
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+            return codes, entries, recorder
+        return _run(_go())
+
+    @staticmethod
+    def _decisions(entries):
+        return sorted((e["kind"], e.get("decision")) for e in entries)
+
+    def test_off_writes_no_allowed_record(self):
+        codes, entries, recorder = self._run_session(
+            False, [b"plain body", b"EXFIL_MARKER_99"])
+        assert codes == [250, 550]
+        assert len(recorder.transactions) == 1
+        assert self._decisions(entries) == [
+            ("smtp_command", "blocked"),
+            ("smtp_command", "blocked"),
+            ("smtp_command", "intercepted"),
+            ("smtp_data", "blocked"),
+        ]
+
+    def test_on_writes_the_allowed_record(self):
+        codes, entries, _ = self._run_session(
+            True, [b"plain body", b"EXFIL_MARKER_99"])
+        assert codes == [250, 550]
+        assert self._decisions(entries) == [
+            ("smtp_command", "blocked"),
+            ("smtp_command", "blocked"),
+            ("smtp_command", "intercepted"),
+            ("smtp_data", "allowed"),
+            ("smtp_data", "blocked"),
+        ]
+
+    def test_flagged_delivery_is_recorded_when_off(self):
+        """A flagged message is a flagged request: its flag and its
+        delivery record (who actually received it) are always written."""
+        codes, entries, _ = self._run_session(False, [b"FLAG_MARKER_42"])
+        assert codes == [250]
+        assert self._decisions(entries) == [
+            ("smtp_command", "blocked"),
+            ("smtp_command", "intercepted"),
+            ("smtp_data", "allowed"),
+            ("smtp_data_flag", "flagged"),
+        ]
+        delivered = next(e for e in entries if e["kind"] == "smtp_data")
+        assert delivered["recipients"] == ["friend@example.com"]
+
+    def test_flip_through_update_settings(self):
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port), audit_log=entries.append,
+                ) as (relay, port):
+                    await self._session(port, [b"one"])
+                    relay.update_settings(log_allowed=True)
+                    await self._session(port, [b"two"])
+                    relay.update_settings(log_allowed=False)
+                    await self._session(port, [b"three"])
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+            assert len(recorder.transactions) == 3
+            allowed = [e for e in entries if e.get("kind") == "smtp_data"
+                       and e.get("decision") == "allowed"]
+            assert len(allowed) == 1
         _run(_go())
