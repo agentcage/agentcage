@@ -190,10 +190,10 @@ adding new test cases:
 - Phase 1-6: cage lifecycle, secrets, domains, backup/restore, hardening
   — all use the basic `node:22-slim` agent, so none exercise openclaw.
 - Phase 7: VM mode — openclaw isn't tested in VM mode anywhere.
-- `tests/conftest.py::openclaw_yaml`: pytest fixture for config-
-  parsing unit tests. Renders a bare `ghcr.io/openclaw/openclaw:latest`
-  directly, bypassing the scaffold Containerfile. Catches YAML-schema
-  regressions but not scaffold build regressions.
+- The openclaw scaffold's `cage.yaml` render is pinned by the Rust
+  golden tests (`tests/fixtures/scaffold-configs/openclaw/`). That
+  catches YAML-schema and template regressions but not scaffold build
+  regressions.
 
 ## TODOs this phase surfaced
 

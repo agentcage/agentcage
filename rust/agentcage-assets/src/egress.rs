@@ -32,7 +32,7 @@
 //! one bless away and an accidental one names the file that moved:
 //!
 //! ```text
-//! cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored
+//! AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored
 //! ```
 
 use std::collections::BTreeMap;
@@ -437,10 +437,12 @@ mod tests {
 
     /// Rewrite `tests/fixtures/egress_hash.json` from the source tree.
     ///
-    /// `#[ignore]`d so it never runs by accident:
+    /// `#[ignore]`d, and a no-op unless `AGENTCAGE_BLESS=1` is set, so a
+    /// `--include-ignored` run (say, to reach the PyYAML crossing test)
+    /// cannot silently re-bless the fixture it is meant to check:
     ///
     /// ```text
-    /// cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored
+    /// AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored
     /// ```
     ///
     /// **Re-blessing must be deliberate.** The fixture pins the digest the
@@ -455,6 +457,10 @@ mod tests {
     #[test]
     #[ignore = "rewrites tests/fixtures/egress_hash.json; run deliberately"]
     fn bless_the_egress_hash_fixture() {
+        if std::env::var_os("AGENTCAGE_BLESS").is_none_or(|v| v != "1") {
+            eprintln!("skipping: set AGENTCAGE_BLESS=1 to rewrite egress_hash.json");
+            return;
+        }
         let data = crate::tests::repo_root()
             .join(crate::PACKAGE_ROOT)
             .join("data");
@@ -468,7 +474,7 @@ mod tests {
             "_comment".into(),
             "Pinned digest of the agentcage-egress image build inputs. \
              Regenerate ONLY for a deliberate change to those inputs: \
-             cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored. \
+             AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored. \
              See rust/agentcage-assets/src/egress.rs for the wire format, \
              which is frozen."
                 .into(),
@@ -490,8 +496,13 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("egress_hash.json");
-        std::fs::write(&path, text)
-            .unwrap_or_else(|err| panic!("{} is unwritable: {err}", path.display()));
+        // Write-then-rename, so a test reading the fixture concurrently
+        // sees the old file or the new one, never half of either.
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, text)
+            .unwrap_or_else(|err| panic!("{} is unwritable: {err}", tmp.display()));
+        std::fs::rename(&tmp, &path)
+            .unwrap_or_else(|err| panic!("renaming onto {}: {err}", path.display()));
     }
 
     /// The whole reason PR B3 exists.

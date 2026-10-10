@@ -95,7 +95,7 @@ Two substitutions, both re-expanded by the reader:
 | token | stands for |
 | :-- | :-- |
 | `{HOME}` | the sandbox home the case ran under |
-| `{VERSION}` | the package version, inside a HAR `creator` block only |
+| `{VERSION}` | the agentcage version, inside a HAR `creator` block only; the Rust test substitutes the version under test |
 
 `{VERSION}` keeps a release from churning 60 KB of fixture. `{HOME}` is what
 makes the error paths comparable at all: two of them print an absolute path.

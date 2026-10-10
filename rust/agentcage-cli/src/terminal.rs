@@ -66,8 +66,8 @@ use nix::sys::termios::{self, SetArg, Termios};
 /// not implement the corresponding protocol, since an unknown CSI
 /// sequence is ignored.
 ///
-/// Byte-identical to the Python's `RESTORE_SEQUENCE`, and deliberately
-/// *not* including `\x1b[?1049l`: DECRST 1049 on a terminal that is not
+/// Byte-identical to the Python CLI's `RESTORE_SEQUENCE` (pinned by
+/// `is_pinned_byte_for_byte` below), and deliberately *not* including `\x1b[?1049l`: DECRST 1049 on a terminal that is not
 /// in the alternate screen also performs DECRC, which on some emulators
 /// homes the cursor over the prompt. Not worth it for a mode our own
 /// sessions do not leak.
@@ -682,6 +682,17 @@ mod tests {
             "DECRST 1049 also performs DECRC, which homes the cursor over \
              the prompt on some emulators"
         );
+    }
+
+    /// The whole sequence, spelled out a second time on purpose: it was
+    /// assembled against real terminals, and an edit to one escape is
+    /// invisible in review. Changing the constant means changing this
+    /// too, in the same commit.
+    #[test]
+    fn is_pinned_byte_for_byte() {
+        let expected: &[u8] = b"\x1b[<u\x1b[=0;1u\x1b[>4;0m\x1b[?2004l\x1b[?1004l\
+            \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2026l\x1b[?25h\x1b[0m";
+        assert_eq!(RESTORE_SEQUENCE, expected);
     }
 
     // ── restoration ──

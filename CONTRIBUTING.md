@@ -104,7 +104,7 @@ If you deliberately change what goes into the egress image, `cargo test
 -p agentcage-assets` will fail. Re-bless the fixture in the same commit:
 
 ```bash
-cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored
+AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored
 ```
 
 Re-bless deliberately: the wire format is frozen so that hosts upgraded

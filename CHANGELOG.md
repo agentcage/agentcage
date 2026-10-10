@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Fixtures under `tests/fixtures/` are now maintained by hand.** They were recorded from the Python CLI and the Rust suite asserts against them unchanged; a deliberate behaviour change now edits the fixture in the same commit. The contract fixtures are still asserted by both the Rust suite and the proxy's pytest suite. See CONTRIBUTING.md.
-- **The egress hash fixture is re-blessed from Rust**: `cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored` replaces `scripts/bless-egress-hash.py`, with byte-identical output.
+- **The egress hash fixture is re-blessed from Rust**: `AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored` replaces `scripts/bless-egress-hash.py`, with byte-identical output.
 - **`pyproject.toml` is only the proxy's test environment**: no package, no build backend, no version (so `scripts/check-version.sh` no longer checks it), and dependencies cut to pytest plus what `Containerfile.egress` installs.
 - **The `cage har` fixture replays against the current version** instead of requiring the recorded version to match, so a version bump no longer needs the fixture regenerated.
 - `RUST-PORT-PLAN.md` moved to `docs/history/rust-port-plan.md`, marked historical; code comments that cite it for design reasoning now point there.

@@ -10,9 +10,10 @@
 //! eight built-in scaffolds' rendered `cage.yaml`. The corpus is a
 //! matrix written *for* the corpus; the scaffolds are what
 //! `agentcage init --scaffold claude-code` actually hands a new user,
-//! and they exercise shapes the matrix does not. `scripts/
-//! gen-scaffold-configs.py` generates them, with `--check` to prove they
-//! are current.
+//! and they exercise shapes the matrix does not. They were generated
+//! from the Python CLI by `scripts/gen-scaffold-configs.py` (removed with
+//! it); a scaffold template change now updates them by hand, and
+//! `scaffold.rs`'s render-diff test fails until it does.
 //!
 //! The `invalid/` half is mostly **not** this PR's. C1 parses and
 //! rejects structural problems; the value checks belong to C2 and C3.

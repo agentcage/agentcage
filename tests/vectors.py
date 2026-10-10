@@ -1,6 +1,6 @@
 """Shared input data for proxy tests that must not drift apart.
 
-Plain data, no imports. Several proxy-side test files assert against the
+Plain data. Several proxy-side test files assert against the
 same inputs; keeping them in one importable module means those files
 cannot silently test different cases. ``tests/test_contract_fixtures.py``
 also checks that the contract fixtures under ``tests/fixtures/contracts/``
@@ -13,6 +13,9 @@ fixtures, sees them too.
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 # Every one of these reaches a non-global address through a public name.
 BYPASS = [
@@ -38,31 +41,19 @@ ALLOWED = [
 
 
 # ── canonical `agents` block ──────────────────────────────────────────
-# The cage.yaml `agents` schema is a format contract: the host CLI validates
-# and writes it, and the addon reads it back (`addon._init_domain_requests` /
-# `_init_watcher`). One canonical sample of the shape the host produces.
+# The cage.yaml `agents` schema is a host/proxy format contract, so the
+# sample lives in tests/fixtures/contracts/agents_config.json, where the
+# Rust suite asserts the host accepts it too (contract_agents_config.rs).
 
+_AGENTS = json.loads(
+    (Path(__file__).parent / "fixtures" / "contracts" / "agents_config.json")
+    .read_text()
+)["cases"][0]["config"]
+
+CANONICAL_AGENTS_CONFIG = _AGENTS
+
+# The LLM client keys both agents share (the watcher overrides api_key).
 AGENTS_CLIENT = {
-    "provider": "openrouter", "model": "m", "api_key": "env:TESTKEY",
-    "timeout_seconds": 45, "max_tokens": 16384,
-    "base_url": "https://models.example.com",
-}
-
-CANONICAL_AGENTS_CONFIG = {
-    "name": "test", "isolation": "container", "dns_servers": ["1.1.1.1"],
-    "container": {"image": "node:22-slim"},
-    "domains": {"allow": ["example.com"]},
-    "agents": {
-        "decider": {
-            "enable": True, "host": "custom.test", "context": "CI cage\n",
-            "rate_limit": {"requests_per_second": 0, "burst": 0},
-            **AGENTS_CLIENT,
-        },
-        "watcher": {
-            "enable": True, "interval_seconds": 900, "window_seconds": 7200,
-            "max_flows": 150, "auto_revoke": False, "dedup_samples": False,
-            "max_digest_tokens": 8000, "context": "Audit CI traffic\n",
-            **AGENTS_CLIENT, "api_key": "env:WATCHKEY",
-        },
-    },
+    k: v for k, v in _AGENTS["agents"]["decider"].items()
+    if k in ("provider", "model", "api_key", "timeout_seconds", "max_tokens", "base_url")
 }

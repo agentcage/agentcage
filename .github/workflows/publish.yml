@@ -14,9 +14,9 @@ on:
 
 # agentcage ships as a binary.
 #
-# There is no PyPI step any more: `pyproject.toml` is dev/test-only and
-# carries `Private :: Do Not Upload`, so an upload would be refused even
-# if one were attempted (docs/history/rust-port-plan.md §2.4). What a release
+# There is no PyPI step any more: `pyproject.toml` is only the egress
+# proxy's test environment, not a package, so there is nothing to
+# upload. What a release
 # produces is four binaries and their checksums, attached to the GitHub
 # release that `install.sh`, the Homebrew formula and the AUR PKGBUILD
 # all read.

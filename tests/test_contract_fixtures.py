@@ -179,14 +179,9 @@ class TestIsNeverGrant:
         )
 
 class TestValidateRelayEntry:
-    """The one contract that is currently a single shared module.
-
-    ``config.py`` imports it as ``agentcage.data.proxy.relays._validate``;
-    the egress container imports it as ``relays._validate`` (it ships
-    without the CLI package on the path). Same file today, two Python
-    module objects, one Rust implementation and one Python module
-    tomorrow. Both import paths are asserted so the seam is already
-    described by tests before it becomes a real one.
+    """The relay validator: ``relays/_validate.py`` in the egress, and
+    ``agentcage_core::relays`` on the host, held to the same answers by
+    ``validate_relay_entry.json``.
     """
 
     @pytest.mark.parametrize(
@@ -198,9 +193,9 @@ class TestValidateRelayEntry:
         """The hook is optional; omitting it must not change the verdict.
 
         This is the proxy's own call shape: the canonical source
-        validator is not importable inside the container, so the egress
-        passes ``None``. The host passes
-        ``secret_resolver.validate_source``. The fixture carries ONE
+        validator is not available inside the container, so the egress
+        passes ``None``, while the host checks ``source:`` references
+        itself. The fixture carries ONE
         answer for both, which is only sound if the hook adds an arm
         rather than altering the existing ones — and it is the proxy,
         the side that actually omits it, that has to prove that.
@@ -300,7 +295,7 @@ class TestFixtureIntegrity:
         vector added on the proxy side from going unchecked on the host.
         """
         vectors = ROOT / "tests" / "vectors.py"
-        ns: dict = {}
+        ns: dict = {"__file__": str(vectors)}
         exec(compile(vectors.read_text(), str(vectors), "exec"), ns)
         wanted = set(ns["BYPASS"]) | set(ns["ALLOWED"])
         for name in ("encoded_private_ip", "is_never_grant"):

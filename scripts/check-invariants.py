@@ -124,9 +124,11 @@ def _proxy_local_names() -> set[str]:
     and the egress image copies the same tree to a directory on
     `sys.path`, so `import policy_api` resolves in both. Derived from
     the directory rather than listed, so a new module needs no edit
-    here.
+    here. Deliberately not `agentcage`: the image copies this tree flat,
+    with no `agentcage` package above it, so `agentcage.*` cannot resolve
+    inside the cage even though the test suite's pythonpath would let it.
     """
-    names = {"agentcage"}
+    names: set[str] = set()
     for entry in PROXY.iterdir():
         if entry.is_dir() and (entry / "__init__.py").exists():
             names.add(entry.name)
