@@ -5,7 +5,7 @@
 //! `config.encoded_private_ip`. Proxy: `policy_api.PolicyApi._valid_domain`
 //! / `_DOMAIN_RE` and `policy_api._encoded_private_ip`. The addon cannot
 //! import the CLI package — the egress image ships without it — so the
-//! two copies are duplicated deliberately, and RUST-PORT-PLAN.md §2.2
+//! two copies are duplicated deliberately, and docs/history/rust-port-plan.md §2.2
 //! lists both as cross-language contracts.
 //!
 //! # The oracle is the fixture, not either implementation

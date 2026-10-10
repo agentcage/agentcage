@@ -4,15 +4,16 @@
 //! the `resolved-config.json` that `config.py`'s `load_config` produced
 //! from it. Reproducing all 125 byte for byte is PR C1's acceptance
 //! check, and it is what turns "did I port 2,473 lines of parsing
-//! correctly?" into a diff (RUST-PORT-PLAN.md §4, Layer 1).
+//! correctly?" into a diff (docs/history/rust-port-plan.md §4, Layer 1).
 //!
 //! `tests/fixtures/scaffold-configs/` is the same comparison over the
 //! eight built-in scaffolds' rendered `cage.yaml`. The corpus is a
 //! matrix written *for* the corpus; the scaffolds are what
 //! `agentcage init --scaffold claude-code` actually hands a new user,
-//! and they exercise shapes the matrix does not. `scripts/
-//! gen-scaffold-configs.py` generates them, with `--check` to prove they
-//! are current.
+//! and they exercise shapes the matrix does not. They were generated
+//! from the Python CLI by `scripts/gen-scaffold-configs.py` (removed with
+//! it); a scaffold template change now updates them by hand, and
+//! `scaffold.rs`'s render-diff test fails until it does.
 //!
 //! The `invalid/` half is mostly **not** this PR's. C1 parses and
 //! rejects structural problems; the value checks belong to C2 and C3.
@@ -207,8 +208,8 @@ fn every_scaffold_config_reproduces_resolved_config() {
     expected.sort();
     assert_eq!(
         names, expected,
-        "tests/fixtures/scaffold-configs is stale; \
-         run `uv run python scripts/gen-scaffold-configs.py`"
+        "tests/fixtures/scaffold-configs does not list every scaffold; \
+         add the new one's cage.yaml, resolved-config.json and MANIFEST.txt entry"
     );
 
     let host = FixedHost {

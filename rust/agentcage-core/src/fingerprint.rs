@@ -546,7 +546,7 @@ pub fn is_state_artifact(relative_posix: &str) -> bool {
 /// `read` closure for their bytes. The ordering, the exclusion and the
 /// framing — which are the parts that change the digest — stay here; the
 /// other half of the Python function is the directory walk, which lands
-/// in `agentcage-cli` with the scaffold commands (RUST-PORT-PLAN.md
+/// in `agentcage-cli` with the scaffold commands (docs/history/rust-port-plan.md
 /// Track D, PR D14). That half still owes: `state_dir.resolve()` as the
 /// root, an *absolute* `containerfile` overriding it with its own parent
 /// instead, `""` for an empty `containerfile` and `"missing"` for a root

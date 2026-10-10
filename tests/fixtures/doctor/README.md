@@ -1,6 +1,14 @@
 # Doctor fixtures
 
-Everything in this directory except this file is **generated**. Do not hand-edit it.
+> **Recorded from the Python CLI, now maintained by hand.** These files
+> were produced by `scripts/gen-doctor-fixture.py`, which ran the Python host CLI and was
+> removed with it after v0.50.0. The Rust tests assert them as golden
+> output: a deliberate behaviour change edits them in the same commit
+> (the failing assertion shows the new output), and any other change is
+> a regression. The rest of this README describes how they were
+> originally produced.
+
+Everything in this directory except this file was **generated** (see the note above).
 
 ```sh
 uv run python scripts/gen-doctor-fixture.py
@@ -54,7 +62,7 @@ on the Linux CI — the same trick `test_apple_container.py` uses.
 
 ## What `check_python_version` has to do with it
 
-The port **deletes** that check rather than porting it. RUST-PORT-PLAN.md §2.4
+The port **deletes** that check rather than porting it. docs/history/rust-port-plan.md §2.4
 makes "Python is not an agentcage runtime dependency anywhere except inside the
 egress image" an invariant, and §2.5 has `install.sh` shedding its
 Python-detection section with it. A ported check would assert the dependency the
@@ -90,7 +98,7 @@ set by name, so a third case cannot be excused by flipping the flag.
 
 ## Python behaviour recorded here that is arguably wrong
 
-Recorded and reproduced rather than fixed, per RUST-PORT-PLAN.md §2.9 — a port
+Recorded and reproduced rather than fixed, per docs/history/rust-port-plan.md §2.9 — a port
 that quietly diverges is worse than one that carries a known wart.
 
 * **`check_dns`'s timeout branch is dead.** It sets

@@ -19,7 +19,7 @@ this repository:
    Containerfiles are exempt — they build the *workload*, which is
    whatever the operator wants.
 
-RUST-PORT-PLAN.md §2.4. Each check reports independently, so a run says
+docs/history/rust-port-plan.md §2.4. Each check reports independently, so a run says
 everything that is wrong rather than only the first thing.
 
 Exit status is 0 when every invariant holds, 1 otherwise.
@@ -60,10 +60,9 @@ def _rust_sources() -> list[Path]:
     `rust/*/src/**` only — deliberately **not** `tests/`. The invariant
     is about what the shipped binary needs at runtime, and the test
     suite invoking an interpreter is not a violation of it but the
-    opposite: `fingerprint_python_crossing` and `yaml_pyyaml_crossing`
-    exist precisely to run the same input through CPython and compare,
-    which is what makes the port's oracles trustworthy. A guard that
-    forbade those would be arguing against its own evidence.
+    opposite: `yaml_pyyaml_crossing` exists precisely to run the YAML the
+    host writes through the PyYAML the egress proxy reads it with. A
+    guard that forbade that would be arguing against its own evidence.
     """
     return sorted(
         path
@@ -125,9 +124,11 @@ def _proxy_local_names() -> set[str]:
     and the egress image copies the same tree to a directory on
     `sys.path`, so `import policy_api` resolves in both. Derived from
     the directory rather than listed, so a new module needs no edit
-    here.
+    here. Deliberately not `agentcage`: the image copies this tree flat,
+    with no `agentcage` package above it, so `agentcage.*` cannot resolve
+    inside the cage even though the test suite's pythonpath would let it.
     """
-    names = {"agentcage"}
+    names: set[str] = set()
     for entry in PROXY.iterdir():
         if entry.is_dir() and (entry / "__init__.py").exists():
             names.add(entry.name)
@@ -233,7 +234,7 @@ def main() -> int:
     if failed:
         print(
             f"\n{failed} invariant violation(s). These keep Python out of "
-            f"the shipped product — see RUST-PORT-PLAN.md §2.4.",
+            f"the shipped product — see docs/history/rust-port-plan.md §2.4.",
             file=sys.stderr,
         )
         return 1

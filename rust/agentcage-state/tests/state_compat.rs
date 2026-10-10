@@ -4,7 +4,7 @@
 //!
 //! At cutover every existing user has cages the *Python* CLI deployed,
 //! and the Rust binary must read that state in place, on first run,
-//! with no migration step (RUST-PORT-PLAN.md §2.7). None of it carries
+//! with no migration step (docs/history/rust-port-plan.md §2.7). None of it carries
 //! a schema version. There is nothing to branch on, so these readers
 //! have to accept exactly what the Python writers produced —
 //! and `tests/fixtures/state-compat/0.40.1/` is the definition of

@@ -1,6 +1,6 @@
 //! `backends/apple_container.py` — the half that only ever produces text.
 //!
-//! RUST-PORT-PLAN.md Track E splits each of the two non-Linux backends
+//! docs/history/rust-port-plan.md Track E splits each of the two non-Linux backends
 //! into a **generation** half, verifiable on a Linux CI runner, and an
 //! **execution** half that needs the hardware (§4.1). This module is the
 //! generation half's second PR, E3: the per-cage unit metadata, the

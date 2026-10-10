@@ -1,6 +1,14 @@
 # Output styling fixtures
 
-Everything in this directory except this file is **generated**. Do not hand-edit it.
+> **Recorded from the Python CLI, now maintained by hand.** These files
+> were produced by `scripts/gen-output-fixture.py`, which ran the Python host CLI and was
+> removed with it after v0.50.0. The Rust tests assert them as golden
+> output: a deliberate behaviour change edits them in the same commit
+> (the failing assertion shows the new output), and any other change is
+> a regression. The rest of this README describes how they were
+> originally produced.
+
+Everything in this directory except this file was **generated** (see the note above).
 
 ```sh
 uv run python scripts/gen-output-fixture.py
@@ -16,7 +24,7 @@ the braille spinner, the phase table. Those are eight helpers in
 `src/agentcage/output.py` and one in `src/agentcage/_timing.py`, and between
 them they are the entire visible identity of `agentcage`.
 
-The Rust port (RUST-PORT-PLAN.md, Track D, PR D4) cannot import click. It
+The Rust port (docs/history/rust-port-plan.md, Track D, PR D4) cannot import click. It
 re-emits the escapes by hand, which makes a missing reset or an off-by-one
 padding both invisible in review and immediately obvious to a user. So this
 records the bytes, from the real Python, and the port is held to them.

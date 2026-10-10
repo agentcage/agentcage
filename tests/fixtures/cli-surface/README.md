@@ -1,7 +1,15 @@
 # `cli-surface` — the golden CLI surface
 
+> **Recorded from the Python CLI, now maintained by hand.** These files
+> were produced by `scripts/gen-cli-surface.py`, which ran the Python host CLI and was
+> removed with it after v0.50.0. The Rust tests assert them as golden
+> output: a deliberate behaviour change edits them in the same commit
+> (the failing assertion shows the new output), and any other change is
+> a regression. The rest of this README describes how they were
+> originally produced.
+
 Generated from the live click tree in `src/agentcage/cli.py` by
-`scripts/gen-cli-surface.py`. Nothing in this directory is hand-written.
+`scripts/gen-cli-surface.py`. Nothing in this directory was hand-written.
 
 ```sh
 uv run python scripts/gen-cli-surface.py          # rewrite

@@ -1,6 +1,14 @@
 # Golden corpus
 
-Everything in this directory except this file is **generated**. Do not hand-edit it.
+> **Recorded from the Python CLI, now maintained by hand.** These files
+> were produced by `scripts/gen-golden-corpus.py`, which ran the Python host CLI and was
+> removed with it after v0.50.0. The Rust tests assert them as golden
+> output: a deliberate behaviour change edits them in the same commit
+> (the failing assertion shows the new output), and any other change is
+> a regression. The rest of this README describes how they were
+> originally produced.
+
+Everything in this directory except this file was **generated** (see the note above).
 
 ```sh
 uv run python scripts/gen-golden-corpus.py
@@ -46,7 +54,7 @@ hand; this captures the rest.
 
 `src/agentcage/config.py` is ~2,500 lines, roughly 90% of it validation logic
 and human-facing error strings, and it is being rewritten in Rust (see
-`RUST-PORT-PLAN.md`, §4 "Layer 1"). "Did I port 2,500 lines of validation
+`docs/history/rust-port-plan.md`, §4 "Layer 1"). "Did I port 2,500 lines of validation
 correctly?" is not a reviewable question. With this corpus it becomes a diff:
 the Rust implementation reads these files directly and must reproduce them.
 
@@ -79,7 +87,7 @@ process. No pickle, no Python module.
 ## Byte-exact vs. semantic comparison
 
 `tests/test_golden_corpus.py` compares two ways, and the split is deliberate —
-`RUST-PORT-PLAN.md` §2.8 is the source:
+`docs/history/rust-port-plan.md` §2.8 is the source:
 
 * **YAML artifacts** (`*.yaml`) are compared **by parsed value**. PyYAML's
   emitter is not reproducible from Rust: it wraps at 80 columns, does not

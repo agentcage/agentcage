@@ -1,6 +1,6 @@
 //! `backends/apple_container.py` — Apple's `container` CLI, two microVMs.
 //!
-//! RUST-PORT-PLAN.md Track E. The backend is the largest in the tree
+//! docs/history/rust-port-plan.md Track E. The backend is the largest in the tree
 //! (2,469 lines) and it is split across three PRs along a line that is
 //! not arbitrary: **roughly two thirds of it is verifiable on Linux**,
 //! and the rest needs Apple Silicon.

@@ -5,7 +5,7 @@
 //! the Lima YAML, every quadlet, the dict order, the stderr, and — for
 //! the one case that raises — the `ValueError` a user would see. This
 //! reproduces all of it byte for byte, which is PR E1's acceptance
-//! check (RUST-PORT-PLAN.md Track E).
+//! check (docs/history/rust-port-plan.md Track E).
 //!
 //! # Why this test builds a filesystem, and an environment
 //!

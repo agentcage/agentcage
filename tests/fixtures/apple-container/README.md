@@ -1,5 +1,13 @@
 # apple-container fixtures
 
+> **Recorded from the Python CLI, now maintained by hand.** These files
+> were produced by `scripts/gen-apple-container-fixtures.py` and `scripts/gen-apple-argv-fixture.py`, which ran the Python host CLI and was
+> removed with it after v0.50.0. The Rust tests assert them as golden
+> output: a deliberate behaviour change edits them in the same commit
+> (the failing assertion shows the new output), and any other change is
+> a regression. The rest of this README describes how they were
+> originally produced.
+
 What `backends/apple_container.py` derives from a `cage.yaml`, recorded
 by running the real Python.
 
@@ -52,7 +60,7 @@ Three placeholders keep the recording machine-independent:
 * `{{CONTEXT}}` — the `container build` context. The Python's is the
   installed package's own `data/` directory; a single Rust binary has no
   such directory and materializes the embedded tree into a cache dir
-  instead (RUST-PORT-PLAN.md §2.1). The argv *shape* is the contract,
+  instead (docs/history/rust-port-plan.md §2.1). The argv *shape* is the contract,
   the path is not.
 
 The egress content hash is deliberately **not** tokenized. It is a
@@ -85,7 +93,7 @@ watching it.
 
 # apple-container argv fixture
 
-`argv.json` is **generated**. Do not hand-edit it.
+`argv.json` was **generated** (see the note above).
 
 ```sh
 uv run python scripts/gen-apple-argv-fixture.py          # write

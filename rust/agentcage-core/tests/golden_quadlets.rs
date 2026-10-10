@@ -5,7 +5,7 @@
 //! corpus README puts quadlets on the **byte-exact** side of its
 //! comparison line: systemd is a byte-sensitive consumer, so "close
 //! enough" is not a category here. Reproducing all of them is PR C8's
-//! acceptance check (RUST-PORT-PLAN.md §4, Layer 1).
+//! acceptance check (docs/history/rust-port-plan.md §4, Layer 1).
 //!
 //! # Why this test builds a filesystem
 //!

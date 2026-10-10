@@ -4,7 +4,7 @@
 //!
 //! The port does not replace the egress proxy — mitmproxy, the addon,
 //! the inspectors and the relays stay Python, unchanged, inside the
-//! egress container (RUST-PORT-PLAN.md, scope decision). But today those
+//! egress container (docs/history/rust-port-plan.md, scope decision). But today those
 //! files are simply *there* on disk, because agentcage is installed as a
 //! Python package and `backends/container.py` hands the package's own
 //! `data/` directory to podman as the build context:
@@ -270,7 +270,7 @@ mod tests {
     ///
     /// If `data/` were embedded without `Containerfile.egress` the
     /// failure would surface as an opaque podman build error a long way
-    /// from the cause (RUST-PORT-PLAN.md section 6).
+    /// from the cause (docs/history/rust-port-plan.md section 6).
     #[test]
     fn the_egress_build_context_has_its_containerfile() {
         let containerfile = repo_root()
@@ -364,7 +364,7 @@ mod tests {
     fn the_embedded_file_count_is_pinned() {
         assert_eq!(
             embedded_files().len(),
-            78,
+            77,
             "embedded file set changed: {:#?}",
             embedded_files().iter().map(|f| f.path).collect::<Vec<_>>()
         );

@@ -28,7 +28,7 @@
 //!
 //! Writing the file and the `launchctl bootout` / `bootstrap` /
 //! `load -w` sequence around it are execution, gated on real hardware
-//! (RUST-PORT-PLAN.md §4.1, Track E's PR E5). This module renders the
+//! (docs/history/rust-port-plan.md §4.1, Track E's PR E5). This module renders the
 //! text and names the file; nothing here touches the disk.
 //!
 //! # Escaping

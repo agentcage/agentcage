@@ -1666,7 +1666,7 @@ fn require_known_backend(config: &Config, command: &str) -> Result<(), ExitCode>
     }
     eprintln!(
         "error: `{command}` on the '{}' backend is not ported yet \
-         (RUST-PORT-PLAN.md Track E)",
+         (docs/history/rust-port-plan.md Track E)",
         config.isolation
     );
     Err(ExitCode::from(EXIT_FAILURE))

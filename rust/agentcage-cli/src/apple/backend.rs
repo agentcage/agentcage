@@ -1,4 +1,4 @@
-//! `AppleContainerBackend` — the execution half (RUST-PORT-PLAN.md E5).
+//! `AppleContainerBackend` — the execution half (docs/history/rust-port-plan.md E5).
 //!
 //! Two sibling microVMs per cage, started in a fixed order, because
 //! each step needs the previous one's result:
@@ -1551,7 +1551,7 @@ impl AppleBackend<'_> {
         // The Python's build context is the installed package's own
         // `data/` directory; a single binary has none, so the embedded
         // tree is materialized into a cache directory instead
-        // (RUST-PORT-PLAN.md section 2.1). The Containerfile expects
+        // (docs/history/rust-port-plan.md section 2.1). The Containerfile expects
         // that directory as the context so its
         // `COPY containers/supervisor-egress.sh` resolves.
         let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;

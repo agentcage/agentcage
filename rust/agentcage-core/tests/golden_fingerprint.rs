@@ -14,7 +14,7 @@
 //!   *deployed* cage, from a different generator with different inputs.
 //!   Depth: this is the exact shape a real user's disk carries at
 //!   cutover, and the one `cage update` has to call a no-op on first
-//!   run (RUST-PORT-PLAN.md §2.7, F2's acceptance check).
+//!   run (docs/history/rust-port-plan.md §2.7, F2's acceptance check).
 //!
 //! Both comparisons are byte-for-byte against the committed file, not
 //! digest-against-digest: that also pins the document `cage update`

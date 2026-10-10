@@ -1,0 +1,73 @@
+{
+  "contract": "agents_config",
+  "summary": "The cage.yaml `agents` block: the host parses and validates it and writes it into proxy-config.yaml unchanged; the egress addon builds its decider and watcher from the same keys. One canonical sample both sides must accept.",
+  "implementations": {
+    "host": "rust/agentcage-core/src/config/{parse,agents}.rs",
+    "proxy": "src/agentcage/data/proxy/addon.py (_init_domain_requests / _init_watcher)"
+  },
+  "fields": {
+    "config": "a complete cage.yaml document carrying the agents block",
+    "expect": "values the host must resolve from it"
+  },
+  "cases": [
+    {
+      "id": "canonical",
+      "why": "every key the addon reads, set to a non-default value, so a renamed or reshaped key fails on whichever side moved",
+      "config": {
+        "name": "test",
+        "isolation": "container",
+        "dns_servers": [
+          "1.1.1.1"
+        ],
+        "container": {
+          "image": "node:22-slim"
+        },
+        "domains": {
+          "allow": [
+            "example.com"
+          ]
+        },
+        "agents": {
+          "decider": {
+            "enable": true,
+            "host": "custom.test",
+            "context": "CI cage\n",
+            "rate_limit": {
+              "requests_per_second": 0,
+              "burst": 0
+            },
+            "provider": "openrouter",
+            "model": "m",
+            "api_key": "env:TESTKEY",
+            "timeout_seconds": 45,
+            "max_tokens": 16384,
+            "base_url": "https://models.example.com"
+          },
+          "watcher": {
+            "enable": true,
+            "interval_seconds": 900,
+            "window_seconds": 7200,
+            "max_flows": 150,
+            "auto_revoke": false,
+            "dedup_samples": false,
+            "max_digest_tokens": 8000,
+            "context": "Audit CI traffic\n",
+            "provider": "openrouter",
+            "model": "m",
+            "api_key": "env:WATCHKEY",
+            "timeout_seconds": 45,
+            "max_tokens": 16384,
+            "base_url": "https://models.example.com"
+          }
+        }
+      },
+      "expect": {
+        "decider_host": "custom.test",
+        "decider_rate_limit_rps": 0,
+        "decider_max_tokens": 16384,
+        "watcher_context": "Audit CI traffic\n",
+        "watcher_auto_revoke": false
+      }
+    }
+  ]
+}

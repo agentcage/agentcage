@@ -12,9 +12,9 @@ Exercises ``PolicyApi._apply_grant`` -> ``_persist_grants`` -> overlay file
 and the ``maybe_reload_overlay`` sweeper poll, against a real temp grants
 dir so the on-disk file is genuine.
 
-Boundary note (RUST-PORT-PLAN.md §2.4): ``policy_api`` stays Python. The
-host-side ``state.load_grants`` / atomic-writer assertions this file used to
-carry moved to ``tests/test_state_atomic_writers.py``.
+Boundary note (docs/history/rust-port-plan.md §2.4): ``policy_api`` is the
+egress side. The host-side grants loading and atomic-writer assertions this
+file used to carry are Rust tests now.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 //! `validate_config`'s in-egress agent rules — `agents.decider` and
 //! `agents.watcher`.
 //!
-//! PR C3 of RUST-PORT-PLAN.md's Track C, and the last three blocks of
+//! PR C3 of docs/history/rust-port-plan.md's Track C, and the last three blocks of
 //! `config.py`'s `validate_config` (the "Policy API validation",
 //! "agents.decider validation" and "agents.watcher validation"
 //! sections, `config.py:2224` onward).

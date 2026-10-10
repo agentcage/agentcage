@@ -1,6 +1,6 @@
 //! Quadlet unit files, rendered from the same `.j2` templates Python uses.
 //!
-//! This is PR C8 of RUST-PORT-PLAN.md's Track C: the port of
+//! This is PR C8 of docs/history/rust-port-plan.md's Track C: the port of
 //! `src/agentcage/quadlets.py` and the four templates under
 //! `src/agentcage/templates/` it renders.
 //!

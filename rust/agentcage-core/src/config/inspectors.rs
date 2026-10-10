@@ -1,6 +1,6 @@
 //! `validate_config`'s inspector-chain warnings.
 //!
-//! PR C3 of RUST-PORT-PLAN.md's Track C, and the last of the four
+//! PR C3 of docs/history/rust-port-plan.md's Track C, and the last of the four
 //! areas it owns. Small, but it is a cross-language contract — PR A6's
 //! audit of the trust boundary found it, and §2.2's original list of
 //! four did not have it.

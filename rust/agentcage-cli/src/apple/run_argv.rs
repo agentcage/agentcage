@@ -5,7 +5,7 @@
 //! sibling's address, whether a bind source is a directory — arrives as
 //! an argument, so both functions are values in and a `Vec<String>`
 //! out. That is the same split the generation half of this backend got
-//! (RUST-PORT-PLAN.md Track E), applied to the half that needs
+//! (docs/history/rust-port-plan.md Track E), applied to the half that needs
 //! hardware: the hardware is needed to *run* the argv, not to decide
 //! what it should be.
 //!

@@ -1,6 +1,6 @@
 //! `backends/container.py` — rootless podman plus quadlet units.
 //!
-//! The one backend this PR ports (RUST-PORT-PLAN.md Track D, D6). The
+//! The one backend this PR ports (docs/history/rust-port-plan.md Track D, D6). The
 //! `vm` and `apple-container` backends are Track E; everything here that
 //! they would share — unit installation, quadlet removal — already lives
 //! in `agentcage-state`, so this file is the podman-and-systemd half

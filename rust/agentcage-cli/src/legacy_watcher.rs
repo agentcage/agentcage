@@ -1,6 +1,6 @@
 //! Remove the legacy host-side grants-watcher supervision from a cage.
 //!
-//! The port of `src/agentcage/legacy_watcher.py` (RUST-PORT-PLAN.md
+//! The port of `src/agentcage/legacy_watcher.py` (docs/history/rust-port-plan.md
 //! Track D, PR D16). This is migration code, and the reason it exists is
 //! not recoverable from reading it, so the Python's reasoning is carried
 //! here verbatim in substance:

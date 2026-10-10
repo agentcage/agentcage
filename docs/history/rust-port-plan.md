@@ -1,5 +1,14 @@
 # agentcage: Python → Rust port plan (host CLI + tooling only)
 
+> **Historical document.** This plan was carried out: the Rust host CLI
+> shipped as v0.50.0 (2026-10-09), and the Python host CLI it describes,
+> along with the generators and comparison suites it used as an oracle,
+> was removed afterwards. File paths under `src/agentcage/` (other than
+> `data/`, `templates/` and `scaffolds/`) and the `scripts/gen-*.py`
+> generators no longer exist. Code comments cite this document for the
+> reasoning behind decisions; the remaining work is tracked in
+> issues #413–#423.
+
 Against `461c99b` (v0.40.1).
 
 **Scope decision (2026-09-19):** port the host CLI and tooling to Rust **on

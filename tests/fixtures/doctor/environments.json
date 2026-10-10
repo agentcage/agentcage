@@ -2,7 +2,7 @@
   "fixture": "doctor",
   "module": "agentcage.doctor",
   "generator": "scripts/gen-doctor-fixture.py",
-  "summary": "41 faked host environments, each recorded by running the real `agentcage.doctor.run_doctor` with every probe it makes answered from the declared environment. `python` is what the Python printed; `expected` is what the Rust port must print -- the same bytes minus the `check_python_version` line, which the port deletes rather than ports (RUST-PORT-PLAN.md \u00a72.4: Python is not a host dependency).",
+  "summary": "41 faked host environments, each recorded by running the real `agentcage.doctor.run_doctor` with every probe it makes answered from the declared environment. `python` is what the Python printed; `expected` is what the Rust port must print -- the same bytes minus the `check_python_version` line, which the port deletes rather than ports (docs/history/rust-port-plan.md \u00a72.4: Python is not a host dependency).",
   "pinned_python_version": "3.12.5",
   "command_keys": {
     "limactl-version": [

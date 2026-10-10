@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **The Python host CLI.** It stayed in the tree through the port as the oracle the Rust binary was checked against; with 0.50.0 released and verified, it is gone, along with everything that only existed to compare against it: the host-side pytest suite, `tests/cross_language/`, the `scripts/gen-*.py` fixture generators and their CI `--check` steps, `scripts/classify-tests.py`, the `tests/e2e/python-cli` wrapper and the Python leg of every e2e job, and the `fingerprint_python_crossing` test. Nothing user-facing changes: no released build has shipped the Python CLI since 0.50.0. The only Python left is the egress proxy (`src/agentcage/data/proxy/`) and its tests.
+
+### Changed
+
+- **Fixtures under `tests/fixtures/` are now maintained by hand.** They were recorded from the Python CLI and the Rust suite asserts against them unchanged; a deliberate behaviour change now edits the fixture in the same commit. The contract fixtures are still asserted by both the Rust suite and the proxy's pytest suite. See CONTRIBUTING.md.
+- **The egress hash fixture is re-blessed from Rust**: `AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored` replaces `scripts/bless-egress-hash.py`, with byte-identical output.
+- **`pyproject.toml` is only the proxy's test environment**: no package, no build backend, no version (so `scripts/check-version.sh` no longer checks it), and dependencies cut to pytest plus what `Containerfile.egress` installs.
+- **The `cage har` fixture replays against the current version** instead of requiring the recorded version to match, so a version bump no longer needs the fixture regenerated.
+- `RUST-PORT-PLAN.md` moved to `docs/history/rust-port-plan.md`, marked historical; code comments that cite it for design reasoning now point there.
+
 ## [0.50.0] - 2026-10-09
 
 The version jumps from 0.40.x to 0.50.0 deliberately. 0.40.x is the Python

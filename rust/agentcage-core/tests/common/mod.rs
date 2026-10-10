@@ -70,7 +70,7 @@ pub(crate) fn fixture_path() -> PathBuf {
 
 /// Every `*.yaml` / `*.yml` under the config fixture trees.
 ///
-/// The two directories RUST-PORT-PLAN.md Track B names:
+/// The two directories docs/history/rust-port-plan.md Track B names:
 /// `tests/configs/**` (the pytest corpus) and `tests/e2e/configs/**`
 /// (the end-to-end corpus).
 pub(crate) fn committed_configs() -> Vec<PathBuf> {

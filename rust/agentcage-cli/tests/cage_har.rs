@@ -58,13 +58,12 @@ struct Case {
     output_text: Option<String>,
 }
 
-fn fixture() -> (String, Vec<Case>) {
+fn fixture() -> Vec<Case> {
     let path = repo_root().join("tests/fixtures/cage-har/cases.json");
     let text = fs::read_to_string(&path).expect("the cage-har fixture is committed");
     let root: Value = serde_json::from_str(&text).expect("valid JSON");
 
-    let version = root["version"].as_str().expect("version").to_owned();
-    let cases = root["cases"]
+    root["cases"]
         .as_array()
         .expect("cases")
         .iter()
@@ -84,8 +83,7 @@ fn fixture() -> (String, Vec<Case>) {
             output_path: case["output_path"].as_str().map(str::to_owned),
             output_text: case["output_text"].as_str().map(str::to_owned),
         })
-        .collect();
-    (version, cases)
+        .collect()
 }
 
 /// A7's snapshot copied into a home, with both XDG trees under it.
@@ -228,13 +226,10 @@ fn host_probe_runner() -> FakeRunner {
 
 #[test]
 fn every_recorded_run_is_reproduced_byte_for_byte() {
-    let (version, cases) = fixture();
-    assert_eq!(
-        version,
-        agentcage_core::VERSION,
-        "the fixture was recorded against a different agentcage; rerun \
-         scripts/gen-cage-har-fixture.py"
-    );
+    let cases = fixture();
+    // The recordings carry `{VERSION}` wherever the version appeared, so
+    // they replay against whatever version this build is.
+    let version = agentcage_core::VERSION;
     assert!(cases.len() >= 20, "the fixture lost cases: {}", cases.len());
 
     for case in &cases {
@@ -253,12 +248,12 @@ fn every_recorded_run_is_reproduced_byte_for_byte() {
         let label = &case.name;
         assert_eq!(
             String::from_utf8(stdout).expect("utf-8"),
-            expand(&case.stdout, &home, &version),
+            expand(&case.stdout, &home, version),
             "{label}: stdout"
         );
         assert_eq!(
             String::from_utf8(stderr).expect("utf-8"),
-            expand(&case.stderr, &home, &version),
+            expand(&case.stderr, &home, version),
             "{label}: stderr"
         );
         assert_eq!(code, case.exit_code, "{label}: exit status");
@@ -266,7 +261,7 @@ fn every_recorded_run_is_reproduced_byte_for_byte() {
         if let (Some(path), Some(text)) = (&case.output_path, &case.output_text) {
             let written = fs::read_to_string(home.join(path))
                 .unwrap_or_else(|e| panic!("{label}: the -o file was not written: {e}"));
-            assert_eq!(written, expand(text, &home, &version), "{label}: -o file");
+            assert_eq!(written, expand(text, &home, version), "{label}: -o file");
         }
     }
 }
@@ -281,7 +276,7 @@ fn every_recorded_run_is_reproduced_byte_for_byte() {
 /// assertion about coverage rather than about behaviour.
 #[test]
 fn both_state_roots_are_covered() {
-    let (_, cases) = fixture();
+    let cases = fixture();
     let names: BTreeSet<&str> = cases.iter().map(|case| case.name.as_str()).collect();
     for required in [
         // the data root, and the apple root
@@ -309,7 +304,7 @@ fn both_state_roots_are_covered() {
 /// produce byte-identical output for `acme-agent` and differ only here.
 #[test]
 fn the_apple_backend_reads_the_apple_root() {
-    let (_, cases) = fixture();
+    let cases = fixture();
     let case = cases
         .iter()
         .find(|case| case.name == "apple-container-root-missing")

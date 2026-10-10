@@ -1,5 +1,5 @@
 {
-  "_comment": "Pinned digest of the agentcage-egress image build inputs. Regenerate ONLY for a deliberate change to those inputs: python3 scripts/bless-egress-hash.py. See src/agentcage/egress_hash.py for the wire format, which the Rust port must reproduce byte-exactly.",
+  "_comment": "Pinned digest of the agentcage-egress image build inputs. Regenerate ONLY for a deliberate change to those inputs: AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored. See rust/agentcage-assets/src/egress.rs for the wire format, which is frozen.",
   "algorithm": "sha256 over sorted inputs, each contributing relpath(utf-8) || 0x00 || len(body) as 8-byte big-endian || body; hex digest truncated to the first 12 characters",
   "hash": "409d3c49c061",
   "input_count": 24,

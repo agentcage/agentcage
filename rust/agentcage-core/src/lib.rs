@@ -5,7 +5,7 @@
 //! The Python host CLI mixes decision-making with doing: [`config.py`]
 //! validates *and* raises click errors, [`services.py`] renders quadlets
 //! *and* shells out to podman. Testing that required 30k lines of
-//! `monkeypatch`-heavy pytest (see RUST-PORT-PLAN.md section 4). The port
+//! `monkeypatch`-heavy pytest (see docs/history/rust-port-plan.md section 4). The port
 //! splits the two so the decision-making half can be tested by feeding it
 //! values and comparing the answers against fixtures the Python
 //! implementation generated — a diff, not a judgement call.
@@ -24,7 +24,7 @@
 //!
 //! # What will live here
 //!
-//! Per RUST-PORT-PLAN.md Track C, in the order those PRs land:
+//! Per docs/history/rust-port-plan.md Track C, in the order those PRs land:
 //!
 //! | | Python source | PR |
 //! | :-- | :-- | :-- |
@@ -46,7 +46,7 @@
 //! Three of those are cross-language contracts rather than ordinary
 //! ports — the relay validator, `encoded_private_ip` and `_is_never_grant`
 //! exist on both sides of the trust boundary and must agree exactly
-//! (RUST-PORT-PLAN.md section 2.2). Their tests assert against the shared
+//! (docs/history/rust-port-plan.md section 2.2). Their tests assert against the shared
 //! fixtures from PR A4, not against hand-written expectations.
 //!
 //! # Dependencies
@@ -83,7 +83,7 @@ pub mod yaml;
 /// it back out of `AGENTCAGE_VERSION` or the `proxy-config.yaml` stamp
 /// rather than from its own package metadata. So once the CLI is Rust
 /// this constant owns the version outright and there are no two package
-/// versions to keep in lockstep (RUST-PORT-PLAN.md section 2.3).
+/// versions to keep in lockstep (docs/history/rust-port-plan.md section 2.3).
 ///
 /// It comes from `[workspace.package] version` in the root `Cargo.toml`,
 /// which `scripts/check-version.sh` holds equal to the root `VERSION`

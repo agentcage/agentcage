@@ -1,16 +1,11 @@
 """The version is written down once, in the root VERSION file.
 
-`scripts/check-version.sh` enforces agreement between VERSION,
-pyproject, the Cargo workspace and the CHANGELOG without needing
-anything installed. This module covers the one thing a shell script
-cannot see -- that the *installed* package actually reports what VERSION
-says -- and pins the behaviour of the script's newer Cargo checks.
-
-That matters because ~10 call sites across the CLI read
-``importlib.metadata.version("agentcage")`` and stamp the answer into the
-egress image tag, the quadlet ``Image=`` pin and ``proxy-config.yaml``.
-If hatchling's VERSION wiring breaks, those keep working against a stale
-number instead of failing, so nothing else would notice.
+`scripts/check-version.sh` enforces agreement between VERSION, the
+Cargo workspace and the CHANGELOG without needing anything installed.
+This module runs it against the tree and pins the behaviour of its
+failure paths. The number matters beyond cosmetics: the Rust CLI stamps
+it into the egress image tag, the quadlet ``Image=`` pin and
+``proxy-config.yaml``.
 """
 
 from __future__ import annotations
@@ -19,7 +14,6 @@ import re
 import shutil
 import subprocess
 import tomllib
-from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 import pytest
@@ -51,23 +45,6 @@ def test_version_file_is_semver():
     assert re.fullmatch(
         r"\d+\.\d+\.\d+(?:[.-]?(?:a|b|rc|alpha|beta|dev)\d+)?", read_version()
     ), f"VERSION {read_version()!r} is not a semantic version"
-
-
-def test_installed_metadata_matches_version_file():
-    """The wheel hatchling built reports what VERSION says.
-
-    A mismatch means the ``[tool.hatch.version]`` wiring silently fell
-    back to something else, and every image tag the CLI stamps is wrong.
-    """
-    assert pkg_version("agentcage") == read_version()
-
-
-def test_pyproject_declares_the_version_dynamic():
-    """No second source of truth."""
-    text = (REPO_ROOT / "pyproject.toml").read_text()
-    project = text.split("[project]", 1)[1].split("\n[", 1)[0]
-    assert 'dynamic = ["version"]' in project
-    assert not re.search(r"^version\s*=", project, re.MULTILINE)
 
 
 def test_changelog_documents_the_current_version():
@@ -114,7 +91,7 @@ def test_check_version_script_rejects_a_mismatched_tag():
 # keeps a copy of VERSION under [workspace.package] and every crate
 # inherits it. These pin the guard that makes the copy safe; the guard
 # itself lives in check-version.sh, because it has to keep working once
-# there is no Python on the host to run pytest with (RUST-PORT-PLAN.md
+# there is no Python on the host to run pytest with (docs/history/rust-port-plan.md
 # sections 2.3 and 2.4).
 
 
@@ -130,7 +107,7 @@ def test_cargo_workspace_version_matches_the_version_file():
 
 
 def test_rust_crates_inherit_the_workspace_version():
-    """No second source of truth, the same rule pyproject lives under.
+    """No second source of truth.
 
     A member crate with its own ``version = "..."`` would win for that
     crate alone, so the binary could report one number while the image
@@ -163,16 +140,12 @@ def test_every_workspace_member_has_a_manifest():
 def _miniature_repo(tmp_path: Path, cargo_version: str) -> Path:
     """A throwaway tree check-version.sh can run against.
 
-    The script reads four files; giving it its own copies is what lets
+    The script reads three files; giving it its own copies is what lets
     these tests exercise the failure paths without mutating the checkout
     the rest of the suite is reading.
     """
     version = read_version()
     (tmp_path / "VERSION").write_text(f"{version}\n")
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "agentcage"\ndynamic = ["version"]\n'
-        '\n[tool.hatch.version]\npath = "VERSION"\n'
-    )
     (tmp_path / "CHANGELOG.md").write_text(f"## [{version}]\n")
     (tmp_path / "Cargo.toml").write_text(
         f'[workspace]\nmembers = ["rust/agentcage-core"]\n'

@@ -2,7 +2,7 @@
 //!
 //! `tests/fixtures/contracts/` is the oracle for every piece of logic
 //! agentcage implements on *both* sides of its trust boundary
-//! (RUST-PORT-PLAN.md §2.2). Before the port the contract was
+//! (docs/history/rust-port-plan.md §2.2). Before the port the contract was
 //! `host == proxy`; after it, `host == fixture` **and**
 //! `proxy == fixture`, because the first form cannot be written across
 //! a language boundary and also passes when both sides drift together.

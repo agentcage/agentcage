@@ -169,7 +169,7 @@ fn require_store_backend(config: &Config, name: &str) -> Result<(), ExitCode> {
     }
     eprintln!(
         "error: cage '{name}' uses the '{}' backend, whose secret store is not \
-         ported yet (RUST-PORT-PLAN.md Track E)",
+         ported yet (docs/history/rust-port-plan.md Track E)",
         config.isolation
     );
     Err(ExitCode::from(EXIT_FAILURE))

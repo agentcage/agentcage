@@ -2,7 +2,7 @@
 //! it.
 //!
 //! The port of `src/agentcage/state.py` and `src/agentcage/systemd.py`
-//! (RUST-PORT-PLAN.md, Track D, PR D2).
+//! (docs/history/rust-port-plan.md, Track D, PR D2).
 //!
 //! # The problem this crate exists to solve
 //!

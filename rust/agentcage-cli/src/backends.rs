@@ -85,7 +85,7 @@ impl<'a> AnyBackend<'a> {
         (!EXECUTABLE.contains(&isolation)).then(|| {
             format!(
                 "error: `{verb}` on the '{isolation}' backend is not ported yet \
-                 (RUST-PORT-PLAN.md Track E)"
+                 (docs/history/rust-port-plan.md Track E)"
             )
         })
     }

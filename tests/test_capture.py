@@ -1,11 +1,10 @@
 """Unit tests for the capture JSONL writer (egress side).
 
-Boundary note (RUST-PORT-PLAN.md §2.4): ``capture.py`` lives in
-``src/agentcage/data/proxy/`` and stays Python. The HAR builder that reads the
-file back is host-side and moved to ``tests/test_capture_har.py``; the one
-assertion that the writer's default size cap matches the host's
-``config.MAX_CAPTURE_FILE_BYTES`` belongs to neither side and moved to
-``tests/cross_language/test_capture_format_conformance.py``.
+Boundary note (docs/history/rust-port-plan.md §2.4): ``capture.py`` lives in
+``src/agentcage/data/proxy/``. The HAR builder that reads the file back is
+host-side (Rust). That the writer's default size cap matches the host's is
+asserted against ``tests/fixtures/contracts/shared_constants.json`` by
+``tests/test_contract_fixtures.py`` and the Rust suite.
 """
 
 from __future__ import annotations

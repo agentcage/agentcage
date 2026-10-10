@@ -178,7 +178,7 @@ fn doctor_runs_for_real() {
         "doctor wrote to stderr: {}",
         stderr(&out)
     );
-    // The check the port deletes: RUST-PORT-PLAN.md §2.4 makes "no host
+    // The check the port deletes: docs/history/rust-port-plan.md §2.4 makes "no host
     // Python" an invariant, so `doctor` must not go looking for one.
     assert!(
         !text.contains("Python"),

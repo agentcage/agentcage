@@ -1,8 +1,7 @@
 //! The egress image's content hash — a cross-language contract.
 //!
-//! A line-for-line port of `src/agentcage/egress_hash.py`. Read that
-//! module's docstring first; it is the specification, and it explains
-//! why the wire format is frozen. The short version, from #312: the
+//! Originally a line-for-line port of the Python CLI's `egress_hash.py`,
+//! and the wire format is frozen to match it. The short version, from #312: the
 //! egress image used to be tagged `localhost/agentcage-egress:<version>`
 //! and the build was skipped whenever that tag was already present, so a
 //! security fix in `supervisor-egress.sh` between releases never reached
@@ -11,15 +10,13 @@
 //! have.
 //!
 //! What makes it a *contract* rather than an implementation detail is
-//! this port. The Python CLI and the Rust CLI will both compute this
-//! digest during the transition, for the same tree, and they must agree
-//! exactly. If they do not, every Mac rebuilds its egress image once on
-//! upgrade and then maintains a second, permanently divergent tag
-//! lineage for byte-identical content — and the "already present?" probe
-//! stops meaning anything across the boundary.
+//! that hosts upgraded from the Python CLI already hold egress images
+//! tagged with the Python digest. If this one computed a different
+//! digest for the same tree, every such host would rebuild its egress
+//! image once and then carry a second tag lineage for byte-identical
+//! content.
 //!
-//! The format, from the Python docstring, is therefore not up for
-//! tidying. SHA-256 over the inputs sorted by relative path, each
+//! The format is therefore not up for tidying. SHA-256 over the inputs sorted by relative path, each
 //! contributing:
 //!
 //! ```text
@@ -32,8 +29,11 @@
 //! stands, together with the full relative-path → size list of inputs
 //! that produced it. The test below reads that file rather than
 //! hardcoding the digest, so a deliberate change to the build inputs is
-//! one `scripts/bless-egress-hash.py` away and an accidental one names
-//! the file that moved.
+//! one bless away and an accidental one names the file that moved:
+//!
+//! ```text
+//! AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored
+//! ```
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -435,22 +435,90 @@ mod tests {
         }
     }
 
+    /// Rewrite `tests/fixtures/egress_hash.json` from the source tree.
+    ///
+    /// `#[ignore]`d, and a no-op unless `AGENTCAGE_BLESS=1` is set, so a
+    /// `--include-ignored` run (say, to reach the PyYAML crossing test)
+    /// cannot silently re-bless the fixture it is meant to check:
+    ///
+    /// ```text
+    /// AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored
+    /// ```
+    ///
+    /// **Re-blessing must be deliberate.** The fixture pins the digest the
+    /// egress image tag is built from. A legitimate change to the build
+    /// inputs (editing the proxy or the supervisor, adding a `COPY` to
+    /// `Containerfile.egress`) moves it, and blessing is how you record
+    /// that; a hash that moves for any other reason is a bug. The input
+    /// list is written out file by file so the diff names what moved.
+    ///
+    /// Keys are inserted in sorted order, so the output is the same with
+    /// or without `serde_json`'s `preserve_order` feature.
+    #[test]
+    #[ignore = "rewrites tests/fixtures/egress_hash.json; run deliberately"]
+    fn bless_the_egress_hash_fixture() {
+        if std::env::var_os("AGENTCAGE_BLESS").is_none_or(|v| v != "1") {
+            eprintln!("skipping: set AGENTCAGE_BLESS=1 to rewrite egress_hash.json");
+            return;
+        }
+        let data = crate::tests::repo_root()
+            .join(crate::PACKAGE_ROOT)
+            .join("data");
+        let inputs = build_inputs_from_dir(&data);
+        let mut sizes = serde_json::Map::new();
+        for (rel, body) in &inputs {
+            sizes.insert(rel.clone(), body.len().into());
+        }
+        let mut doc = serde_json::Map::new();
+        doc.insert(
+            "_comment".into(),
+            "Pinned digest of the agentcage-egress image build inputs. \
+             Regenerate ONLY for a deliberate change to those inputs: \
+             AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored. \
+             See rust/agentcage-assets/src/egress.rs for the wire format, \
+             which is frozen."
+                .into(),
+        );
+        doc.insert(
+            "algorithm".into(),
+            "sha256 over sorted inputs, each contributing relpath(utf-8) || \
+             0x00 || len(body) as 8-byte big-endian || body; hex digest \
+             truncated to the first 12 characters"
+                .into(),
+        );
+        doc.insert("hash".into(), content_hash_from_dir(&data).into());
+        doc.insert("input_count".into(), inputs.len().into());
+        doc.insert("inputs".into(), sizes.into());
+        let text = serde_json::to_string_pretty(&serde_json::Value::Object(doc))
+            .expect("the fixture serializes")
+            + "\n";
+        let path = crate::tests::repo_root()
+            .join("tests")
+            .join("fixtures")
+            .join("egress_hash.json");
+        // Write-then-rename, so a test reading the fixture concurrently
+        // sees the old file or the new one, never half of either.
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, text)
+            .unwrap_or_else(|err| panic!("{} is unwritable: {err}", tmp.display()));
+        std::fs::rename(&tmp, &path)
+            .unwrap_or_else(|err| panic!("renaming onto {}: {err}", path.display()));
+    }
+
     /// The whole reason PR B3 exists.
     ///
-    /// Reads the digest from A5's fixture rather than hardcoding it, so
-    /// the Python reference and this port cannot drift apart without one
-    /// of them failing. A deliberate change to the build inputs is
-    /// `python3 scripts/bless-egress-hash.py` plus this test passing
-    /// again; an accidental one fails here and in
-    /// `tests/test_egress_hash.py` together.
+    /// Reads the digest from A5's fixture rather than hardcoding it. A
+    /// deliberate change to the build inputs is a re-bless (see
+    /// [`bless_the_egress_hash_fixture`]) plus this test passing again;
+    /// an accidental one fails here.
     #[test]
-    fn the_embedded_hash_matches_the_python_fixture() {
+    fn the_embedded_hash_matches_the_fixture() {
         let fixture = fixture();
         assert_eq!(
             content_hash(),
             fixture.hash,
-            "the Rust egress content hash diverged from the Python one; \
-             compare the input lists below"
+            "the egress content hash moved; if the change to the build \
+             inputs was deliberate, re-bless the fixture"
         );
     }
 
@@ -460,7 +528,7 @@ mod tests {
     /// digest precisely so that a mismatch can name the file that moved.
     /// A bare hash comparison would say "different" and stop there.
     #[test]
-    fn the_embedded_build_inputs_match_the_python_fixture() {
+    fn the_embedded_build_inputs_match_the_fixture() {
         let fixture = fixture();
         let actual: BTreeMap<String, usize> = build_inputs()
             .into_iter()
@@ -500,7 +568,7 @@ mod tests {
 
     /// The hash of the source tree on disk equals the hash of the embed.
     ///
-    /// Closes the loop the fixture leaves open: the fixture was blessed
+    /// Closes the loop the fixture leaves open: the fixture is blessed
     /// from `src/agentcage/data`, and this shows the binary is carrying
     /// that same tree rather than a coincidentally equal one.
     #[test]
