@@ -122,7 +122,11 @@
   },
   {
     "line": "{\"ts\":\"2024-01-01T00:06:00+00:00\",\"decision\":\"allowed\",\"host\":\"api.example.com\"}",
-    "parsed": null
+    "parsed": {
+      "decision": "allowed",
+      "host": "api.example.com",
+      "ts": "2024-01-01T00:06:00+00:00"
+    }
   },
   {
     "line": "",
@@ -195,5 +199,157 @@
       "ts": "2024-02-02T08:30:00",
       "url": "https://api.example.com/v1/item/9"
     }
+  },
+  {
+    "line": "{\"kind\": \"imap_command\", \"relay\": \"mail\", \"command\": \"UID STORE\", \"decision\": \"blocked\", \"reason\": \"readonly policy\", \"ts\": \"2024-07-01T09:00:00+00:00\"}",
+    "parsed": {
+      "command": "UID STORE",
+      "decision": "blocked",
+      "kind": "imap_command",
+      "reason": "readonly policy",
+      "relay": "mail",
+      "ts": "2024-07-01T09:00:00+00:00"
+    }
+  },
+  {
+    "line": "{\"kind\": \"smtp_command\", \"relay\": \"outbound-mail\", \"command\": \"RCPT\", \"decision\": \"blocked\", \"recipient\": \"someone@example.net\", \"reason\": \"recipient not in recipient_allowlist\", \"ts\": \"2024-07-01T09:01:00+00:00\"}",
+    "parsed": {
+      "command": "RCPT",
+      "decision": "blocked",
+      "kind": "smtp_command",
+      "reason": "recipient not in recipient_allowlist",
+      "recipient": "someone@example.net",
+      "relay": "outbound-mail",
+      "ts": "2024-07-01T09:01:00+00:00"
+    }
+  },
+  {
+    "line": "{\"kind\": \"smtp_data\", \"relay\": \"outbound-mail\", \"decision\": \"blocked\", \"reason\": \"anthropic_key detected\", \"inspector\": \"secrets\", \"severity\": \"critical\", \"sender\": \"agent@example.com\", \"recipients\": [\"ops@example.com\"], \"size\": 2048, \"ts\": \"2024-07-01T09:02:00+00:00\"}",
+    "parsed": {
+      "decision": "blocked",
+      "inspector": "secrets",
+      "kind": "smtp_data",
+      "reason": "anthropic_key detected",
+      "recipients": [
+        "ops@example.com"
+      ],
+      "relay": "outbound-mail",
+      "sender": "agent@example.com",
+      "severity": "critical",
+      "size": 2048,
+      "ts": "2024-07-01T09:02:00+00:00"
+    }
+  },
+  {
+    "line": "{\"kind\": \"smtp_data_flag\", \"relay\": \"outbound-mail\", \"inspector\": \"entropy\", \"reason\": \"high entropy body\", \"severity\": \"warning\", \"sender\": \"agent@example.com\", \"recipients\": [\"ops@example.com\"], \"ts\": \"2024-07-01T09:03:00+00:00\"}",
+    "parsed": {
+      "inspector": "entropy",
+      "kind": "smtp_data_flag",
+      "reason": "high entropy body",
+      "recipients": [
+        "ops@example.com"
+      ],
+      "relay": "outbound-mail",
+      "sender": "agent@example.com",
+      "severity": "warning",
+      "ts": "2024-07-01T09:03:00+00:00"
+    }
+  },
+  {
+    "line": "[proxy:info] {\"kind\": \"imap_upstream_unreachable\", \"relay\": \"mail\", \"upstream\": \"imap.example.com:993\", \"error\": \"[Errno 111] Connection refused\", \"ts\": \"2024-07-01T09:04:00+00:00\"}",
+    "parsed": {
+      "error": "[Errno 111] Connection refused",
+      "kind": "imap_upstream_unreachable",
+      "relay": "mail",
+      "ts": "2024-07-01T09:04:00+00:00",
+      "upstream": "imap.example.com:993"
+    }
+  },
+  {
+    "line": "{\"kind\": \"policy_introspect\", \"ts\": \"2024-07-01T09:05:00+00:00\", \"path\": \"/v1/allowlist\"}",
+    "parsed": {
+      "kind": "policy_introspect",
+      "path": "/v1/allowlist",
+      "ts": "2024-07-01T09:05:00+00:00"
+    }
+  },
+  {
+    "line": "{\"kind\": \"policy_request\", \"ts\": \"2024-07-01T09:06:00+00:00\", \"domain\": \"pypi.org\", \"decision\": \"granted\", \"reason\": \"package index for the test suite\", \"decided_by\": \"decider\", \"expires_at\": \"\"}",
+    "parsed": {
+      "decided_by": "decider",
+      "decision": "granted",
+      "domain": "pypi.org",
+      "expires_at": "",
+      "kind": "policy_request",
+      "reason": "package index for the test suite",
+      "ts": "2024-07-01T09:06:00+00:00"
+    }
+  },
+  {
+    "line": "{\"kind\": \"policy_request\", \"ts\": \"2024-07-01T09:07:00+00:00\", \"path\": \"/v1/allowlist/requests\", \"method\": \"POST\", \"decision\": \"rejected\", \"reason\": \"body too large\"}",
+    "parsed": {
+      "decision": "rejected",
+      "kind": "policy_request",
+      "method": "POST",
+      "path": "/v1/allowlist/requests",
+      "reason": "body too large",
+      "ts": "2024-07-01T09:07:00+00:00"
+    }
+  },
+  {
+    "line": "{\"ts\": \"2024-07-01T09:08:00+00:00\", \"kind\": \"tcp_bypass_blocked\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"reason\": \"raw TCP outside the proxy\", \"host\": \"192.0.2.10\"}",
+    "parsed": {
+      "decision": "blocked",
+      "direction": "outbound",
+      "host": "192.0.2.10",
+      "kind": "tcp_bypass_blocked",
+      "reason": "raw TCP outside the proxy",
+      "ts": "2024-07-01T09:08:00+00:00"
+    }
+  },
+  {
+    "line": "{\"ts\": \"2024-07-01T09:09:00+00:00\", \"kind\": \"private_peer_blocked\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"reason\": \"granted host resolved to a non-global address\", \"host\": \"granted.example.com\", \"peer_ip\": \"10.0.0.5\", \"phase\": \"server_connect\"}",
+    "parsed": {
+      "decision": "blocked",
+      "direction": "outbound",
+      "host": "granted.example.com",
+      "kind": "private_peer_blocked",
+      "peer_ip": "10.0.0.5",
+      "phase": "server_connect",
+      "reason": "granted host resolved to a non-global address",
+      "ts": "2024-07-01T09:09:00+00:00"
+    }
+  },
+  {
+    "line": "{\"kind\": \"watcher_finding\", \"ts\": \"2024-07-01T09:10:00+00:00\", \"decision\": \"flagged\", \"method\": \"\", \"direction\": \"\", \"host\": \"pypi.org\", \"url\": \"\", \"path\": \"\", \"port\": 0, \"reason\": \"\", \"severity\": \"high\", \"title\": \"bulk upload to a package index\", \"inspectors\": [{\"name\": \"watcher\", \"severity\": \"high\", \"reason\": \"bulk upload to a package index\"}]}",
+    "parsed": {
+      "decision": "flagged",
+      "direction": "",
+      "host": "pypi.org",
+      "inspectors": [
+        {
+          "name": "watcher",
+          "reason": "bulk upload to a package index",
+          "severity": "high"
+        }
+      ],
+      "kind": "watcher_finding",
+      "method": "",
+      "path": "",
+      "port": 0,
+      "reason": "",
+      "severity": "high",
+      "title": "bulk upload to a package index",
+      "ts": "2024-07-01T09:10:00+00:00",
+      "url": ""
+    }
+  },
+  {
+    "line": "{\"kind\": \"Pod\", \"apiVersion\": \"v1\", \"metadata\": {\"name\": \"not-ours\"}}",
+    "parsed": null
+  },
+  {
+    "line": "{\"ts\": \"2024-07-01T09:11:00+00:00\", \"level\": \"info\", \"msg\": \"a structured log line that is not an audit record\"}",
+    "parsed": null
   }
 ]

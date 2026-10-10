@@ -4,6 +4,18 @@ TIMESTAMP                  DIRECTION  METHOD   HOST                      PORT  P
 2024-01-01T00:02:00+00:00  OUTBOUND   POST     evil.example.org          443   /exfil               [31mblocked   [0m source 10.89.7.2; domain not allowed
 2024-01-01T00:03:00+00:00  OUTBOUND   GET      evil.example.org          443   /beacon              [31mblocked   [0m source 10.89.7.2; domain not allowed
 2024-01-01T00:04:00+00:00  INBOUND    PUT      127.0.0.1                 3000  /hook                [32mallowed   [0m source 127.0.0.1
+2024-01-01T00:06:00+00:00                      api.example.com                                      [32mallowed   [0m 
 2024-06-01T12:00:00+00:00  OUTBOUND   HEAD     cdn.example.com           443   /a.bin               [32mallowed   [0m source 10.89.7.2
 not-a-timestamp            OUTBOUND   GET      legacy.example.com        80    /                    [32mallowed   [0m source 10.89.7.2
 2024-02-02T08:30:00        OUTBOUND   DELETE   api.example.com           443   /v1/item/9           [33mflagged   [0m source 10.89.7.2; watcher finding
+2024-07-01T09:00:00+00:00             IMAP     mail                            UID STORE            [31mblocked   [0m imap_command: readonly policy
+2024-07-01T09:01:00+00:00             SMTP     outbound-mail                   RCPT                 [31mblocked   [0m smtp_command: recipient not in recipient_allowlist
+2024-07-01T09:02:00+00:00             SMTP     outbound-mail                                        [31mblocked   [0m smtp_data: anthropic_key detected
+2024-07-01T09:03:00+00:00             SMTP     outbound-mail                                                   smtp_data_flag: high entropy body
+2024-07-01T09:04:00+00:00             IMAP     mail                                                            imap_upstream_unreachable: [Errno 111] Connection refused
+2024-07-01T09:05:00+00:00             POLICY                                   /v1/allowlist                   policy_introspect
+2024-07-01T09:06:00+00:00             POLICY   pypi.org                                             granted    policy_request: package index for the test suite
+2024-07-01T09:07:00+00:00             POST                                     /v1/allowlist/reque  rejected   policy_request: body too large
+2024-07-01T09:08:00+00:00  OUTBOUND   TCP      192.0.2.10                                           [31mblocked   [0m tcp_bypass_blocked: raw TCP outside the proxy
+2024-07-01T09:09:00+00:00  OUTBOUND   PRIVATE  granted.example.com                                  [31mblocked   [0m private_peer_blocked: granted host resolved to a non-global address
+2024-07-01T09:10:00+00:00             WATCHER  pypi.org                                             [33mflagged   [0m watcher_finding: watcher: bulk upload to a package index

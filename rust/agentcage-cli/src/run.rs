@@ -374,9 +374,16 @@ fn blocked_notice(line: &str) -> Option<String> {
     {
         return None;
     }
-    let host = entry
-        .get("host")
-        .and_then(agentcage_core::har::json::Json::as_str)
+    // Not every blocked record is an HTTP request: a relay block names
+    // its relay and no host. The same stand-in `cage audit` shows.
+    let host = ["host", "domain", "relay"]
+        .into_iter()
+        .find_map(|key| {
+            entry
+                .get(key)
+                .and_then(agentcage_core::har::json::Json::as_str)
+                .filter(|value| !value.is_empty())
+        })
         .unwrap_or("?");
     let reason = entry
         .get("reason")
@@ -575,6 +582,17 @@ mod tests {
         assert!(notice.contains("denied"), "{notice:?}");
         assert!(notice.starts_with('\r'), "{notice:?}");
         assert!(notice.ends_with('\n'), "{notice:?}");
+    }
+
+    /// A relay block has no host; the relay's name says where it was.
+    #[test]
+    fn a_relay_block_names_its_relay() {
+        let notice = blocked_notice(
+            r#"{"kind": "smtp_command", "relay": "outbound-mail", "command": "RCPT", "decision": "blocked", "reason": "recipient not in recipient_allowlist"}"#,
+        )
+        .expect("a notice");
+        assert!(notice.contains("outbound-mail"), "{notice:?}");
+        assert!(!notice.contains(" ? "), "{notice:?}");
     }
 
     /// A directory under `$HOME` is created; a file-looking path, an

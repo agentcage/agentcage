@@ -4,6 +4,7 @@
     "direction": "outbound",
     "host": "api.example.com",
     "inspectors": [],
+    "kind": "",
     "method": "GET",
     "path": "/v1/data",
     "port": 443,
@@ -25,6 +26,7 @@
       "url": "https://api.example.com/v1/data"
     },
     "reason": "",
+    "relay": "",
     "secrets_injected": [
       "FAKE_API_KEY"
     ],
@@ -43,6 +45,7 @@
         "severity": "warning"
       }
     ],
+    "kind": "",
     "method": "post",
     "path": "/put",
     "port": 443,
@@ -69,6 +72,7 @@
       "url": "https://upload.example.net/put"
     },
     "reason": "high entropy",
+    "relay": "",
     "secrets_injected": [],
     "secrets_redacted": [
       "FAKE_API_KEY"
@@ -91,6 +95,7 @@
         "severity": "critical"
       }
     ],
+    "kind": "",
     "method": "POST",
     "path": "/exfil",
     "port": 443,
@@ -119,6 +124,7 @@
       "url": "https://evil.example.org/exfil"
     },
     "reason": "domain not allowed",
+    "relay": "",
     "secrets_injected": [],
     "secrets_redacted": [],
     "source": "10.89.7.2",
@@ -135,6 +141,7 @@
         "severity": "error"
       }
     ],
+    "kind": "",
     "method": "GET",
     "path": "/beacon",
     "port": 443,
@@ -159,6 +166,7 @@
       "url": "https://evil.example.org/beacon"
     },
     "reason": "domain not allowed",
+    "relay": "",
     "secrets_injected": [],
     "secrets_redacted": [],
     "source": "10.89.7.2",
@@ -170,6 +178,7 @@
     "direction": "inbound",
     "host": "127.0.0.1",
     "inspectors": [],
+    "kind": "",
     "method": "PUT",
     "path": "/hook",
     "port": 3000,
@@ -189,11 +198,34 @@
       "url": "http://127.0.0.1:3000/hook"
     },
     "reason": "",
+    "relay": "",
     "secrets_injected": [],
     "secrets_redacted": [],
     "source": "127.0.0.1",
     "ts": "2024-01-01T00:04:00+00:00",
     "url": "http://127.0.0.1:3000/hook"
+  },
+  {
+    "decision": "allowed",
+    "direction": "",
+    "host": "api.example.com",
+    "inspectors": [],
+    "kind": "",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "decision": "allowed",
+      "host": "api.example.com",
+      "ts": "2024-01-01T00:06:00+00:00"
+    },
+    "reason": "",
+    "relay": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-01-01T00:06:00+00:00",
+    "url": ""
   },
   {
     "decision": "allowed",
@@ -209,6 +241,7 @@
         "severity": "high"
       }
     ],
+    "kind": "",
     "method": "HEAD",
     "path": "/a.bin",
     "port": 443,
@@ -237,6 +270,7 @@
       "url": "https://cdn.example.com/a.bin"
     },
     "reason": "",
+    "relay": "",
     "secrets_injected": [],
     "secrets_redacted": [],
     "source": "10.89.7.2",
@@ -248,6 +282,7 @@
     "direction": "outbound",
     "host": "legacy.example.com",
     "inspectors": [],
+    "kind": "",
     "method": "GET",
     "path": "/",
     "port": 80,
@@ -267,6 +302,7 @@
       "url": "https://legacy.example.com/"
     },
     "reason": "",
+    "relay": "",
     "secrets_injected": [],
     "secrets_redacted": [],
     "source": "10.89.7.2",
@@ -283,6 +319,7 @@
         "severity": "medium"
       }
     ],
+    "kind": "",
     "method": "DELETE",
     "path": "/v1/item/9",
     "port": 443,
@@ -307,10 +344,327 @@
       "url": "https://api.example.com/v1/item/9"
     },
     "reason": "watcher finding",
+    "relay": "",
     "secrets_injected": [],
     "secrets_redacted": [],
     "source": "10.89.7.2",
     "ts": "2024-02-02T08:30:00",
     "url": "https://api.example.com/v1/item/9"
+  },
+  {
+    "decision": "blocked",
+    "direction": "",
+    "host": "",
+    "inspectors": [],
+    "kind": "imap_command",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "command": "UID STORE",
+      "decision": "blocked",
+      "kind": "imap_command",
+      "reason": "readonly policy",
+      "relay": "mail",
+      "ts": "2024-07-01T09:00:00+00:00"
+    },
+    "reason": "readonly policy",
+    "relay": "mail",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:00:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "blocked",
+    "direction": "",
+    "host": "",
+    "inspectors": [],
+    "kind": "smtp_command",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "command": "RCPT",
+      "decision": "blocked",
+      "kind": "smtp_command",
+      "reason": "recipient not in recipient_allowlist",
+      "recipient": "someone@example.net",
+      "relay": "outbound-mail",
+      "ts": "2024-07-01T09:01:00+00:00"
+    },
+    "reason": "recipient not in recipient_allowlist",
+    "relay": "outbound-mail",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:01:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "blocked",
+    "direction": "",
+    "host": "",
+    "inspectors": [
+      {
+        "name": "secrets",
+        "reason": "anthropic_key detected",
+        "severity": "critical"
+      }
+    ],
+    "kind": "smtp_data",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "decision": "blocked",
+      "inspector": "secrets",
+      "kind": "smtp_data",
+      "reason": "anthropic_key detected",
+      "recipients": [
+        "ops@example.com"
+      ],
+      "relay": "outbound-mail",
+      "sender": "agent@example.com",
+      "severity": "critical",
+      "size": 2048,
+      "ts": "2024-07-01T09:02:00+00:00"
+    },
+    "reason": "anthropic_key detected",
+    "relay": "outbound-mail",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:02:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "",
+    "direction": "",
+    "host": "",
+    "inspectors": [
+      {
+        "name": "entropy",
+        "reason": "high entropy body",
+        "severity": "warning"
+      }
+    ],
+    "kind": "smtp_data_flag",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "inspector": "entropy",
+      "kind": "smtp_data_flag",
+      "reason": "high entropy body",
+      "recipients": [
+        "ops@example.com"
+      ],
+      "relay": "outbound-mail",
+      "sender": "agent@example.com",
+      "severity": "warning",
+      "ts": "2024-07-01T09:03:00+00:00"
+    },
+    "reason": "high entropy body",
+    "relay": "outbound-mail",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:03:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "",
+    "direction": "",
+    "host": "",
+    "inspectors": [],
+    "kind": "imap_upstream_unreachable",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "error": "[Errno 111] Connection refused",
+      "kind": "imap_upstream_unreachable",
+      "relay": "mail",
+      "ts": "2024-07-01T09:04:00+00:00",
+      "upstream": "imap.example.com:993"
+    },
+    "reason": "",
+    "relay": "mail",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:04:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "",
+    "direction": "",
+    "host": "",
+    "inspectors": [],
+    "kind": "policy_introspect",
+    "method": "",
+    "path": "/v1/allowlist",
+    "port": 0,
+    "raw": {
+      "kind": "policy_introspect",
+      "path": "/v1/allowlist",
+      "ts": "2024-07-01T09:05:00+00:00"
+    },
+    "reason": "",
+    "relay": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:05:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "granted",
+    "direction": "",
+    "host": "pypi.org",
+    "inspectors": [],
+    "kind": "policy_request",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "decided_by": "decider",
+      "decision": "granted",
+      "domain": "pypi.org",
+      "expires_at": "",
+      "kind": "policy_request",
+      "reason": "package index for the test suite",
+      "ts": "2024-07-01T09:06:00+00:00"
+    },
+    "reason": "package index for the test suite",
+    "relay": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:06:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "rejected",
+    "direction": "",
+    "host": "",
+    "inspectors": [],
+    "kind": "policy_request",
+    "method": "POST",
+    "path": "/v1/allowlist/requests",
+    "port": 0,
+    "raw": {
+      "decision": "rejected",
+      "kind": "policy_request",
+      "method": "POST",
+      "path": "/v1/allowlist/requests",
+      "reason": "body too large",
+      "ts": "2024-07-01T09:07:00+00:00"
+    },
+    "reason": "body too large",
+    "relay": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:07:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "blocked",
+    "direction": "outbound",
+    "host": "192.0.2.10",
+    "inspectors": [],
+    "kind": "tcp_bypass_blocked",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "decision": "blocked",
+      "direction": "outbound",
+      "host": "192.0.2.10",
+      "kind": "tcp_bypass_blocked",
+      "reason": "raw TCP outside the proxy",
+      "ts": "2024-07-01T09:08:00+00:00"
+    },
+    "reason": "raw TCP outside the proxy",
+    "relay": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:08:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "blocked",
+    "direction": "outbound",
+    "host": "granted.example.com",
+    "inspectors": [],
+    "kind": "private_peer_blocked",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "decision": "blocked",
+      "direction": "outbound",
+      "host": "granted.example.com",
+      "kind": "private_peer_blocked",
+      "peer_ip": "10.0.0.5",
+      "phase": "server_connect",
+      "reason": "granted host resolved to a non-global address",
+      "ts": "2024-07-01T09:09:00+00:00"
+    },
+    "reason": "granted host resolved to a non-global address",
+    "relay": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:09:00+00:00",
+    "url": ""
+  },
+  {
+    "decision": "flagged",
+    "direction": "",
+    "host": "pypi.org",
+    "inspectors": [
+      {
+        "name": "watcher",
+        "reason": "bulk upload to a package index",
+        "severity": "high"
+      }
+    ],
+    "kind": "watcher_finding",
+    "method": "",
+    "path": "",
+    "port": 0,
+    "raw": {
+      "decision": "flagged",
+      "direction": "",
+      "host": "pypi.org",
+      "inspectors": [
+        {
+          "name": "watcher",
+          "reason": "bulk upload to a package index",
+          "severity": "high"
+        }
+      ],
+      "kind": "watcher_finding",
+      "method": "",
+      "path": "",
+      "port": 0,
+      "reason": "",
+      "severity": "high",
+      "title": "bulk upload to a package index",
+      "ts": "2024-07-01T09:10:00+00:00",
+      "url": ""
+    },
+    "reason": "",
+    "relay": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "",
+    "ts": "2024-07-01T09:10:00+00:00",
+    "url": ""
   }
 ]
