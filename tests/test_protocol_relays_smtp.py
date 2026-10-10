@@ -315,6 +315,70 @@ class TestConstruction:
         _run(_go())
 
 
+class TestCredentialLookup:
+    """Credentials resolve through the egress's shared secret lookup:
+    staged file (``$AGENTCAGE_SECRETS_DIR/<NAME>``) → ``$XDG_RUNTIME_DIR/<NAME>``
+    → env. The apple-container backend delivers secrets ONLY as staged
+    files, and only the staged file carries a live ``agentcage secret
+    set`` — an env-only relay started with no credentials there."""
+
+    @pytest.fixture
+    def dirs(self, monkeypatch, tmp_path):
+        staged = tmp_path / "secrets"
+        runtime = tmp_path / "runtime"
+        staged.mkdir()
+        runtime.mkdir()
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(staged))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+        return staged, runtime
+
+    def test_staged_file_beats_env(self, dirs):
+        staged, _ = dirs
+        (staged / "TEST_SMTP_USER").write_text("staged-user@example.com\n")
+        (staged / "TEST_SMTP_PASS").write_text("staged-password\n")
+        relay = SmtpRelay(_relay_entry(1))
+        # Trailing newline stripped, as the injector does.
+        assert relay._user == "staged-user@example.com"
+        assert relay._password == "staged-password"
+
+    def test_staged_file_only_no_env(self, dirs, monkeypatch):
+        """The apple-container case: nothing in env at all."""
+        staged, _ = dirs
+        monkeypatch.delenv("TEST_SMTP_USER", raising=False)
+        monkeypatch.delenv("TEST_SMTP_PASS", raising=False)
+        (staged / "TEST_SMTP_USER").write_text("staged-user@example.com\n")
+        (staged / "TEST_SMTP_PASS").write_text("staged-password\n")
+        relay = SmtpRelay(_relay_entry(1))
+        assert relay._user == "staged-user@example.com"
+        assert relay._password == "staged-password"
+
+    def test_empty_staged_file_is_a_tombstone(self, dirs):
+        """An existing-but-empty staged file (``secret rm``) must not
+        fall back to the stale boot-time env value."""
+        staged, _ = dirs
+        (staged / "TEST_SMTP_PASS").write_text("")
+        with pytest.raises(ValueError, match="credentials not resolved"):
+            SmtpRelay(_relay_entry(1))
+
+    def test_missing_staged_file_falls_back_to_env(self, dirs):
+        relay = SmtpRelay(_relay_entry(1))
+        assert relay._user == "agent@example.com"
+        assert relay._password == "real-app-password"
+
+    def test_runtime_dir_file_beats_env(self, dirs):
+        _, runtime = dirs
+        (runtime / "TEST_SMTP_PASS").write_text("runtime-password\n")
+        relay = SmtpRelay(_relay_entry(1))
+        assert relay._password == "runtime-password"
+
+    def test_staged_file_beats_runtime_dir(self, dirs):
+        staged, runtime = dirs
+        (staged / "TEST_SMTP_PASS").write_text("staged-password\n")
+        (runtime / "TEST_SMTP_PASS").write_text("runtime-password\n")
+        relay = SmtpRelay(_relay_entry(1))
+        assert relay._password == "staged-password"
+
+
 # ── Happy-path delivery ──────────────────────────────────
 
 

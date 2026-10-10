@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `cage har` fixture replays against the current version** instead of requiring the recorded version to match, so a version bump no longer needs the fixture regenerated.
 - `RUST-PORT-PLAN.md` moved to `docs/history/rust-port-plan.md`, marked historical; code comments that cite it for design reasoning now point there.
 
+### Fixed
+
+- **IMAP and SMTP relays read their credentials from staged secret files, not only from the environment.** `auth.user_source` / `auth.password_source` were resolved from env vars alone, so on apple-container (which delivers secrets only as files under `/home/acproxy/secrets`) every relay failed with `relay_init_failed`, and on podman a relay never saw a value changed by `agentcage secret set`. Relays now resolve through one shared egress lookup (`secret_lookup.py`): the staged file `$AGENTCAGE_SECRETS_DIR/<NAME>`, then `$XDG_RUNTIME_DIR/<NAME>`, then env. An existing file wins with its trailing newline stripped, and an existing empty file is a tombstone that does not fall back to a stale env value, as in secret injection.
+
 ## [0.50.0] - 2026-10-09
 
 The version jumps from 0.40.x to 0.50.0 deliberately. 0.40.x is the Python

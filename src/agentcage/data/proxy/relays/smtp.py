@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import time
 from base64 import b64encode
@@ -54,6 +53,7 @@ from inspectors._chain import run_inspector_chain
 from inspectors.base import InspectionContext, InspectionResult, Inspector
 from inspectors.util import shannon_entropy
 from relays._tls import upstream_connect_kwargs
+from secret_lookup import resolve_credential
 
 log = logging.getLogger("agentcage.relays.smtp")
 
@@ -104,18 +104,6 @@ class _RateLimiter:
         what matters is the running count, not which exact slot."""
         if self._timestamps:
             self._timestamps.pop()
-
-
-def _resolve_credential(source: str) -> str:
-    """Read the credential value at relay startup. All four schemes
-    (env:, cmd:, systemd-creds:, podman:) populate the proxy
-    container's environment at unit start."""
-    scheme, _, arg = (source or "").partition(":")
-    if scheme in ("env", "cmd", "systemd-creds", "podman", ""):
-        if not arg:
-            return ""
-        return os.environ.get(arg, "")
-    raise ValueError(f"unsupported relay credential source: {source!r}")
 
 
 class _SmtpConfig:
@@ -210,8 +198,8 @@ class SmtpRelay:
         inspectors: Optional[list[Inspector]] = None,
     ) -> None:
         self._cfg = _SmtpConfig(entry)
-        self._user = _resolve_credential(self._cfg.user_source)
-        self._password = _resolve_credential(self._cfg.password_source)
+        self._user = resolve_credential(self._cfg.user_source)
+        self._password = resolve_credential(self._cfg.password_source)
         if not self._user or not self._password:
             raise ValueError(
                 f"smtp relay {self._cfg.name}: credentials not resolved "
