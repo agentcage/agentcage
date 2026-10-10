@@ -996,6 +996,14 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         }
     }
 
+    // A backup never carries the CA, and neither does a restore: one
+    // left under this name — by an earlier destroy, or by the
+    // best-effort one above — goes before anything is restored.
+    if let Err(message) = ctx.purge_stale_ca(&manifest.isolation, &target) {
+        eprintln!("error: {message}");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
     // Host podman, on purpose, even for a vm tarball — and unlike
     // `cage backup` that is right rather than merely faithful.
     //
@@ -1204,6 +1212,12 @@ fn restore_apple(
                 eprintln!("warning: {error}");
             }
         }
+    }
+
+    // As on the container path: no CA survives into the restored cage.
+    if let Err(message) = ctx.purge_stale_ca(APPLE_CONTAINER, target) {
+        eprintln!("error: {message}");
+        return Err(ExitCode::from(EXIT_FAILURE));
     }
 
     // ── Secrets, which are the operator's to re-set ─────
@@ -2947,6 +2961,53 @@ secret_injection:
         // touched podman.
         assert!(ctx.paths.deployment_exists(APPLE));
         assert!(fake.calls().is_empty(), "{:?}", fake.argv_sequence());
+    }
+
+    /// A backup never carries a CA, and a restore never inherits one: a
+    /// certs dir an earlier cage of the target name left behind is gone
+    /// before the restored cage is started, so its egress generates a
+    /// new CA (`EGRESS-PORT-PLAN.md` D11).
+    #[test]
+    fn an_apple_restore_purges_a_leftover_ca() {
+        let dir = TestDir::new("apple-restore-stale-ca");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = apple_cage(&dir, fake.clone(), &[]);
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            APPLE,
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+
+        // What a destroy that could not finish leaves: no deployment,
+        // and a CA store still on disk under the name.
+        let certs = ctx.paths.apple_certs_dir("apple-clone");
+        let public_certs = ctx.paths.apple_public_certs_dir("apple-clone");
+        for dir in [&certs, &public_certs] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("ca.pem"), "not a real certificate\n").unwrap();
+        }
+
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "restore",
+            &out.display().to_string(),
+            "--name",
+            "apple-clone",
+            "--no-start",
+        ]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+
+        assert!(ctx.paths.deployment_exists("apple-clone"));
+        assert!(!certs.exists(), "the leftover CA survived the restore");
+        assert!(!public_certs.exists(), "the leftover public cert survived");
     }
 
     /// Restoring onto a name that already exists is refused without

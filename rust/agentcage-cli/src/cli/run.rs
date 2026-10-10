@@ -368,6 +368,14 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
         return 1;
     }
 
+    // `cage create`'s step: a failed `run` discards its state but not
+    // its backend resources, so this is the path most likely to find a
+    // CA left under a reused name.
+    if let Err(message) = ctx.purge_stale_ca(&config.isolation, &cage_name) {
+        output::step_fail(&message);
+        return 1;
+    }
+
     // ── state ───────────────────────────────────────────
     if let Err(error) = ctx.paths.save_deployment(&cage_name, &config_path) {
         output::step_fail(&format!("Failed to save deployment state: {error}"));

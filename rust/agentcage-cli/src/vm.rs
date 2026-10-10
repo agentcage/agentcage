@@ -1399,6 +1399,42 @@ impl<'a> VmBackend<'a> {
         Ok(removed)
     }
 
+    /// Remove a CA left behind by an earlier cage of this name
+    /// (`EGRESS-PORT-PLAN.md` D11).
+    ///
+    /// For `cage create`, `run` and `cage restore`, on a name that has
+    /// no deployment. A vm cage's certs volumes live in the podman
+    /// store *inside its Lima guest*, and [`Self::start`] reuses a guest
+    /// it finds rather than creating one — so a guest still there from
+    /// a `cage destroy` whose `limactl delete` failed, or from a failed
+    /// `run` (which discards its state but not its guest), would hand
+    /// the earlier cage's CA to the new one. Reaching into the guest
+    /// would mean booting it first, and nothing has a deployment for it,
+    /// so the guest goes as a whole and `start` provisions a fresh one.
+    ///
+    /// Returns what was removed, for the caller's notice.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Failed`] when the leftover guest could not be
+    /// deleted: the create must not go ahead on top of it.
+    pub fn purge_stale_ca(&self, name: &str) -> Result<Vec<String>, BackendError> {
+        if !self.has_resources(name) {
+            return Ok(Vec::new());
+        }
+        let instance = self.instance(name);
+        instance.delete().map_err(|error| {
+            BackendError::Failed(format!(
+                "Lima instance {instance} is left over from an earlier cage \
+                 named '{name}' and could not be deleted ({error}), and a new \
+                 cage must not inherit its CA. Remove it with `limactl delete \
+                 --force {instance}`, then retry",
+                instance = instance.name()
+            ))
+        })?;
+        Ok(vec![format!("lima-instance:{}", instance.name())])
+    }
+
     // ── execution (PR E4) ────────────────────────────────────
 
     /// `VmBackend.ensure_ready` — nothing to bring up ahead of time.

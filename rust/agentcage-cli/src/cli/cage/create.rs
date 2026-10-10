@@ -102,6 +102,13 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 
     report_port_conflicts(&config)?;
 
+    // A leftover CA under this name goes before any state is written,
+    // so a refusal leaves nothing for `cage update` to deploy over it.
+    if let Err(message) = ctx.purge_stale_ca(&config.isolation, &name) {
+        eprintln!("error: {message}");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
     // ── state ───────────────────────────────────────────
     ctx.paths
         .save_deployment(&name, &config_path)

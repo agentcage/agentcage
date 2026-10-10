@@ -380,6 +380,47 @@ impl<'a> AppleBackend<'a> {
         Ok(removed)
     }
 
+    /// Remove a CA left behind by an earlier cage of this name
+    /// (`EGRESS-PORT-PLAN.md` D11).
+    ///
+    /// For `cage create`, `run` and `cage restore`, on a name that has
+    /// no deployment. The egress microVM keeps its CA in the per-cage
+    /// `certs/` directory and publishes the public half to
+    /// `public-certs/`; [`Self::start`] creates both only if they are
+    /// missing and the egress generates a CA only into an empty store.
+    /// So a state tree left by a `cage destroy` that could not remove
+    /// it would hand the earlier cage's CA to the new one. Only those
+    /// two directories go: the rest of the tree is rewritten by the
+    /// deploy anyway.
+    ///
+    /// Returns what was removed, for the caller's notice.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Failed`] when a leftover directory could not be
+    /// removed: the create must not go ahead on top of it.
+    pub fn purge_stale_ca(&self, name: &str) -> Result<Vec<String>, BackendError> {
+        let mut removed = Vec::new();
+        for dir in [
+            self.paths.apple_certs_dir(name),
+            self.paths.apple_public_certs_dir(name),
+        ] {
+            if !dir.exists() {
+                continue;
+            }
+            std::fs::remove_dir_all(&dir).map_err(|error| {
+                BackendError::Failed(format!(
+                    "{dir} is left over from an earlier cage named '{name}' \
+                     and could not be removed ({error}), and a new cage must \
+                     not inherit its CA. Remove it by hand, then retry",
+                    dir = dir.display()
+                ))
+            })?;
+            removed.push(format!("certs:{}", dir.display()));
+        }
+        Ok(removed)
+    }
+
     // ── argv the CLI dispatches through ──────────────────────
 
     /// `exec_argv`.

@@ -351,6 +351,17 @@ destroy_cage_with_volumes() {
   done
 }
 
+# cage_ca_fingerprint CAGE
+#   SHA-256 of the CA certificate CAGE trusts, read from inside the cage
+#   at the path its own SSL_CERT_FILE names — so the check follows the
+#   cage's env rather than hard-coding where the cert is mounted. Prints
+#   nothing if the cage is not running. Every cage gets a CA of its own
+#   (EGRESS-PORT-PLAN.md D11): two cages never share one, and a cage
+#   destroyed and created again under the same name gets a new one.
+cage_ca_fingerprint() {
+  podman exec "$1-cage" sh -c 'sha256sum "$SSL_CERT_FILE"' 2>/dev/null | cut -d' ' -f1
+}
+
 # _dump_captured LABEL OUTPUT
 #   Print a captured command's combined output to stderr, indented and
 #   framed like dump_cage_diagnostics. Used by the helpers below so a
