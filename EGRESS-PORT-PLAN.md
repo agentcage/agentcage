@@ -311,7 +311,7 @@ fixtures pin them.
   `$AGENTCAGE_SECRETS_DIR/<NAME>` (default `/home/acproxy/secrets`) is
   authoritative, trailing `\n` stripped, **empty file = tombstone**; missing
   file → env. One lookup order shared with the Policy API, watcher **and
-  relays** (Phase 0a fix D7a): staged file → `$XDG_RUNTIME_DIR/<NAME>` → env.
+  relays** (Phase 0a fixes D7a, 0a.12): staged file → env.
 - Placeholder grammar is the host's (`agentcage:secret:<ENV>:<32 hex>`); the
   egress only does literal byte matching. Empty placeholder ⇒ rule skipped.
 - Strict mode (default): only headers whose lowercased name contains `auth`,
@@ -545,7 +545,7 @@ Unchanged (the Rust egress must honour them exactly):
 | Contract | Detail |
 | :-- | :-- |
 | Config | `/etc/agentcage/config.yaml` (bind-mounted proxy-config, rewritten **in place**, mtime = reload trigger); YAML written by the host's emitter |
-| Env | `AGENTCAGE_CONFIG, _CAPTURE, _AUDIT_LOG, _SECRETS_DIR, _GRANTS_DIR, _DNS_PUBLISH, _VERSION, _INSPECTOR_DIRS`, `XDG_RUNTIME_DIR`, `AGENTCAGE_REGULAR_BIND, _INBOUND_PORTS, _CAGE_IP` |
+| Env | `AGENTCAGE_CONFIG, _CAPTURE, _AUDIT_LOG, _SECRETS_DIR, _GRANTS_DIR, _DNS_PUBLISH, _VERSION, _INSPECTOR_DIRS`, `AGENTCAGE_REGULAR_BIND, _INBOUND_PORTS, _CAGE_IP` |
 | CA | per cage (D11). Public cert at `/home/acproxy/public-certs/agentcage-ca.pem`, mounted read-only in the cage as `/certs/agentcage-ca.pem` (neutral names from Phase 0a.10, D12); private key in the cage's own `<n>-certs` volume at `/home/acproxy/ca`. The Rust egress generates a fresh CA there on its first start and reloads only its own CA afterwards |
 | Readiness | supervisor waits for the public CA file and a listener on `:8443`, then touches `/var/log/agentcage/ready`; cage `ExecStartPre` polls the public CA path |
 | Grants | `grants.yaml` format and temp-file scheme (host merges with the same scheme); `watcher/findings.jsonl`, `watcher/state.json` |
@@ -629,7 +629,7 @@ records the oracle. The Rust port then reproduces fixed behaviour only.
 
 | PR | Fix | Where |
 | :-- | :-- | :-- |
-| 0a.1 | Relays resolve credentials through the shared lookup (staged file → `$XDG_RUNTIME_DIR` → env); today env-only, so apple-container relays start with none (D7a) | `relays/imap.py:122-136`, `relays/smtp.py:109-118` |
+| 0a.1 | Relays resolve credentials through the shared lookup (staged file → env; see 0a.12); today env-only, so apple-container relays start with none (D7a) | `relays/imap.py:122-136`, `relays/smtp.py:109-118` |
 | 0a.2 | Relays and the capture writer hot-reload; relays diffed by name (D7b) | `addon.py` `_maybe_reload`, `_start_protocol_relays` |
 | 0a.3 | IMAP `write_mode: none` denies `CLOSE` (D7c) | `relays/imap.py` deny table |
 | 0a.4 | Watcher `interval_seconds` default 900, matching the host (D7d) | `watcher.py` |
@@ -640,7 +640,10 @@ records the oracle. The Rust port then reproduces fixed behaviour only.
 | 0a.9 | Per-cage CA guarantees (D11): `cage create` purges a stale certs volume / apple certs dir left by a failed destroy; `destroy` reports a certs volume it could not remove; e2e asserts two cages have different CA fingerprints and destroy + create yields a new one | `rust/agentcage-cli/src/backend.rs` `destroy_resources`, `cli/cage/create.rs`, apple/vm equivalents, `tests/e2e/phase5_backup.sh`, `phase1_lifecycle.sh` |
 | 0a.10 | Neutral CA naming (D12): public `/certs/agentcage-ca.pem` (+ legacy alias until cutover), private `/home/acproxy/ca` via mitmproxy `--set confdir=`, `EGRESS_RESERVED_PORTS`, neutral validation messages | templates, supervisor, `verify.rs`, apple `run_argv.rs` / `cage-init.sh`, nested `containers.conf`, ubuntu/debian scaffolds, golden fixtures |
 | 0a.11 | IMAP: deny `REPLACE` / `UID REPLACE` (RFC 8508 — atomic append + expunge) in `write_mode: none` and `organise` | `relays/imap.py` deny tables |
-| 0a.12 | One secret lookup for every egress consumer: staged file (honouring `AGENTCAGE_SECRETS_DIR`, empty = tombstone, trailing-newline strip) → `$XDG_RUNTIME_DIR` → env — today the Policy API/watcher treat an empty file as "try next" and `.strip()`, and the injector has no `$XDG_RUNTIME_DIR` step | `policy_api.py` `_read_secret`, `secret_injector.py`, the `secret_lookup.py` helper from 0a.1 |
+| 0a.12 | One secret lookup for every egress consumer (injector, Policy API, watcher, relays): staged file `$AGENTCAGE_SECRETS_DIR/<NAME>` (existing file wins, trailing newline stripped; empty = tombstone; unreadable = fail closed) → env. The former `$XDG_RUNTIME_DIR` step is **removed**: nothing delivers secrets there and the egress has no such variable, so it only ever read `/run/<NAME>` | `secret_lookup.py`, `policy_api.py`, `secret_injector.py` |
+| 0a.13 | WebSocket capture records frames: today the capture entry is written at the 101 response, before any frame, so `ws_messages` never reaches `capture.jsonl` | `addon.py` `response` / `websocket_message` / `websocket_end`, `capture.py` |
+| 0a.14 | Config reload runs on a timer, not only on proxied HTTP requests, so a relay-only cage picks up edits | `addon.py` (an asyncio task alongside the sweeper) |
+| 0a.15 | IMAP relay: refuse the `COMPRESS` command (once compression is on, every policy check and audit is blind to the compressed stream); filter capabilities in upstream `* CAPABILITY` responses as well as the greeting; deny `SETQUOTA` and annotation writes in `none`/`organise` | `relays/imap.py` |
 
 ### Phase 0 — oracle and decisions (≈ 1.5 weeks)
 
