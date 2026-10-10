@@ -313,7 +313,31 @@ impl<'a> Podman<'a> {
         Ok(())
     }
 
-    /// `podman volume import <name> - < <tar_path>`.
+    /// `podman volume create -- <name>`.
+    ///
+    /// `--` because the name can come out of a file — `cage restore`
+    /// reads it from a backup's `manifest.json` — and podman would
+    /// parse one starting with `-` as a flag. stdout is discarded:
+    /// podman echoes the name back and nothing reads it.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] on a non-zero exit, which includes a
+    /// volume that already exists.
+    pub fn volume_create(&self, name: &str) -> Result<(), ExecError> {
+        self.runner
+            .run(&self.cmd(["volume", "create", "--", name]).stdout_null())?
+            .check("podman")?;
+        Ok(())
+    }
+
+    /// `podman volume import -- <name> - < <tar_path>`.
+    ///
+    /// The volume must exist: podman refuses to import into one it does
+    /// not know (`no such volume`) rather than creating it. `--` for
+    /// the reason on [`Podman::volume_create`]: `cage restore` reads
+    /// the name from an archive, and without it a volume named
+    /// `-something` would be parsed as a flag.
     ///
     /// # Errors
     ///
@@ -323,7 +347,7 @@ impl<'a> Podman<'a> {
         self.runner
             .run(
                 &self
-                    .cmd(["volume", "import", name, "-"])
+                    .cmd(["volume", "import", "--", name, "-"])
                     .stdin_file(tar_path),
             )?
             .check("podman")?;

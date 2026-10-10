@@ -66,7 +66,7 @@ pub enum Stdin {
     },
     /// The child reads from a file.
     ///
-    /// `podman volume import <name> -` with `stdin=f`.
+    /// `podman volume import -- <name> -` with `stdin=f`.
     File(PathBuf),
 }
 
