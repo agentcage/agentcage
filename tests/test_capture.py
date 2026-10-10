@@ -277,3 +277,68 @@ class TestCaptureWriterWsBuffer:
         path = str(tmp_path / "capture.jsonl")
         w = CaptureWriter(cfg, path)
         assert w.pop_ws_messages("nonexistent") == []
+
+    def _frame(self, w, content, *, flow="f", text=True, sent=True):
+        w.add_ws_frame(flow, from_client=sent, is_text=text,
+                       content=content, ts="2024-01-01T00:00:00Z")
+
+    def test_frame_shape(self, tmp_path):
+        w = CaptureWriter({}, str(tmp_path / "capture.jsonl"))
+        self._frame(w, b"hi")
+        self._frame(w, b"\xff\x00", text=False, sent=False)
+        w.add_ws_frame("f", from_client=True, is_text=True, content=b"x",
+                       ts="t", decision="flagged")
+        msgs, omitted = w.pop_ws_buffer("f")
+        assert omitted == 0
+        assert msgs[0] == {"type": "send", "ts": "2024-01-01T00:00:00Z",
+                           "opcode": 1, "data": "hi"}
+        assert msgs[1]["type"] == "receive" and msgs[1]["opcode"] == 2
+        assert msgs[1]["data"] == "/wA=" and msgs[1]["dataEncoding"] == "base64"
+        assert msgs[2]["decision"] == "flagged"
+
+    def test_frame_bounds(self, tmp_path, monkeypatch):
+        # The globals of the module this CaptureWriter came from (other
+        # suites re-import ``capture``).
+        mod_globals = CaptureWriter.add_ws_frame.__globals__
+        monkeypatch.setitem(mod_globals, "_WS_MAX_MESSAGES", 4)
+        w = CaptureWriter({"max_body_size": 5}, str(tmp_path / "capture.jsonl"))
+        self._frame(w, b"abcdefgh")   # cut to the per-frame cap...
+        self._frame(w, b"z")          # ...which used the whole 5-byte total
+        self._frame(w, b"z")
+        msgs, omitted = w.pop_ws_buffer("f")
+        assert [m["data"] for m in msgs] == ["abcde"]
+        assert msgs[0]["dataTruncated"] is True
+        assert msgs[0]["dataOriginalSize"] == 8
+        assert omitted == 2
+
+        unbounded = CaptureWriter({"max_body_size": 0},
+                                  str(tmp_path / "capture2.jsonl"))
+        for _ in range(6):
+            self._frame(unbounded, b"m")
+        msgs, omitted = unbounded.pop_ws_buffer("f")
+        assert len(msgs) == 4 and omitted == 2
+        # max_body_size 0 (unlimited bodies) still bounds a socket's total.
+        assert unbounded._ws_total == mod_globals["_WS_DEFAULT_TOTAL"]
+
+    def test_adopt_carries_the_used_bound(self, tmp_path):
+        old = CaptureWriter({"max_body_size": 4}, str(tmp_path / "capture.jsonl"))
+        self._frame(old, b"abcd")
+        new = CaptureWriter({"max_body_size": 4}, str(tmp_path / "capture.jsonl"))
+        new.adopt_ws_buffers(old)
+        self._frame(new, b"e")
+        msgs, omitted = new.pop_ws_buffer("f")
+        assert [m["data"] for m in msgs] == ["abcd"] and omitted == 1
+        assert old._ws_buffers == {}
+
+    def test_write_entry_reports_omitted(self, tmp_path):
+        path = tmp_path / "capture.jsonl"
+        w = CaptureWriter({}, str(path))
+        kw = dict(flow_id="ws1", direction="outbound", decision="allowed",
+                  host="ws.example.com", method="GET", path="/ws",
+                  inspectors=[], inbound_req={}, inbound_resp={},
+                  outbound_req={}, outbound_resp={})
+        w.write_entry(**kw)
+        w.write_entry(**kw, ws_messages_omitted=3)
+        first, second = (json.loads(l) for l in path.read_text().splitlines())
+        assert "ws_messages_omitted" not in first
+        assert second["ws_messages_omitted"] == 3

@@ -760,8 +760,9 @@ class Agentcage:
           plain snapshots and are kept: those flows complete under the
           new writer, with its filters and limits applied to whatever is
           snapshotted from then on (request bodies already snapshotted
-          keep the old truncation). Buffered WebSocket frames move to
-          the new writer for the same reason.
+          keep the old truncation). That includes a WebSocket entry held
+          open past its 101: its buffered frames move to the new writer,
+          which writes the entry when the socket ends.
         """
         cap_cfg = self.cfg.get("capture") or {}
         if not isinstance(cap_cfg, dict):
@@ -1410,9 +1411,22 @@ class Agentcage:
             # Write complete capture entry
             pending = self._cap_pending.pop(flow.id, None)
             if self._capture and pending and cap_outbound_resp is not None:
-                if self._capture.should_capture(pending["decision"], pending["host"]):
+                if self._is_websocket_upgrade(flow):
+                    # The 101 arrives before any frame: keep the entry
+                    # open, with both HTTP halves, for websocket_message
+                    # to add frames to and websocket_end / error to write.
+                    # Only the domain filters are final here; min_action
+                    # is checked at the write, against the decision the
+                    # frames may have escalated (see _finish_ws_capture).
+                    if self._capture.captures_host(pending["host"]):
+                        pending["inbound_resp"] = (
+                            self._capture.snapshot_response(flow)
+                        )
+                        pending["outbound_resp"] = cap_outbound_resp
+                        pending["websocket"] = True
+                        self._cap_pending[flow.id] = pending
+                elif self._capture.should_capture(pending["decision"], pending["host"]):
                     cap_inbound_resp = self._capture.snapshot_response(flow)
-                    ws_msgs = self._capture.pop_ws_messages(flow.id)
                     self._capture.write_entry(
                         flow_id=flow.id,
                         direction=pending["direction"],
@@ -1425,8 +1439,20 @@ class Agentcage:
                         inbound_resp=cap_inbound_resp,
                         outbound_req=pending["outbound_req"],
                         outbound_resp=cap_outbound_resp,
-                        ws_messages=ws_msgs or None,
                     )
+
+    @staticmethod
+    def _is_websocket_upgrade(flow: http.HTTPFlow) -> bool:
+        """True for the 101 response of a WebSocket upgrade.
+
+        The proxy sets ``flow.websocket`` before the response hook exactly
+        when a WebSocket follows (101, ``Upgrade: websocket``, WebSocket
+        support on); the status check keeps a flow whose response an
+        addon replaced from counting.
+        """
+        resp = flow.response
+        return (resp is not None and resp.status_code == 101
+                and getattr(flow, "websocket", None) is not None)
 
     def error(self, flow: http.HTTPFlow) -> None:
         """Release the capture state of a flow that ended in an error.
@@ -1439,11 +1465,47 @@ class Agentcage:
         bodies up to ``max_body_size`` apiece — in memory for the life of
         the process.
 
-        The entry is dropped, not written: there is no response half to
+        Such an entry is dropped, not written: there is no response half to
         pair it with, the audit log already holds the request's decision,
         and a half entry would be a new shape for ``cage har`` and the
-        watcher to read.
+        watcher to read. A WebSocket entry left open past its 101 is the
+        exception: it has both halves, so it is written with the frames
+        recorded so far (see ``_finish_ws_capture``).
         """
+        self._finish_ws_capture(flow)
+
+    def _finish_ws_capture(self, flow: http.HTTPFlow) -> None:
+        """Write a flow's open WebSocket entry, then release its state.
+
+        Called when the socket ends or the flow errors; whichever comes
+        first writes the entry and the other finds nothing. The entry
+        goes to whichever writer is live now, so one swapped in by a
+        reload while the socket was open (it adopted the buffered frames)
+        still records it. ``min_action`` is applied here, against the
+        upgrade's decision escalated by its frames: a socket whose frames
+        were flagged or blocked is captured under ``flag`` / ``block``
+        even though its upgrade was allowed. Anything else the flow holds
+        (a staged non-WebSocket entry) is dropped as before.
+        """
+        pending = self._cap_pending.get(flow.id)
+        if self._capture and pending and pending.get("websocket"):
+            messages, omitted = self._capture.pop_ws_buffer(flow.id)
+            if self._capture.should_capture(pending["decision"], pending["host"]):
+                self._capture.write_entry(
+                    flow_id=flow.id,
+                    direction=pending["direction"],
+                    decision=pending["decision"],
+                    host=pending["host"],
+                    method=pending["method"],
+                    path=pending["path"],
+                    inspectors=pending["inspectors"],
+                    inbound_req=pending["inbound_req"],
+                    inbound_resp=pending["inbound_resp"],
+                    outbound_req=pending["outbound_req"],
+                    outbound_resp=pending["outbound_resp"],
+                    ws_messages=messages or None,
+                    ws_messages_omitted=omitted,
+                )
         self._release_flow_capture(flow)
 
     def _release_flow_capture(self, flow: http.HTTPFlow) -> None:
@@ -1775,16 +1837,9 @@ class Agentcage:
         if not content:
             return
 
-        # Buffer WS frame for capture before any mutation
-        if self._capture and flow.id in self._cap_pending:
-            ws_type = "send" if msg.from_client else "receive"
-            ws_data = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
-            self._capture.add_ws_message(flow.id, {
-                "type": ws_type,
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "opcode": 1 if isinstance(content, str) else 2,
-                "data": ws_data,
-            })
+        # Taken before the inspectors can await, so the recorded time is
+        # the frame's arrival (see _capture_ws_frame).
+        frame_ts = datetime.now(timezone.utc).isoformat()
 
         body_bytes = content if isinstance(content, bytes) else content.encode()
         body_text = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
@@ -1835,6 +1890,7 @@ class Agentcage:
             if blocked:
                 reason = blocked[0].reason
                 msg.drop()
+                decision = "blocked"
                 self._log(flow, "blocked", f"websocket: {reason}", results, direction="outbound")
             else:
                 content, injected = self.injector.inject_ws_content(
@@ -1842,6 +1898,7 @@ class Agentcage:
                 )
                 msg.content = content
                 flagged = [r for r in results if r.action == "flag"]
+                decision = "flagged" if flagged else "allowed"
                 if flagged:
                     reasons = "; ".join(r.reason for r in flagged)
                     self._log(
@@ -1865,8 +1922,13 @@ class Agentcage:
             if blocked:
                 reason = blocked[0].reason
                 msg.drop()
+                decision = "blocked"
                 self._log(flow, "blocked", f"websocket: {reason}", results, direction="inbound")
             else:
+                decision = (
+                    "flagged" if any(r.action == "flag" for r in results)
+                    else "allowed"
+                )
                 if self.log_allowed:
                     self._log(flow, "allowed", "websocket", results, direction="inbound")
 
@@ -1874,16 +1936,51 @@ class Agentcage:
             content, _redacted = self.injector.redact_ws_content(body_bytes)
             msg.content = content
 
-    def websocket_end(self, flow: http.HTTPFlow) -> None:
-        """Release a WebSocket flow's capture state when it closes.
+        self._capture_ws_frame(flow, msg, body_bytes, frame_ts, decision)
 
-        Fires on every close, clean or abnormal. ``response()`` runs for the
-        101 before the first frame and pops the staged entry, so on the
-        normal path nothing is buffered by now; but if that hook bailed out
-        before its pop (an exception mid-way), ``websocket_message`` would
-        buffer every frame of the socket and nothing would ever release it.
+    def _capture_ws_frame(self, flow: http.HTTPFlow, msg, body_bytes: bytes,
+                          ts: str, decision: str) -> None:
+        """Record one WebSocket message on the flow's open capture entry.
+
+        Runs after the message was inspected and rewritten, and only for
+        a flow whose entry ``response()`` kept open at the 101. What is
+        recorded is the message as it arrived (``body_bytes``) with every
+        real secret value swapped for its placeholder: the redaction the
+        cage-bound direction gets before forwarding, and what the HTTP
+        outbound request snapshot holds. For a cage → remote message that
+        is the placeholder form the cage sent, never the injected value
+        (nor a token a transform derived from it); a dropped message that
+        carried a literal secret is redacted the same way. The entry's
+        decision escalates to the worst of its frames' (blocked > flagged
+        > allowed), which ``min_action`` is checked against at the write.
         """
-        self._release_flow_capture(flow)
+        if not self._capture:
+            return
+        pending = self._cap_pending.get(flow.id)
+        if not pending or not pending.get("websocket"):
+            return
+        recorded, _names = self.injector.redact_ws_content(body_bytes)
+        self._capture.add_ws_frame(
+            flow.id,
+            from_client=bool(msg.from_client),
+            is_text=msg.is_text is True,
+            content=recorded,
+            ts=ts,
+            decision=decision,
+        )
+        order = {"allowed": 0, "flagged": 1, "blocked": 2}
+        if order[decision] > order.get(pending["decision"], 0):
+            pending["decision"] = decision
+
+    def websocket_end(self, flow: http.HTTPFlow) -> None:
+        """Write a WebSocket flow's capture entry when the socket ends.
+
+        Fires on every close, clean or abnormal (a dropped connection ends
+        the socket with code 1006). ``response()`` kept the entry open at
+        the 101 and ``websocket_message`` added the frames; this writes it
+        and releases the flow's state (see ``_finish_ws_capture``).
+        """
+        self._finish_ws_capture(flow)
 
     # ── Context building ─────────────────────────────────
 
