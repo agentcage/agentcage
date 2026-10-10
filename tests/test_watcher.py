@@ -1659,13 +1659,13 @@ class TestWatcherHotReload:
         assert a.traffic_watcher._scans == 7
 
     # Review fix (PR #340 follow-up): the unchanged-block path kept the
-    # live watcher WITHOUT re-pointing its refs. ``domains.auto`` gets a
-    # brand new ``PolicyApi`` on every reload (_init_domain_requests
-    # runs unconditionally above _init_watcher), so an unrefreshed
-    # ``_pa`` would keep revoking through a discarded, sweeper-cancelled
-    # instance; and ``secret set`` re-stages the key file without
-    # changing the config value that names it, so the key must be
-    # re-read too.
+    # live watcher WITHOUT re-pointing its refs. Toggling
+    # ``agents.decider`` builds or drops the ``PolicyApi``
+    # (_init_domain_requests runs unconditionally above _init_watcher),
+    # so an unrefreshed ``_pa`` would keep revoking through a discarded,
+    # sweeper-cancelled instance; and ``secret set`` re-stages the key
+    # file without changing the config value that names it, so the key
+    # must be re-read too.
     def test_unchanged_block_still_refreshes_pa_and_key(
             self, tmp_path, monkeypatch):
         a = self._bare_addon(monkeypatch, tmp_path,
