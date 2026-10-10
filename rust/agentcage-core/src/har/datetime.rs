@@ -117,9 +117,16 @@ impl DateTime {
     /// `--since` takes.
     #[must_use]
     pub fn checked_sub_seconds(self, seconds: i64) -> Option<Self> {
-        let civil_micros = seconds
-            .checked_mul(MICROS_PER_SECOND)
-            .and_then(|micros| self.civil_micros.checked_sub(micros))?;
+        self.checked_sub_micros(seconds.checked_mul(MICROS_PER_SECOND)?)
+    }
+
+    /// `self - timedelta(microseconds=micros)`, for a delta that is not a
+    /// whole number of seconds (`timedelta(seconds=3600.5)` is
+    /// microsecond-exact). `None` outside `datetime.min`/`datetime.max`,
+    /// as [`DateTime::checked_sub_seconds`].
+    #[must_use]
+    pub fn checked_sub_micros(self, micros: i64) -> Option<Self> {
+        let civil_micros = self.civil_micros.checked_sub(micros)?;
         if !(MIN_CIVIL_MICROS..=MAX_CIVIL_MICROS).contains(&civil_micros) {
             return None;
         }
