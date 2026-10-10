@@ -202,7 +202,7 @@ class TestDoneHook:
 class TestStartFailureCallback:
     def test_start_failure_logs_to_audit_via_callback(self):
         """Two relays bound to the same listener port — the second
-        ``start()`` raises OSError. The done_callback we attached must
+        ``start()`` raises OSError. The scheduled start task must
         catch the exception and feed it to the audit pipeline rather
         than letting Python emit ``Task exception was never retrieved``
         at GC time."""
@@ -241,7 +241,7 @@ class TestStartFailureCallback:
                         }
                     ]
                 }
-                addon._start_protocol_relays()
+                addon._sync_protocol_relays()
                 # The scheduled start() task runs on the next loop tick.
                 # Yield to let the task run and the callback fire.
                 for _ in range(20):
