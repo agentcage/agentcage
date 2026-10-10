@@ -26,6 +26,7 @@ import time
 from typing import Callable, Optional
 
 from relays._tls import upstream_connect_kwargs
+from relays._validate import RATE_LIMIT_RE, RATE_UNIT_SECS
 from secret_lookup import resolve_credential
 
 log = logging.getLogger("agentcage.relays.imap")
@@ -130,8 +131,9 @@ _STRIPPED_CAPABILITIES_RESTRICTED = frozenset({"REPLACE"})
 _MAILBOX_ARG_COMMANDS = frozenset({"SELECT", "EXAMINE", "STATUS"})
 
 
-_RATE_LIMIT_RE = re.compile(r"^\s*(\d+)\s*/\s*(sec|s|min|m|hour|h)\s*$")
-_RATE_UNIT_SECS = {"sec": 1, "s": 1, "min": 60, "m": 60, "hour": 3600, "h": 3600}
+# One grammar for both relays and the validator — see relays._validate.
+_RATE_LIMIT_RE = RATE_LIMIT_RE
+_RATE_UNIT_SECS = RATE_UNIT_SECS
 
 
 def _parse_rate_limit(spec: str) -> tuple[int, int]:

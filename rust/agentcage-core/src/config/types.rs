@@ -491,9 +491,12 @@ impl Default for RelayUpstream {
 /// `RelayAuth` — the relay's credentials, resolved egress-side.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RelayAuth {
-    /// e.g. `imap-login`.
+    /// Free text such as `imap-login`. Neither relay reads it — IMAP
+    /// always sends `LOGIN`, SMTP always `AUTH PLAIN` — so it is carried
+    /// through and has no effect.
     pub r#type: String,
-    /// Source scheme (`env:` / `cmd:` / `systemd-creds:`).
+    /// `env:NAME` or `systemd-creds:NAME` — see
+    /// [`crate::relays::RELAY_CREDENTIAL_SCHEMES`].
     pub user_source: String,
     /// Source scheme for the password.
     pub password_source: String,
@@ -520,10 +523,10 @@ pub struct RelayPolicy {
     /// Connection rate limit, common to every relay type.
     pub conn_rate_limit: String,
     /// Maximum time the relay waits between commands before
-    /// disconnecting an idle session. 0 disables. Defaults differ per
-    /// relay type: SMTP=300 (5 min, RFC 5321 §4.5.3.2), IMAP=1800 (30
-    /// min, to permit IDLE heartbeats RFC 2177) — applied by the relay
-    /// itself, not here, which is why this defaults to 0.
+    /// disconnecting an idle session. 0 disables. The default differs
+    /// per relay type — see [`RelayPolicy::default_idle_timeout_seconds`]
+    /// — so the parser fills it from the relay's `type`, and an unset
+    /// key reads as the value the egress enforces rather than as 0.
     pub idle_timeout_seconds: i64,
     /// IMAP: refuse everything that writes.
     pub readonly: bool,
@@ -558,10 +561,37 @@ pub struct RelayPolicy {
     pub bypass_inspectors_for_allowlisted: Vec<String>,
 }
 
+/// `relays/imap.py`'s `idle_timeout_seconds` default: 30 minutes, so the
+/// RFC 2177 IDLE heartbeat (every ~29 minutes) never trips it.
+pub const IMAP_IDLE_TIMEOUT_SECONDS: i64 = 1800;
+
+/// `relays/smtp.py`'s `idle_timeout_seconds` default: 5 minutes, the
+/// RFC 5321 §4.5.3.2 floor for command replies.
+pub const SMTP_IDLE_TIMEOUT_SECONDS: i64 = 300;
+
+impl RelayPolicy {
+    /// The idle timeout a relay of `relay_type` enforces when
+    /// `policy.idle_timeout_seconds` is unset.
+    ///
+    /// `cage.yaml`'s `protocol_relays` block reaches the egress verbatim
+    /// in `proxy-config.yaml`, so the relay's own default is what runs;
+    /// this is the host's statement of it. 0 for a type with no relay,
+    /// which validation refuses before anything reads it.
+    #[must_use]
+    pub fn default_idle_timeout_seconds(relay_type: &str) -> i64 {
+        match relay_type {
+            "imap" => IMAP_IDLE_TIMEOUT_SECONDS,
+            "smtp" => SMTP_IDLE_TIMEOUT_SECONDS,
+            _ => 0,
+        }
+    }
+}
+
 impl Default for RelayPolicy {
     fn default() -> Self {
         Self {
             conn_rate_limit: "30/min".to_owned(),
+            // Type-dependent; the parser fills it from the relay type.
             idle_timeout_seconds: 0,
             readonly: false,
             write_mode: String::new(),

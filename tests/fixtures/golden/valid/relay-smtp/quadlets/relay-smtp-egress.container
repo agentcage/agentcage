@@ -118,14 +118,14 @@ Environment="ALLOW_ICMP=0"
 # REDIRECT-supplied original dst and the handshake fails.
 Environment="AGENTCAGE_REGULAR_BIND=10.89.171.10:8080"
 Secret=relay-smtp.GOLDEN_SET_VAR,type=env,target=GOLDEN_SET_VAR
-Secret=relay-smtp.printf fake-smtp-password,type=env,target=printf fake-smtp-password
+Secret=relay-smtp.GOLDEN_SMTP_PASSWORD,type=env,target=GOLDEN_SMTP_PASSWORD
 Volume=%t/agentcage/relay-smtp/secrets:/home/acproxy/secrets:ro,Z
 
 [Service]
 ExecStartPre=/bin/bash -c 'umask 077; mkdir -p "%t/agentcage/relay-smtp/secrets"'
 ExecStartPre=-/bin/bash -c 'podman unshare chown -R 0:0 "%t/agentcage/relay-smtp/secrets"'
 ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/relay-smtp/secrets/GOLDEN_SET_VAR"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "relay-smtp.GOLDEN_SET_VAR" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
-ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/relay-smtp/secrets/printf fake-smtp-password"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "relay-smtp.printf fake-smtp-password" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
+ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/relay-smtp/secrets/GOLDEN_SMTP_PASSWORD"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "relay-smtp.GOLDEN_SMTP_PASSWORD" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
 ExecStartPre=-/bin/bash -c 'podman unshare chown -R 200:200 "%t/agentcage/relay-smtp/secrets"'
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-relay-smtp --format "{{.Mountpoint}}") && podman unshare chown 200:200 "$mp"'
 Restart=on-failure

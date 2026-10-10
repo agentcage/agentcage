@@ -186,6 +186,20 @@ class TestParseRateLimit:
         with pytest.raises(ValueError):
             _parse_rate_limit("nonsense")
 
+    def test_unit_is_case_insensitive(self):
+        # The unit is lowercased after matching, so "MIN" was always
+        # meant to work; the regex refused it before the lowercase ran.
+        assert _parse_rate_limit("10/MIN") == (10, 60)
+        assert _parse_rate_limit("2 / Hour") == (2, 3600)
+
+    def test_grammar_is_ascii_only(self):
+        # The host validates the same grammar, so both sides must agree
+        # on what a digit and a space are: ASCII, not Unicode.
+        with pytest.raises(ValueError):
+            _parse_rate_limit("\u0661\u0660/min")
+        with pytest.raises(ValueError):
+            _parse_rate_limit("10/\u017f")
+
 
 class TestRateLimiter:
     def test_allows_up_to_max(self):

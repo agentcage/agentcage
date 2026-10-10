@@ -1,11 +1,11 @@
 {
   "components": {
-    "cage_yaml": "ab5e48b4bd88e261946d787c7e11f33d8049312fe3f832d1bd00747f49051acb",
+    "cage_yaml": "8c25339e237033074a6d523f6f74149fa7e6d655910ea92c62e1d6b10a448f12",
     "image_digests": "9d1e4448fd473489a1c3f104a0df5f710b9cfd0334898134fde4c1595b37d578",
-    "resolved_config": "8cf6e41d07acac76c56ec9df2ee064f4369b3a57dbaf3b5d79be460ed9058011",
+    "resolved_config": "d1e4b58a1096203e85a8c23cedfbbc77d5bb6caa98c7e1fda3e2304ab3caedb0",
     "scaffold_version": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "units": "7089987d6e9ca377100576f3c194efdec14c66ce5073d5c14d18984c74db77c9"
+    "units": "a34e962f92a2ebe55be8b13293004e2ce4cc96d5c27e09580ab3c1a4e86cbed9"
   },
-  "fingerprint": "6e28c952031d899f7fe154e99fe75452ef503dac3e78fff5b1e90f8ec42a255a",
+  "fingerprint": "609df779edbf8a7b3d5daf36c5cc1d8112708dc8de9c34debfa87a12e86b6c02",
   "version": 1
 }

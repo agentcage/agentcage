@@ -131,7 +131,7 @@
         "conn_rate_limit": "30/min",
         "folder_allowlist": [],
         "folder_denylist": [],
-        "idle_timeout_seconds": 0,
+        "idle_timeout_seconds": 300,
         "max_message_bytes": 5242880,
         "max_recipients": 10,
         "readonly": false,

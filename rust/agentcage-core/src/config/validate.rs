@@ -574,6 +574,27 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         }
     }
 
+    // ── protocol_relays credential schemes ──────────────
+    //
+    // Parse time already refused an unknown scheme (`vault:`); this is
+    // the narrower set a relay can actually use. It is here, not in the
+    // parser, for the reason `agents.*.api_key`'s scheme check is: a
+    // stored config that predates it still loads, and the next
+    // `cage create` / `cage update` names the fix. Placed before the
+    // agents blocks so those stay last, where every existing corpus
+    // case expects them.
+    for relay in &config.protocol_relays {
+        for (key, source) in [
+            ("user_source", &relay.auth.user_source),
+            ("password_source", &relay.auth.password_source),
+        ] {
+            crate::relays::validate_relay_credential_source(
+                source,
+                &format!("protocol_relays[{}].auth.{key}", relay.name),
+            )?;
+        }
+    }
+
     // ── C3: the agents blocks ───────────────────────────
     //
     // `config.py`'s "Policy API validation", "agents.decider validation"
@@ -1147,6 +1168,58 @@ mod tests {
         assert_eq!(
             error.message(),
             "ports.tcp.allow entry 443 appears more than once"
+        );
+    }
+
+    /// A relay credential must name a secret the egress can look up.
+    ///
+    /// The relay resolves `auth.*_source` by the NAME after the colon,
+    /// from the files and env vars the egress unit stages; nothing on
+    /// any backend runs a `cmd:` command for a relay (its NAME would be
+    /// the command text — the golden corpus used to render
+    /// `Secret=<cage>.printf fake-smtp-password`), and a `podman:` NAME
+    /// is never staged into the VM guest.
+    #[test]
+    fn a_relay_credential_must_use_a_scheme_the_egress_can_resolve() {
+        use crate::config::types::{ProtocolRelay, RelayAuth};
+        let relay = |user: &str, password: &str| {
+            let mut config = named("cage");
+            config.protocol_relays.push(ProtocolRelay {
+                name: "mail".to_owned(),
+                r#type: "smtp".to_owned(),
+                listen: "0.0.0.0:1025".to_owned(),
+                auth: RelayAuth {
+                    r#type: String::new(),
+                    user_source: user.to_owned(),
+                    password_source: password.to_owned(),
+                },
+                ..ProtocolRelay::default()
+            });
+            validate(&config, &FixedValidationHost::linux())
+        };
+        assert!(relay("env:MAIL_USER", "systemd-creds:MAIL_PW").is_ok());
+        // Absent credentials are the relay's own startup failure, not a
+        // scheme problem.
+        assert!(relay("", "").is_ok());
+        assert_eq!(
+            relay("env:MAIL_USER", "cmd:pass show mail")
+                .expect_err("cmd")
+                .message(),
+            "protocol_relays[mail].auth.password_source does not support cmd: sources \
+             (the relay looks its credential up by NAME inside the egress, which runs no \
+             commands); use env:NAME or systemd-creds:NAME"
+        );
+        assert_eq!(
+            relay("podman:MAIL_USER", "env:MAIL_PW")
+                .expect_err("podman")
+                .message(),
+            "protocol_relays[mail].auth.user_source does not support podman: sources; use \
+             env:NAME or systemd-creds:NAME"
+        );
+        assert_eq!(
+            relay("env:", "env:MAIL_PW").expect_err("no name").message(),
+            "protocol_relays[mail].auth.user_source must use the 'source:NAME' scheme \
+             (e.g. 'env:NAME' or 'systemd-creds:NAME') — got 'env:'"
         );
     }
 

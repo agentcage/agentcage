@@ -16,7 +16,7 @@
 //!
 //! | File | Rust side |
 //! | :-- | :-- |
-//! | `validate_relay_entry.json` | [`agentcage_core::relays`] — 115 cases |
+//! | `validate_relay_entry.json` | [`agentcage_core::relays`] — 139 cases |
 //! | `shared_constants.json` | the constants both sides duplicate |
 //! | `scaffold_inspectors.json` | the host half of the inspector handshake |
 //!
@@ -66,8 +66,8 @@ fn as_yaml(entry: &serde_json::Value) -> Value {
 
 /// Every `validate_relay_entry` case, byte for byte.
 ///
-/// This is PR C3's headline acceptance check. 115 cases reach every
-/// `raise ValueError` branch in `_validate.py`; six `order-*` cases
+/// This is PR C3's headline acceptance check. 139 cases reach every
+/// `raise ValueError` branch in `_validate.py`; nine `order-*` cases
 /// pin *which* of two problems an entry with both is told about, which
 /// is the part a second implementation gets wrong silently.
 #[test]
@@ -147,18 +147,18 @@ fn every_validate_relay_entry_case_matches() {
     );
     assert_eq!(
         cases.len(),
-        115,
+        139,
         "the fixture grew or shrank; if that is intended, update this number and read \
          the new cases"
     );
     assert_eq!(
         messages.len(),
-        52,
+        66,
         "the number of DISTINCT error messages changed -- a branch was added, removed \
          or reworded"
     );
     assert_eq!(
-        ordering, 6,
+        ordering, 9,
         "the check-order cases are the contract's sharpest half"
     );
     println!(

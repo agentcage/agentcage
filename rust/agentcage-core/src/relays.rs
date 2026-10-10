@@ -28,8 +28,8 @@
 //! # The oracle is neither implementation
 //!
 //! `tests/fixtures/contracts/validate_relay_entry.json` (PR A4) holds
-//! 107 `(entry, ok, error)` cases covering every `raise ValueError`
-//! branch in `_validate.py`, plus six `order-*` cases pinning which of
+//! 130 `(entry, ok, error)` cases covering every `raise ValueError`
+//! branch in `_validate.py`, plus nine `order-*` cases pinning which of
 //! two problems is reported first. pytest asserts the Python against
 //! it; `tests/contract_relay_entry.rs` asserts this module against it.
 //!
@@ -91,6 +91,14 @@ pub const KNOWN_RELAY_TYPES: [&str; 2] = ["imap", "smtp"];
 /// [`KNOWN_RELAY_TYPES`], and pinned by `shared_constants.json`.
 pub const WRITE_MODES: [&str; 3] = ["full", "none", "organise"];
 
+/// The policy keys holding a rate, in the order they are checked.
+const RATE_KEYS: [&str; 2] = ["conn_rate_limit", "send_rate_limit"];
+
+/// The units a rate may name, in their lowercase spelling.
+///
+/// `RATE_UNIT_SECS` in `_validate.py`. Matched ASCII-case-insensitively.
+pub const RATE_UNITS: [&str; 6] = ["sec", "s", "min", "m", "hour", "h"];
+
 /// What a `source_validator` hook is.
 ///
 /// `_validate.py` takes source-scheme validation as an optional
@@ -133,7 +141,7 @@ pub fn validate_relay_type(name: &str) -> Result<(), ConfigError> {
 // The checks are in one function, in `_validate.py`'s order, for the
 // same reason `config::parse::load` is one function: the order is
 // observable. An entry with two problems reports whichever check comes
-// first, and six `order-*` fixture cases exist only to pin that.
+// first, and nine `order-*` fixture cases exist only to pin that.
 #[allow(clippy::too_many_lines)]
 pub fn validate_relay_entry(
     entry: &Value,
@@ -340,6 +348,26 @@ pub fn validate_relay_entry(
                 }
             }
         }
+        // The relays read these as `str(policy.get(key) or default)`, so
+        // a falsy value is "absent" and gets the default. Anything else
+        // that misses the grammar used to pass here and then fail at
+        // egress start with `relay_init_failed`, after `cage create` had
+        // reported success.
+        for key in RATE_KEYS {
+            match policy.get(key) {
+                Some(value) if python_bool(value) => {
+                    let valid = matches!(value, Value::String(text) if is_rate_limit(text));
+                    if !valid {
+                        return Err(ConfigError::value(format!(
+                            "{at}.policy.{key} must be a rate like '30/min': a count, '/', \
+                             then a unit of sec, s, min, m, hour or h (got {})",
+                            repr(value)
+                        )));
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     // ── auth ────────────────────────────────────────────
@@ -353,6 +381,93 @@ pub fn validate_relay_entry(
         }
     }
 
+    Ok(())
+}
+
+/// Whether `text` is a rate both relays can parse.
+///
+/// `RATE_LIMIT_RE` in `_validate.py`, which the relays share:
+/// `^\s*(\d+)\s*/\s*(sec|s|min|m|hour|h)\s*$` under `re.ASCII |
+/// re.IGNORECASE`. Spelled out rather than pulled in from a regex crate,
+/// and ASCII on purpose on both sides: `\s` is Python's ASCII set, which
+/// has the vertical tab that `char::is_ascii_whitespace` leaves out, and
+/// a Unicode `\d` or case fold would accept text (`١٠`, `ſ`) a reader
+/// would not call a count or a unit.
+#[must_use]
+pub fn is_rate_limit(text: &str) -> bool {
+    let space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c');
+    let Some((count, unit)) = text.trim_matches(space).split_once('/') else {
+        return false;
+    };
+    let count = count.trim_end_matches(space);
+    let unit = unit.trim_start_matches(space).to_ascii_lowercase();
+    !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()) && RATE_UNITS.contains(&&*unit)
+}
+
+/// The secret schemes a relay credential can use.
+///
+/// Narrower than [`crate::config::secret::KNOWN_SOURCE_SCHEMES`], the
+/// set `validate_relay_entry`'s `source_validator` hook checks at
+/// parse time. The relay resolves `auth.*_source` by the NAME after the
+/// colon, from the staged secret files and env vars the egress unit
+/// provides (`secret_lookup.py`), and only two schemes put a value
+/// there under that NAME:
+///
+/// - `env:NAME` — the secret store's entry NAME on podman and
+///   apple-container (`Secret=<cage>.NAME`, the staged secret file), and
+///   the host's `NAME` variable, copied into the guest, on vm;
+/// - `systemd-creds:NAME` — decrypted from `NAME.cred` into the same
+///   store entry by the egress unit's `ExecStartPre`.
+///
+/// `cmd:` cannot work: nothing runs a relay's command (the egress has no
+/// shell, and `resolve_and_populate` materializes only injection rules
+/// and agent keys), so its NAME is the command text and the quadlet
+/// renders `Secret=<cage>.pass show mail`. `podman:` resolves on podman
+/// only by coincidence and is never staged into a vm guest. This is the
+/// same narrowing `agents.*.api_key` makes, for the same reason.
+pub const RELAY_CREDENTIAL_SCHEMES: [&str; 2] = ["env", "systemd-creds"];
+
+/// Check one relay credential source against [`RELAY_CREDENTIAL_SCHEMES`].
+///
+/// Host-only, and not part of the `validate_relay_entry` contract: the
+/// egress passes no `source_validator` and never sees which scheme the
+/// host used. It runs from `validate_config` rather than from the
+/// parser, as `agents.*.api_key`'s scheme check does, so a stored
+/// `cage.yaml` written before the check still loads and only the next
+/// `cage create` / `cage update` refuses it.
+///
+/// `path` is the full key, e.g. `protocol_relays[mail].auth.user_source`.
+/// An empty source passes: missing credentials are the relay's own
+/// startup failure, not a scheme problem.
+///
+/// # Errors
+///
+/// [`ConfigError::Value`] for a source with no NAME, a `cmd:` source, or
+/// any other scheme outside [`RELAY_CREDENTIAL_SCHEMES`].
+pub fn validate_relay_credential_source(source: &str, path: &str) -> Result<(), ConfigError> {
+    if source.is_empty() {
+        return Ok(());
+    }
+    let (scheme, name) = source.split_once(':').unwrap_or(("", ""));
+    if scheme.is_empty() || name.is_empty() {
+        return Err(ConfigError::value(format!(
+            "{path} must use the 'source:NAME' scheme (e.g. 'env:NAME' or \
+             'systemd-creds:NAME') — got {}",
+            crate::python::repr_str(source)
+        )));
+    }
+    if scheme == "cmd" {
+        return Err(ConfigError::value(format!(
+            "{path} does not support cmd: sources (the relay looks its credential up by \
+             NAME inside the egress, which runs no commands); use env:NAME or \
+             systemd-creds:NAME"
+        )));
+    }
+    if !RELAY_CREDENTIAL_SCHEMES.contains(&scheme) {
+        return Err(ConfigError::value(format!(
+            "{path} does not support {scheme}: sources; use env:NAME or systemd-creds:NAME"
+        )));
+    }
     Ok(())
 }
 

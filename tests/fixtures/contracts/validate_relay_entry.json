@@ -1822,6 +1822,414 @@
       "source_validator_calls": []
     },
     {
+      "id": "ok-rate-limits",
+      "why": "both rate keys in their documented form",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "10/min",
+          "send_rate_limit": "20/hour"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-rate-short-units",
+      "why": "the one-letter units",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "1/s",
+          "send_rate_limit": "4/h"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-rate-sec-and-m",
+      "why": "the remaining two units",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "1/sec",
+          "send_rate_limit": "3/m"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-rate-unit-uppercase",
+      "why": "the unit is case-insensitive: the relays lowercase it after matching, so the intent was always to accept it",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "10/MIN",
+          "send_rate_limit": "20/Hour"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-rate-whitespace",
+      "why": "whitespace around the count, the slash and the unit is allowed",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": " 3 / s ",
+          "send_rate_limit": "5\t/\th\n"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-rate-vertical-tab-form-feed",
+      "why": "an ASCII \\s includes vertical tab and form feed; a port that trims only its language's ASCII whitespace set misses the vertical tab",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "3/s\u000b",
+          "send_rate_limit": "\f4/h"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-rate-null-and-empty",
+      "why": "a falsy rate is absent and the relay applies its default (`or '30/min'`)",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": null,
+          "send_rate_limit": ""
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-rate-falsy-int",
+      "why": "0 is falsy, so it is absent too, not a malformed rate",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": 0
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-conn-rate-word-unit",
+      "why": "'minute' is not a unit; the relay used to accept the config and then fail at egress start",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "10/minute"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '10/minute')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-send-rate-word-unit",
+      "why": "the same mistake on the SMTP send cap",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "send_rate_limit": "10/minute"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.send_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '10/minute')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-no-count",
+      "why": "the count is required",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "/min"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '/min')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-negative",
+      "why": "the count is unsigned",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "-1/min"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '-1/min')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-fraction",
+      "why": "the count is a whole number",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "1.5/min"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '1.5/min')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-no-unit",
+      "why": "a bare count has no window",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "10"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '10')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-trailing-garbage",
+      "why": "the whole string must match, not a prefix",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "10/min;"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '10/min;')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-int",
+      "why": "a truthy non-string is refused with its repr; the relay would str() it and fail the grammar",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": 10
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got 10)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-list",
+      "why": "a list is not a rate",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "send_rate_limit": [
+            "10/min"
+          ]
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.send_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got ['10/min'])",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-bool",
+      "why": "true is truthy and not a rate",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": true
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got True)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-non-ascii-digits",
+      "why": "the grammar is ASCII: Arabic-Indic digits are a Unicode \\d but not a count",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "\u0661\u0660/min"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '\u0661\u0660/min')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-long-s-unit",
+      "why": "ASCII case folding only: U+017F folds to 's' under Unicode IGNORECASE",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "10/\u017f"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '10/\u017f')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-rate-next-line-space",
+      "why": "U+0085 is a Unicode \\s but not an ASCII one",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "10\u0085/min"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got '10\\x85/min')",
+      "source_validator_calls": []
+    },
+    {
       "id": "err-auth-list",
       "why": "auth as a list",
       "entry": {
@@ -1974,6 +2382,66 @@
       },
       "ok": false,
       "error": "protocol_relays[mail].policy.write_mode must be one of full, none, organise (got 'bogus')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-conn-rate-before-send-rate",
+      "why": "conn_rate_limit is checked before send_rate_limit",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "x",
+          "send_rate_limit": "y"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got 'x')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-folders-before-rate",
+      "why": "the folder lists are checked before the rates",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "folder_allowlist": "INBOX",
+          "conn_rate_limit": "x"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.folder_allowlist must be a list (got str)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-rate-before-auth",
+      "why": "a rate error is reported before an auth error",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        },
+        "policy": {
+          "conn_rate_limit": "x"
+        },
+        "auth": "bob"
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.conn_rate_limit must be a rate like '30/min': a count, '/', then a unit of sec, s, min, m, hour or h (got 'x')",
       "source_validator_calls": []
     }
   ]

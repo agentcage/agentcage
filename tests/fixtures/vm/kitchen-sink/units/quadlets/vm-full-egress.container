@@ -131,7 +131,7 @@ Environment="AGENTCAGE_REGULAR_BIND=10.89.175.10:8080"
 Secret=vm-full.ANTHROPIC_API_KEY,type=env,target=ANTHROPIC_API_KEY
 Secret=vm-full.GITHUB_TOKEN,type=env,target=GITHUB_TOKEN
 Secret=vm-full.GOLDEN_SET_VAR,type=env,target=GOLDEN_SET_VAR
-Secret=vm-full.printf fake-smtp-password,type=env,target=printf fake-smtp-password
+Secret=vm-full.GOLDEN_SMTP_PASSWORD,type=env,target=GOLDEN_SMTP_PASSWORD
 Secret=vm-full.OPENROUTER_API_KEY,type=env,target=OPENROUTER_API_KEY
 Volume=%t/agentcage/vm-full/secrets:/home/acproxy/secrets:ro,Z
 
@@ -141,7 +141,7 @@ ExecStartPre=-/bin/bash -c 'podman unshare chown -R 0:0 "%t/agentcage/vm-full/se
 ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/vm-full/secrets/ANTHROPIC_API_KEY"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "vm-full.ANTHROPIC_API_KEY" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
 ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/vm-full/secrets/GITHUB_TOKEN"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "vm-full.GITHUB_TOKEN" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
 ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/vm-full/secrets/GOLDEN_SET_VAR"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "vm-full.GOLDEN_SET_VAR" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
-ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/vm-full/secrets/printf fake-smtp-password"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "vm-full.printf fake-smtp-password" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
+ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/vm-full/secrets/GOLDEN_SMTP_PASSWORD"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "vm-full.GOLDEN_SMTP_PASSWORD" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
 ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/vm-full/secrets/OPENROUTER_API_KEY"; if v=$(podman secret inspect --showsecret --format "{{.SecretData}}" "vm-full.OPENROUTER_API_KEY" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
 ExecStartPre=-/bin/bash -c 'podman unshare chown -R 200:200 "%t/agentcage/vm-full/secrets"'
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-vm-full --format "{{.Mountpoint}}") && podman unshare chown 200:200 "$mp"'
