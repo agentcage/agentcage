@@ -53,7 +53,7 @@ secret_injection:
 | `secret_injection` | list[object] | `[]` | Declarative rules for injecting real credentials on the wire. |
 | `agents` | object | `{}` | Autonomous LLM policy gatekeepers (`decider`, `watcher`). |
 | `inspectors` | list[object] | Built-ins | Custom Python traffic inspection plugins. |
-| `protocol_relays`| list[object] | `[]` | Hardened non-HTTP protocol relays (IMAP, SMTP). |
+| `protocol_relays`| list[object] | `[]` | Hardened non-HTTP protocol relays (IMAP, SMTP). See [Protocol Relays Reference](protocol-relays.md). |
 | `logging` | object | `{}` | Operational and DNS query logging verbosity. |
 | `capture` | object | `{}` | L7 payload capture and HAR 1.2 generation settings. |
 | `vm` | object | `{}` | Resource allocations for the Lima VM backend. |
@@ -208,34 +208,93 @@ secret_injection:
 
 ## 5. `agents` (Decider & Watcher)
 
-Configures autonomous in-egress LLM models for runtime access control:
+Two optional LLM agents that run inside the egress. The **decider** rules on the domain requests a cage makes through the [Policy API](policy-api.md). The **watcher** reviews the cage's recent traffic after the fact and can revoke runtime grants. Both are off unless `enable: true`, and a disabled agent's other settings are not used. See [Policy API & Decider](../explain/policy-api.md) and [Traffic Watcher](../explain/traffic-watcher.md) for how they behave.
 
 ```yaml
+domains:
+  allow:
+    - pypi.org
+    - files.pythonhosted.org
+
 agents:
   decider:
     enable: true
-    provider: openrouter # openrouter | anthropic | openai
+    provider: openrouter # anthropic | openai | openrouter
     model: z-ai/glm-5.3
+    api_key: env:OPENROUTER_API_KEY # required; env:NAME or systemd-creds:NAME
     context: >
       This cage is running a Python unit test suite.
       Approve access to official PyPI and GitHub releases.
       Deny access to file upload services and social networks.
-    rate_limit_rps: 2.0
-    rate_limit_burst: 5
+    rate_limit:
+      requests_per_second: 2.0
+      burst: 5
 
   watcher:
     enable: true
-    interval_seconds: 300 # Run scan every 5 minutes
-    window_seconds: 600 # Analyze last 10 minutes of traffic
-    max_flows: 100 # Maximum flows analyzed per execution
-    auto_revoke: true # Autonomously revoke abused runtime grants
-    dedup_samples: true # Deduplicate polling requests
-    max_digest_tokens: 8000 # Truncate LLM context to 8,000 tokens
     provider: openrouter
     model: z-ai/glm-5.3
+    api_key: env:OPENROUTER_API_KEY # the decider's key may be reused
+    interval_seconds: 900 # one scan every 15 minutes at most
+    window_seconds: 3600 # look-back for the first scan after an egress (re)start
+    max_flows: 200 # capture samples per digest
+    max_digest_tokens: 8000 # spend ceiling per scan
+    auto_revoke: true # revoke runtime grants the analysis condemns
+    dedup_samples: true # collapse repeated flow shapes into one sample
     context: >
       Inspect traffic for data exfiltration patterns or encoded source code.
 ```
+
+The LLM settings sit directly on each agent block. `rate_limit` is the only nested mapping. A key the host does not know is ignored without a warning, so check the spelling. Flat `rate_limit_rps` / `rate_limit_burst`, for example, do nothing.
+
+`api_key` names an egress-only secret: the egress reads the value and the cage never sees it. Store it like any other secret, with `agentcage secret set <cage> NAME` or `-s NAME` at `cage create`. An `env:` name is also removed from the cage's `container.env`.
+
+### Defaults and accepted values
+
+Keys both agents take:
+
+| Key | Default | Accepted values |
+| :-- | :-- | :-- |
+| `enable` | `false` | `true` or `false`. A real boolean: `"false"` in quotes is refused. |
+| `provider` | none, required | `anthropic`, `openai` or `openrouter`, exactly (lowercase). |
+| `model` | none, required | The provider's model identifier. |
+| `api_key` | none, required | `env:NAME` or `systemd-creds:NAME`. `cmd:` and other schemes are refused: the egress has no shell. |
+| `base_url` | the provider's own endpoint | An `https://` URL with a host. `http://` is refused because the key is sent on every call. |
+| `timeout_seconds` | decider `15`, watcher `30` | Finite and greater than 0. |
+| `max_tokens` | `8192` | At least `1024`. The budget includes a reasoning model's thinking tokens, so a smaller value can leave no room for the answer. Providers bill tokens generated, not this ceiling. |
+| `context` | `""` (off) | A string of at most 4096 characters after trimming. It is added to the agent's system prompt as trusted operator guidance. It does not override the never-grant floor or the rate limit. |
+
+`agents.decider` only:
+
+| Key | Default | Accepted values |
+| :-- | :-- | :-- |
+| `host` | `agentcage.local` | A dotted hostname. Not an IP literal or a single label, and not listed in `domains.allow`, `block` or `passthrough`. This is the synthetic control host the cage calls. |
+| `rate_limit.requests_per_second` | `1.0` | `>= 0`. `0` disables the limit. |
+| `rate_limit.burst` | `5` | `>= 0`. |
+
+The decider requires `domains` allowlist mode. In blocklist mode everything not blocked is already reachable, so a grant means nothing. Some decider limits are fixed and have no config key:
+- at most 32 runtime grants at once;
+- it never grants `internal`, `local`, `localhost`, `metadata.goog` or the control host, and that includes their subdomains.
+
+`agents.watcher` only:
+
+| Key | Default | Accepted values |
+| :-- | :-- | :-- |
+| `interval_seconds` | `900` | `>= 60`. One scan per interval at most, and none when the window had no traffic. |
+| `window_seconds` | `3600` | Greater than 0 and at most `86400`. How far back into the capture the first scan after an egress (re)start reads. |
+| `max_flows` | `200` | `10` to `2000`. |
+| `max_digest_tokens` | `8000` | `0` (unbounded, with a warning) or `2000` to `500000`. This is the only setting that caps spend whatever the traffic volume. |
+| `auto_revoke` | `true` | A real boolean. With `false`, revocations become findings for you to apply. |
+| `dedup_samples` | `true` | A real boolean. |
+
+The watcher refuses `domains` blocklist mode: there the baseline is the block list, so its recommendations would widen egress instead of narrowing it. `cage create` warns when `max_digest_tokens` and `interval_seconds` together allow more than 5 million input tokens a day.
+
+The agent schema was flattened in 0.40. These older forms are refused:
+- `domains.auto`;
+- a top-level `watcher:`;
+- any agent other than `decider` and `watcher`;
+- `kind:`;
+- LLM fields nested under `agent:` or `decider:`.
 
 ---
 
@@ -273,8 +332,15 @@ vm:
 
 ---
 
+## 8. `protocol_relays` (IMAP & SMTP)
+
+A list of hardened IMAP and SMTP relays that run in the egress, hold the mailbox credentials, and apply policy to every command the cage sends. Every key, its default and what the relays log is in the **[Protocol Relays Reference](protocol-relays.md)**.
+
+---
+
 ## Next Steps
 
 - **[CLI Reference](cli.md)** — Learn all commands to create, update, and manage cages.
+- **[Protocol Relays Reference](protocol-relays.md)** — `protocol_relays` keys, defaults and audit records.
 - **[Policy API Reference](policy-api.md)** — HTTP endpoints for dynamic domain requests.
 - **[Secrets Reference](secrets.md)** — Secret storage and placeholder lifecycles.
