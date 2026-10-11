@@ -38,9 +38,10 @@ use crate::audit::{self, AuditSink as _, AuditWriter};
 use crate::capture::Capture;
 use crate::config::{self, Config};
 use crate::inject::Injector;
-use crate::inspect::chain::{Chain, NoPlugins, PluginLoader, build_chain};
+use crate::inspect::chain::{Chain, PluginLoader, build_chain};
 use crate::inspect::domain::DomainInspector;
 use crate::llm::{LlmClient, ToolCaller, UreqTransport};
+use crate::plugin::WasmPluginLoader;
 use crate::policy::{PolicyApi, PolicyPaths, Revocation, SystemEnv, decider_enabled};
 use crate::proxy::PassthroughMatcher;
 use crate::relays::RelaySettings;
@@ -112,14 +113,14 @@ impl std::fmt::Debug for EngineOptions {
 impl EngineOptions {
     /// Production options from the environment (`AGENTCAGE_AUDIT_LOG`,
     /// `AGENTCAGE_CAPTURE`, `AGENTCAGE_GRANTS_DIR`, `AGENTCAGE_DNS_PUBLISH`)
-    /// with no plugins.
+    /// with custom inspectors loaded from `AGENTCAGE_INSPECTOR_DIRS`.
     #[must_use]
     pub fn from_env(config_path: Option<PathBuf>) -> Self {
         Self {
             config_path,
             audit: Arc::new(AuditWriter::from_env()),
             capture: Arc::new(Capture::from_env()),
-            plugins: Arc::new(NoPlugins),
+            plugins: Arc::new(WasmPluginLoader::from_env()),
             policy_paths: PolicyPaths::from_env(),
             watcher_paths: WatcherPaths::from_env(),
         }
@@ -620,6 +621,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inspect::chain::NoPlugins;
 
     fn tmp(tag: &str) -> PathBuf {
         let n = SystemTime::now()
