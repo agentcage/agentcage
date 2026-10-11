@@ -98,8 +98,8 @@ audit_lines() { "$AGENTCAGE" cage audit "$CAGE" --json-lines -n 1000 2>/dev/null
 # wait_audit PATTERN... — poll (20s) until one audit line contains every
 # PATTERN (fixed strings). Audit records are written asynchronously.
 wait_audit() {
-  local i line ok
-  for i in $(seq 1 20); do
+  local line ok p
+  for _ in $(seq 1 20); do
     while IFS= read -r line; do
       ok=true
       for p in "$@"; do
@@ -117,8 +117,8 @@ wait_audit() {
 # lib.sh for why the namespace is joined by path), and wait until all four
 # listeners answer.
 start_services() {
-  local netns i
-  for i in $(seq 1 30); do
+  local netns
+  for _ in $(seq 1 30); do
     netns=$(_egress_netns "$CAGE")
     [ -n "$netns" ] && break
     sleep 1
@@ -135,7 +135,7 @@ start_services() {
     _dump_captured "podman run mock-services FAILED (exit $rc)" "$out"
     return 1
   fi
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     if podman exec "${CAGE}-svc" python3 -c "
 import socket
 for port in (3143, 3025, 18089, 443):
