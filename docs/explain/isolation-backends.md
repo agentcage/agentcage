@@ -57,7 +57,7 @@ The `apple-container` backend is designed specifically for Apple Silicon Macs ru
 
 ### How It Works
 - Instead of running a heavy virtual machine, it leverages Apple's native container virtualization framework to spin up **two lightweight Linux microVMs per cage** (`<name>-cage` and `<name>-egress`).
-- The egress microVM acts as the network router and supervisor, running `dnsmasq` and `mitmdump`.
+- The egress microVM acts as the network router and supervisor, running `dnsmasq` and the egress proxy (`agentcage-egress`), from the same egress image the other backends use.
 - Managed on macOS by a unified agentcage supervisor and launchd daemon.
 
 ### Strengths

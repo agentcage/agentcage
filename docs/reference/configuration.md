@@ -29,7 +29,6 @@ secret_injection:
   - env: ANTHROPIC_API_KEY
     inject_to:
       - api.anthropic.com
-    inject_headers: true
 ```
 
 ---
@@ -52,7 +51,11 @@ secret_injection:
 | `secrets` | object | `{}` | Encrypted secret storage backend configuration. |
 | `secret_injection` | list[object] | `[]` | Declarative rules for injecting real credentials on the wire. |
 | `agents` | object | `{}` | Autonomous LLM policy gatekeepers (`decider`, `watcher`). |
-| `inspectors` | list[object] | Built-ins | Custom Python traffic inspection plugins. |
+| `inspectors` | list[object] | `[]` | Settings for the built-in inspectors, and custom inspectors (WebAssembly components). See [Inspectors](#7-inspectors). |
+| `max_request_body` | integer | `10485760` | Request body limit of the `body-size` inspector, in bytes. `0` disables it. |
+| `entropy` | object | off | Enables and configures the `entropy` inspector. See [Inspectors](#7-inspectors). |
+| `content_type` | object or `false` | on | Configures the `content-type` inspector; `false` turns it off. |
+| `rate_limit` | object | 10 rps, burst 50 | Per-host request rate limit in the egress (`requests_per_second`, `burst`). |
 | `protocol_relays`| list[object] | `[]` | Hardened non-HTTP protocol relays (IMAP, SMTP). See [Protocol Relays Reference](protocol-relays.md). |
 | `logging` | object | `{}` | Operational and DNS query logging verbosity. |
 | `capture` | object | `{}` | L7 payload capture and HAR 1.2 generation settings. |
@@ -133,7 +136,7 @@ container:
 
 ## 2. `domains` (Egress Policy)
 
-Defines network filtering rules enforced by `dnsmasq` and `mitmdump`:
+Defines the domain policy, enforced by `dnsmasq` (which names resolve) and by the egress proxy's `domain` inspector (which requests are allowed):
 
 ```yaml
 domains:
@@ -141,22 +144,22 @@ domains:
   allow:
     - api.anthropic.com
     - github.com
-    - "*.githubusercontent.com"
+    - githubusercontent.com # also covers raw.githubusercontent.com etc.
   block:
     - telemetry.example.com
   passthrough:
     - pinned-api.example.com
   expires:
-    temp-download.com: "2026-09-08T18:00:00Z"
+    temp-download.com: "2026-09-08T18:00:00+00:00"
 ```
 
 - **`mode`** *(string, default: "allowlist")*:
   - `allowlist`: Default-deny. Only domains matching `allow` or active runtime grants can resolve and connect.
   - `blocklist`: Default-allow. All domains connect except those listed in `block`.
-- **`allow`** *(list[string])*: Allowed domain patterns. Leading wildcards (e.g. `*.npmjs.org`) match all subdomains. Single-label LAN hostnames are accepted for operator configurations.
-- **`block`** *(list[string])*: Explicitly forbidden domains. Overrides allow rules.
-- **`passthrough`** *(list[string])*: Domains exempt from TLS MITM decryption. The proxy tunnels raw TCP streams without inspecting bodies or injecting secrets. Required for services using certificate pinning.
-- **`expires`** *(map[string, string])*: ISO 8601 timestamps defining when specific domain entries automatically expire.
+- **`allow`** *(list[string])*: Allowed domains. Each entry matches the name itself and every subdomain (`npmjs.org` covers `registry.npmjs.org`); there is no wildcard syntax, and `*.npmjs.org` is refused. Entries are plain lowercase hostnames; single-label LAN hostnames are accepted.
+- **`block`** *(list[string])*: Forbidden domains in `blocklist` mode, matched the same way.
+- **`passthrough`** *(list[string])*: Domains (and their subdomains) whose TLS is not terminated. The egress splices the connection as raw TCP, so nothing in it is inspected, captured or injected. Use it only for clients that pin certificates and cannot trust the cage CA. A passthrough connection is spliced only when its destination address is one the name resolves to; otherwise it is intercepted like any other.
+- **`expires`** *(map[string, string])*: Per-domain expiry (allowlist mode), as an ISO 8601 timestamp with a UTC offset. An expired entry is blocked at once by the domain inspector, even while DNS still resolves it. `agentcage domain add --expires-in` writes these.
 
 ---
 
@@ -175,6 +178,10 @@ ports:
     allow: false # Allow outbound ping/ICMP (default: false)
 ```
 
+- **`tcp.allow`**: every allowed port that is not also in `tcp.passthrough` is an *inspected* port: the egress redirects it to its proxy, which handles TLS and plain HTTP on it and closes anything else. The forward proxy (`HTTPS_PROXY`) only connects to inspected ports, too: `CONNECT host:22` is refused with a `403` unless 22 is inspected. 8080 and 8443 are the egress's own listeners and cannot be inspected ports.
+- **`tcp.passthrough`**: allowed ports forwarded at layer 3 without inspection, audit or capture.
+- **`udp.allow`**: UDP is never inspected; listed ports are forwarded as they are.
+
 ---
 
 ## 4. `secrets` & `secret_injection`
@@ -183,8 +190,8 @@ Configures host-side encrypted secret storage and wire-level placeholder substit
 
 ```yaml
 secrets:
-  backend: auto # auto | systemd-creds | keychain | plaintext
-  scope: user # user | system
+  backend: auto # auto | systemd-creds | system-keychain | plaintext
+  scope: auto # auto | user | system (systemd-creds only)
   allow_plaintext: false # Disallow unencrypted secret files
 
 secret_injection:
@@ -192,17 +199,21 @@ secret_injection:
     placeholder: null # Auto-generates `agentcage:secret:ANTHROPIC_API_KEY:<hex>`
     inject_to:
       - api.anthropic.com
-    inject_headers: true # Substitute in Authorization/x-api-key headers
-    inject_body: false # Scan and substitute in JSON/form bodies
-    source: null # Optional path or CLI command to resolve secret
-    transform: null # Optional transform (e.g. "google-jwt-bearer")
+    inject_headers: [] # Extra header names to treat as credential-bearing
+    inject_body: false # Also substitute in the URL, every header and the body
+    source: null # Where the value comes from (env:/systemd-creds:/podman:/cmd:)
+    transform: null # Optional transform ("google-jwt-bearer")
+    transform_config: {} # The transform's own settings
 ```
 
 - **`env`** *(string, required)*: Environment variable name presented inside the workload container.
 - **`placeholder`** *(string, optional)*: Explicit placeholder string. When omitted, agentcage mints a cryptographically random 128-bit entropic token (`agentcage:secret:NAME:<hex>`).
-- **`inject_to`** *(list[string], default: all allowed)*: Restricts secret substitution to requests targeting these specific domains.
-- **`inject_headers`** *(boolean, default: true)*: Replaces placeholders in HTTP request headers.
-- **`inject_body`** *(boolean, default: false)*: Scans and replaces placeholders inside HTTP request payloads.
+- **`inject_to`** *(list[string], default: [])*: The domains the real value may be sent to. Each entry also covers its subdomains (`example.com` covers `api.example.com`, not `notexample.com`). **Empty means the value is never injected.** A request that carries the real value to any other host is blocked, and the placeholder sent to another host is flagged.
+- **`inject_headers`** *(list[string], default: [])*: By default the placeholder is replaced only in credential-bearing request headers: a header whose name contains `auth`, `key` or `token` (`Authorization`, `x-api-key`, `x-auth-token`, …), including inside `Authorization: Basic`. List any other header names here (case-insensitive), e.g. `x-honeycomb-team`.
+- **`inject_body`** *(boolean, default: false)*: Also replace the placeholder in the URL (which may change where the request goes), in every header and in the body. A rewritten body is sent without `Content-Encoding` and with a corrected `Content-Length`.
+- **`transform`** *(string, optional)*: `google-jwt-bearer` turns a Google service-account key into short-lived OAuth access tokens: the egress signs an RS256 JWT, exchanges it at `transform_config.audience` (default `https://oauth2.googleapis.com/token`) for `transform_config.scopes`, caches the token until `refresh_margin` seconds (default 300) before it expires, mints at most `mint_rate_per_hour` (default 60) tokens an hour, and injects the token instead of the key. Minted tokens are redacted like the key itself.
+
+Setting a header collapses its duplicates into one comma-joined value. Every real value (and every live minted token) is redacted back to its placeholder in responses, WebSocket messages, the capture file and the audit log, including its percent-encoded, JSON-escaped and base64 forms.
 
 ---
 
@@ -227,7 +238,7 @@ agents:
       Approve access to official PyPI and GitHub releases.
       Deny access to file upload services and social networks.
     rate_limit:
-      requests_per_second: 2.0
+      requests_per_second: 1.0
       burst: 5
 
   watcher:
@@ -305,18 +316,20 @@ Controls forensic recording and HAR 1.2 export:
 ```yaml
 capture:
   enable_har: true # Record HTTP flows for HAR export
-  max_body_size: 1048576 # 1 MB maximum body capture per request
-  max_file_size: 104857600 # 100 MB max capture.jsonl before rotation
+  max_body_size: 10485760 # 10 MiB of each body is kept (default)
+  max_file_size: 134217728 # rotate capture.jsonl to capture.jsonl.1 at 128 MiB (default; 0 = never)
   min_action: all # Least severe outcome to record (all | flag | block)
   domains: [] # Capture only these domains (empty = all)
   exclude_domains: [] # Skip capturing for high-volume endpoints
 
 logging:
   level: info # debug | info | warning | error | critical
-  dns_queries: true # Log all DNS queries to journalctl
-  proxy_connections: true # Log TCP connection events
-  allowed_requests: false # Log successful HTTP requests (requests that injected or redacted a secret are always logged)
+  dns_queries: false # Log every DNS query dnsmasq answers
+  proxy_connections: false # Log every connection the proxy accepts
+  allowed_requests: false # Log allowed HTTP requests (requests that injected or redacted a secret are always logged)
 ```
+
+`enable_har` is off by default. Bodies are recorded with `Content-Encoding` removed; one longer than `max_body_size` is truncated and marked as such. Both views of an entry (`cage har --view inbound` and `--view outbound`) hold placeholders, never real secret values or minted tokens. A streamed response is captured as it streams, keeping its first `max_body_size` bytes; a `max_body_size` of `0` (unlimited) makes the egress buffer responses whole instead of streaming them.
 
 `min_action` filters by the flow's outcome: `all` records every flow, `flag`
 only flagged and blocked ones, `block` only blocked ones. Any other value is
@@ -334,7 +347,64 @@ a socket with a flagged or blocked message is recorded under `flag` or `block`.
 
 ---
 
-## 7. `vm` (Lima Backend Sizing)
+## 7. Inspectors
+
+Every request the cage sends passes through a chain of inspectors in the egress: the built-ins first, in the order `domain`, `secrets`, `body-size`, `entropy`, `content-type`, then custom inspectors in the order listed. The first `block` ends the chain and the cage gets a `403`; a `flag` lets the request through and is audited as `flagged`. The built-ins inspect requests (and WebSocket messages the cage sends), not responses.
+
+The built-ins are configured by top-level keys:
+
+```yaml
+max_request_body: 10485760 # body-size: 10 MiB (default); 0 disables
+
+secrets: # the secrets inspector reads the same block as secret storage
+  action: flag # flag (default) | block
+  extra_patterns: [] # more patterns: {name, pattern} (a regex)
+  allow_to_domains: {} # pattern name -> domains it may be sent to
+
+entropy: # off unless present
+  threshold: 7.0 # bits/byte for bodies
+  min_body_bytes: 256
+  check_url_params: true
+  check_url_path: true
+  url_threshold: 5.5
+  url_min_value_bytes: 64
+  action: block
+
+content_type: # on by default; `content_type: false` turns it off
+  entropy_ceiling: 6.5
+  detect_base64: true
+  base64_min_len: 256
+  action: block
+
+rate_limit: # per host, in the egress
+  requests_per_second: 10 # 0 disables
+  burst: 50
+```
+
+An `inspectors:` entry naming a built-in replaces that built-in's whole configuration (and can enable `entropy`):
+
+```yaml
+inspectors:
+  - name: entropy
+    config:
+      threshold: 7.5
+```
+
+A custom inspector is a WebAssembly component (`.wasm`) built with the `agentcage-inspector-sdk` crate:
+
+```yaml
+inspectors:
+  - name: header-policy # any name except a built-in's
+    path: plugins/header_policy.wasm # relative to the cage.yaml's directory, or absolute
+    config: # handed to the plugin's configure()
+      required_header: X-Trace-ID
+```
+
+`cage create` and `cage update` copy each plugin into the cage and mount it read-only into the egress; a changed plugin file makes `cage update` redeploy. A path that does not end in `.wasm` is refused, and a `.py` path is refused with a pointer to the migration guide: Python inspectors are no longer supported. Plugins run with no capabilities and a CPU and memory budget, and a plugin that fails counts as a `block`. See [Custom Inspectors](../how-to/custom-inspectors.md).
+
+---
+
+## 8. `vm` (Lima Backend Sizing)
 
 When running under `isolation: vm`, configures resource allocations for the guest Linux microVM:
 
@@ -346,7 +416,7 @@ vm:
 
 ---
 
-## 8. `protocol_relays` (IMAP & SMTP)
+## 9. `protocol_relays` (IMAP & SMTP)
 
 A list of hardened IMAP and SMTP relays that run in the egress, hold the mailbox credentials, and apply policy to every command the cage sends. Every key, its default and what the relays log is in the **[Protocol Relays Reference](protocol-relays.md)**.
 

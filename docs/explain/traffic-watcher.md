@@ -1,46 +1,36 @@
 # The Traffic Watcher & Background Auditing
 
-In a defense-in-depth architecture, synchronous inline inspectors (`domain`, `secrets`, `entropy`, `content-type`) evaluate individual HTTP flows in the hot request path. To keep latency negligible, inline inspectors must make instantaneous decisions on single requests.
+The inspectors in the request path judge one request at a time, in milliseconds. Some threats only show in the aggregate: **slow exfiltration** spread over many small requests, **beaconing** to a command-and-control host, a **multi-step pivot** after a prompt injection.
 
-However, sophisticated security threats — such as **slow-and-low data exfiltration**, **C2 beaconing**, and **multi-step prompt injection pivots** — span multiple requests across minutes or hours.
-
-The **Traffic Watcher** is an asynchronous, background LLM auditor that periodically re-examines recent network traffic, detects anomalous behavior, flags suspicious flows, and can **autonomously revoke compromised runtime grants**.
+The **traffic watcher** is an LLM auditor that runs inside the egress, re-reads the cage's recent traffic every interval, records what looks suspicious, and can **revoke runtime grants** it finds abused. It is opt-in.
 
 ---
 
 ## Architecture & Scan Loop
 
-The Watcher runs on an independent background timer inside the egress container:
+The watcher runs on its own thread in the egress process (`agentcage-egress`), so a slow model provider never holds up proxied traffic.
 
 ```
-┌─────────────────────────── TRAFFIC CAPTURE ───────────────────────────┐
+┌──────────────────────────── EVIDENCE ─────────────────────────────────┐
 │                                                                        │
-│  L7 Proxy Flow  ──▶  audit.jsonl   (Decisions, hosts, inspector flags) │
-│                 ──▶  capture.jsonl (Full HTTP bodies, inbound view)    │
+│  audit ring     every audit record the egress writes, allowed          │
+│                 requests included (even with allowed_requests off)     │
+│  capture.jsonl  tailed by byte offset; the placeholder view only       │
 │                                                                        │
 └───────────────────────────────────┬────────────────────────────────────┘
-                                    │
-                         Every `interval_seconds` (e.g. 300s)
-                                    │
+                                    │  every interval_seconds × U(0.5, 1.5)
+                                    │  (never less than 60 s)
                                     ▼
-┌────────────────────────── THE WATCHER ENGINE ──────────────────────────┐
+┌────────────────────────────── ONE SCAN ────────────────────────────────┐
 │                                                                        │
-│  1. Window Digest Generator:                                           │
-│     • Extracts traffic from the last `window_seconds` (e.g. 600s)       │
-│     • Deduplicates repeated polling endpoints (`dedup_samples: true`)   │
-│     • Truncates large bodies to respect `max_digest_tokens`            │
-│     • Enforces strict secret hygiene (never leaks real keys)           │
-│                                                                        │
-│  2. Autonomous LLM Auditor:                                            │
-│     • Evaluates digest against declared cage purpose                   │
-│     • Analyzes traffic shape, frequency, and payload entropy           │
-│     • Scans for exfiltration or C2 beaconing signatures                │
-│                                                                        │
-│  3. Actions & Enforcement:                                             │
-│     • Record structured findings to `findings.jsonl`                   │
-│     • Autonomous Revocation: if `auto_revoke: true` is enabled and a   │
-│       dynamic grant is implicated in suspicious traffic, the grant     │
-│       is immediately revoked and purged from DNS.                      │
+│  1. Collect: drain the ring, read new capture lines                    │
+│     no traffic since the last scan → no model call                     │
+│  2. Digest: per-host aggregates, deduplicated samples, short body      │
+│     excerpts, evasion indicators; trimmed to max_digest_tokens         │
+│  3. Review: one forced tool call to the watcher's LLM                  │
+│  4. Apply: findings → audit + findings.jsonl;                          │
+│     revocations → runtime grants removed (if auto_revoke)              │
+│     failure → evidence pushed back, retried next scan                  │
 │                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -49,99 +39,104 @@ The Watcher runs on an independent background timer inside the egress container:
 
 ## 1. Enabling the Watcher in `cage.yaml`
 
-Configure the watcher within the `agents.watcher` block:
-
 ```yaml
 agents:
   watcher:
     enable: true
-    interval_seconds: 300 # Run scan every 5 minutes
-    window_seconds: 600 # Inspect the last 10 minutes of traffic
-    max_flows: 100 # Maximum flows to analyze per scan
-    auto_revoke: true # Autonomously revoke suspicious runtime grants
-    dedup_samples: true # Collapse repeated polling requests
-    max_digest_tokens: 8000 # Hard ceiling on LLM prompt size
-    provider: openrouter
+    provider: openrouter # anthropic | openai | openrouter
     model: z-ai/glm-5.3
+    api_key: env:OPENROUTER_API_KEY
+    interval_seconds: 900 # one scan per 15 minutes at most (default)
+    window_seconds: 3600 # look-back for a scan that starts from scratch (default)
+    max_flows: 200 # capture samples per digest (default)
+    max_digest_tokens: 8000 # prompt ceiling per scan (default)
+    auto_revoke: true # revoke condemned runtime grants (default)
+    dedup_samples: true # collapse repeated flow shapes (default)
     context: >
-      This cage is running a Python backend unit test suite.
-      Approved traffic includes GitHub API calls and PyPI package downloads.
-      Flag any requests containing serialized source code or unusual uploads.
+      This cage runs a Python backend's unit test suite.
+      Expected traffic: GitHub API calls and PyPI package downloads.
+      Flag requests that carry serialized source code or unusual uploads.
 ```
+
+Every key's accepted values are in the [Configuration Reference](../reference/configuration.md#5-agents-decider--watcher). The watcher requires `domains` allowlist mode.
+
+`max_digest_tokens` is the setting that caps spend whatever the traffic volume. Each scan's prompt is trimmed to fit it; about one scan in twenty is a "full-fidelity" scan with four times the budget, so a cage cannot learn which traffic always falls outside the trimmed digest.
 
 ---
 
-## 2. Evidence Sources & Secret Hygiene
+## 2. Evidence & Secret Hygiene
 
-The Watcher synthesizes evidence from two local log files:
-1. `audit.jsonl`: Contains metadata for every request: timestamp, target host, HTTP method, status code, decision (`allowed`, `blocked`, `flagged`), and triggering inspector names.
-2. `capture.jsonl`: Contains full request and response bodies.
+The watcher reads two sources:
+1. **The audit ring**: every record the egress audits, kept in memory (the most recent 5000), including allowed requests that `logging.allowed_requests: false` keeps out of the log. It carries the host, method, path, decision and inspector verdicts of every request, plus relay, Policy API and other records.
+2. **`capture.jsonl`** (when `capture.enable_har` is on): tailed by byte offset across rotations and truncations. Only short excerpts of request and response bodies reach the digest.
 
-### Secret Hygiene Guarantee
-The Watcher reads exclusively from the **inbound perspective** of captured traffic. It only ever sees decoy placeholders (`agentcage:secret:NAME:<hex>`), never real decrypted API keys. Real credentials can never be leaked to the Watcher's LLM model.
+`window_seconds` applies only when the watcher has to start reading the capture from scratch: the first scan after the egress starts, or after the file was rotated or truncated. Later scans read only what is new since the last one.
+
+### Secret hygiene
+The digest never carries a real secret value. Body excerpts come only from the capture's placeholder view, the values of sensitive headers (`Authorization`, cookies, API-key headers) are replaced by name, and the capture itself holds placeholders only. Everything in the digest is treated as untrusted data; the operator's `context` is the only trusted free text in the prompt.
+
+### Fail closed
+An error, a timeout, a missing tool call or a malformed verdict is a **recorded failed scan**, never an all-clear and never a revocation. The evidence of a failed scan is not lost: the drained audit records go back to the front of the ring and the capture offset is not advanced, so the next scan sees the same window plus anything newer. Repeated failures produce a finding on the first failure and every tenth after it.
+
+Each scan draws its own random seed for the choices that shape the digest (excerpt windows, tie-breaks, which samples survive the budget), so a cage cannot shape its traffic to sit just past a fixed boundary. The seed is recorded in `state.json`.
 
 ---
 
 ## 3. Autonomous Revocation (Narrowing Only)
 
-The Watcher operates under a strict principle of **least authority**:
-- **What it CAN do**: If the Watcher determines that a domain granted through the Policy API is being abused (e.g. an agent requested access to an API but is now uploading base64 data to it), the Watcher can **autonomously revoke the runtime grant**. The domain is immediately blocked at the proxy and removed from `dnsmasq`.
-- **What it CANNOT do**: The Watcher **can never grant access** to new domains, widen existing allowlists, or modify the operator's static `cage.yaml` configuration. Its authority is strictly **narrowing-only**.
+- **What it can do**: revoke a runtime grant (a domain the [Policy API](policy-api.md) granted) when its analysis finds the grant abused. The domain is blocked at once and removed from DNS, and a `watcher_revoke` record is written. With `auto_revoke: false` the revocation is recorded as a finding for you to apply instead.
+- **What it cannot do**: grant anything, widen an allowlist, or edit the operator's baseline. A baseline domain it distrusts becomes a recommendation finding, not a removal. The never-grant floor is never touched.
 
 ---
 
-## 4. Operator Commands
+## 4. Findings
 
-Operators can monitor the Watcher's health and review findings using the CLI:
+Each finding is written twice: as a `watcher_finding` audit record (with `decision: flagged` and an inspector entry named `watcher`, so `cage audit --inspector watcher` and `--decision flagged` find it), and as a line in `findings.jsonl` in the cage's grants directory (`~/.local/share/agentcage/<name>/grants/watcher/`), rotated to `findings.jsonl.1` at 16 MiB.
 
-### A. Check Watcher Status
-Displays scan intervals, the last execution timestamp, and backlog status:
+```json
+{
+  "kind": "watcher_finding",
+  "ts": "2026-09-08T10:24:12.513402+00:00",
+  "decision": "flagged",
+  "method": "",
+  "direction": "",
+  "host": "api.example.com",
+  "url": "",
+  "path": "",
+  "port": 0,
+  "reason": "",
+  "severity": "high",
+  "title": "Repeated base64 uploads to a granted API",
+  "detail": "Every 60 s a POST of ~4 KB of base64 to /v1/events, unrelated to the stated task.",
+  "recommendation": "Revoke the grant and review the workspace for an injected script.",
+  "decided_by": "watcher:agent:openrouter",
+  "inspectors": [{"name": "watcher", "severity": "high", "reason": "Repeated base64 uploads to a granted API"}]
+}
+```
+
+Severities are `info`, `low`, `medium`, `high` and `critical`. The scan state (last scan, scans run, findings total, failures, capture backlog, digest size, seed) is in `state.json` beside it.
+
+---
+
+## 5. Operator Commands
 
 ```bash
+# Configuration and the last scan's state:
 agentcage watcher status <name>
-```
 
-Example output:
-```text
-=== Traffic Watcher: my-agent ===
-Status:           Active (running)
-Interval:         Every 300s (last scan: 42s ago)
-Window:           Last 600s of traffic
-Auto-Revoke:      Enabled
-Last Scan Result: Clean (0 findings across 24 flows)
-Backlog:          0 pending events
-```
-
-### B. Inspect Recorded Findings
-Lists anomalies flagged by the Watcher:
-
-```bash
-# View recent findings:
+# Recorded findings (most recent 50 by default):
 agentcage watcher findings <name>
-
-# Filter by minimum severity:
-agentcage watcher findings <name> -s high
-
-# Stream raw findings as JSON lines:
+agentcage watcher findings <name> -s high -s critical
+agentcage watcher findings <name> --host example.com -n 0
 agentcage watcher findings <name> --json
 ```
 
-Example finding entry:
-```json
-{
-  "timestamp": "2026-09-08T10:24:12Z",
-  "severity": "high",
-  "category": "exfiltration",
-  "domain": "api.example.com",
-  "description": "High entropy POST payload (7.8 bits/byte) sent to unverified endpoint.",
-  "action_taken": "grant_revoked"
-}
-```
+`watcher status` shows the scan interval, look-back window, auto-revoke setting and agent, then the scan state: last scan, scans run, flows in the last window, findings total, digest size against its budget and the capture backlog. Neither command triggers a scan or changes a grant.
 
 ---
 
 ## Next Steps
 
-- **[System Architecture](architecture.md)** — Understand the full dual-container design.
-- **[Configuration Reference](../reference/configuration.md)** — Complete configuration schema for `agents.watcher`.
-- **[Auditing How-To](../how-to/manage-egress-and-domains.md)** — Managing and promoting domain grants.
+- **[System Architecture](architecture.md)** — The egress and its request pipeline.
+- **[Configuration Reference](../reference/configuration.md)** — `agents.watcher` keys and defaults.
+- **[Managing Egress How-To](../how-to/manage-egress-and-domains.md)** — Managing and promoting domain grants.

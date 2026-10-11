@@ -70,11 +70,11 @@ Every cage consists of a workload sandbox and an egress gateway container operat
 │  │   │  • All capabilities drop │─────────▶│  • Blocked zones → 198.51.100.1│  │   │
 │  │   │  • No-new-privileges     │          │    (TEST-NET-2 sinkhole)       │  │   │
 │  │   │  • Read-only rootfs      │  TCP     │                                │  │   │
-│  │   │  • Pivot masks on .git   │─────────▶│  mitmdump (Inspecting Proxy)   │  │   │
+│  │   │  • Pivot masks on .git   │─────────▶│  agentcage-egress (Rust proxy) │  │   │
 │  │   │                          │          │  • :8080 HTTP proxy            │  │   │
 │  │   │  Decoy Placeholders:     │          │  • :8443 transparent (iptables)│  │   │
 │  │   │  agentcage:secret:KEY:…  │          │                                │  │   │
-│  │   │                          │          │  Proxy Addon & Controls:       │  │   │
+│  │   │                          │          │  Pipeline & Controls:          │  │   │
 │  │   │  Trusted Per-Cage CA:    │          │  • Inspector Chain             │  │   │
 │  │   │  /certs/agentcage-ca.pem │          │    (domain, secrets, entropy,  │  │   │
 │  │   └──────────────────────────┘          │     content-type, body-size)   │  │   │
@@ -99,17 +99,18 @@ Every cage consists of a workload sandbox and an egress gateway container operat
 When an agent performs an HTTPS call (e.g. `GET https://api.anthropic.com/v1/messages`):
 
 1. **DNS Resolution**: The agent queries `dnsmasq`. If `anthropic.com` is in the allowlist, it forwards upstream and returns the real A/AAAA record. If not, it resolves to `198.51.100.1` (RFC 5737 TEST-NET-2 sinkhole) so unauthorized destinations fail immediately with clear policy errors instead of silent timeouts.
-2. **Transparent Interception**: TCP port 443 is redirected by kernel `iptables PREROUTING` into the local `mitmdump` proxy on port 8443.
-3. **Identity & Anti-Rebinding Checks**: The proxy enforces strict SNI ↔ Host equality and verifies that the resolved peer IP is a globally routable public address (blocking DNS rebinding to internal subnets).
+2. **Interception**: The request reaches the egress proxy (`agentcage-egress`, a single static Rust binary): through `HTTPS_PROXY` on port 8080, or because `iptables PREROUTING` redirects ports 80 and 443 to its transparent listener on port 8443. It terminates TLS with a leaf certificate signed by the cage's own CA, speaking HTTP/2 or HTTP/1.1.
+3. **Identity & Anti-Rebinding Checks**: The proxy enforces strict SNI ↔ Host equality and, for a host allowed only by a runtime grant, refuses to connect when it resolves to a private, loopback or link-local address (blocking DNS rebinding to internal subnets).
 4. **Inspector Chain**: Offloaded to worker threads to keep latency minimal:
    - `domain`: Verifies destination against permanent allowlists and active runtime grants.
    - `secrets`: Scans payloads with regex patterns; detects raw credentials leaving the sandbox.
-   - `entropy`: Computes Shannon entropy (0–8 bits/byte) to catch encrypted or obfuscated exfiltration payloads.
-   - `content-type`: Flags base64 blobs disguised inside JSON or plain text.
-   - `body-size`: Enforces strict request body limits.
+   - `body-size`: Enforces request body limits.
+   - `entropy` (opt-in): Computes Shannon entropy (0–8 bits/byte) to catch encrypted or obfuscated exfiltration payloads.
+   - `content-type`: Catches base64 blobs and high-entropy data disguised as JSON or plain text.
+   - Custom inspectors: your own rules, as sandboxed WebAssembly components.
 5. **Wire Secret Injection**: Decoy placeholders (`agentcage:secret:ANTHROPIC_API_KEY:<hex>`) are substituted with the real secret on the wire — **only** for matching allowlisted domains and credential-bearing headers (`Authorization`, `x-api-key`, etc.).
-6. **Upstream Request**: Sent to upstream servers over verified TLS.
-7. **Inbound Redaction**: The proxy scans the server response; any echoed real secret is redacted back to its placeholder before reaching the cage.
+6. **Upstream Request**: Sent to upstream servers over verified TLS (Mozilla roots, hostname checked), on pooled HTTP/2 or HTTP/1.1 connections. A failure is a JSON `502`, never a silent pass.
+7. **Inbound Redaction**: The response streams back to the cage; any echoed real secret is redacted back to its placeholder on the way, without buffering the body.
 8. **Forensic Logging**: Decisions are written to `audit.jsonl` and full HTTP transactions are recorded in `capture.jsonl` (exportable as HAR 1.2).
 
 ---
@@ -122,7 +123,7 @@ When an agent performs an HTTPS call (e.g. `GET https://api.anthropic.com/v1/mes
 - **Autonomous Policy API**: Sandboxed agents can query `https://agentcage.local/v1/allowlist` to discover reachable domains and `POST /v1/allowlist/requests` to request dynamic domain access with a justification. An in-egress LLM **Decider Agent** scrutinizes the justification and grants temporary runtime access without operator intervention.
 - **Autonomous Traffic Watcher**: An opt-in background LLM agent re-examines audit logs and capture windows to detect subtle exfiltration, beaconing, or injection patterns, and can autonomously revoke compromised runtime grants in real time.
 - **Host Pivot Protection**: Project mounts hide `.git/hooks/` and `.claude/` via tmpfs masks (`notmpcopyup` and `tmpcopyup`), preventing agents from planting malicious git hooks that execute on your host machine.
-- **Dual-Perspective HAR Forensics**: Export complete network traffic via `agentcage cage har` loadable into Chrome DevTools — choosing either the **inbound** view (safe to share, placeholders only) or **outbound** view (wire-level debugging with real injected values).
+- **Dual-Perspective HAR Forensics**: Export complete network traffic via `agentcage cage har`, loadable into Chrome DevTools, as the **inbound** view (what the cage saw) or the **outbound** view (what went on the wire). Both hold placeholders, never your real secret values.
 - **First-Class Scaffolds**: Pre-packaged, hardened templates for popular coding agents (Claude Code, Pi, OpenAI Codex, OpenClaw, and minimal base distros).
 
 ---
@@ -143,7 +144,7 @@ agentcage automatically selects the optimal isolation backend for your host mach
 | **Pivot Masks (`.git/hooks`)**| Supported via tmpfs | Emulated via tmpcopyup | Supported via tmpfs |
 | **Encrypted Secret Store** | `systemd-creds` (TPM2 / host key) | macOS Keychain | macOS Keychain / `systemd-creds` |
 | **Named Volumes** | Supported | Not supported | Supported |
-| **Published Host Ports** | Supported (reverse mitmproxy) | Reached via direct vmnet IP | Supported |
+| **Published Host Ports** | Supported (through the egress's reverse proxy) | Reached via direct vmnet IP | Supported |
 | **Policy API & Watcher** | Supported | Supported | Supported |
 | **HAR 1.2 Capture** | Supported | Supported | Supported |
 
@@ -166,11 +167,11 @@ toolchain via rustup if you have none). Or, with Rust 1.85+ installed:
 cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.50.0 agentcage-cli
 ```
 
-See [the install guide](docs/get-started/install.md) for details.
+The host binary embeds the egress proxy that goes into each cage's egress image. The installer takes care of that (it downloads the release's prebuilt egress binary and verifies it); a plain `cargo install` builds only the host. See [the install guide](docs/get-started/install.md) for both.
 
 agentcage is a single binary. It is no longer a Python package:
 `pip install agentcage` and `uv tool install agentcage` are not install
-paths any more, and the `pyproject.toml` here is dev/test-only.
+paths any more.
 
 Verify your host environment:
 
@@ -317,7 +318,7 @@ domains:
     - api.anthropic.com
     - github.com
     - registry.npmjs.org
-  passthrough: []            # Raw TCP TLS passthrough (bypasses MITM inspection)
+  passthrough: []            # TLS passthrough: spliced raw, not inspected
 
 secrets:
   backend: auto              # systemd-creds (Linux) or keychain (macOS)
@@ -326,7 +327,6 @@ secret_injection:
   - env: ANTHROPIC_API_KEY
     inject_to:
       - api.anthropic.com
-    inject_headers: true
     inject_body: false
 
 agents:

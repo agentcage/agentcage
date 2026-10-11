@@ -1,6 +1,6 @@
 # Policy API HTTP Specification
 
-The **Policy API** is an internal REST service running inside the egress gateway at `https://agentcage.local`. It enables sandboxed agent workloads to introspect their network boundaries and request dynamic egress access.
+The **Policy API** is a control plane the egress proxy serves to the caged agent at `https://agentcage.local`. It lets the agent read its effective allowlist, request a domain (decided by the operator's LLM decider), and give a runtime grant back. For the design and the trust model, see [The Policy API & Autonomous Decider](../explain/policy-api.md).
 
 ---
 
@@ -8,199 +8,245 @@ The **Policy API** is an internal REST service running inside the egress gateway
 
 | Property | Value |
 | :--- | :--- |
-| **Base URL** | `https://agentcage.local` |
-| **Protocol** | HTTPS (TLS terminated with per-cage CA) |
-| **Port** | `443` (HTTP on `80` redirects to HTTPS) |
-| **Authentication** | Per-cage internal network identity (no tokens required) |
-| **Availability** | Available **only** inside the sandboxed workload container |
-| **Rate Limit** | 2.0 requests/sec with burst capacity of 5 requests |
+| **Base URL** | `https://agentcage.local` (the host is `agents.decider.host`) |
+| **Transport** | HTTPS on 443, signed by the cage's own CA; plain HTTP on 80 is answered the same way (no redirect) |
+| **Served when** | `agents.decider.enable: true`, for outbound requests from the cage only |
+| **Authentication** | None; only the caged agent can reach it |
+| **Request bodies** | JSON objects, at most 8 KiB (larger: `413`). A UTF-8 BOM is accepted. |
+| **Responses** | `Content-Type: application/json` |
+| **Paths** | Compared exactly, query string included: `/v1/health?x=1` is a `404` |
+| **Rate limit** | One token bucket shared by requests and removals: 1 request/second, burst 5 (`agents.decider.rate_limit`) |
 
 ---
 
-## Endpoint Specification
+## Endpoints
 
-### 1. Health Check (`GET /v1/health`)
-Verifies that the Policy API server and internal proxy addons are operational.
+### 1. Health (`GET /v1/health`)
 
-#### Request
-```http
-GET /v1/health HTTP/1.1
-Host: agentcage.local
-```
+Not rate limited, not audited.
 
-#### Response (`200 OK`)
 ```json
 {
   "status": "ok",
-  "decider_enabled": true,
-  "watcher_enabled": true
+  "version": "0.51.0",
+  "features": {"introspection": true, "request": true, "removal": true},
+  "host": "agentcage.local"
 }
 ```
 
 ---
 
-### 2. Introspect Allowlist (`GET /v1/allowlist`)
-Returns the complete set of reachable domains, separating the operator's static baseline from active dynamic grants.
+### 2. Effective allowlist (`GET /v1/allowlist`)
 
-#### Request
-```http
-GET /v1/allowlist HTTP/1.1
-Host: agentcage.local
-```
+Audited as `policy_introspect`.
 
-#### Response (`200 OK`)
 ```json
 {
   "mode": "allowlist",
-  "static": [
-    "api.anthropic.com",
-    "github.com",
-    "registry.npmjs.org"
-  ],
-  "grants": [
+  "baseline": ["api.anthropic.com", "github.com", "registry.npmjs.org"],
+  "granted": [
     {
       "domain": "crates.io",
-      "reason": "Download Rust crate dependencies",
-      "created_at": "2026-09-08T10:15:00Z",
-      "expires_at": "2026-09-08T12:15:00Z",
-      "ttl_remaining_seconds": 7142
+      "granted_at": "2026-09-08T10:15:00.123456+00:00",
+      "expires_at": "2026-09-08T11:15:00.123456+00:00",
+      "reason": "Package registry for the project's Rust build.",
+      "source": "decider:agent:openrouter"
     }
-  ]
+  ],
+  "passthrough": [],
+  "requestable": true,
+  "context": "This cage builds and tests a Rust CLI application.",
+  "version": "0.51.0"
 }
 ```
 
+| Field | Meaning |
+| :-- | :-- |
+| `mode` | `allowlist` or `blocklist` (`null` if neither). |
+| `baseline` | The operator's domains (`domains.allow`). Each entry also covers its subdomains. |
+| `granted` | Live runtime grants, as stored in `grants.yaml`. `expires_at` is `""` for a permanent grant. |
+| `passthrough` | `domains.passthrough`, sorted. |
+| `requestable` | Whether `POST /v1/allowlist/requests` is available. |
+| `context` | The operator's `agents.decider.context`, or `""`. |
+| `version` | The agentcage version. |
+
 ---
 
-### 3. Request Dynamic Egress (`POST /v1/allowlist/requests`)
-Submits a dynamic access request for a specific domain. The request is evaluated programmatically against hard safety gates and passed to the in-egress Decider Agent.
+### 3. Request a domain (`POST /v1/allowlist/requests`)
 
-#### Request
 ```http
 POST /v1/allowlist/requests HTTP/1.1
 Host: agentcage.local
 Content-Type: application/json
 
-{
-  "domain": "docs.rs",
-  "reason": "Need to read Rust crate API documentation for project compilation."
-}
+{"domain": "docs.rs", "reason": "Read the serde_json API documentation for the parser task."}
 ```
 
-#### Request Fields
 | Field | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `domain` | string | **Yes** | Fully qualified domain name (FQDN). Must not contain wildcards, paths, or protocols. |
-| `reason` | string | **Yes** | Technical justification explaining why this domain is necessary for the current task. |
+| `domain` | string | **Yes** | One hostname, lowercased, with a trailing dot removed. No wildcards, schemes, paths or ports. |
+| `reason` | string | **Yes** | Why the task needs this domain. Must not be empty; cut to 1000 characters. The decider judges this text. |
 
-#### Responses
+The checks run in this order, and the first that applies decides the response:
 
-##### `200 OK` — Access Granted
+| # | Check | Status | Body |
+| :-- | :-- | :-- | :-- |
+| 1 | Body is not a JSON object | `400` | `{"error": "invalid JSON body"}` |
+| 2 | `reason` empty | `400` | `{"error": "a non-empty 'reason' justification is required"}` |
+| 3 | `domains` not in allowlist mode | `400` | `{"error": "request endpoint requires allowlist mode"}` |
+| 4 | Not a valid dotted hostname | `400` | `{"error": "invalid domain: '<domain>'"}` |
+| 5 | Already allowed (baseline or live grant, unexpired) | `200` | `status: "already_allowed"`, no decider call |
+| 6 | Never-grant floor | `403` | `status: "denied"`, `retryable: false` |
+| 7 | 32 live grants (decisions in flight count) | `409` | `status: "denied"`, `retryable: true` |
+| 8 | Rate limit | `429` | `status: "denied"`, `retryable: true` |
+| 9 | Decider not configured (no provider, model or key) | `503` | `{"error": "llm provider not configured"}` |
+| 10 | Decider denies, errors, times out or answers malformed | `403` | `status: "denied"`, `retryable: true` |
+| 11 | Decider grants | `200` | `status: "granted"` |
+
+An expired baseline entry or grant is not "already allowed": the request goes to the decider for a fresh decision.
+
+#### `200` — granted
 ```json
 {
-  "id": "req-9f2c8a1b",
+  "id": "req_5f0c2a9e1b7d4c3a8e6f1d20",
+  "status": "granted",
   "domain": "docs.rs",
-  "decision": "granted",
-  "reason": "Legitimate documentation retrieval for declared project tasks.",
-  "ttl_seconds": 7200,
-  "expires_at": "2026-09-08T12:15:00Z"
+  "reason": "Official Rust crate documentation host; low risk and fits the stated task.",
+  "expires_at": "2026-09-08T11:15:00.123456+00:00",
+  "ttl_seconds": 3600,
+  "decided_by": "decider:agent:openrouter"
 }
 ```
-*The domain is instantly promoted to the active routing table and `dnsmasq`. It becomes reachable in < 1 second.*
+`ttl_seconds` is `0` and `expires_at` is `""` for a permanent grant. The decider picks 600, 3600 or 0 (the default); anything above 86400 is clamped to a day. The domain is allowed at once and resolves within about a second.
 
-##### `200 OK` — Access Denied by Decider
+#### `200` — already allowed
+```json
+{"id": "req_…", "status": "already_allowed", "domain": "github.com", "reason": "already in baseline or granted"}
+```
+
+#### `403` — denied by the decider
 ```json
 {
-  "id": "req-3b4c5d6e",
+  "id": "req_3b4c5d6e7f8091a2b3c4d5e6",
+  "status": "denied",
   "domain": "pastebin.com",
-  "decision": "denied",
-  "reason": "Arbitrary paste/upload service presents unacceptable data exfiltration risk."
+  "reason": "Paste sites are a data exfiltration sink. Request the project's own documentation host instead.",
+  "suggestion": "Paste sites are a data exfiltration sink. Request the project's own documentation host instead.",
+  "retryable": true,
+  "decided_by": "decider:agent:openrouter"
+}
+```
+`suggestion` repeats the decider's reason, which is written to tell the agent how to ask better. A provider failure is reported as a denial too, without the provider's error text.
+
+#### `403` — never-grant floor
+```json
+{
+  "id": "req_…",
+  "status": "denied",
+  "domain": "metadata.goog",
+  "reason": "metadata.goog is on the operator's never_grant list and cannot be granted by the policy API",
+  "suggestion": "request a different, non-internal domain; this one is permanently denied by policy",
+  "retryable": false,
+  "decided_by": "decider"
 }
 ```
 
-##### `400 Bad Request` — Invalid Domain Syntax
+#### `409` — no room for another grant
 ```json
 {
-  "error": "invalid_domain",
-  "message": "Domain '192.168.1.1' is an IP literal. IP addresses are rejected by policy."
+  "id": "req_…",
+  "status": "denied",
+  "domain": "new.example.net",
+  "reason": "max_grants (32) reached; no room for another grant",
+  "suggestion": "wait for an existing grant to expire, or ask the operator to remove one with `agentcage domain rm`, then re-request",
+  "retryable": true,
+  "decided_by": "decider"
 }
 ```
 
-##### `403 Forbidden` — Denied by Hard Security Policy (`never_grant`)
+#### `429` — rate limited
 ```json
 {
-  "error": "forbidden_domain",
-  "message": "Domain '169.254.169.254.nip.io' matches forbidden metadata address space."
-}
-```
-
-##### `429 Too Many Requests` — Rate Limit Exceeded
-```json
-{
-  "error": "rate_limited",
-  "message": "Exceeded request quota of 2 requests/sec. Please back off."
+  "id": "req_…",
+  "status": "denied",
+  "domain": "z.com",
+  "reason": "request rate limit exceeded",
+  "suggestion": "wait a few seconds and re-request the same domain",
+  "retryable": true,
+  "decided_by": "decider"
 }
 ```
 
 ---
 
-### 4. Voluntary Grant Removal (`POST /v1/allowlist/removals`)
-Allows cooperative agents to give back a previously granted domain once its task (e.g. downloading a package) is complete.
+### 4. Give a grant back (`POST /v1/allowlist/removals`)
 
-#### Request
 ```http
 POST /v1/allowlist/removals HTTP/1.1
 Host: agentcage.local
 Content-Type: application/json
 
-{
-  "domain": "docs.rs"
-}
+{"domain": "docs.rs", "reason": "task finished"}
 ```
 
-#### Response (`200 OK`)
-```json
-{
-  "status": "revoked",
-  "domain": "docs.rs"
-}
-```
+`reason` is optional. Removals share the request rate limit and are audited as `policy_removal`.
+
+| Case | Status | Body |
+| :-- | :-- | :-- |
+| A live runtime grant | `200` | `{"id", "status": "removed", "domain", "reason"}`, plus `"still_allowed_by_baseline": true` when a baseline entry still covers the domain |
+| A baseline entry (operator-owned) | `403` | `status: "denied"`, `retryable: false`, with a suggestion to ask the operator to run `agentcage domain rm` |
+| Not a live grant | `404` | `status: "not_found"`, with a suggestion to use the exact domain from `GET /v1/allowlist` |
+| Invalid hostname | `400` | `{"error": "invalid domain: '<domain>'"}` |
+| Rate limited | `429` | `status: "denied"`, `retryable: true` |
+
+A removal takes effect at once: the domain inspector stops allowing the name, the overlay is persisted and DNS is re-published.
 
 ---
 
-## Domain Validation & Security Rules
+### Other responses
 
-All domain strings undergo strict programmatic validation before evaluation:
-
-1. **RFC 1035 Syntax**:
-   - Total length: 1–253 characters.
-   - Label length: 1–63 characters consisting of `[a-z0-9-]` (cannot begin or end with hyphens).
-   - TLD validation: Last label must be at least 2 characters.
-2. **IP Literals Rejected**: Raw IPv4 or IPv6 addresses are rejected.
-3. **`never_grant` Denylist**: Suffixes matching the following spaces are rejected unconditionally:
-   - Cloud instance metadata: `169.254.169.254`, `metadata.google.internal`, `100.100.100.200`
-   - Local networks & loopbacks: `.local`, `.localhost`, `.internal`, `.lan`, `.home.arpa`
-   - Private tailnets: `.ts.net`
-4. **Encoded IP Block**: Domains utilizing wildcard DNS services to encode private IP addresses (e.g. `10-0-0-1.nip.io`, `192.168.1.1.sslip.io`) are stripped and blocked via `_encoded_private_ip()`.
+| Case | Status | Body |
+| :-- | :-- | :-- |
+| Any request with a body over 8 KiB | `413` | `{"error": "request body too large"}` |
+| Unknown path, or a known path with the wrong method | `404` | `{"error": "not found"}` |
 
 ---
 
-## HTTP Status Code Summary
+## Domain Validation & the Never-Grant Floor
 
-| Status Code | Meaning |
+1. **Syntax**: a dotted hostname of at most 253 characters, labels of 1–63 characters from `[a-z0-9-]` that do not start or end with a hyphen. IP literals and single labels are refused.
+2. **Never grant**: `internal`, `local`, `localhost`, `metadata.goog`, the control host (`agents.decider.host`), and every subdomain of these. This floor is fixed; it has no config key.
+3. **Encoded private addresses**: names that encode a loopback, link-local (cloud metadata), private or CGNAT address for a wildcard DNS service (`10-0-0-1.nip.io`, `192.168.1.1.sslip.io`, `169-254-169-254.nip.io`, …) are on the floor too.
+
+A granted host is also checked when the egress connects to it: if it resolves to an address that is not globally routable, the connection is refused and the host stays refused (`private_peer_blocked`).
+
+---
+
+## Status Code Summary
+
+| Status | Meaning |
 | :--- | :--- |
-| `200 OK` | Request processed successfully (evaluates to `granted` or `denied`). |
-| `400 Bad Request` | Missing fields, malformed JSON, or invalid domain syntax. |
-| `403 Forbidden` | Target domain matches a `never_grant` protected suffix. |
-| `404 Not Found` | Unrecognized API endpoint. |
-| `429 Too Many Requests`| Exceeded rate limits (2 rps, burst 5). |
-| `502 Bad Gateway` | Upstream LLM provider failed to respond to the Decider Agent. |
-| `503 Service Unavailable`| Policy API or Decider Agent is disabled in `cage.yaml`. |
+| `200` | Granted, already allowed, removed, or a read. |
+| `400` | Not a JSON object, empty reason, not allowlist mode, or invalid domain. |
+| `403` | Denied: by the decider, by the never-grant floor, or a removal of a baseline entry. |
+| `404` | Unknown endpoint, or a removal of something that is not a live grant. |
+| `409` | 32 live grants already. |
+| `413` | Body over 8 KiB. |
+| `429` | Rate limit (1 rps, burst 5 by default). |
+| `503` | The decider has no provider, model or key configured. |
 
 ---
 
-## Client Code Examples
+## Client Examples
 
-### Python (using `requests` or `urllib`)
+### Shell (`curl`)
+```bash
+curl -s -X POST https://agentcage.local/v1/allowlist/requests \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "crates.io", "reason": "Fetch the crate dependencies for cargo build"}'
+```
+
+### Python (`requests`)
 ```python
 import requests
 
@@ -208,28 +254,17 @@ def request_egress(domain: str, justification: str) -> bool:
     resp = requests.post(
         "https://agentcage.local/v1/allowlist/requests",
         json={"domain": domain, "reason": justification},
-        timeout=15,
+        timeout=30,
     )
-    if resp.status_code == 200:
-        data = resp.json()
-        return data.get("decision") == "granted"
-    return False
-
-# Example usage:
-if request_egress("crates.io", "Download serde serialization crate"):
-    print("Access granted! Initiating download...")
+    status = resp.json().get("status")
+    return status in ("granted", "already_allowed")
 ```
 
-### Shell (`curl`)
-```bash
-curl -s -X POST https://agentcage.local/v1/allowlist/requests \
-  -H "Content-Type: application/json" \
-  -d '{"domain": "crates.io", "reason": "Fetch crate dependencies"}'
-```
+The decider call can take as long as `agents.decider.timeout_seconds` (15 s by default), so give the client a longer timeout than that.
 
 ---
 
 ## Next Steps
 
-- **[Policy API Architecture](../explain/policy-api.md)** — Architectural deep-dive on the Decider Agent.
-- **[Configuration Reference](configuration.md)** — How to configure `agents.decider` in `cage.yaml`.
+- **[Policy API Architecture](../explain/policy-api.md)** — The decider and the grant lifecycle.
+- **[Configuration Reference](configuration.md)** — `agents.decider` keys and defaults.
