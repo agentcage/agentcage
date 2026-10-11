@@ -73,6 +73,16 @@ encoding_rs = "0.8.35"
 # RS256 signing for the `google-jwt-bearer` transform.
 ring = "0.17.14"
 
+# ── Per-cage CA ──────────────────────────────────────────────
+# CA generation and leaf minting; `x509-parser` reloads the CA from disk.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+# Certificate validity windows for rcgen.
+time = "0.3"
+# Random serials and the CA fingerprint (already in the tree through rustls).
+# Leaves are handed to the TLS stack as rustls `CertifiedKey`s; ring
+# provider only (no aws-lc / cmake).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
 [dev-dependencies]
 # Test-only: the host's own grants-overlay reader and writer, so an
 # interop test proves the egress and `cage grants` agree on the shared
