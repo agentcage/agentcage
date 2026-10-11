@@ -52,21 +52,21 @@ Once the TTL elapses:
 
 ---
 
-## 3. Wildcards & Domain Matching Rules
+## 3. Domain Matching Rules
 
-In `cage.yaml`:
+Every entry matches the name itself **and every subdomain** of it. There is no wildcard syntax: `*.githubusercontent.com` is refused at `cage create`.
 
 ```yaml
 domains:
   mode: allowlist
   allow:
-    - api.github.com         # Exact match only
-    - "*.githubusercontent.com" # Matches all subdomains (raw.githubusercontent.com, etc.)
+    - api.github.com         # api.github.com and *.api.github.com
+    - githubusercontent.com  # githubusercontent.com, raw.githubusercontent.com, ...
 ```
 
-### Wildcard Best Practices
-- **Do not allow top-level wildcards**: Never declare `*.com` or `*`. This breaks egress isolation entirely.
-- **Specific subdomains preferred**: Prefer `api.anthropic.com` over `*.anthropic.com` to prevent agents from accessing employee portals or marketing sites.
+### Best Practices
+- **Never allow a bare top-level domain** such as `com` or `co.uk`: it covers every name under it and breaks egress isolation.
+- **Prefer specific hosts**: `api.anthropic.com` rather than `anthropic.com`, so the agent cannot reach employee portals or marketing sites under the same apex.
 
 ---
 
@@ -88,7 +88,7 @@ domains:
     - pinned-api.example.com
 ```
 
-> **Warning**: In passthrough mode, the proxy acts as a transparent TCP tunnel. It cannot inspect request bodies, scan for exfiltration, or inject/redact secret placeholders. Use passthrough sparingly.
+> **Warning**: In passthrough mode, the egress splices the TLS connection as raw TCP. It cannot inspect request bodies, scan for exfiltration, inject or redact secret placeholders, or capture anything. A passthrough name also covers its subdomains, and the splice happens only when the connection goes to an address that name actually resolves to. Use passthrough sparingly.
 
 ---
 
@@ -96,11 +96,9 @@ domains:
 
 When an agent attempts to access an unauthorized domain, two things happen:
 1. **DNS**: The hostname resolves to `198.51.100.1` (RFC 5737 TEST-NET-2 sinkhole IP).
-2. **HTTP**: Connecting to `198.51.100.1:443` is intercepted by the proxy, which returns `403 Forbidden` with diagnostic headers:
-   ```text
-   HTTP/1.1 403 Forbidden
-   x-agentcage-decision: blocked
-   x-agentcage-reason: domain 'unapproved.com' not in allowlist
+2. **HTTP**: Connecting to `198.51.100.1:443` is intercepted by the egress proxy, which reads the real name from the TLS SNI and returns a `403` with a JSON body:
+   ```json
+   {"blocked": true, "reason": "domain not in allowlist: unapproved.com", "host": "unapproved.com", "by": "agentcage"}
    ```
 
 ### Diagnosing Blocked Hosts via Audit Logs

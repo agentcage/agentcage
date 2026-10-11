@@ -12,7 +12,7 @@ When encountering any issue with agentcage, run through this four-step triage:
 ```bash
 agentcage doctor
 ```
-Checks Python runtime, rootless Podman, systemd lingering, cgroups v2, Lima/Apple Container runtimes, and secret storage backends.
+Checks rootless Podman, systemd lingering, cgroups v2, Lima/Apple Container runtimes, and secret storage backends.
 
 ### Step 2: Verify Cage Health
 ```bash
@@ -42,7 +42,7 @@ agentcage renders expected failures as a single `error: ...` line; set `AGENTCAG
 ### A. Network & DNS Gotchas
 
 #### Symptom: Connections resolve to `198.51.100.1` or fail with `403 Forbidden`
-- **Cause**: The requested domain is not in the allowlist. Unauthorized domains are sinkholed to `198.51.100.1` so the proxy can return a structured 403 response.
+- **Cause**: The requested domain is not in the allowlist. Unauthorized domains are sinkholed to `198.51.100.1` so the egress proxy can answer with a JSON `403` such as `{"blocked": true, "reason": "domain not in allowlist: example.com", "host": "example.com", "by": "agentcage"}`.
 - **Solution**:
   1. Inspect blocked requests:
      ```bash
@@ -147,9 +147,52 @@ agentcage renders expected failures as a single `error: ...` line; set `AGENTCAG
 
 ---
 
+### F. Egress Proxy Responses & Errors
+
+Every response the egress generates itself is JSON: `{"blocked": <bool>, "reason": "...", "host": "...", "by": "agentcage"}`. The `reason` says what happened; the matching audit record is in `agentcage cage audit <name>`.
+
+#### Symptom: `502` with `"blocked": false`
+- **Cause**: The request was allowed, but the upstream failed: the name did not resolve, the connection was refused, the upstream's TLS certificate did not verify, the upstream broke the HTTP protocol, or its response body was larger than the egress's per-body limit. Each one writes an `upstream_error` audit record with the error text.
+- **Also**: `"reason": "internal error: ..."` is the egress refusing a flow it could not process (for example a body whose `Content-Encoding` is corrupt), with an `internal_error` record. The egress never forwards such a flow unfiltered.
+- **Solution**: Read the reason. A TLS verification failure usually means a host behind a private CA (the egress trusts the Mozilla roots only) or a pinned endpoint that needs `domains.passthrough`.
+
+#### Symptom: `503` "the egress is already buffering its … budget of bodies; retry later"
+- **Cause**: Too many large request or response bodies were buffered at once; the egress refuses new ones after waiting two seconds for room, rather than run out of memory.
+- **Solution**: Retry. If it persists, the cage is moving many large bodies concurrently; streamed responses hold only a little at a time, so check whether a custom inspector (which forces responses to be buffered) is loaded.
+
+#### Symptom: `413` "request body exceeds the egress limit of … bytes"
+- **Cause**: A request body over the egress's per-body limit (256 MiB). Request bodies are buffered whole so they can be inspected. A body over `max_request_body` (10 MiB by default) is blocked earlier by the `body-size` inspector with a `403`.
+- **Solution**: Raise `max_request_body` in `cage.yaml` if the upload is legitimate.
+
+#### Symptom: `403` "port N is not an inspected port"
+- **Cause**: A client used the forward proxy (`HTTPS_PROXY`) to `CONNECT` to a port that is not an inspected port. The forward proxy only connects to `ports.tcp.allow` minus `ports.tcp.passthrough`.
+- **Solution**: Add the port to `ports.tcp.allow` (inspected), or to both `allow` and `passthrough` and exclude the host from the proxy with `NO_PROXY` (uninspected).
+
+#### Symptom: `403` "SNI/Host header mismatch"
+- **Cause**: The TLS SNI and the HTTP `Host` header name different hosts, which is how domain fronting works.
+- **Solution**: Make the client send the same name in both. Clients that set `Host` by hand to a different name are refused by design.
+
+#### Symptom: A download or stream stops partway, with no error response
+- **Cause**: The upstream failed after the response had started, or a streamed body turned out to be corrupt at its end. The egress cuts the client off (HTTP/1.1 closes the connection, HTTP/2 resets the stream) so a truncated transfer never looks complete. With secrets to redact, a single run of more than 16 MiB without a separator (a huge base64 blob, for instance) is also aborted rather than relayed unredacted.
+- **Solution**: Retry; check `agentcage logs <name> -s egress` for the error.
+
+#### Symptom: A config change does not take effect
+- **Cause**: The egress refused the new config (it does not parse, or an inspector or rate-limit setting is invalid) and kept running the last good one. It writes one `config_reload_failed` record per bad version.
+- **Solution**: `agentcage cage audit <name>` shows the record and the error; fix the config with `agentcage cage edit <name>`.
+
+#### Symptom: TLS errors after upgrading agentcage, from an image that bakes in the CA
+- **Cause**: Each cage's egress generates its own CA and loads only that one afterwards. A cage gets a new CA when it is created or recreated, and every existing cage got one on its first start after the upgrade that introduced the Rust egress (it never reuses a CA the previous egress generated). An image that copied `/certs/agentcage-ca.pem` into its trust store at **build** time still trusts the old CA.
+- **Solution**: Rebuild the image without its layer cache (`agentcage cage update <name> --no-cache`), or install the CA at start-up instead, as the arch/debian/ubuntu scaffolds do. Tools that read `SSL_CERT_FILE` and the other CA variables pick up the new CA with no rebuild.
+
+#### Symptom: A custom inspector blocks everything with "inspector <name> failed: …"
+- **Cause**: The plugin trapped, used a capability it does not have (files, network, environment, clock), ran out of its fuel or memory budget, or returned a malformed verdict. A broken plugin fails closed.
+- **Solution**: See [Custom Inspectors](custom-inspectors.md#the-sandbox-and-its-limits); test the logic natively with `cargo test` first.
+
+---
+
 ## 3. Viewing Forensic Audit Logs
 
-Every request decision is logged to `~/.local/share/agentcage/<name>/audit.jsonl`:
+The egress writes every decision as a JSON line to its log (journald on the container and vm backends, `audit.jsonl` on apple-container). `agentcage cage audit` reads it, whatever the backend:
 
 ```bash
 # View recent decisions:
