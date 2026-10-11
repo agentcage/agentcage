@@ -666,3 +666,257 @@ fn a_predecoded_response_redacts_exactly_as_one_decoded_lazily() {
     assert_eq!(back.as_deref(), Some(&b"nothing secret here"[..]));
     assert_eq!(resp.body, raw);
 }
+
+// ── Streaming redaction ──────────────────────────────────
+
+/// Redact `body` (no Content-Encoding) as the buffered path does: the
+/// body and the names, headers included.
+fn buffered_redaction(inj: &Injector, headers: &Headers, body: &[u8]) -> (Vec<u8>, Vec<String>) {
+    let mut resp = Response {
+        status: 200,
+        headers: headers.clone(),
+        body: body.to_vec(),
+        ..Response::default()
+    };
+    let names = inj.redact_response(&mut resp).expect("identity body");
+    (resp.body, names)
+}
+
+/// Stream `body` through a fresh redactor, cut at `cuts` (sorted
+/// offsets), with `headers` redacted first as the streaming head is.
+fn streamed_redaction(
+    inj: &Injector,
+    headers: &Headers,
+    body: &[u8],
+    cuts: &[usize],
+) -> (Vec<u8>, Vec<String>) {
+    let Some(mut red) = inj.stream_redactor() else {
+        return (body.to_vec(), Vec::new());
+    };
+    let mut headers = headers.clone();
+    let header_found = Injector::redact_headers_with(&mut headers, red.forms());
+    let body = bytes::Bytes::copy_from_slice(body);
+    let mut out = Vec::new();
+    let mut at = 0;
+    for &cut in cuts.iter().chain(std::iter::once(&body.len())) {
+        if cut < at {
+            continue;
+        }
+        red.push(body.slice(at..cut), &mut out).expect("bounded");
+        at = cut;
+    }
+    red.finish(&mut out);
+    (out.concat(), red.names(&header_found))
+}
+
+/// Every chunking worth checking for a body of `len` bytes: one cut at
+/// every offset (all of them for short bodies), single bytes, and random
+/// multi-cuts.
+fn chunkings(len: usize, rng: &mut Rng) -> Vec<Vec<usize>> {
+    let mut out = vec![Vec::new(), (1..len).collect()];
+    let step = (len / 64).max(1);
+    out.extend((1..len).step_by(step).map(|i| vec![i]));
+    for _ in 0..8 {
+        let mut cuts: Vec<usize> = (0..rng.below(6)).map(|_| rng.below(len + 1)).collect();
+        cuts.sort_unstable();
+        out.push(cuts);
+    }
+    out
+}
+
+fn assert_stream_equivalent(inj: &Injector, headers: &Headers, body: &[u8], rng: &mut Rng) -> bool {
+    let want = buffered_redaction(inj, headers, body);
+    for cuts in chunkings(body.len(), rng) {
+        let got = streamed_redaction(inj, headers, body, &cuts);
+        assert_eq!(
+            got.0,
+            want.0,
+            "body differs for cuts {cuts:?} over {:?}",
+            String::from_utf8_lossy(body)
+        );
+        assert_eq!(got.1, want.1, "names differ for cuts {cuts:?}");
+    }
+    want.0 != body
+}
+
+#[test]
+fn streamed_redaction_matches_the_corpus_for_every_chunking() {
+    let corpus = corpus();
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut checked = 0;
+    for case in arr(&corpus, "cases") {
+        if s(case, "op") != "redact_response" {
+            continue;
+        }
+        let rules: Vec<Rule> = arr(case, "rules").iter().map(rule_of).collect();
+        let inj = Injector::with_rules(rules, &[]);
+        let resp = response_of(case.get("response").unwrap());
+        let Ok(decoded) = crate::text::decoded_body(&resp.headers, &resp.body) else {
+            continue;
+        };
+        let mut headers = resp.headers.clone();
+        headers.remove("content-encoding");
+        assert_stream_equivalent(&inj, &headers, &decoded, &mut rng);
+        checked += 1;
+    }
+    assert!(checked >= 2, "{checked}");
+}
+
+/// The ways a server can spell `value` back.
+fn spellings(value: &str, rng: &mut Rng) -> Vec<Vec<u8>> {
+    use std::fmt::Write as _;
+    let pct = |upper: bool| {
+        value.bytes().fold(String::new(), |mut out, b| {
+            if upper {
+                let _ = write!(out, "%{b:02X}");
+            } else {
+                let _ = write!(out, "%{b:02x}");
+            }
+            out
+        })
+    };
+    let json_u = value.encode_utf16().fold(String::new(), |mut out, u| {
+        let _ = write!(out, "\\u{u:04x}");
+        out
+    });
+    let mixed: String = value
+        .chars()
+        .map(|c| match c {
+            ' ' => "+".to_owned(),
+            '/' => "\\/".to_owned(),
+            '"' => "\\\"".to_owned(),
+            c if !c.is_ascii_alphanumeric() => format!("%{:02X}", u32::from(c) & 0xff),
+            c => c.to_string(),
+        })
+        .collect();
+    let mut out = vec![
+        value.as_bytes().to_vec(),
+        pct(true).into_bytes(),
+        pct(false).into_bytes(),
+        json_u.into_bytes(),
+        mixed.into_bytes(),
+    ];
+    for prefix in ["", "u:", "ab", "xyz:"] {
+        let raw = [prefix.as_bytes(), value.as_bytes(), b"!tail"].concat();
+        let std = b64_encode_std(&raw);
+        let mut url = std.clone().into_bytes();
+        std_to_url(&mut url);
+        out.push(std.into_bytes());
+        out.push(url.clone());
+        let unpadded: Vec<u8> = url.into_iter().filter(|&b| b != b'=').collect();
+        out.push(unpadded);
+    }
+    // A cut-off spelling: a prefix that never completes.
+    let cut = rng.below(value.len().max(1));
+    out.push(value.as_bytes()[..cut].to_vec());
+    out
+}
+
+#[test]
+fn streamed_redaction_matches_buffered_on_random_bodies() {
+    let values = [
+        "sk-live-0123456789abcdef",
+        "p@ss w/rd \"q\" \u{e9}",
+        "abc/def+ghi==",
+        "short",
+        "%%%%%%%%%",
+        "ffffffffffff",
+        "tok_9f8e7d6c5b4a",
+    ];
+    let mut rng = Rng(0xdead_beef_cafe_f00d);
+    let mut changed = 0;
+    for round in 0..120 {
+        // A few rules at a time, so passes of several secrets compose.
+        let picked: Vec<&str> = (0..=rng.below(3))
+            .map(|_| values[rng.below(values.len())])
+            .collect();
+        let rules: Vec<Rule> = picked
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                Rule::new(
+                    &format!("SECRET_{i}"),
+                    &format!("agentcage:secret:SECRET_{i}:{round:04x}"),
+                    v,
+                    &[],
+                )
+            })
+            .collect();
+        let inj = Injector::with_rules(rules, &[]);
+        let fillers: [&[u8]; 8] = [
+            b"data: {\"delta\": \"",
+            b"\"}\n\n",
+            b" ",
+            b"AAAABBBBccccdddd0123",
+            b"%2",
+            b"\\u00",
+            b"==",
+            b"\xff\x00\x10",
+        ];
+        let mut body = Vec::new();
+        for _ in 0..rng.below(10) {
+            match rng.below(4) {
+                0 => {
+                    let v = picked[rng.below(picked.len())];
+                    let forms = spellings(v, &mut rng);
+                    body.extend_from_slice(&forms[rng.below(forms.len())]);
+                }
+                1 => body.extend_from_slice(fillers[rng.below(fillers.len())]),
+                2 => body.extend((0..rng.below(24)).map(|_| (rng.next() & 0xff) as u8)),
+                _ => body.extend((0..rng.below(40)).map(|_| b"ab0+/-_="[rng.below(8)])),
+            }
+        }
+        let mut headers = Headers::new();
+        if rng.below(3) == 0 {
+            headers.add("X-Echo", picked[0]);
+        }
+        if assert_stream_equivalent(&inj, &headers, &body, &mut rng) {
+            changed += 1;
+        }
+    }
+    // The comparison bites: most bodies did carry a secret.
+    assert!(changed > 40, "{changed}");
+}
+
+#[test]
+fn streamed_redaction_holds_back_only_the_unfinished_tail() {
+    let inj = Injector::with_rules(
+        vec![Rule::new(
+            "K",
+            "agentcage:secret:K:1",
+            "sk-live-0123456789",
+            &[],
+        )],
+        &[],
+    );
+    let mut red = inj.stream_redactor().unwrap();
+    let mut out = Vec::new();
+    // An SSE event ends in "\n\n": nothing is held, and the chunk goes on
+    // as it came (no copy).
+    let event = bytes::Bytes::from_static(b"data: {\"delta\": \"hi\"}\n\n");
+    red.push(event.clone(), &mut out).unwrap();
+    assert_eq!(red.held(), 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].as_ptr(), event.as_ptr(), "relayed without a copy");
+    // A secret split across chunks is held until it can be judged.
+    out.clear();
+    red.push(bytes::Bytes::from_static(b"key: sk-live-01"), &mut out)
+        .unwrap();
+    assert_eq!(out.concat(), b"key: ");
+    assert_eq!(red.held(), 10);
+    red.push(bytes::Bytes::from_static(b"23456789\n"), &mut out)
+        .unwrap();
+    red.finish(&mut out);
+    assert_eq!(out.concat(), b"key: agentcage:secret:K:1\n");
+    assert_eq!(red.names(&[]), ["K"]);
+
+    // A run with no separator past the bound aborts.
+    let mut red = inj.stream_redactor().unwrap().with_max_hold(64);
+    let mut out = Vec::new();
+    let run = bytes::Bytes::from(vec![b'A'; 40]);
+    red.push(run.clone(), &mut out).unwrap();
+    assert_eq!(
+        red.push(run, &mut out),
+        Err(StreamRedactError::UnboundedRun)
+    );
+}
