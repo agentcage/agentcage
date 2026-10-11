@@ -19,6 +19,9 @@ members = [
     "rust/agentcage-cli",
     "rust/agentcage-egress",
     "rust/agentcage-egress-embed",
+    # Mock upstreams for tests/e2e (a static musl binary the harness runs
+    # beside each cage's egress) and the harness's own tests.
+    "rust/agentcage-e2e-mock",
 
     "rust/agentcage-inspector-sdk",
     # Example custom inspectors (WebAssembly components). Members so they

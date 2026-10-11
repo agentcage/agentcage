@@ -9,7 +9,7 @@
 # asserts each known regression class.
 #
 # Secret-injection verification uses real external echo services
-# (httpbin.org, postman-echo.com) via the cage's mitm proxy — no mock server.
+# (httpbin.org, postman-echo.com) via the cage's egress proxy — no mock server.
 source "$(dirname "$0")/lib.sh"
 preflight_check "$AGENTCAGE" podman curl jq
 phase_header 8 "OpenClaw Scaffold Regression Canary"
@@ -70,29 +70,9 @@ sed -i \
   -e 's|      - anthropic.com$|      - httpbin.org|' \
   cage.yaml
 
-# Append echo-service allowlist entries. The default scaffold allowlist
-# section ends with an `# Add domains your agents need access to:` comment
-# block; we insert before the final empty/hash block.
-# Simplest approach: append to the allow list directly by inserting after
-# the last existing allow entry.
-python3 - <<'PYEOF'
-import re
-from pathlib import Path
-
-path = Path("cage.yaml")
-text = path.read_text()
-
-# Inject httpbin.org and postman-echo.com into domains.allow by
-# appending to the existing allow block. Find the "domains:\n  allow:"
-# header and splice after the first allow entry.
-m = re.search(r"(domains:\s*\n\s*allow:\s*\n)", text)
-if not m:
-    raise SystemExit("could not find domains.allow in cage.yaml")
-
-insert_at = m.end()
-extra = "    - httpbin.org\n    - postman-echo.com\n"
-text = text[:insert_at] + extra + text[insert_at:]
-
+# Add the echo services to domains.allow, as the first entries of the
+# block (right after the `allow:` line that follows `domains:`).
+#
 # Force the plaintext podman secret store. CI has no usable systemd-creds,
 # and on a dev host WHERE systemd-creds IS available `auto` would pick it —
 # but only secret_injection entries get a decrypt ExecStartPre (on the
@@ -101,13 +81,35 @@ text = text[:insert_at] + extra + text[insert_at:]
 # "no such secret" and create aborts. Explicit `backend: plaintext` makes
 # `-s` writes land directly in the podman store on both host classes;
 # either way this is test-only plumbing, not the encryption-at-rest path.
-sm = re.search(r"^secrets:[ \t]*\n", text, re.M)
-if sm:
-    text = text[:sm.end()] + "  backend: plaintext\n  allow_plaintext: true\n" + text[sm.end():]
-else:
-    text += "\nsecrets:\n  backend: plaintext\n  allow_plaintext: true\n"
-path.write_text(text)
-PYEOF
+# An existing top-level `secrets:` block gets the two keys as its first
+# entries; without one, a block is appended.
+if ! awk '
+  { print }
+  !allow_done && after_domains && /^[[:space:]]*allow:[[:space:]]*$/ {
+    print "    - httpbin.org"
+    print "    - postman-echo.com"
+    allow_done = 1
+  }
+  !secrets_done && /^secrets:[ \t]*$/ {
+    print "  backend: plaintext"
+    print "  allow_plaintext: true"
+    secrets_done = 1
+  }
+  { after_domains = ($0 ~ /^[[:space:]]*domains:[[:space:]]*$/) }
+  END {
+    if (!allow_done) exit 1
+    if (!secrets_done) {
+      print ""
+      print "secrets:"
+      print "  backend: plaintext"
+      print "  allow_plaintext: true"
+    }
+  }
+' cage.yaml > cage.yaml.new; then
+  e2e_fail "8.0" "scaffold patch" "could not find domains.allow in cage.yaml"
+  print_results; exit 1
+fi
+mv cage.yaml.new cage.yaml
 
 echo "Creating cage (scaffold build may take several minutes cold)..."
 # Secrets are passed via -s KEY=VALUE so cage create can install them

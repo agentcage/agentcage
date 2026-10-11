@@ -72,11 +72,23 @@ jobs:
           path: ~/.local/share/containers/storage
           key: podman-node22slim-${{ runner.os }}-${{ hashFiles('tests/e2e/mock-image.ref') }}
 
-      # The e2e mock upstream runs in its own stock-python container joined
-      # to the egress's network namespace (tests/e2e/lib.sh start_mock); its
-      # pinned reference lives in tests/e2e/mock-image.ref. Phase 9's mail,
-      # LLM and TLS mocks (tests/e2e/mock-services.py) run in the same
-      # image, so there is nothing else to pull.
+      # The e2e mocks (httpbin stand-in, and phase 9's mail, LLM and TLS
+      # upstreams) are one static binary, rust/agentcage-e2e-mock, which
+      # tests/e2e/lib.sh bind-mounts into a container joined to the
+      # egress's network namespace. Built here once; run.sh would build it
+      # itself, but an explicit step fails earlier and more legibly.
+      - name: Build the e2e mock (static musl binary)
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          command -v musl-gcc >/dev/null || sudo apt-get install -y -qq musl-tools
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p agentcage-e2e-mock
+          echo "E2E_MOCK_BIN=$PWD/target/x86_64-unknown-linux-musl/release/agentcage-e2e-mock" >> "$GITHUB_ENV"
+
+      # The mock's container image (tests/e2e/mock-image.ref) is the pinned
+      # debian base the egress image is built FROM, so it is pulled once
+      # for both.
       - name: Pull base images (if not cached)
         run: |
           podman image exists docker.io/library/node:22-slim 2>/dev/null || podman pull docker.io/library/node:22-slim
@@ -153,9 +165,20 @@ jobs:
 
           podman info --format '{{.Host.Security.Rootless}}'
 
-      # The mock upstream runs in its own pinned python container
-      # (tests/e2e/mock-image.ref), so nothing in the harness needs
-      # python3 in the egress image -- which the Rust one does not have.
+      # The e2e mocks: one static binary (rust/agentcage-e2e-mock) that
+      # tests/e2e/lib.sh bind-mounts into a container joined to the
+      # egress's network namespace. The musl target and musl-gcc are
+      # already installed above for the egress.
+      - name: Build the e2e mock (static musl binary)
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p agentcage-e2e-mock
+          echo "E2E_MOCK_BIN=$PWD/target/x86_64-unknown-linux-musl/release/agentcage-e2e-mock" >> "$GITHUB_ENV"
+
+      # The mock's container image (tests/e2e/mock-image.ref) is the pinned
+      # debian base the egress image is built FROM, so nothing in the
+      # harness depends on what the egress image itself contains.
       - name: Pull base images
         run: |
           podman pull docker.io/library/node:22-slim

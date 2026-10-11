@@ -179,7 +179,7 @@ echo "--- THREAT MODEL: root in cage VM cannot modify the firewall ---"
 #
 # Containment is capability-based now: `cage exec --as-root` wraps the
 # session in `setpriv --bounding-set=-net_admin --inh-caps=-net_admin`
-# (backends/apple_container.py exec_argv), so uid 0 in the cage lands
+# (exec_argv in rust/agentcage-core/src/apple/argv.rs), so uid 0 in the cage lands
 # with CAP_NET_ADMIN cleared from CapEff and every mutating netfilter
 # call returns EPERM. That is what we assert here.
 
@@ -237,7 +237,7 @@ echo "--- cage exec proxied curl works (allowlisted) ---"
 # The cage's ubuntu:24.04 base ships without curl/wget. apt-install it
 # inside the cage VM (as root, before we test as uid 1000) so the
 # subsequent egress-proxied request has a client to make. The HTTPS
-# fetch goes through mitmproxy in the egress sibling thanks to
+# fetch goes through the egress proxy in the egress sibling thanks to
 # cage-init.sh's default-route handoff + trust-store install.
 "$AGENTCAGE" cage exec "$CAGE" --as-root -- bash -c \
     'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl) >/dev/null 2>&1' \
@@ -254,8 +254,8 @@ echo "--- domain add live-reloads dnsmasq (no cage restart) ---"
 # `container inspect "$CAGE" | jq -r '.[0].process.pid ...'`, but Apple
 # `container` 1.0.0's inspect schema has no `process` object at all — it
 # is `status.{state,networks,startedDate}` (see
-# src/agentcage/apple_container/cli.py::container_state and the schema
-# fixtures in tests/test_apple_container.py). jq therefore emitted
+# container_state in rust/agentcage-exec/src/tools/apple.rs and its
+# schema fixtures). jq therefore emitted
 # `empty` on BOTH sides and `"" != ""` was always false: the assertion
 # passed vacuously and could never have caught a restart. It sits below
 # the stale iptables check (issue #314), so nobody noticed. Reading PID

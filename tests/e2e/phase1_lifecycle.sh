@@ -45,7 +45,7 @@ fi
 # Re-patch after proxy is fully up (ExecStartPost may have restarted it)
 repatch_mock "$CAGE" httpbin.org example.com || true
 
-# Verify the full data path (DNS → iptables → mitmproxy → /etc/hosts → mock)
+# Verify the full data path (DNS → iptables → egress proxy → /etc/hosts → mock)
 # is actually working before running assertions. wait_ready only checks GET /
 # on the cage; it can pass while the upstream chain is still broken.
 if ! wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org example.com; then
