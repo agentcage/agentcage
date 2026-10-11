@@ -1,0 +1,5249 @@
+{
+ "_comment": "SMTP relay oracle, recorded from the Python egress by tests/fixtures/egress/gen/smtp.py; see its docstring.",
+ "headers": [
+  {
+   "body": "From: a@example.com\r\nTo: b@example.com\r\nSubject: hi\r\n\r\nbody\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "From",
+     "a@example.com"
+    ],
+    [
+     "To",
+     "b@example.com"
+    ],
+    [
+     "Subject",
+     "hi"
+    ]
+   ]
+  },
+  {
+   "body": "Content-Type: TEXT/HTML; charset=utf-8\r\n\r\n<b>x</b>\r\n",
+   "content_type": "text/html",
+   "headers": [
+    [
+     "Content-Type",
+     "TEXT/HTML; charset=utf-8"
+    ]
+   ]
+  },
+  {
+   "body": "Content-Type: multipart/mixed;\r\n boundary=\"xyz\"\r\n\r\n--xyz--\r\n",
+   "content_type": "multipart/mixed",
+   "headers": [
+    [
+     "Content-Type",
+     "multipart/mixed;\r\n boundary=\"xyz\""
+    ]
+   ]
+  },
+  {
+   "body": "content-type: application/octet-stream\r\n\r\n\u0000\u0001",
+   "content_type": "application/octet-stream",
+   "headers": [
+    [
+     "content-type",
+     "application/octet-stream"
+    ]
+   ]
+  },
+  {
+   "body": "Content-Type: nonsense\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Content-Type",
+     "nonsense"
+    ]
+   ]
+  },
+  {
+   "body": "Content-Type: a/b/c\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Content-Type",
+     "a/b/c"
+    ]
+   ]
+  },
+  {
+   "body": "Content-Type:   image/png  ; name=x.png\r\n\r\n",
+   "content_type": "image/png",
+   "headers": [
+    [
+     "Content-Type",
+     "image/png  ; name=x.png"
+    ]
+   ]
+  },
+  {
+   "body": "Content-Type: \r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Content-Type",
+     ""
+    ]
+   ]
+  },
+  {
+   "body": {
+    "b64": "U3ViamVjdDogY2Fmw6kg/w0KDQo="
+   },
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "caf�� �"
+    ]
+   ]
+  },
+  {
+   "body": "Subject: folded\r\n\tcontinuation\r\n  more\r\nX: y\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "folded\r\n\tcontinuation\r\n  more"
+    ],
+    [
+     "X",
+     "y"
+    ]
+   ]
+  },
+  {
+   "body": "From someone@example.com Mon Jan  1 00:00:00 2026\r\nSubject: unix from\r\n\r\nx",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "unix from"
+    ]
+   ]
+  },
+  {
+   "body": "Subject: a\r\nFrom misplaced\r\nX: y\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "a"
+    ],
+    [
+     "X",
+     "y"
+    ]
+   ]
+  },
+  {
+   "body": "Subject: a\r\nFrom last line\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "a"
+    ]
+   ]
+  },
+  {
+   "body": " leading continuation\r\nSubject: a\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "a"
+    ]
+   ]
+  },
+  {
+   "body": ":nameless\r\nSubject: a\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "a"
+    ]
+   ]
+  },
+  {
+   "body": "Subject: a\rX-CR: only\rTo: z\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "a"
+    ],
+    [
+     "X-CR",
+     "only"
+    ],
+    [
+     "To",
+     "z"
+    ]
+   ]
+  },
+  {
+   "body": "Subject: a\nX-LF: only\n\nbody",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "a"
+    ],
+    [
+     "X-LF",
+     "only"
+    ]
+   ]
+  },
+  {
+   "body": "No header here, just text\r\nSubject: not a header\r\n",
+   "content_type": "text/plain",
+   "headers": []
+  },
+  {
+   "body": "Subject: no body separator\r\nthis line is body\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "no body separator"
+    ]
+   ]
+  },
+  {
+   "body": "",
+   "content_type": "text/plain",
+   "headers": []
+  },
+  {
+   "body": "Subject:\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     ""
+    ]
+   ]
+  },
+  {
+   "body": "Subject:   \r\n   \r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     ""
+    ]
+   ]
+  },
+  {
+   "body": "X-Weird_Name!: v\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "X-Weird_Name!",
+     "v"
+    ]
+   ]
+  },
+  {
+   "body": "Bad Name: v\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": []
+  },
+  {
+   "body": "Subject: no newline at end",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "no newline at end"
+    ]
+   ]
+  },
+  {
+   "body": "Subject: crlf at end\r",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Subject",
+     "crlf at end"
+    ]
+   ]
+  },
+  {
+   "body": "Content-Type: text/plain\r\nContent-Type: text/html\r\n\r\n",
+   "content_type": "text/plain",
+   "headers": [
+    [
+     "Content-Type",
+     "text/plain"
+    ],
+    [
+     "Content-Type",
+     "text/html"
+    ]
+   ]
+  }
+ ],
+ "addresses": [
+  {
+   "arg": "<luca@example.com>",
+   "address": "luca@example.com"
+  },
+  {
+   "arg": "<luca@example.com> SIZE=100",
+   "address": "luca@example.com"
+  },
+  {
+   "arg": "luca@example.com",
+   "address": "luca@example.com"
+  },
+  {
+   "arg": "",
+   "address": null
+  },
+  {
+   "arg": "   ",
+   "address": null
+  },
+  {
+   "arg": "<>",
+   "address": null
+  },
+  {
+   "arg": "<> <real@example.com>",
+   "address": "real@example.com"
+  },
+  {
+   "arg": "noat",
+   "address": null
+  },
+  {
+   "arg": "<a<b@example.com>",
+   "address": "a<b@example.com"
+  },
+  {
+   "arg": "  < spaced@example.com >  ",
+   "address": "spaced@example.com"
+  },
+  {
+   "arg": "<unterminated@example.com",
+   "address": "<unterminated@example.com"
+  },
+  {
+   "arg": "x <y@z> <w@v>",
+   "address": "y@z"
+  }
+ ],
+ "sessions": [
+  {
+   "name": "round-trip",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "QUIT\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ],
+     [
+      [
+       "221 2.0.0 agentcage signing off\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "round-trip-logged",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": true,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "allowed",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "recipients_rejected_upstream": [],
+      "size": 78,
+      "upstream_status": "upstream 250 2.0.0 queued as ABC123"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "helo",
+   "steps": [
+    {
+     "send": "HELO cage\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250 agentcage-smtp-relay\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "before-helo",
+   "steps": [
+    {
+     "send": "MAIL FROM:<a@b>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "503 HELO/EHLO first\r\n"
+      ]
+     ],
+     [
+      [
+       "503 HELO/EHLO first\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "misc-commands",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    },
+    {
+     "send": "VRFY bob\r\n",
+     "responses": 1
+    },
+    {
+     "send": "HELP\r\n",
+     "responses": 1
+    },
+    {
+     "send": "EXPN list\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RSET\r\n",
+     "responses": 1
+    },
+    {
+     "send": "noop\r\n",
+     "responses": 1
+    },
+    {
+     "send": "QUIT\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ],
+     [
+      [
+       "252 cannot VRFY user, but will accept for delivery\r\n"
+      ]
+     ],
+     [
+      [
+       "502 5.5.1 command not implemented\r\n"
+      ]
+     ],
+     [
+      [
+       "502 5.5.1 command not implemented\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ],
+     [
+      [
+       "221 2.0.0 agentcage signing off\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "syntax",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL TO:<a@b>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT FROM:<a@b>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<a@b>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "501 syntax: MAIL FROM:<address>\r\n"
+      ]
+     ],
+     [
+      [
+       "501 syntax: MAIL FROM:<address>\r\n"
+      ]
+     ],
+     [
+      [
+       "501 syntax: RCPT TO:<address>\r\n"
+      ]
+     ],
+     [
+      [
+       "503 MAIL FROM first\r\n"
+      ]
+     ],
+     [
+      [
+       "503 need MAIL FROM and at least one RCPT TO\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "mail-forms",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:noat\r\n",
+     "responses": 1
+    },
+    {
+     "send": "mail from: bare@example.com\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<x@y> SIZE=10\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "550 missing or malformed sender\r\n"
+      ]
+     ],
+     [
+      [
+       "550 missing or malformed sender\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "MAIL",
+      "decision": "blocked",
+      "reason": "missing sender"
+     },
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "MAIL",
+      "decision": "blocked",
+      "reason": "missing sender"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "rcpt-mixed",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<evil@attacker.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "recipient_allowlist": {
+     "addresses": [
+      "friend@example.com"
+     ],
+     "domains": []
+    }
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.1 recipient evil@attacker.com not permitted\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.1 missing or malformed recipient\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "RCPT",
+      "decision": "blocked",
+      "recipient": "evil@attacker.com",
+      "reason": "recipient not in recipient_allowlist"
+     },
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "RCPT",
+      "decision": "blocked",
+      "reason": "missing recipient"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "rcpt-domains",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<a@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<x@sub.example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<x@EXAMPLE.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<x@badexample.com>\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "recipient_allowlist": {
+     "addresses": [],
+     "domains": [
+      "example.com"
+     ]
+    }
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.1 recipient x@badexample.com not permitted\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "RCPT",
+      "decision": "blocked",
+      "recipient": "x@badexample.com",
+      "reason": "recipient not in recipient_allowlist"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "rcpt-list-shorthand",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<a@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<Friend@Example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<x@example.com>\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "recipient_allowlist": [
+     "friend@example.com"
+    ]
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.1 recipient x@example.com not permitted\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "RCPT",
+      "decision": "blocked",
+      "recipient": "x@example.com",
+      "reason": "recipient not in recipient_allowlist"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "sender-allowlist",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<evil@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<Agent@Example.COM>\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "sender_allowlist": [
+     "agent@example.com"
+    ]
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "550 sender evil@example.com not permitted\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "MAIL",
+      "decision": "blocked",
+      "sender": "evil@example.com",
+      "reason": "sender not in sender_allowlist"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "max-recipients",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<a@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<r0@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<r1@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<r2@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<r3@example.com>\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "max_recipients": 2
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "452 4.5.3 too many recipients\r\n"
+      ]
+     ],
+     [
+      [
+       "452 4.5.3 too many recipients\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "RCPT",
+      "decision": "blocked",
+      "reason": "max_recipients (2) exceeded"
+     },
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "RCPT",
+      "decision": "blocked",
+      "reason": "max_recipients (2) exceeded"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "max-message-bytes",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "max_message_bytes": 50
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 50\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "552 5.3.4 message size exceeds limit\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "DATA",
+      "decision": "blocked",
+      "reason": "message exceeds max_message_bytes (50)",
+      "size": 216
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "send-rate-limit",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "send_rate_limit": "1/hour"
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "451 4.7.0 send rate limit exceeded\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "DATA",
+      "decision": "blocked",
+      "reason": "send_rate_limit exceeded"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "blocked-does-not-burn-slot",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nEXFIL_MARKER_99\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "send_rate_limit": "1/hour"
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "marker",
+     "action": "block",
+     "marker": "EXFIL_MARKER_99",
+     "severity": "critical"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.0 block: EXFIL_MARKER_99\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "blocked",
+      "reason": "block: EXFIL_MARKER_99",
+      "inspector": "marker",
+      "severity": "critical",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "size": 31
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "oversize-does-not-burn-slot",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "short\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "send_rate_limit": "1/hour",
+    "max_message_bytes": 100
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 100\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "552 5.3.4 message size exceeds limit\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "short\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "DATA",
+      "decision": "blocked",
+      "reason": "message exceeds max_message_bytes (100)",
+      "size": 216
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "conn-rate-limit",
+   "steps": [
+    {
+     "new_client": true
+    },
+    {
+     "new_client": true
+    }
+   ],
+   "policy": {
+    "conn_rate_limit": "2/min"
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "220 agentcage-smtp-relay ready\r\n"
+      ]
+     ],
+     [
+      [
+       "421 connection rate limit\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "auth-plain-inline",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "AUTH PLAIN AGNhZ2UAcHc=\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "235 2.7.0 already authenticated (relay)\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "AUTH",
+      "decision": "intercepted",
+      "reason": "client AUTH on relay-authed connection"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "auth-plain-continuation",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "AUTH PLAIN\r\n",
+     "responses": 1
+    },
+    {
+     "send": "AGNhZ2UAcHc=\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "334 \r\n"
+      ]
+     ],
+     [
+      [
+       "235 2.7.0 already authenticated (relay)\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "AUTH",
+      "decision": "intercepted",
+      "reason": "client AUTH on relay-authed connection"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "auth-plain-lowercase",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "auth plain\r\n",
+     "responses": 1
+    },
+    {
+     "send": "AGNhZ2UAcHc=\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "334 \r\n"
+      ]
+     ],
+     [
+      [
+       "235 2.7.0 already authenticated (relay)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "AUTH",
+      "decision": "intercepted",
+      "reason": "client AUTH on relay-authed connection"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "auth-login",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "AUTH LOGIN\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Y2FnZQ==\r\n",
+     "responses": 1
+    },
+    {
+     "send": "cHc=\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "334 VXNlcm5hbWU6\r\n"
+      ]
+     ],
+     [
+      [
+       "334 UGFzc3dvcmQ6\r\n"
+      ]
+     ],
+     [
+      [
+       "235 2.7.0 already authenticated (relay)\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "AUTH",
+      "decision": "intercepted",
+      "reason": "client AUTH on relay-authed connection"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "auth-login-inline-user",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "AUTH LOGIN Y2FnZQ==\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Y2FnZQ==\r\n",
+     "responses": 1
+    },
+    {
+     "send": "cHc=\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "334 VXNlcm5hbWU6\r\n"
+      ]
+     ],
+     [
+      [
+       "334 UGFzc3dvcmQ6\r\n"
+      ]
+     ],
+     [
+      [
+       "235 2.7.0 already authenticated (relay)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "AUTH",
+      "decision": "intercepted",
+      "reason": "client AUTH on relay-authed connection"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "auth-other",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "AUTH CRAM-MD5\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "235 2.7.0 already authenticated (relay)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "AUTH",
+      "decision": "intercepted",
+      "reason": "client AUTH on relay-authed connection"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "inspector-block",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nleak EXFIL_MARKER_99\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "marker",
+     "action": "block",
+     "marker": "EXFIL_MARKER_99",
+     "severity": "critical"
+    },
+    {
+     "kind": "recorder",
+     "name": "recorder"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.0 block: EXFIL_MARKER_99\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "blocked",
+      "reason": "block: EXFIL_MARKER_99",
+      "inspector": "marker",
+      "severity": "critical",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "size": 36
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "inspector-pass",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "recorder",
+     "name": "recorder"
+    },
+    {
+     "kind": "marker",
+     "name": "marker",
+     "action": "block",
+     "marker": "EXFIL_MARKER_99",
+     "severity": "critical"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [],
+    "contexts": [
+     {
+      "inspector": "recorder",
+      "url": "",
+      "host": "127.0.0.1",
+      "method": "SMTP_DATA",
+      "headers": [
+       [
+        "From",
+        "agent@example.com"
+       ],
+       [
+        "To",
+        "friend@example.com"
+       ],
+       [
+        "Subject",
+        "hi"
+       ]
+      ],
+      "content_type": "text/plain",
+      "body_text": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n",
+      "body_size": 78,
+      "body_entropy": 4.539412887328894,
+      "prior": []
+     }
+    ]
+   }
+  },
+  {
+   "name": "inspector-flag",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nFLAG_MARKER_42\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "marker-flag",
+     "action": "flag",
+     "marker": "FLAG_MARKER_42",
+     "severity": "warning"
+    },
+    {
+     "kind": "recorder",
+     "name": "recorder"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "Subject: x\r\n\r\nFLAG_MARKER_42\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_data_flag",
+      "relay": "test-smtp",
+      "decision": "flagged",
+      "inspector": "marker-flag",
+      "reason": "flag: FLAG_MARKER_42",
+      "severity": "warning",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ]
+     },
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "allowed",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "recipients_rejected_upstream": [],
+      "size": 30,
+      "upstream_status": "upstream 250 2.0.0 queued as ABC123"
+     }
+    ],
+    "contexts": [
+     {
+      "inspector": "recorder",
+      "url": "",
+      "host": "127.0.0.1",
+      "method": "SMTP_DATA",
+      "headers": [
+       [
+        "Subject",
+        "x"
+       ]
+      ],
+      "content_type": "text/plain",
+      "body_text": "Subject: x\r\n\r\nFLAG_MARKER_42\r\n",
+      "body_size": 30,
+      "body_entropy": 4.389898095464287,
+      "prior": [
+       "marker-flag"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "inspector-flag-then-block",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nFLAG_MARKER_42 EXFIL_MARKER_99\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "marker-flag",
+     "action": "flag",
+     "marker": "FLAG_MARKER_42",
+     "severity": "warning"
+    },
+    {
+     "kind": "marker",
+     "name": "marker",
+     "action": "block",
+     "marker": "EXFIL_MARKER_99",
+     "severity": "critical"
+    },
+    {
+     "kind": "recorder",
+     "name": "recorder"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.0 block: EXFIL_MARKER_99\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "blocked",
+      "reason": "block: EXFIL_MARKER_99",
+      "inspector": "marker",
+      "severity": "critical",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "size": 46
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "context",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": {
+      "b64": "RnJvbTogYUBleGFtcGxlLmNvbQ0KQ29udGVudC1UeXBlOiBUZXh0L1BsYWluOyBjaGFyc2V0PXgNClN1YmplY3Q6IGNhZsOpDQoNCmJvZHkg/yBieXRlcw0KLi5kb3QNCi4NCg=="
+     },
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "recorder",
+     "name": "recorder"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": {
+        "b64": "RnJvbTogYUBleGFtcGxlLmNvbQ0KQ29udGVudC1UeXBlOiBUZXh0L1BsYWluOyBjaGFyc2V0PXgNClN1YmplY3Q6IGNhZsOpDQoNCmJvZHkg/yBieXRlcw0KLmRvdA0K"
+       }
+      }
+     ]
+    },
+    "audit": [],
+    "contexts": [
+     {
+      "inspector": "recorder",
+      "url": "",
+      "host": "127.0.0.1",
+      "method": "SMTP_DATA",
+      "headers": [
+       [
+        "From",
+        "a@example.com"
+       ],
+       [
+        "Content-Type",
+        "Text/Plain; charset=x"
+       ],
+       [
+        "Subject",
+        "caf��"
+       ]
+      ],
+      "content_type": "text/plain",
+      "body_text": "From: a@example.com\r\nContent-Type: Text/Plain; charset=x\r\nSubject: café\r\n\r\nbody � bytes\r\n.dot\r\n",
+      "body_size": 96,
+      "body_entropy": 4.8773644233332565,
+      "prior": []
+     }
+    ]
+   }
+  },
+  {
+   "name": "default-bypass",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nkey sk-ant-api03-XXXX QUJDREVGR0g\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "recipient_allowlist": {
+     "addresses": [
+      "friend@example.com"
+     ],
+     "domains": []
+    }
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "secrets",
+     "action": "block",
+     "marker": "sk-ant-api03",
+     "severity": "critical"
+    },
+    {
+     "kind": "marker",
+     "name": "entropy",
+     "action": "flag",
+     "marker": "QUJDREVGR0g",
+     "severity": "warning"
+    },
+    {
+     "kind": "recorder",
+     "name": "recorder"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "Subject: x\r\n\r\nkey sk-ant-api03-XXXX QUJDREVGR0g\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_data_bypass",
+      "relay": "test-smtp",
+      "bypassed": [
+       "entropy",
+       "secrets"
+      ],
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "reason": "all recipients in allowlist"
+     }
+    ],
+    "contexts": [
+     {
+      "inspector": "recorder",
+      "url": "",
+      "host": "127.0.0.1",
+      "method": "SMTP_DATA",
+      "headers": [
+       [
+        "Subject",
+        "x"
+       ]
+      ],
+      "content_type": "text/plain",
+      "body_text": "Subject: x\r\n\r\nkey sk-ant-api03-XXXX QUJDREVGR0g\r\n",
+      "body_size": 49,
+      "body_entropy": 4.818392496999824,
+      "prior": []
+     }
+    ]
+   }
+  },
+  {
+   "name": "explicit-empty-bypass",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nkey sk-ant-api03-XXXX\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "recipient_allowlist": {
+     "addresses": [
+      "friend@example.com"
+     ],
+     "domains": []
+    },
+    "bypass_inspectors_for_allowlisted": []
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "secrets",
+     "action": "block",
+     "marker": "sk-ant-api03",
+     "severity": "critical"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.0 block: sk-ant-api03\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "blocked",
+      "reason": "block: sk-ant-api03",
+      "inspector": "secrets",
+      "severity": "critical",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "size": 37
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "no-allowlist-no-bypass",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nkey sk-ant-api03-XXXX\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "secrets",
+     "action": "block",
+     "marker": "sk-ant-api03",
+     "severity": "critical"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.0 block: sk-ant-api03\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "blocked",
+      "reason": "block: sk-ant-api03",
+      "inspector": "secrets",
+      "severity": "critical",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "size": 37
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "bypass-keeps-body-size",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nHUGE\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "recipient_allowlist": {
+     "addresses": [
+      "friend@example.com"
+     ],
+     "domains": []
+    }
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "body-size",
+     "action": "block",
+     "marker": "HUGE",
+     "severity": "error"
+    },
+    {
+     "kind": "marker",
+     "name": "secrets",
+     "action": "block",
+     "marker": "sk-ant-api03",
+     "severity": "critical"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "550 5.7.0 block: HUGE\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "blocked",
+      "reason": "block: HUGE",
+      "inspector": "body-size",
+      "severity": "error",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "size": 20
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "custom-bypass",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nHUGE sk-ant-api03\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "recipient_allowlist": {
+     "addresses": [
+      "friend@example.com"
+     ],
+     "domains": []
+    },
+    "bypass_inspectors_for_allowlisted": [
+     "body-size",
+     "secrets"
+    ]
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "secrets",
+     "action": "block",
+     "marker": "sk-ant-api03",
+     "severity": "critical"
+    },
+    {
+     "kind": "marker",
+     "name": "body-size",
+     "action": "block",
+     "marker": "HUGE",
+     "severity": "error"
+    },
+    {
+     "kind": "recorder",
+     "name": "recorder"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "Subject: x\r\n\r\nHUGE sk-ant-api03\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_data_bypass",
+      "relay": "test-smtp",
+      "bypassed": [
+       "body-size",
+       "secrets"
+      ],
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "reason": "all recipients in allowlist"
+     }
+    ],
+    "contexts": [
+     {
+      "inspector": "recorder",
+      "url": "",
+      "host": "127.0.0.1",
+      "method": "SMTP_DATA",
+      "headers": [
+       [
+        "Subject",
+        "x"
+       ]
+      ],
+      "content_type": "text/plain",
+      "body_text": "Subject: x\r\n\r\nHUGE sk-ant-api03\r\n",
+      "body_size": 33,
+      "body_entropy": 4.513794876803093,
+      "prior": []
+     }
+    ]
+   }
+  },
+  {
+   "name": "flag-logged-when-off",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n\r\nQUJDREVGR0g\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [
+    {
+     "kind": "marker",
+     "name": "entropy",
+     "action": "flag",
+     "marker": "QUJDREVGR0g",
+     "severity": "warning"
+    }
+   ],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "Subject: x\r\n\r\nQUJDREVGR0g\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_data_flag",
+      "relay": "test-smtp",
+      "decision": "flagged",
+      "inspector": "entropy",
+      "reason": "flag: QUJDREVGR0g",
+      "severity": "warning",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ]
+     },
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "allowed",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "recipients_rejected_upstream": [],
+      "size": 27,
+      "upstream_status": "upstream 250 2.0.0 queued as ABC123"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "dot-stuffing",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: dots\r\n\r\n..leading dot\r\n...two\r\nmiddle . dot\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "Subject: dots\r\n\r\n.leading dot\r\n..two\r\nmiddle . dot\r\n"
+      }
+     ]
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "bare-lf-message",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: lf\n\n.x\nno crlf\n.\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "Subject: lf\n\n.x\nno crlf\n\r\n"
+      }
+     ]
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "rcpt-rejected-upstream",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<bounce@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": true,
+   "upstream": {
+    "reject_rcpts": [
+     "bounce@example.com"
+    ]
+   },
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "RCPT TO:<bounce@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "allowed",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ],
+      "recipients_rejected_upstream": [
+       "bounce@example.com"
+      ],
+      "size": 78,
+      "upstream_status": "upstream 250 2.0.0 queued as ABC123"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "all-rcpts-rejected-upstream",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {
+    "reject_rcpts": [
+     "friend@example.com"
+    ]
+   },
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "451 4.4.0 upstream temporarily unavailable\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "RSET\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "upstream_error",
+      "error": "upstream rejected all recipients",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ]
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "upstream-auth-rejected",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RSET\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {
+    "fail_auth": true
+   },
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "451 4.4.0 upstream temporarily unavailable\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "upstream_error",
+      "error": "upstream AUTH failed: 535 5.7.8 bad credentials",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ]
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "upstream-auth-echoed",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {
+    "echo_auth": true
+   },
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "451 4.4.0 upstream temporarily unavailable\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "upstream_error",
+      "error": "upstream AUTH failed: 535 5.7.8 rejected: AUTH PLAIN [redacted]\n5.7.8 password [redacted] is wrong",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ]
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "upstream-data-rejected",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {
+    "reject_data": true
+   },
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "451 4.4.0 upstream temporarily unavailable\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "upstream_error",
+      "error": "upstream DATA rejected: 554 5.7.0 no data today",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ]
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "upstream-unreachable",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {
+    "unreachable": true
+   },
+   "inspectors": [],
+   "mask_error": true,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "451 4.4.0 upstream temporarily unavailable\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "upstream_error",
+      "error": "<masked>",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ]
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "upstream-reused",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RSET\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "RSET\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      },
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "cage-idle",
+   "steps": [
+    {
+     "sleep": 1.5,
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "idle_timeout_seconds": 1
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "421 4.4.2 idle timeout, closing connection\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_session",
+      "relay": "test-smtp",
+      "decision": "closed",
+      "reason": "cage idle timeout"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "data-idle",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "Subject: x\r\n",
+     "sleep": 0,
+     "responses": 0
+    },
+    {
+     "sleep": 1.5,
+     "responses": 1
+    },
+    {
+     "send": "NOOP\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "idle_timeout_seconds": 1
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [],
+     [
+      [
+       "451 4.4.2 DATA reception timed out\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_command",
+      "relay": "test-smtp",
+      "command": "DATA",
+      "decision": "blocked",
+      "reason": "DATA reception idle timeout"
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "upstream-silent",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "idle_timeout_seconds": 1
+   },
+   "log_allowed": false,
+   "upstream": {
+    "silent": true
+   },
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "451 4.4.0 upstream temporarily unavailable\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [
+     {
+      "kind": "smtp_data",
+      "relay": "test-smtp",
+      "decision": "upstream_error",
+      "error": "",
+      "sender": "agent@example.com",
+      "recipients": [
+       "friend@example.com"
+      ]
+     }
+    ],
+    "contexts": []
+   }
+  },
+  {
+   "name": "rset-clears",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<friend@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RSET\r\n",
+     "responses": 1
+    },
+    {
+     "send": "DATA\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250 OK\r\n"
+      ]
+     ],
+     [
+      [
+       "503 need MAIL FROM and at least one RCPT TO\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "ehlo-resets",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<agent@example.com>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "EHLO again\r\n",
+     "responses": 1
+    },
+    {
+     "send": "RCPT TO:<x@y.z>\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ],
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "503 MAIL FROM first\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "ehlo-size",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {
+    "max_message_bytes": 1234
+   },
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 1234\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "pipelined",
+   "steps": [
+    {
+     "send": "EHLO a\r\nMAIL FROM:<agent@example.com>\r\nRCPT TO:<friend@example.com>\r\nDATA\r\n",
+     "responses": 4
+    },
+    {
+     "send": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n.\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ],
+      [
+       "250 2.1.0 sender ok\r\n"
+      ],
+      [
+       "250 2.1.5 recipient ok\r\n"
+      ],
+      [
+       "354 end data with <CR><LF>.<CR><LF>\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [
+      "EHLO agentcage.local\r\n",
+      "AUTH PLAIN AGFnZW50QGV4YW1wbGUuY29tAHJlYWwtYXBwLXBhc3N3b3Jk\r\n",
+      "MAIL FROM:<agent@example.com>\r\n",
+      "RCPT TO:<friend@example.com>\r\n",
+      "DATA\r\n",
+      "QUIT\r\n"
+     ],
+     "auth_seen": [
+      "agent@example.com",
+      "real-app-password"
+     ],
+     "transactions": [
+      {
+       "sender": "agent@example.com",
+       "recipients": [
+        "friend@example.com"
+       ],
+       "data": "From: agent@example.com\r\nTo: friend@example.com\r\nSubject: hi\r\n\r\nHello there.\r\n"
+      }
+     ]
+    },
+    "audit": [],
+    "contexts": []
+   }
+  },
+  {
+   "name": "non-ascii-command",
+   "steps": [
+    {
+     "send": "EHLO cage.local\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MÀIL FROM:<a@b.c>\r\n",
+     "responses": 1
+    },
+    {
+     "send": "MAIL FROM:<é@example.com>\r\n",
+     "responses": 1
+    }
+   ],
+   "policy": {},
+   "log_allowed": false,
+   "upstream": {},
+   "inspectors": [],
+   "mask_error": false,
+   "expect": {
+    "greeting": [
+     "220 agentcage-smtp-relay ready\r\n"
+    ],
+    "steps": [
+     [
+      [
+       "250-agentcage-smtp-relay\r\n",
+       "250-AUTH PLAIN LOGIN\r\n",
+       "250-8BITMIME\r\n",
+       "250-SIZE 5242880\r\n",
+       "250-PIPELINING\r\n",
+       "250-ENHANCEDSTATUSCODES\r\n",
+       "250 SMTPUTF8\r\n"
+      ]
+     ],
+     [
+      [
+       "502 5.5.1 command not implemented\r\n"
+      ]
+     ],
+     [
+      [
+       "250 2.1.0 sender ok\r\n"
+      ]
+     ]
+    ],
+    "upstream": {
+     "commands": [],
+     "auth_seen": null,
+     "transactions": []
+    },
+    "audit": [],
+    "contexts": []
+   }
+  }
+ ]
+}

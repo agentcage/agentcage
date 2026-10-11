@@ -11,13 +11,19 @@
 //! * [`imap`]: `PREAUTH` greeting, `LOGIN` injected upstream, write
 //!   modes, folder allow/deny lists, literal tracking, capability
 //!   filtering.
-//! * [`tls`]: the upstream TLS policy every relay shares.
+//! * [`smtp`]: sender and recipient allowlists, size, recipient and rate
+//!   caps, and the inspector chain on every `DATA` payload.
+//! * [`tls`]: the upstream TLS policy both share.
+//! * [`manager`]: starts the relays from the config and re-syncs them on
+//!   every reload, diffing by relay name.
 //!
 //! Each relay is a tokio TCP listener inside the egress process, so it
 //! shares the egress's secret lookup ([`crate::secret_lookup`]) and its
 //! audit pipeline ([`crate::audit`]).
 
 pub mod imap;
+pub mod manager;
+pub mod smtp;
 pub mod tls;
 pub mod validate;
 
@@ -143,7 +149,6 @@ impl RateLimiter {
         true
     }
 
-    #[allow(dead_code)] // the SMTP relay's, in the next change
     pub(crate) fn release(&self) {
         self.stamps
             .lock()
