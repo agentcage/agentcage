@@ -13,12 +13,12 @@ changes; only *who applies* it.
 
 A grant needs two things to become real:
 
-1. **L7** — the domain must pass `DomainInspector`. The addon already does
-   this synchronously, in-memory, the instant the decider says yes.
+1. **L7** — the domain must pass the domain inspector. The egress proxy
+   already does this synchronously, in memory, the instant the decider says yes.
 2. **DNS** — dnsmasq must be willing to forward the zone, or the cage cannot
    resolve the name at all.
 
-Only (2) was remote. The addon (`acproxy`, uid 200, `--bounding-set=-all`)
+Only (2) was remote. The egress proxy (`acproxy`, uid 200, `--bounding-set=-all`)
 cannot signal dnsmasq (`acdns`, uid 201) — it has no `CAP_KILL` — so applying
 DNS was delegated to a host process, and the host learned about grants by
 **polling a file**:
@@ -34,21 +34,22 @@ bugs were: a plist with no `PATH` could not find `limactl` and failed every
 tick while reporting healthy to `launchctl`.
 
 The deeper observation is that **the host was never the right place for this**.
-The egress already *is* the enforcement domain — mitmproxy and dnsmasq both run
-there. Anyone who can execute code in that container already owns policy
+The egress already *is* the enforcement domain — the egress proxy and dnsmasq
+both run there. Anyone who can execute code in that container already owns policy
 enforcement completely. Routing a DNS update through the host bought no
 security; it bought latency, an OS-specific supervisor, and a polling loop.
 
 ## The design
 
-The addon publishes the granted zone list; the supervisor renders and reloads.
+The egress proxy publishes the granted zone list; the supervisor renders and
+reloads.
 
 ```
-addon (uid 200)                    supervisor (root, PID 1)         dnsmasq (uid 201)
+agentcage-egress (uid 200)         supervisor (root, PID 1)         dnsmasq (uid 201)
   |                                   |                                |
   | decider says grant                |                                |
-  | dom.grant()  ── L7 live now       |                                |
-  | _persist_grants()                 |                                |
+  | grant in memory ── L7 live now    |                                |
+  | persist + publish                 |                                |
   |    ├─ grants.yaml   (durability)  |                                |
   |    └─ dns/granted   (apply)  ───► | step G loop notices mtime      |
   |                                   | re-render servers-file         |
@@ -65,10 +66,10 @@ already runs and already sleeps 1 s introduces *no new wakeups, no new process,
 and no new service*. This is the difference between "polling" and "noticing":
 the wakeup is already paid for.
 
-**The addon can only name a zone, never route it.** It writes newline-delimited
+**The egress proxy can only name a zone, never route it.** It writes newline-delimited
 **domain names** to `/home/acproxy/dns/granted`, not `server=` directives. The
 supervisor decides the upstream for each zone using exactly the logic it
-already applies to the baseline. A compromised addon therefore cannot point a
+already applies to the baseline. A compromised egress proxy therefore cannot point a
 zone at a resolver it controls — the worst it can do is name a domain, which is
 precisely the authority it already has (it is the component that decides
 grants).
@@ -89,7 +90,7 @@ makes that runtime file unconditional so there is a single path to re-render.
 
 ### Permissions
 
-`/home/acproxy` is chowned to `acproxy` in an image layer, so the addon can
+`/home/acproxy` is chowned to `acproxy` in an image layer, so the proxy can
 create `dns/granted` with no runtime `chown` — the supervisor deliberately
 avoids `chown` at runtime because hardened rootless podman
 (`default_capabilities = []`) drops `CAP_CHOWN`. The file is written
@@ -105,7 +106,7 @@ sinkhole answer, the same as any non-baseline name. Only allowlisted
 **baseline** domains get real in-cage `A` records. This is by design and
 grants still **work** end-to-end: the connection to that sinkhole IP is
 transparently intercepted at the egress, the proxy re-derives the real
-destination from SNI/Host (`flow.request.host = pretty_host` in the addon),
+destination from SNI/Host (the request is re-targeted to the `Host` name),
 enforces the grant, and resolves the upstream itself via the egress resolver
 — which *does* serve the granted zone. Think "DNS answer vs. connectivity":
 the sinkhole answer is a scoped-DNS artifact of the cage-local resolver,
@@ -130,7 +131,7 @@ drives the live-reload chain, and a read-only status command should not have
 that side effect.
 
 Enforcement durability does not depend on this. The overlay (`grants.yaml`) is
-the addon's own persistence: it reloads it at startup and re-publishes the DNS
+the egress's own persistence: it reloads it at startup and re-publishes the DNS
 list, so a granted domain survives an egress restart whether or not the host
 has reconciled yet.
 
@@ -138,7 +139,7 @@ has reconciled yet.
 
 **An expired *baseline* entry stays resolvable until the next reconcile.** Only
 entries from `agentcage domain add --expires-in` are affected (decider TTLs are
-swept by the addon itself, which re-publishes on expiry). The L7 inspector
+swept by the egress itself every 30 seconds, which re-publishes on expiry). The L7 inspector
 blocks an expired domain immediately and unconditionally, so the window is
 cosmetic — DNS resolution is not egress. This is already the behavior between
 watcher ticks today; it just widens from ≤1 s to "until the operator runs a
@@ -151,14 +152,12 @@ sees is correct; the file on disk is what converges lazily.
 bounded by the policy API's existing per-cage rate limit (1 rps, burst 5) and
 by `max_grants` (32), so the amplification ceiling is a few file writes.
 
-## What this removes
+## What this removed
 
-- `quadlets._grants_service_unit` and the `<name>-grants.service` unit.
-- `watcher.install_grants_watcher_plist` / `uninstall_grants_watcher` and the
-  `io.agentcage.<name>.grants.plist` launchd agent.
-- `cli._ensure_grants_watcher` and every backend's install/enable/stop/uninstall
-  call site.
-- The `grants watch` polling loop (`--once` survives as `grants sync`).
+- The per-cage `<name>-grants.service` systemd user unit.
+- The `io.agentcage.<name>.grants.plist` launchd agent.
+- Every backend's install, enable, stop and uninstall step for them.
+- The host's `grants watch` polling loop (`--once` survives as `grants sync`).
 
 Net: one fewer long-lived process per cage, no per-OS service supervision in
 the feature's correctness path, and no `PATH`/`limactl`/GUI-domain class of bug.

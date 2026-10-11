@@ -220,7 +220,7 @@ agentcage domain add my-agent crates.io docs.rs --expires-in 2h
 ```
 
 **Options**:
-- `--passthrough`: Add to raw TLS passthrough list (bypasses MITM inspection).
+- `--passthrough`: Add to the TLS passthrough list (the egress splices the connection without terminating TLS, so it is not inspected).
 - `--expires-in TEXT`: Set a TTL (e.g. `"30m"`, `"2h"`, `"1d"`). Once expired, traffic is blocked.
 
 ---
@@ -309,7 +309,7 @@ agentcage cage audit my-agent --summary --since 24h
 agentcage cage audit my-agent -f -d blocked
 ```
 
-Every record the egress audits is listed, not only HTTP and DNS decisions: protocol-relay commands and failures (`imap_command`, `smtp_data`, `relay_start_failed`, ...), Policy API requests (`policy_*`), watcher findings and revocations (`watcher_*`), and blocked TCP bypasses and private-address peers. In the table, a record without an HTTP method shows its kind's family (`IMAP`, `SMTP`, `POLICY`, ...) in the METHOD column, the relay name in HOST when it has no host, the relay command in PATH, and its full `kind` at the start of REASON. `--summary` counts `policy_*` and `watcher_*` records separately from traffic and lists every kind it saw.
+Every record the egress audits is listed, not only HTTP and DNS decisions: protocol-relay commands and failures (`imap_command`, `smtp_data`, `relay_start_failed`, ...), Policy API requests (`policy_*`), watcher findings and revocations (`watcher_*`), blocked TCP bypasses and private-address peers, upstream failures (`upstream_error`, `decision: error`), flows the egress refused after an internal error (`internal_error`), and config edits it refused to apply (`config_reload_failed`). In the table, a record without an HTTP method shows its kind's family (`IMAP`, `SMTP`, `POLICY`, ...) in the METHOD column, the relay name in HOST when it has no host, the relay command in PATH, and its full `kind` at the start of REASON. `--summary` counts `policy_*` and `watcher_*` records separately from traffic and lists every kind it saw.
 
 **Options**:
 - `-d, --decision [blocked|flagged|allowed]`: Filter by proxy decision (repeatable). Records with no decision (for example a Policy API introspection read) never match.
