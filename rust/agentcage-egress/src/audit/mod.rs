@@ -20,8 +20,9 @@ mod ring;
 mod writer;
 
 pub use records::{
-    Decision, Direction, HttpDecision, config_reload_failed, inspectors_json, log_allowed,
-    private_peer_blocked, relay_failure, tcp_bypass_blocked, tcp_bypass_target, upstream_error,
+    Decision, Direction, HttpDecision, config_reload_failed, inspectors_json, internal_error,
+    log_allowed, private_peer_blocked, relay_failure, tcp_bypass_blocked, tcp_bypass_target,
+    upstream_error,
 };
 pub use ring::{Drained, RING_MAX, WatcherRing};
 pub use writer::{AUDIT_CAP_BYTES, AuditWriter, DEFAULT_AUDIT_LOG};
