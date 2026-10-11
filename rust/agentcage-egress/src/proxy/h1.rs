@@ -749,6 +749,14 @@ fn fix_framing(headers: &mut Headers, len: usize, needs_length: bool) -> bool {
     if is_chunked(headers) {
         return true;
     }
+    if headers.contains("transfer-encoding") {
+        // A transfer coding without `chunked` (a response read until the
+        // upstream closed): the body is close-delimited on the way out
+        // too, and the connection closes after it. A `Content-Length`
+        // beside the coding would frame it a second, different way — the
+        // shape the smuggling checks refuse on the way in.
+        return false;
+    }
     if headers.contains("content-length") {
         headers.set("content-length", len.to_string());
     } else if needs_length {
@@ -1107,6 +1115,34 @@ mod tests {
             b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi"
         );
         assert_eq!(encode_response(&resp, "HEAD"), b"HTTP/1.1 200 OK\r\n\r\n");
+    }
+
+    /// Found by the `h1_response` fuzz target: a response framed by a
+    /// transfer coding without `chunked` (read until the upstream closed)
+    /// was relayed with a `Content-Length` added beside the
+    /// `Transfer-Encoding` — two framings, which the egress's own
+    /// smuggling checks refuse.
+    #[test]
+    fn a_close_delimited_response_gets_no_length_beside_its_coding() {
+        let mut resp = Response {
+            status: 200,
+            reason: "OK".into(),
+            http_version: "HTTP/1.1".into(),
+            headers: Headers::new(),
+            body: b"\x1f\x8b\x08\x00".to_vec(),
+        };
+        resp.headers.add("Transfer-Encoding", "gzip");
+        let wire = encode_response(&resp, "GET");
+        assert_eq!(
+            wire,
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n\x1f\x8b\x08\x00"
+        );
+        let head = parse_response_head(&wire).unwrap();
+        assert!(validate_framing(&head.headers, &head.version, Some(200)).is_ok());
+        assert_eq!(
+            response_framing("GET", 200, &head.headers),
+            Ok(Framing::UntilEof)
+        );
     }
 
     #[test]
