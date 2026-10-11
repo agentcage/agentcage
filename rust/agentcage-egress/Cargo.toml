@@ -44,6 +44,32 @@ ring = "0.17"
 # provider only (no aws-lc / cmake).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
+# ── Proxy core ───────────────────────────────────────────────
+# The async runtime every listener, connection and upstream runs on
+# (`process` only for the curl scenario test).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync", "process"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# The upstream trust store (plan D8): the Mozilla bundle, compiled in.
+webpki-roots = "1"
+# The HTTP/1 head parser behind the order/case/duplicate-preserving codec (D10).
+httparse = "1"
+# HTTP/2 server and client framing, and the request/response types it speaks.
+h2 = "0.4"
+http = "1"
+bytes = "1"
+# WebSocket message relay over the upgraded connection.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Hot-reloadable transport settings without locking the hot path.
+arc-swap = "1"
+# Command-line parsing for `agentcage-egress run`, as the host CLI does it.
+clap = { version = "4", features = ["derive", "env"] }
+
+# `SO_ORIGINAL_DST` for the transparent listener, through a safe wrapper
+# (`unsafe_code` is forbidden workspace-wide).
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["socket", "net"] }
+
 [dev-dependencies]
 
 [lints]
