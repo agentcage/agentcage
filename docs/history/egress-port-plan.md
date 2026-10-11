@@ -655,7 +655,9 @@ matrix during the transition. Two harness changes are needed because Python
 leaves the egress image: `start_mock` runs `mock-httpbin.py` in a separate
 `python:3-alpine` container joined with `--network container:<n>-egress`
 (so the `/etc/hosts` + `127.0.0.1` trick keeps working), and nothing else in
-the harness may assume `python3` in the egress. Add e2e coverage the suite
+the harness may assume `python3` in the egress. (At the cutover the mocks
+became a static Rust binary, `rust/agentcage-e2e-mock`, run the same way in
+a container on the egress image's debian base.) Add e2e coverage the suite
 lacks today: WebSocket through the proxy, Policy API grant round trip (with a
 stub decider), one IMAP and one SMTP relay against mock servers, passthrough,
 the 403 body shape, a wasm plugin blocking a request.
