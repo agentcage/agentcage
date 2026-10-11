@@ -594,7 +594,7 @@ class SmtpRelay:
                     )
                     await client_writer.drain()
                     try:
-                        body, oversize = await self._read_data(
+                        body, oversize, complete = await self._read_data(
                             client_reader, self._cfg.max_message_bytes
                         )
                     except asyncio.TimeoutError:
@@ -615,6 +615,23 @@ class SmtpRelay:
                         await client_writer.drain()
                         txn = _Transaction()
                         continue
+                    if not complete:
+                        # The cage hung up before the end-of-data line,
+                        # so it sent no message: never deliver the part
+                        # that arrived. Nothing of this transaction has
+                        # gone upstream yet (delivery starts below), so
+                        # there is nothing to abort there.
+                        self._send_limiter.release()
+                        self._audit_log({
+                            "kind": "smtp_data_aborted",
+                            "relay": self._cfg.name,
+                            "decision": "blocked",
+                            "reason": "cage disconnected before end of data",
+                            "sender": txn.sender,
+                            "recipients": list(txn.recipients),
+                            "size": len(body),
+                        })
+                        return
                     if oversize:
                         # Size cap rejection — release the slot.
                         self._send_limiter.release()
@@ -796,7 +813,9 @@ class SmtpRelay:
         """Read until the canonical end-of-data marker ``\\r\\n.\\r\\n``.
 
         Performs SMTP dot-unstuffing (RFC 5321 §4.5.2: a line that
-        starts with ``..`` becomes ``.``). Returns (body, oversize).
+        starts with ``..`` becomes ``.``). Returns (body, oversize,
+        complete); ``complete`` is false when the cage hung up before the
+        end-of-data line.
         On oversize the body is truncated and the rest of the
         transaction is drained from the wire so the next command
         starts at a clean state.
@@ -811,7 +830,7 @@ class SmtpRelay:
                 # let the caller surface the error to the cage.
                 raise
             if not line:
-                return bytes(body), oversize
+                return bytes(body), oversize, False
             if line == b".\r\n" or line == b".\n":
                 break
             if line.startswith(b".."):
@@ -822,7 +841,7 @@ class SmtpRelay:
                     oversize = True
                     # Drop excess; keep reading to consume the rest of
                     # the message so the SMTP framing stays in sync.
-        return bytes(body), oversize
+        return bytes(body), oversize, True
 
     def _sender_decision(self, sender: Optional[str]) -> Optional[str]:
         """Returns a denial reason (string) or None if allowed."""
