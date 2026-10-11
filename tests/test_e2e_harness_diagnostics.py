@@ -84,10 +84,10 @@ class TestRunShMacOSContainerGuard:
     @pytest.mark.parametrize(
         "args, expected_phases",
         [
-            ("container", "1 2 3 4 5 6"),
+            ("container", "1 2 3 4 5 6 9"),
             ("openclaw", "8"),
-            ("all", "1 2 3 4 5 6 8"),
-            ("", "1 2 3 4 5 6 8"),   # no args ⇒ all phases
+            ("all", "1 2 3 4 5 6 8 9"),
+            ("", "1 2 3 4 5 6 8 9"),   # no args ⇒ all phases
             ("1", "1"),
             ("3 7", "3"),            # 7 alone is fine, 3 is not
         ],
@@ -146,7 +146,7 @@ class TestRunShMacOSContainerGuard:
         """
         text = RUN_SH.read_text()
         assert '[ "$(uname -s)" = "Darwin" ]' in text
-        assert "1|2|3|4|5|6|8) BLOCKED+=" in text
+        assert "1|2|3|4|5|6|8|9) BLOCKED+=" in text
         assert "|7|" not in text
         # The guard block must precede the stale-cage sweep, which is the
         # first thing that talks to a backend. The sweep goes through

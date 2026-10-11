@@ -17,7 +17,7 @@ on:
 # container.
 jobs:
   e2e-container:
-    name: E2E Container (Phases 1-6)
+    name: E2E Container (Phases 1-6, 9)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -74,7 +74,9 @@ jobs:
 
       # The e2e mock upstream runs in its own stock-python container joined
       # to the egress's network namespace (tests/e2e/lib.sh start_mock); its
-      # pinned reference lives in tests/e2e/mock-image.ref.
+      # pinned reference lives in tests/e2e/mock-image.ref. Phase 9's mail,
+      # LLM and TLS mocks (tests/e2e/mock-services.py) run in the same
+      # image, so there is nothing else to pull.
       - name: Pull base images (if not cached)
         run: |
           podman image exists docker.io/library/node:22-slim 2>/dev/null || podman pull docker.io/library/node:22-slim
@@ -84,13 +86,13 @@ jobs:
       - name: Run E2E container tests
         run: bash tests/e2e/run.sh container
 
-  # Phases 1-6 against the Rust egress (AGENTCAGE_EGRESS_ENGINE=rust), the
+  # Phases 1-6 and 9 against the Rust egress (AGENTCAGE_EGRESS_ENGINE=rust), the
   # second axis of the egress-engine matrix (EGRESS-PORT-PLAN.md P5.3).
   #
   # Required: the Rust egress passes the same phases as the Python one
   # (it was gated off only while `agentcage-egress` was a placeholder).
   e2e-container-rust:
-    name: E2E Container, Rust egress (Phases 1-6)
+    name: E2E Container, Rust egress (Phases 1-6, 9)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
