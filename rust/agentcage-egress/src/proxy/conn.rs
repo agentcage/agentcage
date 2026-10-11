@@ -39,6 +39,8 @@ pub(crate) struct Shared<H> {
     pub(crate) upstream_tls: Arc<UpstreamTls>,
     pub(crate) settings: Arc<ArcSwap<TransportSettings>>,
     pub(crate) budget: Arc<super::budget::BodyBudget>,
+    /// The cage-facing TLS session ticket key.
+    pub(crate) tickets: Option<Arc<dyn rustls::server::ProducesTickets>>,
 }
 
 /// Which upstream an HTTP connection may be reused for.
@@ -763,7 +765,11 @@ async fn terminate_tls<H: FlowHandler>(
         }
     };
     let chosen = detect::choose_alpn(&hello.alpn);
-    let config = match server_config(leaf, chosen, !hello.alpn.is_empty()) {
+    // Only a session with an SNI is resumable: rustls binds a ticket to
+    // the SNI it was issued under, and without one the leaf is minted for
+    // whatever address the client happened to reach.
+    let tickets = info.sni.as_ref().and(shared.tickets.as_ref());
+    let config = match server_config(leaf, chosen, !hello.alpn.is_empty(), tickets) {
         Ok(config) => config,
         Err(e) => {
             log(&info, &format!("TLS config: {e}"));
