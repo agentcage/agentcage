@@ -358,11 +358,18 @@ impl CaptureWriter {
     fn encode_body(&self, content: &[u8]) -> (String, Option<&'static str>, bool, usize) {
         let original = content.len();
         let max = self.settings.max_body_size;
-        let (kept, truncated) = if max != 0 && len_i64(original) > max {
-            (py_prefix(content, max), true)
+        if max != 0 && len_i64(original) > max {
+            Self::encode_kept(py_prefix(content, max), true, original)
         } else {
-            (content, false)
-        };
+            Self::encode_kept(content, false, original)
+        }
+    }
+
+    fn encode_kept(
+        kept: &[u8],
+        truncated: bool,
+        original: usize,
+    ) -> (String, Option<&'static str>, bool, usize) {
         match std::str::from_utf8(kept) {
             Ok(text) => (text.to_owned(), None, truncated, original),
             Err(_) => (
@@ -375,14 +382,18 @@ impl CaptureWriter {
     }
 
     fn body_fields(&self, content: &[u8]) -> (Fields, Fields) {
-        let (body, encoding, truncated, original) = self.encode_body(content);
+        Self::fields(self.encode_body(content))
+    }
+
+    fn fields(encoded: (String, Option<&'static str>, bool, usize)) -> (Fields, Fields) {
+        let (body, encoding, truncated, original) = encoded;
         let head = vec![
             ("body".to_owned(), Json::Str(body)),
             (
                 "bodyEncoding".to_owned(),
                 encoding.map_or(Json::Null, Json::string),
             ),
-            ("bodySize".to_owned(), Json::Int(len_i64(content.len()))),
+            ("bodySize".to_owned(), Json::Int(len_i64(original))),
         ];
         let tail = if truncated {
             vec![
@@ -393,6 +404,17 @@ impl CaptureWriter {
             Vec::new()
         };
         (head, tail)
+    }
+
+    /// How much of a streamed body a snapshot needs: the first
+    /// `max_body_size` bytes, or `None` when that is not a plain prefix
+    /// (0 is unlimited, a negative size cuts from the end) and the body
+    /// must be buffered whole.
+    #[must_use]
+    pub fn streamed_prefix(&self) -> Option<usize> {
+        usize::try_from(self.settings.max_body_size)
+            .ok()
+            .filter(|&n| n > 0)
     }
 
     /// A request snapshot: `{method, url, httpVersion, headers: [[k, v],
@@ -425,7 +447,23 @@ impl CaptureWriter {
         let Some((resp, content)) = resp else {
             return Json::Object(Vec::new());
         };
-        let (body, tail) = self.body_fields(content);
+        Self::response_json(resp, self.body_fields(content))
+    }
+
+    /// [`CaptureWriter::snapshot_response`] for a streamed body, of which
+    /// only the first [`CaptureWriter::streamed_prefix`] bytes (`kept`)
+    /// were kept, out of `total`.
+    #[must_use]
+    pub fn snapshot_streamed_response(&self, resp: &Response, kept: &[u8], total: usize) -> Json {
+        let max = self.streamed_prefix().unwrap_or(usize::MAX);
+        let kept = &kept[..kept.len().min(max)];
+        Self::response_json(
+            resp,
+            Self::fields(Self::encode_kept(kept, total > max, total)),
+        )
+    }
+
+    fn response_json(resp: &Response, (body, tail): (Fields, Fields)) -> Json {
         let mut pairs = vec![
             ("status".to_owned(), Json::Int(i64::from(resp.status))),
             ("statusText".to_owned(), Json::string(resp.reason.clone())),
@@ -986,6 +1024,46 @@ impl Capture {
                 state.pending.insert(flow_id.to_owned(), pending);
             }
         } else if writer.should_capture(pending.info.decision.as_str(), &pending.info.host) {
+            pending.inbound_resp = snapshot.clone();
+            pending.outbound_resp = snapshot;
+            state.write(&pending.entry(Vec::new(), 0));
+        }
+    }
+
+    /// Whether `flow_id` has a staged entry for its response, and how
+    /// much of a streamed body it needs: `None` for no entry (nothing to
+    /// record), `Some(None)` when the whole body is needed (it must be
+    /// buffered), `Some(Some(n))` for its first `n` bytes.
+    #[must_use]
+    pub fn streamed_body_limit(&self, flow_id: &str) -> Option<Option<usize>> {
+        let state = self.lock();
+        let writer = state.writer.as_ref()?;
+        state
+            .pending
+            .contains_key(flow_id)
+            .then(|| writer.streamed_prefix())
+    }
+
+    /// [`Capture::finish_response`] for a streamed (never a WebSocket)
+    /// response: `kept` is the first part of the redacted, decoded body
+    /// (at least what [`Capture::streamed_body_limit`] asked for, when the
+    /// body was that long), `total` its whole length.
+    pub fn finish_streamed_response(
+        &self,
+        flow_id: &str,
+        resp: &Response,
+        kept: &[u8],
+        total: usize,
+    ) {
+        let mut state = self.lock();
+        let Some(mut pending) = state.pending.remove(flow_id) else {
+            return;
+        };
+        let Some(writer) = state.writer.as_ref() else {
+            return;
+        };
+        if writer.should_capture(pending.info.decision.as_str(), &pending.info.host) {
+            let snapshot = writer.snapshot_streamed_response(resp, kept, total);
             pending.inbound_resp = snapshot.clone();
             pending.outbound_resp = snapshot;
             state.write(&pending.entry(Vec::new(), 0));

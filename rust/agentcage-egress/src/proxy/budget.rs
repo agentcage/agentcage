@@ -165,7 +165,6 @@ impl Reservation {
     }
 
     /// Give back everything above `total` bytes.
-    #[allow(dead_code)] // The streaming body path's release point.
     pub(crate) fn shrink_to(&mut self, total: usize) {
         if total < self.held {
             self.budget.release(self.held - total);

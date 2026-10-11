@@ -11,9 +11,15 @@
 //!   resolved or connected upstream. Nothing leaves the egress until
 //!   [`FlowHandler::request`] returns [`RequestAction::Forward`], so a
 //!   blocked request, a 429 or a Policy API call never opens a socket.
-//! * **Fully buffered bodies**, capped at [`TransportSettings::max_body`]
-//!   (plan D6): a body over the cap is an error response from the handler,
-//!   never an out-of-memory kill.
+//! * **Buffered requests, streamed responses where possible.** A request
+//!   body is read whole before the request hook runs, capped at
+//!   [`TransportSettings::max_body`] (plan D6): a body over the cap is an
+//!   error response from the handler, never an out-of-memory kill. A
+//!   response body is offered to [`FlowHandler::response_head`] first;
+//!   when the handler streams it, it is relayed chunk by chunk through its
+//!   [`ResponseStream`] with backpressure both ways and no cap (an upstream
+//!   failure mid-body cuts the client off: HTTP/1 closes, HTTP/2 resets the
+//!   stream); otherwise it is buffered under the same cap.
 //! * **The handler vets every upstream address.** The transport resolves a
 //!   name (getaddrinfo semantics, no cache), hands the answers to
 //!   [`FlowHandler::server_connect`], and connects only to what comes
@@ -380,6 +386,24 @@ pub trait FlowHandler: Send + Sync + 'static {
         resp: &mut Response,
     ) -> impl Future<Output = ()> + Send;
 
+    /// Offered the head of an upstream response that has a body (not a
+    /// `101`, not `HEAD` / `204` / `304`), before any of the body is read:
+    /// return a [`ResponseStream`] to relay the body as it arrives instead
+    /// of buffering it and calling [`Self::response`]. `head.body` is
+    /// empty; the handler may rewrite the head in place (it is what the
+    /// client gets). A streamed flow ends with [`ResponseStream::close`]
+    /// and then [`Self::flow_end`]. The default buffers every body.
+    fn response_head(
+        &self,
+        conn: &ConnInfo,
+        flow: &mut Self::Flow,
+        req: &mut Request,
+        head: &mut Response,
+    ) -> impl Future<Output = Option<Box<dyn ResponseStream>>> + Send {
+        let _ = (conn, flow, req, head);
+        async { None }
+    }
+
     /// One complete WebSocket message, either direction.
     fn websocket_message(
         &self,
@@ -431,6 +455,56 @@ pub trait FlowHandler: Send + Sync + 'static {
     /// names a passthrough destination. [`PassthroughMatcher`] implements
     /// the configured rule.
     fn is_passthrough(&self, conn: &ConnInfo, candidate: &str) -> bool;
+}
+
+/// How a streamed response ended, for [`ResponseStream::close`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamOutcome {
+    /// The whole body reached the client.
+    Completed,
+    /// The upstream failed mid-body (reset, truncated, malformed); the
+    /// client's response was cut off.
+    UpstreamFailed(String),
+    /// The stream itself refused to go on (a corrupt Content-Encoding, a
+    /// run too long to redact); the client's response was cut off.
+    Refused(String),
+    /// The client went away mid-body.
+    ClientGone,
+}
+
+/// A response body relayed as it arrives (see
+/// [`FlowHandler::response_head`]): every upstream chunk goes in through
+/// [`ResponseStream::push`], every piece for the client comes out of
+/// [`ResponseStream::next_out`]. The transport reads the next upstream
+/// chunk only once the stream has nothing more to give, and gives the
+/// stream nothing more until the client has taken what it gave, so memory
+/// per exchange stays at what the stream holds back plus one chunk.
+pub trait ResponseStream: Send + 'static {
+    /// Whether the body goes out byte for byte as it came, so the
+    /// upstream's `Content-Length` still holds; otherwise the body may
+    /// change length and goes out chunked (HTTP/1) or without a length
+    /// (HTTP/2).
+    fn passthrough(&self) -> bool;
+
+    /// The next chunk of the upstream body.
+    fn push(&mut self, chunk: bytes::Bytes);
+
+    /// The upstream body is complete.
+    fn end(&mut self);
+
+    /// The next piece for the client; `None` when the stream needs more
+    /// input (or, after [`ResponseStream::end`], when it is done).
+    ///
+    /// # Errors
+    ///
+    /// The stream cannot go on; the exchange is aborted with the reason.
+    fn next_out(&mut self) -> Result<Option<bytes::Bytes>, String>;
+
+    /// Bytes held back, accounted on the process-wide body budget.
+    fn held(&self) -> usize;
+
+    /// The exchange is over: record it.
+    fn close(self: Box<Self>, outcome: StreamOutcome);
 }
 
 /// Transport settings that a reload may change; read once per request

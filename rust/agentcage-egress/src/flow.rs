@@ -43,10 +43,12 @@ use crate::message::{Request, Response};
 use crate::policy::{CONTENT_TYPE, ControlRequest};
 use crate::proxy::{
     ConnInfo, ConnectDecision, ConnectTarget, Direction, FlowEnd, FlowHandler, Refusal,
-    RequestAction, UpstreamError, WsMessage, WsVerdict, make_response, parse_authority,
-    retarget_to_host,
+    RequestAction, ResponseStream, UpstreamError, WsMessage, WsVerdict, make_response,
+    parse_authority, retarget_to_host,
 };
 use crate::text;
+
+mod stream;
 
 /// The headers a reverse (inbound) flow drops instead of forwarding:
 /// client attribution the egress cannot vouch for.
@@ -621,6 +623,75 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Whether (and how) to relay a response body as it arrives rather
+    /// than buffer it: only when no response inspector needs it whole, its
+    /// Content-Encoding can be removed as it streams, and a capture entry
+    /// needs no more than a prefix of it. `None` keeps the buffered path,
+    /// which also fails closed on anything the head already shows wrong.
+    fn stream_plan(
+        &self,
+        flow: &Flow,
+        req: &mut Request,
+        head: &mut Response,
+    ) -> Option<stream::PipelineStream> {
+        use crate::text::stream::StreamEncoding;
+        let engine = &self.engine;
+        if flow.live.chain.inspects_responses() {
+            return None;
+        }
+        let codec = match StreamEncoding::of(head.headers.get("content-encoding").as_deref()) {
+            StreamEncoding::Buffered => return None,
+            StreamEncoding::Identity => None,
+            StreamEncoding::Codec(codec) => Some(codec),
+        };
+        let capture = match engine.capture.streamed_body_limit(&flow.id) {
+            None => None,
+            Some(None) => return None,
+            Some(Some(limit)) => Some(limit),
+        };
+        // What the response hook does before the body: the request put
+        // back to placeholders for every record, the headers redacted.
+        engine.injector.redact_request(req).ok()?;
+        engine
+            .capture
+            .refresh_request(&flow.id, req, &lenient_body(&req.headers, &req.body));
+        let redactor = engine.injector.stream_redactor();
+        let decode = redactor.as_ref().and(codec);
+        if let Some(redactor) = &redactor {
+            stream::redact_head(head, redactor.forms());
+        }
+        if decode.is_some() {
+            head.headers.remove("content-encoding");
+        }
+        if redactor.is_some() {
+            // The body may change length.
+            head.headers.remove("content-length");
+        }
+        let recorded = Request {
+            method: req.method.clone(),
+            scheme: req.scheme.clone(),
+            host: req.host.clone(),
+            port: req.port,
+            path: req.path.clone(),
+            http_version: req.http_version.clone(),
+            headers: req.headers.clone(),
+            body: Vec::new(),
+        };
+        let plan = stream::Plan {
+            decode,
+            capture: capture.map(|limit| (limit, if decode.is_none() { codec } else { None })),
+            redactor,
+        };
+        Some(stream::PipelineStream::new(
+            Arc::clone(engine),
+            flow.id.clone(),
+            flow.direction,
+            recorded,
+            head.clone(),
+            plan,
+        ))
+    }
+
     async fn websocket_inner(
         &self,
         conn: &ConnInfo,
@@ -788,6 +859,19 @@ impl FlowHandler for Pipeline {
             self.engine.capture.release(&flow.id);
             *resp = self.internal_error(req, flow.direction, &e);
         }
+    }
+
+    fn response_head(
+        &self,
+        _conn: &ConnInfo,
+        flow: &mut Flow,
+        req: &mut Request,
+        head: &mut Response,
+    ) -> impl std::future::Future<Output = Option<Box<dyn ResponseStream>>> + Send {
+        std::future::ready(
+            self.stream_plan(flow, req, head)
+                .map(|stream| Box::new(stream) as Box<dyn ResponseStream>),
+        )
     }
 
     async fn websocket_message(

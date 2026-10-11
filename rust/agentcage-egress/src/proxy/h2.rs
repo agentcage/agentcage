@@ -16,7 +16,7 @@ use http::{HeaderName, HeaderValue};
 
 use super::conn::{self, Shared};
 use super::io::BoxIo;
-use super::{ConnInfo, FlowHandler, Refusal, UpstreamError, host_port};
+use super::{ConnInfo, FlowHandler, Refusal, StreamOutcome, UpstreamError, host_port};
 use crate::message::{Headers, Request, Response};
 
 /// Headers that are meaningless (and illegal) in HTTP/2.
@@ -205,42 +205,83 @@ pub(crate) fn response_to_h2(resp: &Response, method: &str) -> Result<http::Resp
     Ok(out)
 }
 
-/// Send `req` on an HTTP/2 upstream connection and read the response.
-pub(crate) async fn send(
+/// Aborts a task when dropped: the request-body sender of an HTTP/2
+/// upstream stream, which outlives nothing of its exchange.
+#[derive(Debug)]
+pub(crate) struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Send `req` on an HTTP/2 upstream connection and wait for the response
+/// head: the head (empty body), the body stream, and the task still
+/// sending the request body, if any.
+///
+/// The request body is handed to the codec as `Bytes` without a copy
+/// (`req.body` is moved out and put back afterwards, without a copy once
+/// the codec has let go of it), a window at a time as the server's flow
+/// control admits it. It is sent by its own task, concurrently with the
+/// wait for the response: a server that answers before reading the whole
+/// upload (an early 413) would otherwise never be heard, the sender
+/// waiting for window the server will not open.
+pub(crate) async fn send_head(
     sender: &h2::client::SendRequest<Bytes>,
-    req: &Request,
-    max: usize,
-    budget: &mut super::budget::Reservation,
-) -> Result<Response, UpstreamError> {
+    req: &mut Request,
+) -> Result<(Response, RecvStream, Option<AbortOnDrop>), UpstreamError> {
     let protocol = |e: h2::Error| UpstreamError::Protocol(e.to_string());
     let head = request_to_h2(req).map_err(UpstreamError::Protocol)?;
     let mut sender = sender.clone().ready().await.map_err(protocol)?;
-    let (response, mut stream) = sender
-        .send_request(head, req.body.is_empty())
-        .map_err(protocol)?;
-    if !req.body.is_empty() {
-        stream
-            .send_data(Bytes::copy_from_slice(&req.body), true)
-            .map_err(protocol)?;
-    }
-    let response = response.await.map_err(protocol)?;
-    let (parts, mut body) = response.into_parts();
-    let declared = declared_length(&parts.headers);
+    let empty = req.body.is_empty();
+    let (response, mut stream) = sender.send_request(head, empty).map_err(protocol)?;
+    let sending = (!empty).then(|| {
+        let body = Bytes::from(std::mem::take(&mut req.body));
+        let data = body.clone();
+        let task = tokio::spawn(async move {
+            let _ = send_body(&mut stream, data, true).await;
+        });
+        (AbortOnDrop(task), body)
+    });
+    let response = response.await;
+    let sending = sending.map(|(task, body)| {
+        req.body = Vec::from(body);
+        task
+    });
+    let (parts, recv) = response.map_err(protocol)?.into_parts();
+    Ok((response_from_h2(&parts, Vec::new()), recv, sending))
+}
+
+/// Read a whole upstream response body (the buffered path).
+pub(crate) async fn read_response_body(
+    recv: &mut RecvStream,
+    headers: &crate::message::Headers,
+    max: usize,
+    budget: &mut super::budget::Reservation,
+) -> Result<Vec<u8>, UpstreamError> {
+    let declared = headers
+        .get("content-length")
+        .and_then(|v| v.trim().parse().ok());
     let limit = budget.limit();
-    let body = read_body(&mut body, max, declared, budget)
+    read_body(recv, max, declared, budget)
         .await
         .map_err(|e| match e {
             BodyError::TooLarge => UpstreamError::ResponseBodyTooLarge { limit: max },
             BodyError::Budget => UpstreamError::BodyBudgetExhausted { limit },
-            BodyError::Stream(e) => protocol(e),
-        })?;
-    Ok(response_from_h2(&parts, body))
+            BodyError::Stream(e) => UpstreamError::Protocol(e.to_string()),
+        })
 }
 
-/// Send `data` as the end of `stream`, a window's worth at a time as
-/// the peer's flow control admits it, so the whole body is never queued
-/// in the codec at once and the caller holds its budget until it is out.
-async fn send_body(stream: &mut h2::SendStream<Bytes>, mut data: Bytes) -> Result<(), h2::Error> {
+/// Send `data` on `stream` (ending it when `end`), a window's worth at a
+/// time as the peer's flow control admits it, so the whole body is never
+/// queued in the codec at once and the caller holds its budget until it
+/// is out.
+async fn send_body(
+    stream: &mut h2::SendStream<Bytes>,
+    mut data: Bytes,
+    end: bool,
+) -> Result<(), h2::Error> {
     while !data.is_empty() {
         stream.reserve_capacity(data.len());
         let granted = match std::future::poll_fn(|cx| stream.poll_capacity(cx)).await {
@@ -251,7 +292,7 @@ async fn send_body(stream: &mut h2::SendStream<Bytes>, mut data: Bytes) -> Resul
             continue;
         }
         let chunk = data.split_to(granted.min(data.len()));
-        stream.send_data(chunk, data.is_empty())?;
+        stream.send_data(chunk, end && data.is_empty())?;
     }
     Ok(())
 }
@@ -261,9 +302,9 @@ async fn send_body(stream: &mut h2::SendStream<Bytes>, mut data: Bytes) -> Resul
 /// HTTP/2's default is 64 KiB, and a receiver can never have more than
 /// one window in flight, so with the default a single download runs at
 /// one window per round trip: about 2.5 MB/s at 25 ms, a twentieth of
-/// what the same link does over HTTP/1. Bodies are buffered whole here
-/// (and capped by `TransportSettings::max_body`), so a large window
-/// costs no memory a body would not use anyway.
+/// what the same link does over HTTP/1. A buffered body uses the memory
+/// anyway; a streamed one returns credit only as its pieces reach the
+/// client, so at most one window per stream sits in the codec.
 const STREAM_WINDOW: u32 = 8 * 1024 * 1024;
 
 /// The connection-level receive window: room for a few streams at full
@@ -334,6 +375,18 @@ pub(crate) async fn serve<H: FlowHandler>(
     }
 }
 
+/// What an HTTP/2 client stream gets: a whole response, or a head and a
+/// body relayed as it arrives.
+enum Answer<F> {
+    Whole(Response),
+    Streamed {
+        resp: Response,
+        flow: F,
+        stream: Box<dyn super::ResponseStream>,
+        body: conn::UpstreamBody,
+    },
+}
+
 async fn stream<H: FlowHandler>(
     shared: Arc<Shared<H>>,
     conn: Arc<ConnInfo>,
@@ -350,7 +403,7 @@ async fn stream<H: FlowHandler>(
     let mut req_budget = super::budget::Reservation::new(&shared.budget);
     let mut resp_budget = super::budget::Reservation::new(&shared.budget);
     let mut refused_body = false;
-    let response = match read_body(&mut body, max, declared, &mut req_budget).await {
+    let answer = match read_body(&mut body, max, declared, &mut req_budget).await {
         Ok(body) => {
             let req = request_from_h2(&parts, body, &conn);
             let mut slot = None;
@@ -365,37 +418,64 @@ async fn stream<H: FlowHandler>(
             )
             .await
             {
-                conn::Exchanged::Done(resp) | conn::Exchanged::RawUpgrade(resp) => resp,
+                conn::Exchanged::Done(resp) | conn::Exchanged::RawUpgrade(resp) => {
+                    Answer::Whole(resp)
+                }
                 conn::Exchanged::Upgrade { resp, flow, .. } => {
                     // HTTP/2 has no 101; the upstream should never send one.
                     shared
                         .handler
                         .flow_end(&conn, flow, super::FlowEnd::Completed);
-                    resp
+                    Answer::Whole(resp)
                 }
+                conn::Exchanged::Stream {
+                    resp,
+                    flow,
+                    stream,
+                    body,
+                } => Answer::Streamed {
+                    resp,
+                    flow,
+                    stream,
+                    body,
+                },
             }
         }
         Err(BodyError::TooLarge) => {
             refused_body = true;
             let req = request_from_h2(&parts, Vec::new(), &conn);
-            shared.handler.transport_refusal(
+            Answer::Whole(shared.handler.transport_refusal(
                 &conn,
                 Some(&req),
                 &Refusal::RequestBodyTooLarge { limit: max },
-            )
+            ))
         }
         Err(BodyError::Budget) => {
             refused_body = true;
             let req = request_from_h2(&parts, Vec::new(), &conn);
-            shared.handler.transport_refusal(
+            Answer::Whole(shared.handler.transport_refusal(
                 &conn,
                 Some(&req),
                 &Refusal::BodyBudgetExhausted {
                     limit: shared.budget.limit(),
                 },
-            )
+            ))
         }
         Err(BodyError::Stream(_)) => return,
+    };
+    let response = match answer {
+        Answer::Whole(response) => response,
+        Answer::Streamed {
+            resp,
+            flow,
+            stream,
+            body,
+        } => {
+            // The request body is not needed any more.
+            drop(req_budget);
+            relay(&shared, &conn, &mut respond, &resp, flow, stream, body).await;
+            return;
+        }
     };
     let Ok(head) = response_to_h2(&response, &method) else {
         respond.send_reset(h2::Reason::INTERNAL_ERROR);
@@ -405,7 +485,7 @@ async fn stream<H: FlowHandler>(
         super::h1::response_has_body(&method, response.status) && !response.body.is_empty();
     match respond.send_response(head, !has_body) {
         Ok(mut stream) if has_body => {
-            let _ = send_body(&mut stream, Bytes::from(response.body)).await;
+            let _ = send_body(&mut stream, Bytes::from(response.body), true).await;
         }
         _ => {}
     }
@@ -413,19 +493,85 @@ async fn stream<H: FlowHandler>(
     // here, not when it was queued whole.
     drop((req_budget, resp_budget));
     if refused_body {
-        // The client is still uploading the body we refused. Dropping the
-        // request stream now would reset it with CANCEL, which discards
-        // the queued refusal: the client would see a framing error, not
-        // the 413/503. Discard what it sends for a moment so the refusal
-        // goes out, then tell it to stop with NO_ERROR (RFC 9113 8.1).
-        let drain = async {
-            while let Some(Ok(chunk)) = body.data().await {
-                let _ = body.flow_control().release_capacity(chunk.len());
-            }
-        };
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), drain).await;
-        respond.send_reset(h2::Reason::NO_ERROR);
+        drain_refused(&mut body, &mut respond).await;
     }
+}
+
+/// The client is still uploading a body we refused. Dropping the request
+/// stream now would reset it with CANCEL, which discards the queued
+/// refusal: the client would see a framing error, not the 413/503.
+/// Discard what it sends for a moment so the refusal goes out, then tell
+/// it to stop with `NO_ERROR` (RFC 9113 8.1).
+async fn drain_refused(body: &mut RecvStream, respond: &mut h2::server::SendResponse<Bytes>) {
+    let drain = async {
+        while let Some(Ok(chunk)) = body.data().await {
+            let _ = body.flow_control().release_capacity(chunk.len());
+        }
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), drain).await;
+    respond.send_reset(h2::Reason::NO_ERROR);
+}
+
+/// The HTTP/2 head of a streamed response: a `content-length` kept only
+/// when the body goes out unchanged.
+fn stream_head_to_h2(resp: &Response, keep_length: bool) -> Result<http::Response<()>, String> {
+    let mut headers = resp.headers.clone();
+    if !keep_length {
+        headers.remove("content-length");
+    }
+    let mut out = http::Response::builder()
+        .status(resp.status)
+        .version(http::Version::HTTP_2)
+        .body(())
+        .map_err(|e| format!("invalid response: {e}"))?;
+    *out.headers_mut() = to_header_map(&headers, false)?;
+    Ok(out)
+}
+
+/// Relay a streamed response to an HTTP/2 client: DATA frames as pieces
+/// come, sent as the client's flow control admits them; a failure
+/// mid-body resets the stream.
+async fn relay<H: FlowHandler>(
+    shared: &Shared<H>,
+    conn: &ConnInfo,
+    respond: &mut h2::server::SendResponse<Bytes>,
+    resp: &Response,
+    flow: H::Flow,
+    mut stream: Box<dyn super::ResponseStream>,
+    mut body: conn::UpstreamBody,
+) {
+    let mut reservation = super::budget::Reservation::new(&shared.budget);
+    let mut ended = false;
+    let head = stream_head_to_h2(resp, stream.passthrough());
+    let outcome = match head.map(|head| respond.send_response(head, false)) {
+        Err(reason) => {
+            respond.send_reset(h2::Reason::INTERNAL_ERROR);
+            StreamOutcome::Refused(reason)
+        }
+        Ok(Err(_)) => StreamOutcome::ClientGone,
+        Ok(Ok(mut out)) => loop {
+            match conn::next_piece(&mut *stream, &mut body, &mut ended, &mut reservation).await {
+                Ok(Some(piece)) => {
+                    if send_body(&mut out, piece, false).await.is_err() {
+                        break StreamOutcome::ClientGone;
+                    }
+                }
+                Ok(None) => {
+                    if out.send_data(Bytes::new(), true).is_err() {
+                        break StreamOutcome::ClientGone;
+                    }
+                    break StreamOutcome::Completed;
+                }
+                Err(outcome) => {
+                    out.send_reset(h2::Reason::INTERNAL_ERROR);
+                    break outcome;
+                }
+            }
+        },
+    };
+    let end = conn::stream_flow_end(&outcome);
+    stream.close(outcome);
+    shared.handler.flow_end(conn, flow, end);
 }
 
 #[cfg(test)]

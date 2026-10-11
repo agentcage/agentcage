@@ -127,23 +127,24 @@ pub(crate) async fn open<H: FlowHandler>(
     }
 }
 
-/// The outcome of one HTTP/1 exchange with an upstream.
-pub(crate) struct H1Exchange {
+/// The head of an HTTP/1 upstream response, its body not read yet.
+pub(crate) struct H1Head {
+    /// The response, with an empty body.
     pub(crate) response: Response,
-    /// The connection may carry another request.
+    /// How its body is delimited.
+    pub(crate) framing: h1::Framing,
+    /// The connection may carry another request once the body is read.
     pub(crate) reusable: bool,
 }
 
 /// Send `req` on an HTTP/1 upstream connection and read the response
-/// (interim `1xx` responses other than `101` are skipped). On error, the
-/// flag says whether nothing was received — a dead keep-alive connection,
-/// so a retry on a fresh one is safe.
-pub(crate) async fn send_h1(
+/// head (interim `1xx` responses other than `101` are skipped). On error,
+/// the flag says whether nothing was received — a dead keep-alive
+/// connection, so a retry on a fresh one is safe.
+pub(crate) async fn send_h1_head(
     up: &mut Buffered,
     req: &Request,
-    max: usize,
-    budget: &mut super::budget::Reservation,
-) -> Result<H1Exchange, (UpstreamError, bool)> {
+) -> Result<H1Head, (UpstreamError, bool)> {
     let protocol = |e: String| UpstreamError::Protocol(e);
     if let Err(e) = h1::write_request(up, req).await {
         return Err((protocol(e.to_string()), true));
@@ -173,31 +174,20 @@ pub(crate) async fn send_h1(
         )?;
         let framing = h1::response_framing(&req.method, parsed.status, &parsed.headers)
             .map_err(|e| (protocol(e), false))?;
-        let limit = budget.limit();
-        let body = h1::read_body(up, framing, max, budget)
-            .await
-            .map_err(|e| match e {
-                h1::ReadError::BodyTooLarge => {
-                    (UpstreamError::ResponseBodyTooLarge { limit: max }, false)
-                }
-                h1::ReadError::BudgetExhausted => {
-                    (UpstreamError::BodyBudgetExhausted { limit }, false)
-                }
-                other => (protocol(other.to_string()), false),
-            })?;
         let reusable = parsed.status != 101
             && framing != h1::Framing::UntilEof
             && !h1::connection_close(&req.http_version, &req.headers)
             && !h1::connection_close(&parsed.version, &parsed.headers)
             && req.http_version.starts_with("HTTP/1");
-        return Ok(H1Exchange {
+        return Ok(H1Head {
             response: Response {
                 status: parsed.status,
                 reason: parsed.reason,
                 http_version: parsed.version,
                 headers: parsed.headers,
-                body,
+                body: Vec::new(),
             },
+            framing,
             reusable,
         });
     }
