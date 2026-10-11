@@ -4,5 +4,5 @@ domains:
   - cdn.example.com
 inspectors:
 - name: house-rules
-  path: /etc/agentcage/inspectors/house_rules.py
+  path: house_rules.wasm
 agentcage_version: 0.0.0-golden

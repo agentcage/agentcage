@@ -361,6 +361,7 @@ const REPRODUCED: &[&str] = &[
     "err-domains-allow-and-block",
     "err-image-invalid-ref",
     "err-image-missing",
+    "err-inspectors-python-path",
     "err-isolation-apple-on-intel-mac",
     "err-isolation-apple-on-linux",
     "err-isolation-container-on-macos",

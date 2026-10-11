@@ -16,7 +16,7 @@ use crate::quadlets::{
     CageNetworkAddrs, b64, cage_network_addrs, certs_volume, effective_port_policy,
     passthrough_regex, podman_storage_volume, public_certs_volume, reserved_volume_entry,
     templates, vm_local_cage_env_dir, vm_local_dns_allowlist_path, vm_local_grants_dir,
-    vm_local_placeholders_env_path, vm_local_proxy_config_path,
+    vm_local_inspectors_dir, vm_local_placeholders_env_path, vm_local_proxy_config_path,
 };
 use crate::volume_mounts::{
     self, MountTarget, TMPFS_COPYUP_OPTIONS, enclosing_mount, is_non_persistent_volume,
@@ -220,6 +220,13 @@ impl StatePaths {
     pub fn grants_dir(&self, name: &str) -> String {
         format!("{}/{name}/grants", self.data_root)
     }
+
+    /// Where `cage create` / `cage update` stage the cage's custom
+    /// inspector plugins. Path only.
+    #[must_use]
+    pub fn inspectors_dir(&self, name: &str) -> String {
+        format!("{}/{name}/inspectors", self.data_root)
+    }
 }
 
 /// Everything `generate_quadlets` takes besides the config itself.
@@ -364,6 +371,8 @@ struct EgressContext<'a> {
     capture_host_dir: &'a str,
     agents_volume_enabled: bool,
     grants_host_dir: &'a str,
+    inspectors_enabled: bool,
+    inspectors_host_dir: &'a str,
     passthrough_regex: &'a str,
     rootless: bool,
     inspected_tcp_ports: &'a [i64],
@@ -977,6 +986,21 @@ pub fn generate_quadlets(
         )
     };
 
+    // Custom inspector plugins, staged by `cage create` / `cage update`.
+    // Mounted only when the config references one, so a cage without
+    // plugins renders exactly the unit it always did. The vm backend
+    // mounts a guest-local copy (`push_inspectors`), for the reason the
+    // proxy config above is guest-local: Lima's reverse-sshfs caches
+    // host writes, and a rebuilt plugin must not be served stale.
+    let inspectors_enabled = !crate::config::plugin_refs(config).is_empty();
+    let inspectors_dir = if !inspectors_enabled {
+        String::new()
+    } else if config.isolation == "vm" {
+        vm_local_inspectors_dir(deploy)
+    } else {
+        options.state.inspectors_dir(deploy)
+    };
+
     let port_policy = effective_port_policy(config);
     out.files.insert(
         format!("{name}-egress.container"),
@@ -1010,6 +1034,8 @@ pub fn generate_quadlets(
                     || config.agents.watcher.enable
                     || !config.domains.expires.is_empty(),
                 grants_host_dir: &grants_dir,
+                inspectors_enabled,
+                inspectors_host_dir: &inspectors_dir,
                 passthrough_regex: &passthrough_regex(&config.domains.passthrough),
                 rootless: options.rootless,
                 inspected_tcp_ports: &port_policy.inspected_tcp,
@@ -1756,6 +1782,55 @@ agents:
     /// volume names only once `$VAR` is expanded is refused here, where
     /// validation — which reads the entry as written — cannot see it
     /// (`EGRESS-PORT-PLAN.md` D11).
+    /// Staged custom inspectors are mounted read-only at the egress's
+    /// plugin directory: from the data dir on container, from the
+    /// guest-local copy on vm, and not at all without a plugin.
+    #[test]
+    fn plugins_are_mounted_from_the_staged_directory() {
+        let egress = |isolation: &str, inspectors: &str| -> String {
+            let yaml = format!("name: c\nisolation: {isolation}\ninspectors:\n{inspectors}");
+            let config = crate::config::load(
+                "cage.yaml",
+                &yaml,
+                &crate::config::FixedHost {
+                    isolation: isolation.to_owned(),
+                    dns_servers: Ok(vec!["192.0.2.53".to_owned()]),
+                },
+            )
+            .expect("valid config");
+            let state = StatePaths {
+                config_root: "/cfg/agentcage".to_owned(),
+                data_root: "/data/agentcage".to_owned(),
+            };
+            let units = generate_quadlets(
+                &config,
+                &GenerateOptions {
+                    config_host_path: "/cfg/agentcage/cages/c/cage.yaml",
+                    patches_host_dir: "/data/patches",
+                    deploy_name: "c",
+                    rootless: true,
+                    used_octets: None,
+                    network_octet: None,
+                    store_secrets: None,
+                    state: &state,
+                    version: "9.9.9",
+                },
+                &TestHost,
+            )
+            .expect("renders");
+            units.files["c-egress.container"].clone()
+        };
+        let plugin = "- name: dlp\n  path: plugins/dlp.wasm\n";
+        assert!(
+            egress("container", plugin)
+                .contains("\nVolume=/data/agentcage/c/inspectors:/etc/agentcage/inspectors:ro,Z\n")
+        );
+        assert!(egress("vm", plugin).contains(
+            "\nVolume=%h/.config/agentcage-vm/cages/c/inspectors:/etc/agentcage/inspectors:ro,Z\n"
+        ));
+        assert!(!egress("container", "- name: entropy\n").contains("/etc/agentcage/inspectors"));
+    }
+
     #[test]
     fn a_volume_source_that_expands_to_a_reserved_name_is_refused() {
         let yaml = r"

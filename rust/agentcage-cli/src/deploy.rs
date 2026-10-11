@@ -510,6 +510,7 @@ pub fn update_fingerprint(
         units: &unit_map,
         image_digests: &image_digests,
         scaffold_version: &format!("{scaffold}:{context_version}"),
+        inspector_plugins: &paths.inspector_plugin_digests(name, config),
     })
     .map_err(|error| BackendError::Config(agentcage_core::config::ConfigError::runtime(error)))?;
 

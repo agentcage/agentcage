@@ -1,4 +1,4 @@
-name: backend-apple-container-inspectors
+name: err-inspectors-python-path
 container:
   image: docker.io/library/node:22-slim
   command:
@@ -10,9 +10,6 @@ domains:
   - cdn.example.com
 dns_servers:
 - 192.0.2.53
-isolation: apple-container
 inspectors:
-- name: domain
-- name: not-a-real-inspector
-- name: custom
-  path: plugins/x.wasm
+- name: house-rules
+  path: inspectors/house_rules.py

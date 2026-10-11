@@ -543,6 +543,13 @@ pub fn build_and_deploy(
         paths.ensure_capture_dir(deploy_name)?;
     }
 
+    // The egress unit bind-mounts the staged plugin directory whenever
+    // the config names a plugin. Every deploy path checks it here, not
+    // only `cage update`: a restored cage (backups do not carry the
+    // staged plugins) would otherwise start an egress whose mount source
+    // is missing.
+    paths.check_inspector_plugins_staged(deploy_name, config)?;
+
     let units = backend.generate_units(
         config,
         config_host_path,

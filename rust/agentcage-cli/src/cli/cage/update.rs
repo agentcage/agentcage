@@ -78,6 +78,19 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         }
     };
 
+    // Custom inspector plugins: restaged from the new cage.yaml's
+    // directory with `-c`; otherwise the staged copy is the cage's, and
+    // every plugin the stored config names has to be in it.
+    let staged = match config_path.as_deref() {
+        Some(path) => ctx.paths.stage_inspector_plugins(
+            &name,
+            &config,
+            path.parent().unwrap_or(Path::new(".")),
+        ),
+        None => ctx.paths.check_inspector_plugins_staged(&name, &config),
+    };
+    staged.map_err(|error| state_error(&error))?;
+
     // Pre-rework cages carry a host-side grants watcher whose command no
     // longer exists; on an upgraded host the unit crash-loops on every
     // boot. Remove it now, while a vm cage's guest is still running —

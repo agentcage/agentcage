@@ -40,6 +40,12 @@
 //! fingerprint     sha256(stable_json({"version": 1, "components": …}))
 //! ```
 //!
+//! A sixth component, `inspector_plugins` (`sha256(stable_json({file
+//! name: sha256 of its bytes}))`), joins the components only for a cage
+//! that stages custom inspector plugins, so `cage update` notices a
+//! rebuilt plugin. Every cage without plugins hashes exactly as before:
+//! the key is absent, not empty.
+//!
 //! The per-component digests are not load-bearing on their own — the
 //! top-level `fingerprint` is the only value compared — but they make a
 //! `fingerprint.json` diff say *which* input moved, which is the whole
@@ -96,8 +102,10 @@ pub fn stable_json(value: &Json) -> String {
     json::dumps(value, STABLE)
 }
 
-/// `hashlib.sha256(value).hexdigest()`, over UTF-8 for a `str`.
-fn sha256_hex(bytes: &[u8]) -> String {
+/// `hashlib.sha256(value).hexdigest()`, over UTF-8 for a `str`. Also
+/// how staged inspector plugins are digested for the fingerprint.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(64);
     for byte in Sha256::digest(bytes) {
         let _ = write!(out, "{byte:02x}");
@@ -356,6 +364,10 @@ pub struct Inputs<'a> {
     /// The scaffold version, or the empty string for a cage that has no
     /// scaffold. Hashed as a plain string, not through [`stable_json`].
     pub scaffold_version: &'a str,
+    /// Staged custom inspector plugins: file name to the SHA-256 (hex)
+    /// of its bytes. Empty for a cage without plugins, which then has no
+    /// `inspector_plugins` component at all.
+    pub inspector_plugins: &'a BTreeMap<String, String>,
 }
 
 /// The five per-input digests.
@@ -375,6 +387,9 @@ pub struct Components {
     pub image_digests: String,
     /// `sha256` of the scaffold version.
     pub scaffold_version: String,
+    /// `sha256` of the staged plugins' digests, or `None` (no key at
+    /// all) for a cage without plugins.
+    pub inspector_plugins: Option<String>,
 }
 
 /// A computed fingerprint, as written to `fingerprint.json`.
@@ -394,7 +409,7 @@ impl Components {
     /// Insertion order is not load-bearing — [`stable_json`] sorts — but
     /// keeping the Python's order makes the two sources read the same.
     fn to_json(&self) -> Json {
-        Json::Object(vec![
+        let mut fields = vec![
             ("cage_yaml".to_string(), Json::string(&self.cage_yaml)),
             (
                 "resolved_config".to_string(),
@@ -409,7 +424,11 @@ impl Components {
                 "scaffold_version".to_string(),
                 Json::string(&self.scaffold_version),
             ),
-        ])
+        ];
+        if let Some(plugins) = &self.inspector_plugins {
+            fields.push(("inspector_plugins".to_string(), Json::string(plugins)));
+        }
+        Json::Object(fields)
     }
 }
 
@@ -473,6 +492,9 @@ pub fn compute_fingerprint(inputs: Inputs<'_>) -> Result<Fingerprint, Error> {
         // The one input hashed as itself rather than through
         // `stable_json`: it is already a bare string.
         scaffold_version: sha256_hex(inputs.scaffold_version.as_bytes()),
+        inspector_plugins: (!inputs.inspector_plugins.is_empty()).then(|| {
+            sha256_hex(stable_json(&string_map_to_json(inputs.inspector_plugins)).as_bytes())
+        }),
     };
     let mut fingerprint = Fingerprint {
         version: FINGERPRINT_VERSION,
@@ -623,6 +645,7 @@ mod tests {
             units: &map(&[("demo.container", "[Container]\n")]),
             image_digests: &map(&[("img", "sha256:00")]),
             scaffold_version: "",
+            inspector_plugins: &BTreeMap::new(),
         })
         .expect("computes")
     }
@@ -761,6 +784,7 @@ mod tests {
             units: &map(&[("demo.container", "[Container]\n")]),
             image_digests: &map(&[("img", "sha256:00")]),
             scaffold_version: "",
+            inspector_plugins: &BTreeMap::new(),
         };
         let original = compute_fingerprint(base).expect("computes").fingerprint;
 
@@ -861,6 +885,7 @@ mod tests {
                 units: &BTreeMap::new(),
                 image_digests: &BTreeMap::new(),
                 scaffold_version: "",
+                inspector_plugins: &BTreeMap::new(),
             }),
             Err(Error::NotAMapping { .. })
         ));
@@ -876,6 +901,7 @@ mod tests {
             units: &map(&[("demo.container", "[Container]\n")]),
             image_digests: &map(&[("img", "sha256:00")]),
             scaffold_version: "",
+            inspector_plugins: &BTreeMap::new(),
         })
         .expect("computes");
         assert_eq!(text, parsed);
@@ -931,5 +957,43 @@ mod tests {
             digest,
             "cc5276997b27ad7f0e4588ef839f9e2a9729864b9dd20eba95027d677d76ec39"
         );
+    }
+
+    /// Plugins add a sixth component; without them the document (and
+    /// so every existing cage's fingerprint) is exactly what it was.
+    #[test]
+    fn staged_plugins_add_a_component_only_when_present() {
+        let resolved = Json::Object(Vec::new());
+        let empty = BTreeMap::new();
+        let compute = |plugins: &BTreeMap<String, String>| {
+            compute_fingerprint(Inputs {
+                cage_yaml: CageYaml::Text("name: c\n"),
+                resolved_config: &resolved,
+                units: &empty,
+                image_digests: &empty,
+                scaffold_version: "",
+                inspector_plugins: plugins,
+            })
+            .unwrap()
+        };
+        let without = compute(&empty);
+        assert!(without.components.inspector_plugins.is_none());
+        assert!(
+            without
+                .to_json()
+                .get("components")
+                .unwrap()
+                .get("inspector_plugins")
+                .is_none()
+        );
+
+        let one: BTreeMap<String, String> = [("a.wasm".to_owned(), "11".repeat(32))].into();
+        let other: BTreeMap<String, String> = [("a.wasm".to_owned(), "22".repeat(32))].into();
+        let with = compute(&one);
+        assert!(with.components.inspector_plugins.is_some());
+        assert_ne!(with.fingerprint, without.fingerprint);
+        // A rebuilt plugin (same name, new bytes) is a change.
+        assert_ne!(compute(&other).fingerprint, with.fingerprint);
+        assert_eq!(compute(&one).fingerprint, with.fingerprint);
     }
 }

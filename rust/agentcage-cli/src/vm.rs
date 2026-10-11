@@ -69,8 +69,8 @@ use agentcage_core::lima::{LimaFacts, generate_lima_config};
 use agentcage_core::quadlets::{
     GenerateOptions, Quadlets, b64, b64_bytes, generate_quadlets, shlex_quote,
     vm_local_cage_env_dir, vm_local_config_dir, vm_local_dns_allowlist_path, vm_local_grants_dir,
-    vm_local_grants_file, vm_local_placeholders_env_path, vm_local_proxy_config_path,
-    vm_local_watcher_dir,
+    vm_local_grants_file, vm_local_inspectors_dir, vm_local_placeholders_env_path,
+    vm_local_proxy_config_path, vm_local_watcher_dir,
 };
 use agentcage_core::yaml::{self, Mapping, Value};
 use agentcage_exec::tools::limactl::{LimaInstance, VmPodman};
@@ -568,6 +568,35 @@ impl<'a> VmBackend<'a> {
             )?;
         }
         Ok(())
+    }
+
+    /// Mirror the cage's staged custom inspector plugins into the guest.
+    ///
+    /// The egress mounts the guest-local copy
+    /// ([`vm_local_inspectors_dir`]), not the host's
+    /// `~/.local/share/agentcage/<name>/inspectors/`: that one is reached
+    /// through Lima's reverse-sshfs mount, whose caching could serve a
+    /// rebuilt plugin's old bytes. The guest directory is replaced whole,
+    /// so a plugin dropped from the config is gone too. `limactl copy`
+    /// rather than the base64 pipeline [`Self::push_config_files`] uses,
+    /// because a component is easily larger than one argv string may be.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError`] from a guest command or the copy.
+    pub fn push_inspectors(&self, name: &str) -> Result<(), ExecError> {
+        // No plugins staged: nothing to mirror, and no guest round-trip.
+        // A stale guest copy left behind is harmless, because the egress
+        // unit mounts it only while the config names a plugin.
+        let source = self.paths.inspectors_dir(name);
+        if !source.is_dir() {
+            return Ok(());
+        }
+        let guest = self.abs_path(name, &vm_local_inspectors_dir(name))?;
+        let instance = self.instance(name);
+        instance.exec(&["rm", "-rf", &guest].map(str::to_string), true)?;
+        instance.exec(&["mkdir", "-p", &guest].map(str::to_string), true)?;
+        self.run_checked(&self.copy_build_context_argv(name, &source, &guest))
     }
 
     /// `vm.ensure_grants_dir` — create the guest-local overlay directory.
@@ -1739,7 +1768,8 @@ impl<'a> VmBackend<'a> {
         let phase = crate::timing::Phase::start("deploy.vm_local_config", Some(name));
         let mirrored = self
             .push_config_files(name)
-            .and_then(|()| self.ensure_grants_dir(name));
+            .and_then(|()| self.ensure_grants_dir(name))
+            .and_then(|()| self.push_inspectors(name));
         drop(phase);
         mirrored?;
 
