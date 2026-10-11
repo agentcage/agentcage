@@ -104,6 +104,12 @@ impl Ctx {
                 removed.join(", ")
             );
         }
+        if remove_stale_grants(&self.paths, self.runner.as_ref(), name)? {
+            println!(
+                "Removed domain grants and traffic-watcher state left by an earlier \
+                 cage named '{name}'; this cage starts with none."
+            );
+        }
         Ok(())
     }
 
@@ -239,10 +245,61 @@ pub(crate) fn load_stored_and_validate(paths: &Paths, name: &str) -> Result<Conf
     Ok(config)
 }
 
+/// Remove the grants overlay a destroyed cage of the same name left.
+///
+/// `cage destroy` deletes the deployment but keeps the cage's data dir
+/// (capture history and the policy audit trail stay for the operator).
+/// That dir also holds `grants/`: the Policy API's `grants.yaml` and the
+/// traffic watcher's state and findings. A new cage that reuses the name
+/// would load them — domains a different cage was granted, findings
+/// about traffic it never sent — so they go, as a leftover CA does.
+///
+/// The egress writes inside `grants/` as its own uid, which the host
+/// user may not be able to unlink outside the rootless user namespace;
+/// a plain delete that fails is retried through `podman unshare`.
+///
+/// Returns whether anything was there to remove.
+///
+/// # Errors
+///
+/// The message to print when the directory could not be removed.
+fn remove_stale_grants(
+    paths: &Paths,
+    runner: &dyn CommandRunner,
+    name: &str,
+) -> Result<bool, String> {
+    let dir = paths.grants_dir(name);
+    if std::fs::symlink_metadata(&dir).is_err() {
+        return Ok(false);
+    }
+    if std::fs::remove_dir_all(&dir).is_ok() {
+        return Ok(true);
+    }
+    let command = agentcage_exec::tools::podman::Podman::new(runner)
+        .base()
+        .args(["unshare", "rm", "-rf", "--"])
+        .arg(dir.display().to_string())
+        .captured();
+    let removed = runner
+        .run(&command)
+        .is_ok_and(|output| output.check("podman").is_ok());
+    if removed && std::fs::symlink_metadata(&dir).is_err() {
+        Ok(true)
+    } else {
+        Err(format!(
+            "{} is left over from an earlier cage named '{name}' and could not be \
+             removed; delete it (`podman unshare rm -rf {}`) and retry",
+            dir.display(),
+            dir.display()
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ensure_v022_cage, parse_version};
+    use super::{ensure_v022_cage, parse_version, remove_stale_grants};
     use agentcage_core::har::json::Json;
+    use agentcage_exec::SystemRunner;
     use agentcage_state::{Paths, TestDir};
 
     #[test]
@@ -293,5 +350,28 @@ mod tests {
         let paths = Paths::under(dir.path());
         std::fs::create_dir_all(paths.deployment_dir("bare")).unwrap();
         assert!(ensure_v022_cage(&paths, "bare").is_err());
+    }
+
+    /// A destroyed cage's grants and watcher state never reach a new
+    /// cage of the same name; capture history and the policy audit
+    /// trail beside them stay.
+    #[test]
+    fn stale_grants_are_removed_and_the_rest_of_the_data_dir_kept() {
+        let dir = TestDir::new("stale-grants");
+        let paths = Paths::under(dir.path());
+        let runner = SystemRunner::new();
+        assert!(!remove_stale_grants(&paths, &runner, "c").unwrap());
+
+        let grants = paths.grants_dir("c");
+        std::fs::create_dir_all(grants.join("watcher")).unwrap();
+        std::fs::write(grants.join("grants.yaml"), "- domain: example.org\n").unwrap();
+        std::fs::write(grants.join("watcher").join("findings.jsonl"), "{}\n").unwrap();
+        std::fs::create_dir_all(paths.capture_dir("c")).unwrap();
+        std::fs::write(paths.policy_audit_file("c"), "{}\n").unwrap();
+
+        assert!(remove_stale_grants(&paths, &runner, "c").unwrap());
+        assert!(!grants.exists());
+        assert!(paths.capture_dir("c").is_dir());
+        assert!(paths.policy_audit_file("c").is_file());
     }
 }
