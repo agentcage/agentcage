@@ -239,8 +239,23 @@ pub(crate) async fn serve<H: FlowHandler>(
     {
         Ok(session) => session,
         Err(e) => {
+            // A client that rejects the leaf certificate does so after our
+            // side of the TLS handshake has completed (TLS 1.3), so what
+            // reaches here is a connection that closed before the HTTP/2
+            // preface. Say what that usually means: the bare h2 error
+            // reads like an egress fault.
+            let hint = if conn.tls {
+                format!(
+                    " (the client closed the TLS session before sending a request; \
+                     if it reported a certificate error, it does not trust the cage CA \
+                     for {}: point it at /certs/agentcage-ca.pem)",
+                    conn.sni.as_deref().unwrap_or("this host")
+                )
+            } else {
+                String::new()
+            };
             eprintln!(
-                "agentcage-egress: conn {}: HTTP/2 handshake failed: {e}",
+                "agentcage-egress: conn {}: HTTP/2 handshake failed: {e}{hint}",
                 conn.id
             );
             return;
