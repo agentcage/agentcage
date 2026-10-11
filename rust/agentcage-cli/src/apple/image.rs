@@ -46,6 +46,8 @@ use std::path::Path;
 
 use agentcage_assets::egress;
 
+use crate::egress_engine::{EgressEngine, EngineError};
+
 /// `_EGRESS_IMAGE_REPO` — the repository half of the tag.
 ///
 /// `localhost/` is load-bearing: the image is built locally and can
@@ -82,6 +84,23 @@ pub fn egress_image_name_embedded() -> String {
     egress_image_name(agentcage_assets::VERSION, &egress::content_hash())
 }
 
+/// The shared egress image's reference for an engine.
+///
+/// [`egress_image_name_embedded`] for the default engine; for Rust,
+/// `<repo>:<version>-rust-<hash>`, whose hash covers the embedded
+/// binary, so the "already present" short-circuit stays sound when only
+/// the binary changed.
+///
+/// # Errors
+///
+/// [`EngineError::MissingBinary`] for Rust on a host without one.
+pub fn egress_image_name_for(engine: EgressEngine) -> Result<String, EngineError> {
+    Ok(format!(
+        "{EGRESS_IMAGE_REPO}:{}",
+        engine.apple_tag(agentcage_assets::VERSION)?
+    ))
+}
+
 /// What `cage create --no-cache` / `--pull` mean for the egress build.
 ///
 /// Either one forces a rebuild even when the tag *is* present: the
@@ -110,13 +129,24 @@ impl BuildFlags {
 /// *between* `-f <containerfile>` and the context, not at the end.
 #[must_use]
 pub fn egress_build_argv(image: &str, context: &Path, flags: BuildFlags) -> Vec<String> {
+    egress_build_argv_for(image, context, EgressEngine::Python, flags)
+}
+
+/// [`egress_build_argv`] for an engine's Containerfile.
+#[must_use]
+pub fn egress_build_argv_for(
+    image: &str,
+    context: &Path,
+    engine: EgressEngine,
+    flags: BuildFlags,
+) -> Vec<String> {
     let context = context.display().to_string();
     let mut argv = vec![
         "build".to_owned(),
         "-t".to_owned(),
         image.to_owned(),
         "-f".to_owned(),
-        format!("{context}/{}", egress::CONTAINERFILE_REL),
+        format!("{context}/{}", engine.containerfile_rel()),
     ];
     if flags.no_cache {
         argv.push("--no-cache".to_owned());
