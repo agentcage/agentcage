@@ -1858,6 +1858,7 @@ agents:
                     store_secrets: None,
                     state: &state,
                     version: "9.9.9",
+                    egress_tag: None,
                 },
                 &TestHost,
             )
