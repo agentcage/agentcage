@@ -114,6 +114,11 @@ nix = { version = "0.31", default-features = false, features = ["socket", "net"]
 # Upstream TLS for the relays (and the proxy): rustls on the ring
 # provider, so no OpenSSL and no cmake in the build (plan D8).
 # The Mozilla root store, the one trust store every upstream uses (D8).
+
+# The async runtime the listeners and relays run on (plan §4.1).
+# Upstream TLS for the relays (and the proxy): rustls on the ring
+# provider, so no OpenSSL and no cmake in the build (plan D8).
+# The Mozilla root store, the one trust store every upstream uses (D8).
 # Digest of a relay's resolved credentials, so a reload notices a
 # rotated secret without keeping another plaintext copy of it.
 sha2 = "0.10.9"
