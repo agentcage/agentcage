@@ -1,0 +1,18 @@
+[package]
+name = "legacy-inspector"
+description = "Test fixture: a custom inspector built against agentcage:inspector@1.0.0, before plugins declared their phases."
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Built for wasm32-wasip2 by the egress plugin tests; `rlib` so the
+# workspace build compiles it natively too.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Bindings straight from the frozen 1.0.0 WIT in `wit/`, not through the
+# SDK (which follows the live world): the component this builds has the
+# exports a 1.0.0 plugin has, and no `phases`.
+wit-bindgen = { version = "0.62", default-features = false, features = ["macros", "realloc"] }

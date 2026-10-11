@@ -1,19 +1,10 @@
-//! Custom inspectors end to end: the example plugins and a misbehaving
-//! fixture, compiled to WebAssembly components and loaded through
-//! `agentcage_egress::plugin`.
-//!
-//! The components are built on first use by a nested
-//! `cargo build --release --target wasm32-wasip2` into
-//! `target/inspector-wasm/` (a separate target directory, so it never
-//! waits on the lock the outer `cargo test` holds). When the
-//! `wasm32-wasip2` target is not installed the tests print why and pass
-//! without running, so `cargo test --workspace` works on any machine;
-//! set `AGENTCAGE_REQUIRE_WASM=1` (CI does) to make a missing target a
-//! failure instead.
+//! Custom inspectors end to end: the example plugins, a misbehaving
+//! fixture and one built against the 1.0.0 world, compiled to
+//! WebAssembly components and loaded through `agentcage_egress::plugin`.
+//! How they are built (and when these tests skip): [`support`].
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use agentcage_egress::inspect::{
@@ -22,66 +13,11 @@ use agentcage_egress::inspect::{
 use agentcage_egress::json::Json;
 use agentcage_egress::plugin::{Limits, Loader};
 
-const CRATES: [(&str, &str); 3] = [
-    ("header-policy-inspector", "header_policy_inspector"),
-    ("dlp-regex-inspector", "dlp_regex_inspector"),
-    ("misbehaving-inspector", "misbehaving_inspector"),
-];
-
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn wasm_target_installed() -> bool {
-    let Ok(out) = Command::new("rustc").args(["--print", "sysroot"]).output() else {
-        return false;
-    };
-    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    Path::new(&sysroot)
-        .join("lib/rustlib/wasm32-wasip2")
-        .is_dir()
-}
-
-/// The directory holding the built `.wasm` files, or `None` (after
-/// saying why) when they cannot be built here.
-fn plugin_dir() -> Option<&'static Path> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| {
-        if !wasm_target_installed() {
-            let msg = "wasm32-wasip2 target not installed \
-                       (rustup target add wasm32-wasip2); plugin tests skipped";
-            assert!(
-                std::env::var_os("AGENTCAGE_REQUIRE_WASM").is_none(),
-                "{msg}"
-            );
-            eprintln!("{msg}");
-            return None;
-        }
-        let target_dir = workspace_root().join("target/inspector-wasm");
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut cmd = Command::new(cargo);
-        cmd.current_dir(workspace_root())
-            .args([
-                "build",
-                "--release",
-                "--target",
-                "wasm32-wasip2",
-                "--target-dir",
-            ])
-            .arg(&target_dir);
-        for (package, _) in CRATES {
-            cmd.args(["-p", package]);
-        }
-        let status = cmd.status().expect("run cargo");
-        assert!(status.success(), "building the plugin components failed");
-        Some(target_dir.join("wasm32-wasip2/release"))
-    })
-    .as_deref()
-}
+mod support;
 
 macro_rules! plugins_or_skip {
     () => {
-        match plugin_dir() {
+        match support::plugin_dir() {
             Some(dir) => dir,
             None => return,
         }
@@ -204,11 +140,25 @@ fn dlp_regex_reports_where_it_matched_but_not_what() {
     assert_eq!(v.reason, r#"DLP pattern "codename" matched in the body"#);
     let v = verdict_of(dlp.as_ref(), &ctx(&[("X-Id", "123-45-6789")], None));
     assert_eq!(v.reason, r#"DLP pattern "ssn" matched in the headers"#);
-    // Responses are opt-in.
+    // Responses are opt-in, and without them it does not declare the
+    // response phase, so it leaves responses streaming.
     assert!(
         dlp.inspect_response(&ctx(&[], Some("blue falcon")))
             .is_none()
     );
+    assert!(!dlp.inspects_responses());
+    let dlp = load(
+        dir,
+        "dlp",
+        "dlp_regex_inspector",
+        r#"{"patterns": [{"name": "codename", "regex": "(?i)\\bblue[- ]?falcon\\b"}],
+            "responses": true}"#,
+    );
+    assert!(dlp.inspects_responses());
+    let v = dlp
+        .inspect_response(&ctx(&[], Some("blue falcon")))
+        .expect("a response verdict");
+    assert_eq!(v.reason, r#"DLP pattern "codename" matched in the body"#);
 }
 
 #[test]
@@ -310,6 +260,110 @@ fn the_chain_builder_loads_plugins_through_the_wasm_loader() {
     assert!(
         err.contains("dlp: configure refused: patterns must be"),
         "{err}"
+    );
+}
+
+// ── Declared phases ─────────────────────────────────────────
+
+fn websocket(mut c: Context) -> Context {
+    c.websocket = true;
+    c
+}
+
+/// Which of the four calls (request, response, and each on a WebSocket
+/// message) reach the plugin.
+fn reached(plugin: &dyn Inspector) -> [bool; 4] {
+    let c = ctx(&[], Some("x"));
+    [
+        plugin.inspect_request(&c).is_some(),
+        plugin.inspect_response(&c).is_some(),
+        plugin.inspect_request(&websocket(c.clone())).is_some(),
+        plugin.inspect_response(&websocket(c)).is_some(),
+    ]
+}
+
+#[test]
+fn a_request_only_plugin_is_called_for_requests_alone() {
+    let dir = plugins_or_skip!();
+    let p = load(dir, "header-policy", "header_policy_inspector", "{}");
+    assert!(!p.inspects_responses());
+    // No X-Trace-ID anywhere: every call it gets flags.
+    assert_eq!(reached(p.as_ref()), [true, false, false, false]);
+}
+
+#[test]
+fn a_plugin_is_called_for_exactly_the_phases_it_declares() {
+    let dir = plugins_or_skip!();
+    let with = |phases: &str| {
+        load(
+            dir,
+            "probe",
+            "misbehaving_inspector",
+            &format!(r#"{{"mode": "describe", "phases": "{phases}"}}"#),
+        )
+    };
+    let cases = [
+        ("request,response,websocket", [true, true, true, true], true),
+        ("request", [true, false, false, false], false),
+        ("response", [false, true, false, false], true),
+        ("websocket", [false, false, true, true], false),
+        ("request,websocket", [true, false, true, true], false),
+        ("", [false, false, false, false], false),
+    ];
+    for (phases, calls, responses) in cases {
+        let p = with(phases);
+        assert_eq!(reached(p.as_ref()), calls, "{phases:?}");
+        assert_eq!(p.inspects_responses(), responses, "{phases:?}");
+    }
+    // Without a declaration (the SDK default) it is every phase.
+    let p = load(
+        dir,
+        "probe",
+        "misbehaving_inspector",
+        r#"{"mode": "describe"}"#,
+    );
+    assert_eq!(reached(p.as_ref()), [true; 4]);
+}
+
+#[test]
+fn a_phases_that_traps_fails_the_load() {
+    let dir = plugins_or_skip!();
+    let err = loader(dir)
+        .load(
+            "bad",
+            "misbehaving_inspector.wasm",
+            r#"{"mode": "describe", "phases": "trap"}"#,
+        )
+        .unwrap_err();
+    assert!(err.starts_with("inspector bad: phases failed: "), "{err}");
+    assert!(err.contains("unreachable"), "{err}");
+}
+
+/// A component built against `agentcage:inspector@1.0.0` (no `phases`
+/// export, the frozen WIT under `tests/fixtures/legacy-inspector/wit/`)
+/// still loads, and is called for every phase exactly as before.
+#[test]
+fn a_component_built_against_1_0_0_loads_and_inspects_every_phase() {
+    let dir = plugins_or_skip!();
+    let p = load(dir, "legacy", "legacy_inspector", "{}");
+    assert!(p.inspects_responses());
+    let c = ctx(&[], Some("x"));
+    let reason = |v: Option<Verdict>| v.expect("a verdict").reason;
+    assert_eq!(
+        reason(p.inspect_request(&c)),
+        "legacy request Phase::Request"
+    );
+    assert_eq!(
+        reason(p.inspect_response(&c)),
+        "legacy response Phase::Response"
+    );
+    assert_eq!(
+        reason(p.inspect_request(&websocket(c.clone()))),
+        "legacy request Phase::Websocket"
+    );
+    assert_eq!(
+        reason(p.inspect_response(&websocket(c))),
+        "legacy response Phase::Websocket"
     );
 }
 

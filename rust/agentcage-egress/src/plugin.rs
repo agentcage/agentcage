@@ -1,7 +1,7 @@
 //! Custom inspectors as WebAssembly components (plan D2, §5.7).
 //!
 //! A custom inspector is a component implementing the
-//! `agentcage:inspector@1.0.0` world (`rust/agentcage-inspector-sdk/wit/`),
+//! `agentcage:inspector@1.x` world (`rust/agentcage-inspector-sdk/wit/`),
 //! listed in the config as
 //!
 //! ```yaml
@@ -34,6 +34,11 @@
 //!   instantiation or a malformed verdict becomes a `block` verdict with
 //!   the reason `inspector <name> failed: …`, and the instance is thrown
 //!   away. Only `None` from a healthy call abstains.
+//! * **Declared phases.** A 1.1 component says which phases it inspects
+//!   ([`Phases`], its `phases` export, asked once per load after
+//!   `configure`); it is called for those only, and one that declares no
+//!   `response` leaves responses streaming. A 1.0.0 component, without
+//!   the export, is called for every phase, as before.
 //!
 //! Compiled components are cached by the SHA-256 of their bytes, so a
 //! reload that re-lists an unchanged plugin does not recompile it; every
@@ -52,7 +57,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use sha2::{Digest, Sha256};
-use wasmtime::component::{Component, Linker};
+use wasmtime::component::{Component, Instance, Linker};
 use wasmtime::{Config, Engine, ResourceLimiter, Store, Trap};
 
 use crate::config::Value;
@@ -61,14 +66,69 @@ use crate::inspect::{Action, Context, Direction, Inspector, Severity, Verdict};
 use crate::json::{self, Json};
 
 /// The generated host bindings for `wit/inspector.wit`.
+///
+/// Not the `inspector` world itself: instantiating through it would
+/// require every export it declares, `phases` included, and refuse every
+/// component built against 1.0.0. The `base` world below is the exports
+/// every 1.x component has, over the live `types`; `phases` is looked up
+/// by name on the instance and typed when found ([`Plugin::ask_phases`]).
+/// Records, enums and flags are typed structurally, so a 1.0.0
+/// component's `context` and `verdict` match the 1.1.0 ones.
 mod wit {
     wasmtime::component::bindgen!({
         path: "../agentcage-inspector-sdk/wit",
-        world: "inspector",
+        inline: "
+            package agentcage:egress-host;
+
+            world base {
+                use agentcage:inspector/types@1.1.0.{context, verdict, phase-set};
+                export configure: func(config: string) -> result<_, string>;
+                export inspect-request: func(ctx: context) -> option<verdict>;
+                export inspect-response: func(ctx: context) -> option<verdict>;
+            }
+        ",
+        world: "agentcage:egress-host/base",
     });
 }
 
 use wit::agentcage::inspector::types as abi;
+
+/// The name of the optional 1.1.0 export declaring a plugin's phases.
+const PHASES_EXPORT: &str = "phases";
+
+/// The phases a plugin inspects (`agentcage:inspector` `phase-set`,
+/// returned by its optional `phases` export).
+///
+/// A plugin is called only for the phases it declared, and a chain whose
+/// plugins declare no [`response`](Self::response) streams responses
+/// instead of buffering them. A component without the export (built
+/// against 1.0.0) gets [`Phases::ALL`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Phases {
+    /// HTTP requests and relayed mail (`inspect-request`).
+    pub request: bool,
+    /// HTTP responses (`inspect-response`).
+    pub response: bool,
+    /// WebSocket messages, both directions.
+    pub websocket: bool,
+}
+
+impl Phases {
+    /// Every phase: what a 1.0.0 component is asked about.
+    pub const ALL: Self = Self {
+        request: true,
+        response: true,
+        websocket: true,
+    };
+
+    fn from_abi(set: abi::PhaseSet) -> Self {
+        Self {
+            request: set.contains(abi::PhaseSet::REQUEST),
+            response: set.contains(abi::PhaseSet::RESPONSE),
+            websocket: set.contains(abi::PhaseSet::WEBSOCKET),
+        }
+    }
+}
 
 /// Where plugins live inside the egress container. The host mounts the
 /// cage's `inspectors/` directory here read-only.
@@ -120,8 +180,8 @@ impl Default for Limits {
 ///
 /// A one-line, operator-facing message: the path is outside the plugin
 /// directories or not a `.wasm` file, the component does not compile or
-/// does not implement `agentcage:inspector@1.0.0`, or its `configure`
-/// refused the config (or trapped).
+/// does not implement `agentcage:inspector@1.x`, its `configure`
+/// refused the config (or trapped), or its `phases` trapped.
 pub fn load(name: &str, path: &str, config_json: &str) -> Result<Arc<dyn Inspector>, String> {
     Loader::from_env().load(name, path, config_json)
 }
@@ -448,17 +508,19 @@ impl ResourceLimiter for StoreState {
 /// One live instance and the store that owns it.
 struct Slot {
     store: Store<StoreState>,
-    bindings: wit::Inspector,
+    instance: Instance,
+    bindings: wit::Base,
 }
 
-/// A loaded plugin: one compiled component, its config, a pool of
-/// configured instances.
+/// A loaded plugin: one compiled component, its config, the phases it
+/// declared, a pool of configured instances.
 struct Plugin {
     name: String,
     component: Component,
     linker: Linker<StoreState>,
     config: String,
     limits: Limits,
+    phases: Phases,
     pool: Mutex<Vec<Slot>>,
     pool_cap: usize,
 }
@@ -468,6 +530,7 @@ impl fmt::Debug for Plugin {
         f.debug_struct("Plugin")
             .field("name", &self.name)
             .field("limits", &self.limits)
+            .field("phases", &self.phases)
             .finish_non_exhaustive()
     }
 }
@@ -484,23 +547,48 @@ impl Plugin {
     fn new(name: &str, component: Component, config: &str, limits: Limits) -> Result<Self, String> {
         let linker =
             linker_for(&component).map_err(|e| format!("inspector {name}: {}", one_line(&e)))?;
-        let plugin = Self {
+        let mut plugin = Self {
             name: name.to_owned(),
             component,
             linker,
             config: config.to_owned(),
             limits,
+            phases: Phases::ALL,
             pool: Mutex::new(Vec::new()),
             pool_cap: std::thread::available_parallelism().map_or(4, usize::from),
         };
         // One instance up front: proves the component instantiates and
-        // accepts this config before it replaces anything in the chain.
-        let slot = plugin.instantiate().map_err(|e| match e {
+        // accepts this config before it replaces anything in the chain,
+        // and answers which phases it inspects under that config.
+        let mut slot = plugin.instantiate().map_err(|e| match e {
             CallError::Refused(msg) => format!("inspector {name}: configure refused: {msg}"),
             CallError::Failed(msg) => format!("inspector {name}: {msg}"),
         })?;
+        plugin.phases = plugin
+            .ask_phases(&mut slot)
+            .map_err(|msg| format!("inspector {name}: phases failed: {msg}"))?;
         plugin.check_in(slot);
         Ok(plugin)
+    }
+
+    /// The configured instance's answer to the optional `phases` export;
+    /// [`Phases::ALL`] for a component without it (built against 1.0.0).
+    /// A `phases` of the wrong type or one that traps fails the load.
+    fn ask_phases(&self, slot: &mut Slot) -> Result<Phases, String> {
+        let Some(func) = slot.instance.get_func(&mut slot.store, PHASES_EXPORT) else {
+            return Ok(Phases::ALL);
+        };
+        let typed = func
+            .typed::<(), (abi::PhaseSet,)>(&slot.store)
+            .map_err(|e| format!("the export has the wrong type: {}", one_line(&e)))?;
+        let fail = |store: &Store<StoreState>, e: &wasmtime::Error| self.describe(store, e);
+        slot.store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| fail(&slot.store, &e))?;
+        let (set,) = typed
+            .call(&mut slot.store, ())
+            .map_err(|e| fail(&slot.store, &e))?;
+        Ok(Phases::from_abi(set))
     }
 
     fn new_store(&self) -> Store<StoreState> {
@@ -524,13 +612,20 @@ impl Plugin {
         store
             .set_fuel(self.limits.fuel)
             .map_err(|e| fail(&store, &e))?;
-        let bindings = wit::Inspector::instantiate(&mut store, &self.component, &self.linker)
+        let instance = self
+            .linker
+            .instantiate(&mut store, &self.component)
             .map_err(|e| fail(&store, &e))?;
+        let bindings = wit::Base::new(&mut store, &instance).map_err(|e| fail(&store, &e))?;
         store
             .set_fuel(self.limits.fuel)
             .map_err(|e| fail(&store, &e))?;
         match bindings.call_configure(&mut store, &self.config) {
-            Ok(Ok(())) => Ok(Slot { store, bindings }),
+            Ok(Ok(())) => Ok(Slot {
+                store,
+                instance,
+                bindings,
+            }),
             Ok(Err(msg)) => Err(CallError::Refused(msg)),
             Err(e) => Err(fail(&store, &e)),
         }
@@ -623,15 +718,38 @@ impl Inspector for Plugin {
     }
 
     fn inspect_request(&self, ctx: &Context) -> Option<Verdict> {
+        if !self.declares(ctx, false) {
+            return None;
+        }
         self.call(ctx, false)
     }
 
     fn inspect_response(&self, ctx: &Context) -> Option<Verdict> {
+        if !self.declares(ctx, true) {
+            return None;
+        }
         self.call(ctx, true)
     }
 
+    /// Only for a plugin that declared `response`: this is the switch
+    /// that keeps HTTP responses buffered (`Chain::inspects_responses`).
+    /// WebSocket messages do not depend on it; the chain runs on every
+    /// message, and [`Plugin::declares`] filters there.
     fn inspects_responses(&self) -> bool {
-        true
+        self.phases.response
+    }
+}
+
+impl Plugin {
+    /// Whether the plugin declared the phase `ctx` is in.
+    fn declares(&self, ctx: &Context, response: bool) -> bool {
+        if ctx.websocket {
+            self.phases.websocket
+        } else if response {
+            self.phases.response
+        } else {
+            self.phases.request
+        }
     }
 }
 

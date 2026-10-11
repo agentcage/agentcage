@@ -9,7 +9,9 @@
 //!       block_on_missing: true        # default false: flag only
 //! ```
 
-use agentcage_inspector_sdk::{Context, Inspector, Severity, Value, Verdict, export_inspector};
+use agentcage_inspector_sdk::{
+    Context, Inspector, Phases, Severity, Value, Verdict, export_inspector,
+};
 
 /// The inspector's configuration.
 #[derive(Debug)]
@@ -55,6 +57,13 @@ impl Inspector for HeaderPolicy {
             Verdict::flag(reason)
         };
         Some(verdict.with_metadata("target_host", ctx.host.clone()))
+    }
+
+    /// Requests only: the header belongs on the HTTP request (a
+    /// WebSocket's upgrade request is one), and declaring no response
+    /// phase leaves the egress free to stream responses.
+    fn phases(&self) -> Phases {
+        Phases::REQUEST
     }
 }
 

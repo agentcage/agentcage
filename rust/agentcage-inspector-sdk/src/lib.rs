@@ -49,10 +49,17 @@
 //! * The egress may run several instances of a plugin at once, and may
 //!   replace an instance at any time (after a failure, on a config
 //!   change). Do not rely on state carried between calls.
+//! * The egress calls the `inspect_*` methods only for the phases
+//!   [`Inspector::phases`] declares (every phase unless overridden).
+//!   Declaring only what the plugin inspects matters for responses: the
+//!   egress streams a response to the cage as it arrives unless some
+//!   loaded inspector asks for [`Phases::RESPONSE`], in which case it
+//!   buffers the whole body first.
 //!
 //! The ABI is the WIT world in `wit/inspector.wit`
-//! (`agentcage:inspector@1.0.0`); plugins built against any 1.x SDK keep
-//! loading across egress upgrades.
+//! (`agentcage:inspector@1.1.0`); plugins built against any 1.x SDK keep
+//! loading across egress upgrades. A plugin built against 1.0.0 (before
+//! [`Inspector::phases`] existed) is treated as inspecting every phase.
 
 use std::cell::RefCell;
 
@@ -141,6 +148,101 @@ pub enum Phase {
     /// the ones the cage sends, [`Inspector::inspect_response`] the ones
     /// it receives.
     WebSocket,
+}
+
+/// A set of phases: the ones an inspector inspects
+/// ([`Inspector::phases`]).
+///
+/// ```
+/// use agentcage_inspector_sdk::Phases;
+///
+/// const MINE: Phases = Phases::REQUEST.union(Phases::WEBSOCKET);
+/// assert!(MINE.contains(Phases::REQUEST));
+/// assert!(!MINE.contains(Phases::RESPONSE));
+/// assert_eq!(Phases::REQUEST | Phases::RESPONSE | Phases::WEBSOCKET, Phases::ALL);
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Phases(u8);
+
+impl Phases {
+    /// No phase: the inspector is never called.
+    pub const NONE: Self = Self(0);
+    /// HTTP requests and relayed mail: [`Inspector::inspect_request`] with
+    /// [`Phase::Request`].
+    pub const REQUEST: Self = Self(1);
+    /// HTTP responses: [`Inspector::inspect_response`] with
+    /// [`Phase::Response`]. Declaring it makes the egress buffer every
+    /// response whole instead of streaming it.
+    pub const RESPONSE: Self = Self(1 << 1);
+    /// WebSocket messages, both directions: either method with
+    /// [`Phase::WebSocket`].
+    pub const WEBSOCKET: Self = Self(1 << 2);
+    /// Every phase: the default.
+    pub const ALL: Self = Self(0b111);
+
+    /// The phases in either set.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// The phases of `self` that are not in `other`.
+    #[must_use]
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Whether every phase of `other` is in `self`.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether the set is empty.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl Default for Phases {
+    /// [`Phases::ALL`].
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+impl std::ops::BitOr for Phases {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        self.union(rhs)
+    }
+}
+
+impl std::ops::BitOrAssign for Phases {
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = self.union(rhs);
+    }
+}
+
+impl std::fmt::Debug for Phases {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = [
+            (Self::REQUEST, "REQUEST"),
+            (Self::RESPONSE, "RESPONSE"),
+            (Self::WEBSOCKET, "WEBSOCKET"),
+        ]
+        .into_iter()
+        .filter(|(p, _)| self.contains(*p))
+        .map(|(_, n)| n)
+        .collect();
+        if names.is_empty() {
+            f.write_str("Phases(NONE)")
+        } else {
+            write!(f, "Phases({})", names.join(" | "))
+        }
+    }
 }
 
 /// A finding an inspector earlier in the chain already reported.
@@ -280,6 +382,13 @@ impl Verdict {
 /// The type must be `Default`: each [`configure`](Self::configure) starts
 /// from a fresh default value. Every method has a default, so implement
 /// only what the inspector needs.
+///
+/// Override [`phases`](Self::phases) to say which phases the inspector
+/// inspects. The default is every phase, which is always correct but
+/// makes the egress buffer responses whole for a plugin that never looks
+/// at them. Rust cannot tell at compile time which `inspect_*` methods a
+/// type overrides, so the SDK does not guess: whatever `phases` leaves
+/// out is not called, even if the type implements it.
 pub trait Inspector: Default + 'static {
     /// Take this instance's configuration (the cage.yaml entry's
     /// `config:`, `{}` when absent). An `Err` refuses it; the message is
@@ -303,6 +412,28 @@ pub trait Inspector: Default + 'static {
     fn inspect_response(&self, ctx: &Context) -> Option<Verdict> {
         let _ = ctx;
         None
+    }
+
+    /// The phases this inspector inspects, asked once per configuration
+    /// after [`configure`](Self::configure) succeeds, so the answer may
+    /// depend on the configuration. The egress calls
+    /// [`inspect_request`](Self::inspect_request) for [`Phases::REQUEST`]
+    /// and for WebSocket messages the cage sends,
+    /// [`inspect_response`](Self::inspect_response) for
+    /// [`Phases::RESPONSE`] and for WebSocket messages the cage receives
+    /// (both WebSocket cases under [`Phases::WEBSOCKET`]), and nothing
+    /// else.
+    ///
+    /// ```ignore
+    /// fn phases(&self) -> Phases {
+    ///     Phases::REQUEST | Phases::WEBSOCKET
+    /// }
+    /// ```
+    ///
+    /// The default, [`Phases::ALL`], is what a plugin built before this
+    /// method existed gets too.
+    fn phases(&self) -> Phases {
+        Phases::ALL
     }
 }
 
@@ -358,6 +489,10 @@ macro_rules! export_inspector {
                         $crate::__private::inspect::<$ty>(cell, ctx, <$ty as $crate::Inspector>::inspect_response)
                     })
                 }
+
+                fn phases() -> $crate::__private::WitPhaseSet {
+                    INSTANCE.with(|cell| $crate::__private::phases::<$ty>(cell))
+                }
             }
 
             $crate::bindings::__agentcage_export_inspector_world!(Component with_types_in $crate::bindings);
@@ -369,11 +504,11 @@ macro_rules! export_inspector {
 #[doc(hidden)]
 pub mod __private {
     use super::{
-        Action, Context, Direction, Inspector, Phase, PriorResult, RefCell, Severity, Value,
-        Verdict, wit,
+        Action, Context, Direction, Inspector, Phase, Phases, PriorResult, RefCell, Severity,
+        Value, Verdict, wit,
     };
 
-    pub use wit::{Context as WitContext, Verdict as WitVerdict};
+    pub use wit::{Context as WitContext, PhaseSet as WitPhaseSet, Verdict as WitVerdict};
 
     /// `configure`: parse, configure a fresh default, swap it in only on
     /// success.
@@ -413,6 +548,26 @@ pub mod __private {
         let mut slot = cell.borrow_mut();
         let inspector = slot.get_or_insert_with(T::default);
         method(inspector, &ctx).map(to_wit_verdict)
+    }
+
+    /// `phases`: the configured instance's declaration, as WIT flags.
+    pub fn phases<T: Inspector>(cell: &RefCell<Option<T>>) -> WitPhaseSet {
+        let mut slot = cell.borrow_mut();
+        to_wit_phases(slot.get_or_insert_with(T::default).phases())
+    }
+
+    pub(crate) fn to_wit_phases(phases: Phases) -> WitPhaseSet {
+        let mut out = WitPhaseSet::empty();
+        for (phase, flag) in [
+            (Phases::REQUEST, WitPhaseSet::REQUEST),
+            (Phases::RESPONSE, WitPhaseSet::RESPONSE),
+            (Phases::WEBSOCKET, WitPhaseSet::WEBSOCKET),
+        ] {
+            if phases.contains(phase) {
+                out = out | flag;
+            }
+        }
+        out
     }
 
     fn from_wit_context(ctx: WitContext) -> Context {
@@ -588,6 +743,60 @@ mod tests {
         assert_eq!(seen.header("X-A"), Some("1"));
         assert_eq!(seen.prior_results[0].metadata[0].1, json!({"a": [1]}));
         assert_eq!(seen.prior_results[0].severity, Severity::Error);
+    }
+
+    #[derive(Default)]
+    struct Configurable {
+        responses: bool,
+    }
+
+    impl Inspector for Configurable {
+        fn configure(&mut self, config: &Value) -> Result<(), String> {
+            self.responses = config["responses"].as_bool().unwrap_or(false);
+            Ok(())
+        }
+
+        fn phases(&self) -> Phases {
+            let mut phases = Phases::REQUEST | Phases::WEBSOCKET;
+            if self.responses {
+                phases |= Phases::RESPONSE;
+            }
+            phases
+        }
+    }
+
+    #[test]
+    fn phases_default_to_all_and_follow_the_configuration() {
+        let cell = RefCell::new(None::<Word>);
+        __private::configure(&cell, r#"{"word": "x"}"#).unwrap();
+        assert_eq!(__private::phases(&cell).bits(), 0b111);
+
+        let cell = RefCell::new(None::<Configurable>);
+        __private::configure(&cell, "{}").unwrap();
+        assert_eq!(
+            __private::phases(&cell).bits(),
+            (wit::PhaseSet::REQUEST | wit::PhaseSet::WEBSOCKET).bits()
+        );
+        __private::configure(&cell, r#"{"responses": true}"#).unwrap();
+        assert_eq!(__private::phases(&cell).bits(), 0b111);
+    }
+
+    #[test]
+    fn phase_sets_combine() {
+        assert_eq!(Phases::default(), Phases::ALL);
+        assert!(Phases::NONE.is_empty());
+        assert_eq!(
+            Phases::ALL.difference(Phases::RESPONSE),
+            Phases::REQUEST | Phases::WEBSOCKET
+        );
+        assert!(Phases::ALL.contains(Phases::REQUEST | Phases::RESPONSE));
+        assert!(!Phases::REQUEST.contains(Phases::ALL));
+        assert_eq!(
+            format!("{:?}", Phases::REQUEST | Phases::WEBSOCKET),
+            "Phases(REQUEST | WEBSOCKET)"
+        );
+        assert_eq!(format!("{:?}", Phases::NONE), "Phases(NONE)");
+        assert_eq!(__private::to_wit_phases(Phases::NONE).bits(), 0);
     }
 
     #[test]
