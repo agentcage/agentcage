@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use agentcage_core::apple::{normalize_cpus, normalize_memory};
+use agentcage_core::cage_ca;
 use agentcage_core::volume_mounts::{is_non_persistent_volume, split_volume_spec};
 
 use super::meta::Meta;
@@ -346,23 +347,27 @@ pub fn cage_argv(
         &format!("AGENTCAGE_EGRESS_IP={}", inputs.egress_ip),
         "-e",
         "AGENTCAGE_DNS_SERVERS_FILE=/etc/agentcage/dns-allowlist.conf",
-        // Point HTTPS clients at the proxy CA immediately, without
-        // waiting for `cage-init.sh` stage C to copy it into
-        // /usr/local/share/ca-certificates and run
-        // update-ca-certificates. curl reads SSL_CERT_FILE and Node
-        // reads NODE_EXTRA_CA_CERTS; together they cover the agents
-        // agentcage actually ships. `cage.container.j2` does the same.
-        // Without it, claude-code 2.1.x exits 0 from `-p` when its
-        // HTTPS call fails verification, which looks like success.
-        "-e",
-        "SSL_CERT_FILE=/certs/agentcage-ca.pem",
-        "-e",
-        "NODE_EXTRA_CA_CERTS=/certs/agentcage-ca.pem",
-        // So an agent can tell it is sandboxed, and which version by.
-        "-e",
-        &format!("AGENTCAGE_VERSION={version}"),
     ]);
-    for (key, value) in meta.map("env") {
+    // Point HTTPS clients at the proxy CA immediately, without waiting
+    // for `cage-init.sh` stage C to copy it into
+    // /usr/local/share/ca-certificates and run update-ca-certificates,
+    // and cover the tools that never read the system store at all.
+    // `cage_ca::ENV_VARS` says which tool reads which var;
+    // `cage.container.j2` sets the same ones. Without them, claude-code
+    // 2.1.x exits 0 from `-p` when its HTTPS call fails verification,
+    // which looks like success. A var the cage's `container.env` sets
+    // is left out rather than passed twice: `container run` hands the
+    // workload both, and which one a process sees depends on how it
+    // reads its environment.
+    let user_env = meta.map("env");
+    for var in cage_ca::defaults(|var| user_env.contains_key(var)) {
+        argv.push("-e".to_owned());
+        argv.push(format!("{var}={}", cage_ca::CERT_PATH));
+    }
+    // So an agent can tell it is sandboxed, and which version by.
+    argv.push("-e".to_owned());
+    argv.push(format!("AGENTCAGE_VERSION={version}"));
+    for (key, value) in user_env {
         argv.push("-e".to_owned());
         argv.push(format!("{key}={value}"));
     }
@@ -737,12 +742,60 @@ mod tests {
         // And it is told to trust the public cert by its neutral name,
         // the one the egress publishes into that directory.
         let env = pairs(&cage, "-e");
-        for var in ["SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"] {
+        for var in ["SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO"] {
             assert!(
                 env.contains(&format!("{var}=/certs/agentcage-ca.pem")),
                 "{env:?}"
             );
         }
+        for var in agentcage_core::cage_ca::ENV_VARS {
+            assert!(
+                env.contains(&format!("{var}=/certs/agentcage-ca.pem")),
+                "{env:?}"
+            );
+        }
+    }
+
+    /// A CA var the cage's `container.env` sets reaches the workload
+    /// once, with the user's value. Passing the default too would leave
+    /// it to each process which of the two it sees.
+    #[test]
+    fn a_container_env_ca_var_replaces_the_default() {
+        let staged = BTreeSet::new();
+        let placeholders = BTreeMap::new();
+        let cage = cage_argv(
+            "demo",
+            "demo-net",
+            "img",
+            "9.9.9",
+            &meta(r#"{"env": {"GIT_SSL_CAINFO": "/etc/ssl/certs/ca-certificates.crt"}}"#),
+            &CageInputs {
+                public_certs: Path::new("/s/public-certs"),
+                egress_config: Path::new("/s/egress-config"),
+                egress_ip: "10.0.0.2",
+                staged_envs: &staged,
+                placeholders: &placeholders,
+                volume_entries: &[],
+                copyup_seeds: &[],
+                unmaskable: &[],
+            },
+            &|_| true,
+        );
+        let env = pairs(&cage, "-e");
+        let git: Vec<&String> = env
+            .iter()
+            .filter(|e| e.starts_with("GIT_SSL_CAINFO="))
+            .collect();
+        assert_eq!(
+            git,
+            vec!["GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt"],
+            "{env:?}"
+        );
+        // The vars the user did not set keep their default.
+        assert!(
+            env.contains(&"SSL_CERT_FILE=/certs/agentcage-ca.pem".to_owned()),
+            "{env:?}"
+        );
     }
 
     /// A staged secret reaches the cage as its **placeholder**. One

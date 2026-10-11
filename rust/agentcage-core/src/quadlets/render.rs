@@ -416,6 +416,9 @@ struct CageContext<'a> {
     placeholders_env_path: &'a str,
     cage_env_dir: &'a str,
     env: &'a IndexMap<String, String>,
+    /// [`crate::cage_ca::ENV_VARS`] minus the ones `env` sets.
+    ca_env: &'a [&'static str],
+    ca_cert: &'a str,
     userns: &'a str,
     user: &'a str,
     read_only: bool,
@@ -468,6 +471,18 @@ pub fn generate_quadlets(
         options.deploy_name
     };
     let mut out = Quadlets::default();
+    for key in &config.capture.unknown_keys {
+        let hint = if matches!(key.as_str(), "enabled" | "enable" | "har") {
+            " (did you mean `enable_har`?)"
+        } else {
+            ""
+        };
+        out.warnings.push(format!(
+            "warning: capture.{key} is not a capture setting and is ignored{hint}; \
+             capture takes: {}",
+            crate::config::types::CAPTURE_KEYS.join(", ")
+        ));
+    }
 
     // Expand ~ and env vars in volume paths and env values. The inline
     // `np` option marks one bind non-persistent: it uses Podman's
@@ -1141,6 +1156,8 @@ pub fn generate_quadlets(
                 placeholders_env_path: &placeholders_env_path,
                 cage_env_dir: &cage_env_dir,
                 env: &expanded_env,
+                ca_env: &crate::cage_ca::defaults(|var| expanded_env.contains_key(var)),
+                ca_cert: crate::cage_ca::CERT_PATH,
                 userns: &cc.userns,
                 user: &cage_user,
                 read_only: cc.read_only,
@@ -1662,6 +1679,76 @@ secret_injection:
         assert_eq!(
             rust.files["c-cage.container"],
             units.files["c-cage.container"]
+        );
+    }
+
+    /// Every CA var reaches the cage pointing at the egress CA, and one
+    /// the cage's `container.env` sets is rendered once, with the
+    /// user's value. The golden corpus has no case that overrides one.
+    #[test]
+    fn a_container_env_ca_var_replaces_the_default() {
+        let render_cage = |env_yaml: &str| {
+            let yaml = format!(
+                "name: c\ncontainer:\n  image: busybox\n{env_yaml}domains:\n  allow: [api.example.com]\ndns_servers: [192.0.2.53]\n"
+            );
+            let config = crate::config::load(
+                "cage.yaml",
+                &yaml,
+                &crate::config::FixedHost::linux(&["192.0.2.53"]),
+            )
+            .expect("valid config");
+            let state = StatePaths {
+                config_root: "/cfg/agentcage".to_owned(),
+                data_root: "/data/agentcage".to_owned(),
+            };
+            let units = generate_quadlets(
+                &config,
+                &GenerateOptions {
+                    config_host_path: "/cfg/agentcage/cages/c/cage.yaml",
+                    patches_host_dir: "/data/patches",
+                    deploy_name: "c",
+                    rootless: true,
+                    used_octets: None,
+                    network_octet: None,
+                    store_secrets: None,
+                    state: &state,
+                    version: "9.9.9",
+                    egress_tag: None,
+                },
+                &TestHost,
+            )
+            .expect("renders");
+            units.files["c-cage.container"].clone()
+        };
+
+        let cage = render_cage("");
+        for var in crate::cage_ca::ENV_VARS {
+            assert!(
+                cage.contains(&format!("Environment=\"{var}=/certs/agentcage-ca.pem\"\n")),
+                "{cage}"
+            );
+        }
+
+        let cage = render_cage(
+            "  env:\n    GIT_SSL_CAINFO: /etc/ssl/certs/ca-certificates.crt\n    REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt\n",
+        );
+        for var in ["GIT_SSL_CAINFO", "REQUESTS_CA_BUNDLE"] {
+            let lines: Vec<&str> = cage
+                .lines()
+                .filter(|line| line.starts_with(&format!("Environment=\"{var}=")))
+                .collect();
+            assert_eq!(
+                lines,
+                vec![format!(
+                    "Environment=\"{var}=/etc/ssl/certs/ca-certificates.crt\""
+                )],
+                "{cage}"
+            );
+        }
+        // The vars the user did not set keep their default.
+        assert!(
+            cage.contains("Environment=\"SSL_CERT_FILE=/certs/agentcage-ca.pem\"\n"),
+            "{cage}"
         );
     }
 

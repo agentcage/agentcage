@@ -1463,7 +1463,7 @@ impl AppleBackend<'_> {
                 .deployment_dir(deploy_name)
                 .join(&config.container.build.containerfile);
             if staged.is_file() {
-                let context = staged.parent().unwrap_or(Path::new(".")).to_path_buf();
+                let context = crate::staging::parent_dir(&staged).to_path_buf();
                 super::build::build_image_from_staged(
                     self.runner,
                     &user_image,

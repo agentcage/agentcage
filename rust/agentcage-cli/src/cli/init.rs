@@ -246,7 +246,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         // refusal that then kept the stale file would be the original
         // bug with a prompt.
         for source in &staged_cfs {
-            let build_context = source.parent().unwrap_or(Path::new("."));
+            let build_context = agentcage_cli::staging::parent_dir(source);
             let clobber_names = if force {
                 agentcage_cli::staging::build_inputs(source)
             } else {

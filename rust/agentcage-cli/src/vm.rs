@@ -1737,7 +1737,7 @@ impl<'a> VmBackend<'a> {
             return Ok(());
         }
 
-        let source = containerfile.parent().unwrap_or(Path::new("."));
+        let source = crate::staging::parent_dir(&containerfile);
         let guest_scaffold = format!("{VM_BUILD_DIR}/scaffold");
         instance.exec(&["mkdir", "-p", &guest_scaffold].map(str::to_string), true)?;
         self.run_checked(&self.copy_build_context_argv(deploy_name, source, &guest_scaffold))?;

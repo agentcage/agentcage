@@ -119,7 +119,7 @@ The DNS engine rejects:
 Each cage's egress generates a Certificate Authority (CA) of its own on its first start:
 - The private key stays in the egress's private CA store (`/home/acproxy/ca`, backed by that cage's own certs volume) and is never shared — not with the workload, not with other cages, and not in backups. It is removed with the cage.
 - The public certificate is mounted read-only into the workload container at `/certs/agentcage-ca.pem`.
-- Environment variables (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`) point to this certificate, enabling Node.js, Python, curl, and git to verify intercepted TLS without certificate warnings.
+- Environment variables point to this certificate, so the common toolchains verify intercepted TLS without certificate warnings: `SSL_CERT_FILE` (OpenSSL-based tools, Go, uv), `NODE_EXTRA_CA_CERTS` (Node, npm, Bun), `GIT_SSL_CAINFO` (git), `REQUESTS_CA_BUNDLE` (Python `requests`), `CURL_CA_BUNDLE` (curl), `PIP_CERT` (pip), `AWS_CA_BUNDLE` (boto3, the AWS CLI), `CARGO_HTTP_CAINFO` (cargo), `DENO_CERT` (Deno) and `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` (gRPC). Most of them replace the tool's default roots, so a tool trusts only the cage CA; every intercepted connection is signed by it. A `container.env` entry that sets one of these replaces the default.
 
 ### B. Strict SNI ↔ Host Matching
 To prevent domain-fronting attacks (where an attacker supplies an allowlisted domain in TLS SNI but requests a malicious host in the HTTP `Host` header), the proxy enforces strict equality between TLS Server Name Indication and the L7 HTTP `Host` header. Any mismatch terminates the connection with a 403.

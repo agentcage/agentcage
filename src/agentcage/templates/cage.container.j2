@@ -11,8 +11,14 @@ Environment="HTTP_PROXY=http://{{ ip_egress }}:8080"
 Environment="HTTPS_PROXY=http://{{ ip_egress }}:8080"
 Environment="http_proxy=http://{{ ip_egress }}:8080"
 Environment="https_proxy=http://{{ ip_egress }}:8080"
-Environment="NODE_EXTRA_CA_CERTS=/certs/agentcage-ca.pem"
-Environment="SSL_CERT_FILE=/certs/agentcage-ca.pem"
+{# The CA-bundle env vars common toolchains read, all naming the cage
+   CA (agentcage_core::cage_ca). Most replace the tool's default roots,
+   the trade-off SSL_CERT_FILE always made: everything intercepted is
+   signed by this CA. ca_env leaves out any var `env` sets, so a
+   container.env value is the only one rendered. #}
+{% for key in ca_env %}
+Environment="{{ key }}={{ ca_cert }}"
+{% endfor %}
 Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
 Volume={{ name }}-public-certs.volume:/certs:ro,Z
 {# NOTE: do NOT reintroduce a broad `Volume={{ patches_host_dir }}:/agentcage`

@@ -195,7 +195,7 @@ fn reinstall_apple_units(
     match backend.generate_units(config, "", "", cage, None, None) {
         Ok(units) => {
             for warning in &units.warnings {
-                eprint!("{warning}");
+                eprintln!("{warning}");
             }
             if let Err(error) = backend.install_units(&units, true) {
                 eprintln!("warning: apple-container unit metadata not reinstalled: {error}");
@@ -270,7 +270,7 @@ pub(crate) fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<()
         )
         .map_err(|error| error.to_string())?;
     for warning in &units.warnings {
-        eprint!("{warning}");
+        eprintln!("{warning}");
     }
     // `backend.unit_dir()`, not the container backend's: a vm cage's
     // quadlets live under the shared Lima config directory, so asking
