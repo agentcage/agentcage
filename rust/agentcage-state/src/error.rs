@@ -1,9 +1,8 @@
 //! What can go wrong reading or writing state.
 //!
-//! The Python raises `OSError`, `ValueError`, `FileNotFoundError`,
-//! `yaml.YAMLError` and `json.JSONDecodeError` from these paths, and
-//! `cli.py` turns most of them into a click error with the message
-//! attached. So the variants here are grouped by *what the CLI has to
+//! These paths fail in the OS, in a missing file, in malformed YAML or
+//! JSON and in config validation, and the CLI turns most of those into
+//! an error with the message attached. So the variants here are grouped by *what the CLI has to
 //! say about it*, not by which syscall failed:
 //!
 //! * [`StateError::Io`] carries the path, because "No such file or
@@ -47,13 +46,12 @@ pub enum StateError {
     },
     /// A stored file that has to exist does not.
     ///
-    /// Separate from [`StateError::Io`] because the Python raises
-    /// `FileNotFoundError` with its *own* message here rather than
-    /// letting the OS one through — `"No stored config for deployment
+    /// Separate from [`StateError::Io`] because it carries its *own*
+    /// message rather than the OS one — `"No stored config for deployment
     /// '<name>'"` — and `cage show` on a typo'd name is a common
     /// enough path that the wording matters.
     Missing {
-        /// The message, exactly as the Python composes it.
+        /// The message, worded as earlier releases worded it.
         message: String,
         /// The file that was looked for.
         path: PathBuf,
@@ -115,9 +113,9 @@ impl StateError {
 
     /// Whether this is a "the file is not there" failure.
     ///
-    /// The Python distinguishes these constantly — `load_metadata`
+    /// The readers distinguish these constantly — `load_metadata`
     /// returns `{}`, `load_fingerprint` returns `None`, `load_grants`
-    /// returns `[]` — and the readers here do the same, so this is for
+    /// returns `[]` — so this is for
     /// the callers that have to decide it themselves.
     #[must_use]
     pub fn is_missing(&self) -> bool {
@@ -140,9 +138,8 @@ impl fmt::Display for StateError {
                 write!(f, "cannot {doing} {}: {source}", path.display())
             }
             // `Missing` and `Value` render the same way and mean
-            // different things: one is a `FileNotFoundError` with the
-            // Python's own wording, the other a `ValueError` about a
-            // file's content. Merging the arms would tie them together.
+            // different things: one is a missing file with its own
+            // wording, the other a complaint about a file's content. Merging the arms would tie them together.
             Self::Missing { message, .. } | Self::Value(message) => f.write_str(message),
             Self::Config(error) => f.write_str(error.message()),
             Self::Yaml { path, source } => {
@@ -191,7 +188,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn the_collision_message_is_the_pythons() {
+    fn the_collision_message_is_pinned() {
         let error = StateError::TempCollision {
             target: PathBuf::from("/s/cage.yaml"),
             first: "cage.yaml.9.tmp".to_owned(),
@@ -205,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_file_says_so_in_the_pythons_words() {
+    fn a_missing_file_says_so_in_its_own_words() {
         let error = StateError::missing(
             "No stored config for deployment 'nope'",
             "/s/cages/nope/cage.yaml",

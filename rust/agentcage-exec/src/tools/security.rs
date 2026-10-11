@@ -208,7 +208,7 @@ impl KeychainTarget {
     /// `security <args> [keychain]`, with the `sudo -n` prefix applied.
     ///
     /// The keychain path goes last, after every flag, which is where
-    /// `security(1)` expects it and where the Python appends it.
+    /// `security(1)` expects it.
     #[must_use]
     pub fn command<I, S>(&self, args: I) -> Command
     where
@@ -255,7 +255,7 @@ impl KeychainTarget {
 /// **This enum is the seam.** [`SHIPPED_PASSWORD_CHANNEL`] is what
 /// agentcage actually runs, and since 2026-10-02 it is
 /// [`PasswordChannel::Interactive`]. [`PasswordChannel::Argv`] is the
-/// Python's original behaviour and the exposure PR D1 found; it is
+/// behaviour of earlier releases and the exposure PR D1 found; it is
 /// kept reachable, and asserted, because it is what the fix is defined
 /// against -- a test that only pins the new shape cannot tell you the
 /// old one is gone.
@@ -647,7 +647,7 @@ impl<'a> Security<'a> {
     /// [`ExecError::Failed`] when `security` refuses -- typically
     /// because the keychain is locked. The caller does not read the
     /// stderr text to find out: every non-zero exit falls through
-    /// alike, which is what the Python does.
+    /// alike.
     pub fn add(
         &self,
         target: &KeychainTarget,
@@ -825,8 +825,8 @@ mod tests {
     /// and nothing was appended. Every previous argv assertion for
     /// `add` used the login target.
     ///
-    /// The Python is `argv + ["-w", value, "-U"]` and then
-    /// `argv.append(kc)`, so this is a port-fidelity fix, not a
+    /// Earlier releases built `argv + ["-w", value, "-U"]` and then
+    /// appended the keychain, so this is a fidelity fix, not a
     /// behaviour change: no `-w` on any channel may be followed by the
     /// keychain path.
     #[test]

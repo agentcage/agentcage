@@ -11,7 +11,7 @@
 //! | [`Paths::config_root`] | `$XDG_CONFIG_HOME` or `~/.config`, + `agentcage` | `cages/<name>/` — `cage.yaml`, `metadata.json`, `fingerprint.json`, `proxy-config.yaml`, `dns-allowlist.conf`, `cage-env/`, `creds/`, `secret_keys.json`, `pending_secrets.json` |
 //! | [`Paths::apple_root`] | **`~` directly** + `.config/agentcage/apple-container` | `<name>/logs/{audit,capture}.jsonl`, `dnsmasq.log`, `ready`, `mask-mountpoints.json` |
 //! | [`Paths::data_root`] | `$XDG_DATA_HOME` or `~/.local/share`, + `agentcage` | `<name>/grants/grants.yaml`, `<name>/capture/`, `<name>/policy-audit.jsonl`, and the **shared** `patches/` |
-//! | [`Paths::quadlet_dir`] | **`~` directly** + `.config/containers/systemd` | the quadlets Python rendered, which systemd is still running |
+//! | [`Paths::quadlet_dir`] | **`~` directly** + `.config/containers/systemd` | the installed quadlets, which systemd is running |
 //! | [`Paths::user_unit_dir`] | **`~` directly** + `.config/systemd/user` | *native* `.service` units — the legacy grants watcher D16 has to clean up |
 //! | [`Paths::runtime_root`] | `$XDG_RUNTIME_DIR` or `/run/user/<uid>` | `agentcage/<name>/secrets`, tmpfs, the egress's staged credentials |
 //! | [`Paths::apple_launchd_plist`] | **`~` directly** + `Library/LaunchAgents` | the opt-in autostart job, outside every agentcage root |
@@ -53,7 +53,7 @@
 //! escape it. So the roots are a value that callers pass down.
 //!
 //! [`Paths::from_env`] reads the environment once, at the top of the
-//! program, exactly where Python's import did.
+//! program.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -82,18 +82,18 @@ impl Paths {
     /// * `os.environ.get("XDG_CONFIG_HOME", expanduser("~/.config"))`
     ///   — a `get` with a default, so `XDG_CONFIG_HOME=""` yields the
     ///   empty string and the config root becomes the *relative* path
-    ///   `agentcage`. Surprising, but it is what the Python does, and a
-    ///   port that quietly "fixed" it would write state somewhere the
-    ///   Python would not look.
+    ///   `agentcage`. Surprising, but it is what earlier releases did,
+    ///   and quietly "fixing" it would write state somewhere they
+    ///   would not look.
     /// * `os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{getuid()}"`
     ///   — an `or`, so there an empty value *does* fall through to the
     ///   default (`state.py:389`).
     ///
-    /// `~` is `$HOME`. Python's `expanduser` would fall back to a
+    /// `~` is `$HOME`. `os.path.expanduser` would fall back to a
     /// `pwd` lookup when `HOME` is unset, and then to leaving the `~`
     /// in place; there is no `pwd` without `libc`, so this skips the
-    /// middle step and leaves the literal `~`, which is Python's own
-    /// last resort. A host with no `HOME` is not a configuration
+    /// middle step and leaves the literal `~`, which is `expanduser`'s
+    /// own last resort. A host with no `HOME` is not a configuration
     /// agentcage supports either way.
     #[must_use]
     pub fn from_env() -> Self {
@@ -205,7 +205,7 @@ impl Paths {
     ///
     /// `backends/vm.py::unit_dir`, and like [`Paths::quadlet_dir`] and
     /// [`Paths::apple_root`] it is an `expanduser` with **no** XDG
-    /// lookup — so a cage the Python deployed has its Lima config
+    /// lookup — so a cage an earlier release deployed has its Lima config
     /// there whatever `XDG_CONFIG_HOME` says.
     #[must_use]
     pub fn lima_dir(&self) -> PathBuf {
@@ -281,8 +281,7 @@ impl Paths {
     ///
     /// Bind-mounted read-only into the cage at `/run/agentcage/env`. A
     /// directory rather than a single-file mount so an in-place rewrite
-    /// propagates regardless of inode churn. Path only: the Python
-    /// helper does not `mkdir` either, because quadlet rendering
+    /// propagates regardless of inode churn. Path only: no `mkdir`, because quadlet rendering
     /// composes this path and must have no side effects.
     #[must_use]
     pub fn cage_env_dir(&self, name: &str) -> PathBuf {
@@ -374,9 +373,8 @@ impl Paths {
     /// `<data_root>/<name>/policy-audit.jsonl` —
     /// `state.policy_audit_file`.
     ///
-    /// A **sibling** of `grants/`, not a file inside it, and the
-    /// Python carries a long comment explaining why: `grants/` is
-    /// group-writable by the egress container and bind-mounted
+    /// A **sibling** of `grants/`, not a file inside it, for a reason:
+    /// `grants/` is group-writable by the egress container and bind-mounted
     /// read-write into it, so a forensic trail placed inside would be
     /// forgeable and truncatable by the thing it audits.
     #[must_use]
@@ -539,7 +537,7 @@ impl Paths {
     /// `$XDG_RUNTIME_DIR`). tmpfs only: real secret values never touch
     /// persistent disk unencrypted. Use
     /// [`crate::Paths::ensure_runtime_secrets_dir`] to create it with
-    /// the modes the Python sets.
+    /// the right modes.
     #[must_use]
     pub fn runtime_secrets_dir(&self, name: &str) -> PathBuf {
         self.runtime_root

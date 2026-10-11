@@ -57,8 +57,8 @@ impl Scope {
 /// The real encryption's time limit.
 ///
 /// 30 seconds: TPM2 operations occasionally block on hardware -- a slow
-/// chip, or contention with another process -- and the Python turns the
-/// timeout into a message that says so, rather than an unexplained hang
+/// chip, or contention with another process -- and a timeout becomes a
+/// message that says so, rather than an unexplained hang
 /// during `secret set`.
 pub const ENCRYPT_TIMEOUT: Duration = Duration::from_secs(30);
 

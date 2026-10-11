@@ -78,7 +78,7 @@ pub trait CommandRunner: fmt::Debug + Send + Sync {
     /// Whether `program` is installed.
     ///
     /// Sugar for `which(..).is_some()`; provided so the common case
-    /// reads like the Python it replaces.
+    /// reads as a question.
     fn has(&self, program: &str) -> bool {
         self.which(program).is_some()
     }

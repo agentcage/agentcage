@@ -242,7 +242,7 @@ fn spawn_line_reader(pipe: impl Read + Send + 'static, tx: Sender<String>) {
     thread::spawn(move || {
         use std::io::BufRead as _;
         // Lossy so one stray byte in a log line cannot end the stream;
-        // `text=True` in the Python would raise, which is worse.
+        // a strict decode would raise, which is worse.
         for line in std::io::BufReader::new(pipe).split(b'\n') {
             let Ok(mut bytes) = line else { return };
             if bytes.last() == Some(&b'\r') {

@@ -8,11 +8,9 @@
 //! and the interesting part of nearly every function is *which argv it
 //! builds*.
 //!
-//! The Python suite tests that by monkeypatching `subprocess.run` and
-//! poking at the recorded call. `tests/test_apple_container.py` alone
-//! has 217 `monkeypatch` calls. That technique does not port to Rust,
-//! and it should not: patching a module attribute asserts that a
-//! particular *function* was called, whereas argv is the actual contract
+//! The obvious way to test that -- patching the process-spawning function
+//! and poking at the recorded call -- asserts that a particular
+//! *function* was called, whereas argv is the actual contract
 //! with podman and systemd. A test that pins argv keeps working when the
 //! code around it is refactored, and stops working when the contract
 //! changes -- which is the behaviour you want from a test.
@@ -41,24 +39,24 @@
 //!
 //! # What the trait can express
 //!
-//! The Python it replaces uses a wide slice of `subprocess`, and the
-//! trait has to cover all of it or callers will reach around it:
+//! The CLI needs a wide slice of process control, and the trait has to
+//! cover all of it or callers will reach around it:
 //!
-//! | Python                                        | here |
+//! | need                                          | here |
 //! | :-- | :-- |
-//! | `subprocess.run(cmd)`                         | [`Command`] with inherited stdio (the default) |
-//! | `subprocess.run(cmd, capture_output=True)`    | [`Command::captured`] |
-//! | `subprocess.run(cmd, check=True)`             | [`Output::check`] -- the runner never treats a non-zero exit as an error |
-//! | `subprocess.run(cmd, input=value)`            | [`Command::stdin_secret`] / [`Command::stdin_text`] |
-//! | `subprocess.run(cmd, stdin=f)`                | [`Command::stdin_file`] |
-//! | `subprocess.run(cmd, stdout=f)`               | [`Command::stdout`] with [`Sink::Write`] |
-//! | `subprocess.run(cmd, stderr=subprocess.STDOUT)` | [`Command::merge_stderr`] |
-//! | `subprocess.run(cmd, timeout=30)`             | [`Command::timeout`] |
-//! | `subprocess.run(cmd, start_new_session=True)` | [`Command::new_process_group`] |
-//! | `subprocess.Popen(cmd, stdout=PIPE)` + iterate | [`CommandRunner::stream`] -> [`LineStream`] |
-//! | `proc.terminate()`                            | [`LineStream::terminate`] |
-//! | `shutil.which("systemctl")`                   | [`CommandRunner::which`] |
-//! | `FileNotFoundError` vs a non-zero exit        | [`ExecError::NotFound`] vs [`Output::status`] |
+//! | run with the terminal attached                | [`Command`] with inherited stdio (the default) |
+//! | capture stdout and stderr                     | [`Command::captured`] |
+//! | fail on a non-zero exit                       | [`Output::check`] -- the runner never treats a non-zero exit as an error |
+//! | feed stdin from memory                        | [`Command::stdin_secret`] / [`Command::stdin_text`] |
+//! | feed stdin from a file                        | [`Command::stdin_file`] |
+//! | write stdout to a file                        | [`Command::stdout`] with [`Sink::Write`] |
+//! | merge stderr into stdout                      | [`Command::merge_stderr`] |
+//! | bound the run time                            | [`Command::timeout`] |
+//! | run in its own process group                  | [`Command::new_process_group`] |
+//! | read stdout line by line while it runs        | [`CommandRunner::stream`] -> [`LineStream`] |
+//! | stop a streaming child                        | [`LineStream::terminate`] |
+//! | ask whether a binary is on `PATH`             | [`CommandRunner::which`] |
+//! | tell "not installed" from "failed"            | [`ExecError::NotFound`] vs [`Output::status`] |
 //!
 //! Two of those rows are the ones worth arguing about.
 //!
@@ -67,16 +65,16 @@
 //! already torn down looks. If the runner returned `Err` for those, every
 //! caller would immediately unwrap it back into a status. So [`run`]
 //! returns `Ok(Output)` for any process that ran, and `Err` only when the
-//! process could not be run at all. `check=True` becomes an explicit
-//! [`Output::check`], which is exactly where the Python puts it.
+//! process could not be run at all. Failing on a non-zero exit is an
+//! explicit [`Output::check`] at the call sites that want it.
 //!
 //! [`run`]: CommandRunner::run
 //!
-//! **"Binary missing" is a distinct outcome.** `registry.py` catches
-//! `FileNotFoundError` from `skopeo` and prints an install hint while
-//! returning `None`; `apple_container/cli.py` raises its own
-//! `FileNotFoundError` with a download URL; `systemd.py` turns every
-//! function into a no-op when `systemctl` is not on `PATH`. Those three
+//! **"Binary missing" is a distinct outcome.** The registry lookup prints
+//! an install hint and degrades when `skopeo` is missing; the
+//! apple-container backend fails with a download URL when `container` is;
+//! every `systemctl` wrapper turns into a no-op when `systemctl` is not
+//! on `PATH`. Those three
 //! behaviours all hinge on the same distinction, so it is a variant:
 //! [`ExecError::NotFound`], with [`ExecError::is_not_found`] for the
 //! callers that only care about the one bit.
@@ -102,10 +100,9 @@
 //! # Environment and working directory
 //!
 //! [`Command`] carries `env` and `cwd` as fields, so they are part of
-//! what [`FakeRunner`] records and part of what a test can assert. The
-//! Python host code happens not to use either today -- it mutates
-//! `os.environ` in-process or relies on the inherited cwd -- which is
-//! precisely why they belong on the recorded struct now: the first
+//! what [`FakeRunner`] records and part of what a test can assert. Few
+//! callers set either today, which is precisely why they belong on the
+//! recorded struct now: the first
 //! caller that needs one will otherwise reach for a side channel the
 //! fake cannot see.
 //!
@@ -113,8 +110,8 @@
 //!
 //! The project rule is that secret material goes on stdin, never in
 //! argv, because argv is world-readable through `/proc/<pid>/cmdline`
-//! and `ps`. The Python honours that in every place but one --
-//! `secret_store.py`'s `KeychainStore` passes the cleartext as
+//! and `ps`. Earlier releases honoured that in every place but one --
+//! the keychain store passed the cleartext as
 //! `security add-generic-password ... -w <value>`. See
 //! [`tools::security`] for the detail and for what this crate does about
 //! it.

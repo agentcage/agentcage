@@ -2,7 +2,7 @@
 //!
 //! Any GET, POST or PUT is answered `200` with
 //! `{"ok": true, "path": <request target>, "method": <method>}`. Other
-//! methods get `501`, as they did from the first (Python `http.server`)
+//! methods get `501`, as they did from the first (`http.server`-based)
 //! version of this mock. `GET /ws` with `Upgrade: websocket` is the
 //! WebSocket echo in [`crate::ws`] instead.
 

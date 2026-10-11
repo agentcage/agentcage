@@ -82,8 +82,8 @@ const DIR_MODE: u32 = 0o755;
 
 /// The directory holding every extracted tree, one per `<version>-<digest>`.
 ///
-/// Honours `XDG_DATA_HOME`, matching `state._DATA_DIR` and
-/// `services.patches_work_dir` on the Python side.
+/// Honours `XDG_DATA_HOME`, like the state data root and the patches
+/// work dir.
 #[must_use]
 pub fn cache_root() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
@@ -372,7 +372,7 @@ mod tests {
     /// The extracted build context hashes to the contract value.
     ///
     /// The strongest single statement this crate can make: what podman
-    /// will be handed produces the digest the Python CLI computes.
+    /// will be handed produces the digest the fixture pins.
     #[test]
     fn the_extracted_build_context_hashes_to_the_contract_value() {
         let scratch = Scratch::new("hash");
@@ -491,7 +491,7 @@ mod tests {
         );
     }
 
-    /// The cache lands where the Python data root already is.
+    /// The cache lands under the same data root as the cage state.
     #[test]
     fn the_cache_root_follows_xdg_data_home() {
         let root = cache_root();

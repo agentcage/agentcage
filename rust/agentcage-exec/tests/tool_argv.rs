@@ -1,12 +1,8 @@
 //! argv assertions for the six non-podman tools.
 //!
-//! `test_podman.py` has a Rust counterpart in `podman_argv.rs`; the
-//! other tools' Python tests are spread across `test_systemd.py`,
-//! `test_lima_*.py`, `test_vm_backend.py`, `test_apple_container*.py`
-//! and `test_secret_store.py`, and D2, D3, E1, E2b and E3 port the logic
-//! around them. What is pinned here is the *seam*: the exact argv each
-//! wrapper produces, so those PRs inherit a contract rather than
-//! inventing one.
+//! `podman` has its own file, `podman_argv.rs`. What is pinned here is
+//! the *seam*: the exact argv each wrapper produces, so the CLI code
+//! around them inherits a contract rather than inventing one.
 
 use agentcage_exec::tools::apple::{AppleContainer, container_state};
 use agentcage_exec::tools::creds::{PROBE_NAME, Scope, SystemdCreds};
@@ -311,8 +307,7 @@ fn container_commands_use_the_resolved_path() {
 }
 
 /// Without the binary, `system_running` is `false` and `inspect` is
-/// `None` -- the Python's `except FileNotFoundError` -- and nothing is
-/// spawned.
+/// `None`, and nothing is spawned.
 #[test]
 fn container_calls_degrade_when_the_binary_is_missing() {
     let fake = FakeRunner::new();
@@ -539,7 +534,7 @@ fn keychain_get_has_no_secret_in_argv() {
 }
 
 /// **The ordering bug.** Every `security` invocation, on the System
-/// keychain, with the path where the Python puts it: last.
+/// keychain, with the path where `security(1)` expects it: last.
 ///
 /// The login target cannot see this -- its keychain is `None`, so
 /// nothing is appended and any argument order looks right. `add` was

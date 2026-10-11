@@ -40,9 +40,8 @@ impl<'a> AppleContainer<'a> {
     /// installed.
     ///
     /// `PATH` first, then [`CANDIDATE_PATHS`], which is what
-    /// `container_binary()` does -- and note that the Python probes the
-    /// candidates with `shutil.which(absolute_path)`, i.e. it still
-    /// checks executability rather than mere existence.
+    /// earlier releases did -- and the candidates are probed for
+    /// executability rather than mere existence.
     #[must_use]
     pub fn binary(&self) -> Option<String> {
         if let Some(path) = self.runner.which("container") {
@@ -60,8 +59,7 @@ impl<'a> AppleContainer<'a> {
     /// # Errors
     ///
     /// [`ExecError::NotFound`] when the binary is not installed. The
-    /// Python raises `FileNotFoundError` with an install URL here; the
-    /// URL belongs in the CLI's error presentation, not in the seam, so
+    /// install URL belongs in the CLI's error presentation, not in the seam, so
     /// this returns the variant and lets D5 phrase it.
     pub fn command<I, S>(&self, args: I) -> Result<Command, ExecError>
     where
@@ -95,8 +93,7 @@ impl<'a> AppleContainer<'a> {
 
     /// Run `container <args>` with its output attached to the terminal.
     ///
-    /// The streaming half of the Python's `run(capture_output=False)`.
-    /// That branch also wraps the call in `output.pause_active_spinner()`
+    /// The streaming counterpart of the captured runs. The caller also wraps the call in `output.pause_active_spinner()`
     /// because Apple's CLI writes its own progress -- `[1/2] Fetching
     /// image [13s]` -- to stderr and would fight an agentcage spinner for
     /// the line. The spinner lives in D4's `output` module, so the pause
@@ -122,7 +119,7 @@ impl<'a> AppleContainer<'a> {
 
     /// Whether the `container` apiserver is running.
     ///
-    /// `container system status`, with the Python's substring test on
+    /// `container system status`, with a substring test on
     /// stdout rather than the exit code. A missing binary answers
     /// `false` rather than erroring, the way its `except
     /// FileNotFoundError` does.

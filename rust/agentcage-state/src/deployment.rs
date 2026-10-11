@@ -1,9 +1,6 @@
 //! The stored `cage.yaml`, and the deployment directory around it.
 //!
-//! `state.py`'s first half. Every function here is a method on
-//! [`Paths`] with the same name as the Python free function it ports,
-//! so `state.load_raw_config(name)` reads as
-//! `paths.load_raw_config(name)`.
+//! Every function here is a method on [`Paths`].
 //!
 //! # Two readers, not one
 //!
@@ -99,7 +96,7 @@ impl Paths {
     ///
     /// # Errors
     ///
-    /// [`StateError::Missing`] with the Python's own wording when
+    /// [`StateError::Missing`] with its own wording when
     /// there is no stored config, [`StateError::Yaml`] on a malformed
     /// file, [`StateError::Config`] when the agent schema check bites.
     pub fn load_raw_config(&self, name: &str, schema: AgentSchema) -> Result<Value> {
@@ -133,7 +130,7 @@ impl Paths {
     ///
     /// [`StateError::Missing`] — note the wording differs from
     /// [`Paths::load_raw_config`]'s by one word, "deployment" rather
-    /// than "cage", because the two Python functions were written at
+    /// than "cage", because the two readers were written at
     /// different times and both messages are user-visible.
     /// [`StateError::Config`] for anything the parser rejects.
     pub fn load_deployment_config(&self, name: &str, host: &dyn HostProbe) -> Result<Config> {

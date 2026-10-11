@@ -1,10 +1,9 @@
-//! `podman` -- the port of `src/agentcage/podman.py`.
+//! `podman`.
 //!
-//! Twenty-one invocation shapes, one method each, in the order the
-//! Python declares them. `tests/podman_argv.rs` pins every one of them
-//! against `tests/test_podman.py`'s expectations.
+//! Twenty-one invocation shapes, one method each. `tests/podman_argv.rs`
+//! pins every one of them.
 //!
-//! Three behaviours from the Python are load-bearing and easy to lose in
+//! Three behaviours are load-bearing and easy to lose in
 //! translation, so they are called out at their methods:
 //!
 //! * `no_cache` and `pull` are independent flags, not one flag
@@ -24,8 +23,7 @@ use crate::tools::Elevation;
 
 /// Arguments to [`Podman::build_image`].
 ///
-/// A struct rather than eight positional parameters because the Python's
-/// are keyword-only past the third, and because `no_cache` and `pull`
+/// A struct rather than eight positional parameters because `no_cache` and `pull`
 /// are the kind of adjacent booleans that get swapped.
 #[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
@@ -35,8 +33,7 @@ pub struct BuildOptions {
     pub cap_add: Vec<String>,
     /// `--no-cache`: throw away podman's per-layer build cache.
     ///
-    /// Independent of [`BuildOptions::pull`], and the Python says so at
-    /// length: `no_cache` alone still reuses a stale base image, because
+    /// Independent of [`BuildOptions::pull`]: `no_cache` alone still reuses a stale base image, because
     /// the `FROM` ref is resolved from local storage. `pull` alone still
     /// reuses cached intermediate layers built on the old base. A fully
     /// clean rebuild needs both.
@@ -45,13 +42,12 @@ pub struct BuildOptions {
     pub pull: bool,
     /// `--build-arg K=V`, in order.
     ///
-    /// A list, not a map: the Python iterates a `dict`, so insertion
-    /// order is what reaches argv, and a `BTreeMap` here would silently
+    /// A list, not a map: insertion order is what reaches argv, and a `BTreeMap` here would silently
     /// re-sort it.
     pub build_args: Vec<(String, String)>,
     /// Capture the build output instead of streaming it to the terminal.
     ///
-    /// `quiet=True` in the Python, and it changes more than the noise
+    /// Quiet mode, and it changes more than the noise
     /// level: the quiet path captures and raises with the captured
     /// output attached, the loud path streams and raises with nothing.
     pub quiet: bool,
@@ -147,7 +143,7 @@ impl<'a> Podman<'a> {
 
     /// `podman build -t <tag> [flags] <context_dir>`.
     ///
-    /// Flag order matches the Python exactly -- `-f`, `--no-cache`,
+    /// Flag order is fixed -- `-f`, `--no-cache`,
     /// `--pull=always`, each `--cap-add`, each `--build-arg`, then the
     /// context directory last -- because that order is what the argv
     /// tests pin and what a reader comparing the two files will check.
@@ -385,9 +381,7 @@ impl<'a> Podman<'a> {
     ///
     /// # Errors
     ///
-    /// Only if podman itself could not be run -- which is the same thing
-    /// the Python does, since a `FileNotFoundError` from `subprocess`
-    /// escapes its `try`.
+    /// Only if podman itself could not be run.
     pub fn secret_list(&self, prefix: &str) -> Result<Vec<String>, ExecError> {
         let out = self.runner.run(&self.secret_ls_cmd())?;
         Ok(parse_secret_list(&out, prefix))
@@ -499,10 +493,8 @@ impl<'a> Podman<'a> {
 /// Keep the names that start with `prefix`; keep all of them when it is
 /// empty.
 ///
-/// `podman.py::filter_secrets_by_prefix`, shared by the host and VM
-/// implementations. The Python returns `[{"Name": n}]`; the dict was
-/// only ever there because `podman secret ls --format json` used to be
-/// parsed, and every caller immediately reads `["Name"]`.
+/// Shared by the host and VM implementations. Plain names: every caller
+/// only ever wanted the name.
 #[must_use]
 pub fn filter_secrets_by_prefix(names: &[String], prefix: &str) -> Vec<String> {
     if prefix.is_empty() {
@@ -553,7 +545,7 @@ pub trait ImageInspector {
 
     /// Whether a refresh is possible at all.
     ///
-    /// `can_refresh` in the Python: false for a vm cage whose guest is
+    /// False for a vm cage whose guest is
     /// not running, where there is nothing to pull *into*.
     fn can_refresh(&self) -> bool {
         true

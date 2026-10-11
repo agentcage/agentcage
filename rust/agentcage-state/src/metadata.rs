@@ -28,7 +28,7 @@
 //! Cargo unifies features across the workspace, so it would also
 //! re-order `agentcage-core`'s `stable_json`, and every `cage update`
 //! no-op check depends on *that* being sorted. Core already solved
-//! this for `har.py` with its own Python-shaped JSON value — insertion
+//! this for the HAR writer with its own JSON value — insertion
 //! ordered, with `json.dumps`'s separators, `ensure_ascii` and
 //! `sort_keys` as options — and it is the right type here for exactly
 //! the same reason.
@@ -48,7 +48,7 @@
 //!
 //! Porting the weaker writer is the right call anyway: strengthening
 //! it would change the temp filename, and a half-upgraded machine with
-//! a Python and a Rust agentcage would then leave two different stray
+//! an old and a new agentcage would then leave two different stray
 //! temp files instead of one predictable one.
 
 use std::fs;
@@ -86,9 +86,8 @@ impl Paths {
     ///
     /// # Errors
     ///
-    /// [`StateError::Value`] on a malformed file. The Python raises
-    /// too: `json.load` here is not wrapped, unlike
-    /// [`Paths::load_fingerprint`]'s.
+    /// [`StateError::Value`] on a malformed file, unlike
+    /// [`Paths::load_fingerprint`], which forgives one.
     pub fn load_metadata(&self, name: &str) -> Result<Json> {
         let path = self.metadata_path(name);
         if !path.is_file() {
@@ -117,9 +116,8 @@ impl Paths {
 
     /// `state.load_fingerprint` — `None` for missing **or corrupt**.
     ///
-    /// Infallible on purpose, and this one really is the Python:
-    /// `except (OSError, json.JSONDecodeError): return None`, plus a
-    /// final `isinstance(value, dict)` guard. Every way of failing to
+    /// Infallible on purpose: an unreadable file, malformed JSON and a
+    /// non-object all read as `None`. Every way of failing to
     /// read a fingerprint means the same thing to the caller — the
     /// cage is stale and must be redeployed — and turning an
     /// unreadable file into an error would make `cage update` refuse
