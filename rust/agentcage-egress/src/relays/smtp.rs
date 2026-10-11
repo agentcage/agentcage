@@ -812,6 +812,25 @@ impl Inner {
                 let _ = write_line(w, b"421 4.3.2 relay shutting down").await;
                 return Ok(false);
             }
+            DataRead::Eof(size) => {
+                // No end-of-data line, so no message: a truncated body is
+                // never delivered. The replaced implementation delivered
+                // what it had read. Nothing of this transaction has gone
+                // upstream yet (delivery starts after the body is read),
+                // so there is nothing to abort there.
+                self.send_limiter.release();
+                self.emit(vec![
+                    ("kind", s("smtp_data_aborted")),
+                    ("relay", s(name)),
+                    ("decision", s("blocked")),
+                    ("reason", s("cage disconnected before end of data")),
+                    ("sender", s(&txn.sender)),
+                    ("recipients", recipients_json(&txn.recipients)),
+                    ("size", Json::Int(i64::try_from(size).unwrap_or(i64::MAX))),
+                ]);
+                *txn = Transaction::default();
+                return Ok(false);
+            }
             DataRead::Timeout => {
                 // The message never made it through: the slot is not used.
                 self.send_limiter.release();
@@ -981,7 +1000,7 @@ impl Inner {
                 Read::Shutdown => return Ok(DataRead::Shutdown),
             };
             if line.is_empty() {
-                return Ok(DataRead::Body(body, oversize));
+                return Ok(DataRead::Eof(body.len()));
             }
             if line == b".\r\n" || line == b".\n" {
                 break;
@@ -1173,7 +1192,10 @@ impl Inner {
 
 /// What reading a message body produced.
 enum DataRead {
+    /// The body up to the end-of-data line, and whether it overflowed.
     Body(Vec<u8>, bool),
+    /// The cage hung up before the end-of-data line; the bytes read.
+    Eof(usize),
     Timeout,
     Shutdown,
 }
