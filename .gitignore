@@ -1,14 +1,8 @@
-*.pyc
-__pycache__/
-.mitmproxy/
 *.pem
-.pytest_cache/
 node_modules/
-.venv/
 .env
 dist/
 build/
-*.egg-info/
 .claude/worktrees/
 /.worktrees
 

@@ -14,7 +14,7 @@ name: Fuzz
 
 on:
   pull_request:
-    branches: [master, egress/rust-port]
+    branches: [master]
   schedule:
     # Mondays, 04:23 UTC.
     - cron: "23 4 * * 1"

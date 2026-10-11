@@ -1,10 +1,10 @@
 # agentcage Rust workspace.
 #
-# The Rust port of the host CLI lives under `rust/`; the Python tree it
-# replaces stays where it is under `src/agentcage/`. The manifest sits at
-# the repo root so `cargo build`, `cargo test` and `cargo clippy` work
-# from the root the same way `uv run pytest` does, and so `target/` has
-# one home instead of one per crate.
+# The crates live under `rust/`; the trees the binary embeds (image
+# build contexts, templates, scaffolds) under `src/agentcage/`. The
+# manifest sits at the repo root so `cargo build`, `cargo test` and
+# `cargo clippy` work from the root, and so `target/` has one home
+# instead of one per crate.
 #
 # See docs/history/rust-port-plan.md section 5, Phase 0 and the
 # Track B table for why this exists.
@@ -19,6 +19,8 @@ members = [
     "rust/agentcage-cli",
     "rust/agentcage-egress",
     "rust/agentcage-egress-embed",
+    # Repository maintenance tasks (`cargo xtask`); never shipped.
+    "rust/xtask",
 
     "rust/agentcage-inspector-sdk",
     # Example custom inspectors (WebAssembly components). Members so they
@@ -42,9 +44,8 @@ exclude = ["rust/agentcage-egress/fuzz"]
 # tooling look for it.
 #
 # So the number is duplicated and the duplication is *guarded*:
-# scripts/check-version.sh already exists to notice exactly this kind of
-# drift for pyproject.toml and the CHANGELOG, and it now checks this
-# field too. Keep VERSION as the thing you edit; this follows.
+# scripts/check-version.sh exists to notice exactly this kind of drift
+# (against the CHANGELOG too). Keep VERSION as the thing you edit; this follows.
 [workspace.package]
 version = "0.50.1"
 edition = "2024"

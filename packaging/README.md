@@ -11,6 +11,16 @@ beside it:
 | macOS Apple Silicon | `agentcage-<version>-aarch64-apple-darwin.tar.gz` |
 | macOS Intel | `agentcage-<version>-x86_64-apple-darwin.tar.gz` |
 
+Each host binary embeds the linux-musl `agentcage-egress` for its
+architecture. The two egress binaries are attached as well, for
+`install.sh`, which builds the host from source and embeds the released
+egress instead of building one:
+
+| Architecture | Asset |
+| :-- | :-- |
+| x86-64 | `agentcage-egress-<version>-x86_64-unknown-linux-musl` |
+| arm64 | `agentcage-egress-<version>-aarch64-unknown-linux-musl` |
+
 Everything downstream reads those assets: `install.sh`, the Homebrew
 formula and the AUR `PKGBUILD`.
 
@@ -20,15 +30,15 @@ A Homebrew formula and a `PKGBUILD` both pin a version *and* a checksum,
 so both are wrong the moment a release ships and right again only when
 someone regenerates them. Hand-editing four checksums per release is how
 a tap ends up installing the previous version, so neither file is
-committed in a filled-in state — `scripts/gen-packaging.py` produces
+committed in a filled-in state — `cargo xtask gen-packaging` produces
 them from a release's published checksums:
 
 ```sh
 # From the assets a release workflow just built:
-python3 scripts/gen-packaging.py --version 0.50.0 --dist ./dist
+cargo xtask gen-packaging --version 0.50.0 --dist ./dist
 
 # Or straight from a published GitHub release:
-python3 scripts/gen-packaging.py --version 0.50.0 --from-release
+cargo xtask gen-packaging --version 0.50.0 --from-release
 ```
 
 It writes `agentcage.rb` and `PKGBUILD` into the output directory, ready
