@@ -130,11 +130,17 @@ def test_every_workspace_member_has_a_manifest():
     a crate directory nobody listed -- it just never gets built, tested
     or linted.
     """
-    listed = set(tomllib.loads(CARGO_TOML.read_text())["workspace"]["members"])
+    members = tomllib.loads(CARGO_TOML.read_text())["workspace"]["members"]
+    # The crates are `rust/<crate>`; members elsewhere (the example
+    # custom inspectors, a test-fixture plugin) are listed by hand and
+    # only need to exist.
+    listed = {m for m in members if m.startswith("rust/") and m.count("/") == 1}
     on_disk = {
         str(m.parent.relative_to(REPO_ROOT)) for m in rust_member_manifests()
     }
     assert listed == on_disk
+    for member in members:
+        assert (REPO_ROOT / member / "Cargo.toml").is_file(), member
 
 
 def _miniature_repo(tmp_path: Path, cargo_version: str) -> Path:

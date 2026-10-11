@@ -78,7 +78,16 @@ jobs:
       - name: cargo build
         run: cargo build --workspace --locked
 
+      # The egress plugin tests build the example custom inspectors as
+      # WebAssembly components. Without the target they skip themselves
+      # (so `cargo test` works on any laptop); here a missing target is a
+      # failure, so the plugin path is always exercised.
+      - name: Install the wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2
+
       - name: cargo test
+        env:
+          AGENTCAGE_REQUIRE_WASM: "1"
         run: cargo test --workspace --locked
 
       # The Rust->Python crossing test (PR B2). It is #[ignore]d so that

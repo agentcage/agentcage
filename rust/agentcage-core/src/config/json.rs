@@ -408,12 +408,15 @@ fn string_map(map: &OrderedMap<String>) -> Json {
 /// Reached by `inspectors` and by `secret_injection[].transform_config`,
 /// the two fields `config.py` deliberately keeps as raw dicts so the
 /// proxy addon stays the single source of truth for their contents.
+/// Public because the egress renders a custom inspector's `config:`
+/// with it, so a plugin receives the same JSON this file records.
 ///
 /// A non-string mapping key is rendered the way `json.dumps` renders
 /// one: an `int` by its digits, a `bool` as `true`/`false` — **not**
 /// Python's `str(True)`, which is `"True"` — and `None` as `null`.
 /// `sort_keys=True` then orders by the rendered key, as it does here.
-fn from_yaml(value: &Value) -> Json {
+#[must_use]
+pub fn from_yaml(value: &Value) -> Json {
     match value {
         Value::Null => Json::Null,
         Value::Bool(flag) => Json::Bool(*flag),

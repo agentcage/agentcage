@@ -1,0 +1,51 @@
+[package]
+name = "agentcage-inspector-sdk"
+description = "Write agentcage custom inspectors in Rust, compiled to WebAssembly components (agentcage:inspector@1.0.0)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["agentcage", "wasm", "component", "inspector", "plugin"]
+categories = ["wasm", "network-programming"]
+# The WIT file is the ABI the egress loads plugins against; it ships with
+# the crate so the bindings generated here and in the egress agree.
+include = ["src/**", "wit/**", "Cargo.toml"]
+
+[dependencies]
+# Guest-side bindings for `wit/inspector.wit`. Only the macro and the
+# small runtime (`realloc` for lists and strings) are needed; the async
+# component-model support is not, and leaving it out keeps plugins small.
+wit-bindgen = { version = "0.62", default-features = false, features = ["macros", "realloc"] }
+# A plugin's `config:` arrives as JSON; `serde_json::Value` is what every
+# Rust plugin author already knows how to walk, and `from_value` gives
+# typed configs for free. Builds unchanged on wasm32-wasip2.
+serde_json = "1"
+serde = "1"
+
+[dev-dependencies]
+# The typed-config test derives `Deserialize`.
+serde = { version = "1", features = ["derive"] }
+
+# Not `[lints] workspace = true`: the workspace forbids `unsafe_code`, and
+# the code `wit_bindgen::generate!` expands to is FFI glue (exported
+# `extern "C"` functions, raw-pointer lifting and lowering) that cannot be
+# written without it. The table below is the workspace's with
+# `unsafe_code` lowered to `deny`, so it stays an error everywhere except
+# the one generated `bindings` module that opts out explicitly.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+print_stderr = "allow"
+print_stdout = "allow"
+assert_is_empty = "allow"

@@ -162,6 +162,23 @@ pub struct Context {
     pub body_entropy: Option<f64>,
     /// Verdicts already returned by earlier inspectors in this chain.
     pub prior_results: Vec<Verdict>,
+    /// Which way the flow runs. No built-in reads it; custom inspectors
+    /// are handed it (`agentcage:inspector` `context.direction`).
+    pub direction: Direction,
+    /// True when this is one WebSocket message rather than an HTTP
+    /// request or response. Custom inspectors see it as
+    /// `phase: websocket`.
+    pub websocket: bool,
+}
+
+/// Which way a flow runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Direction {
+    /// Cage to world: the forward and transparent proxy, the relays.
+    #[default]
+    Outbound,
+    /// World to a port the cage exposes: the reverse proxy.
+    Inbound,
 }
 
 /// An inspector, built-in or plugin.
