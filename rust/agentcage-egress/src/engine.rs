@@ -21,7 +21,8 @@
 //!
 //! Applying follows the replaced implementation's order: inspector chain
 //! (the domain inspector reconfigured in place), injector, rate limit,
-//! logging, passthrough, relays, capture, Policy API (reconfigured in
+//! logging, passthrough, relays (synced in order by one worker task),
+//! capture, Policy API (reconfigured in
 //! place while enabled, so its token bucket survives), watcher.
 
 use std::collections::HashSet;
@@ -37,12 +38,13 @@ use crate::audit::{self, AuditSink as _, AuditWriter};
 use crate::capture::Capture;
 use crate::config::{self, Config};
 use crate::inject::Injector;
-use crate::inspect::Inspector;
 use crate::inspect::chain::{Chain, NoPlugins, PluginLoader, build_chain};
 use crate::inspect::domain::DomainInspector;
 use crate::llm::{LlmClient, ToolCaller, UreqTransport};
 use crate::policy::{PolicyApi, PolicyPaths, Revocation, SystemEnv, decider_enabled};
 use crate::proxy::PassthroughMatcher;
+use crate::relays::RelaySettings;
+use crate::relays::manager::RelayManager;
 use crate::watcher::{
     AgentSpec, CallerFactory, GrantStore, RuntimeRefs, WatcherDeps, WatcherManager, WatcherPaths,
 };
@@ -75,28 +77,12 @@ pub struct Live {
     pub passthrough: PassthroughMatcher,
 }
 
-/// The protocol relays' hook into reloads (implemented by the relay
-/// manager when relays land; [`NoRelays`] until then).
-pub trait RelayHook: Send + Sync + std::fmt::Debug {
-    /// Make the running relays match `cfg` (diffed by name), handing each
-    /// the reload's relay inspector chain and `log_allowed`.
-    fn apply(&self, cfg: &Config, inspectors: Vec<Arc<dyn Inspector>>, log_allowed: bool);
-    /// Stop every relay (shutdown).
-    fn shutdown(&self) {}
-}
-
-/// No relays: `protocol_relays` entries are ignored with a warning.
-#[derive(Debug, Default)]
-pub struct NoRelays;
-
-impl RelayHook for NoRelays {
-    fn apply(&self, cfg: &Config, _inspectors: Vec<Arc<dyn Inspector>>, _log_allowed: bool) {
-        if cfg.get("protocol_relays").is_some_and(config::truthy) {
-            eprintln!(
-                "agentcage: protocol_relays configured but relays are not available in this egress build"
-            );
-        }
-    }
+/// A job for the relay worker, which owns the [`RelayManager`] and
+/// applies jobs in order (a reload's relay sync never overtakes the one
+/// before it).
+enum RelayJob {
+    Sync(Config, RelaySettings),
+    Shutdown(tokio::sync::oneshot::Sender<()>),
 }
 
 /// What the engine is built from.
@@ -109,8 +95,6 @@ pub struct EngineOptions {
     pub capture: Arc<Capture>,
     /// Custom inspector loader.
     pub plugins: Arc<dyn PluginLoader + Send + Sync>,
-    /// Protocol relays.
-    pub relays: Arc<dyn RelayHook>,
     /// Policy API file locations.
     pub policy_paths: PolicyPaths,
     /// Watcher file locations.
@@ -128,7 +112,7 @@ impl std::fmt::Debug for EngineOptions {
 impl EngineOptions {
     /// Production options from the environment (`AGENTCAGE_AUDIT_LOG`,
     /// `AGENTCAGE_CAPTURE`, `AGENTCAGE_GRANTS_DIR`, `AGENTCAGE_DNS_PUBLISH`)
-    /// with no plugins and no relays.
+    /// with no plugins.
     #[must_use]
     pub fn from_env(config_path: Option<PathBuf>) -> Self {
         Self {
@@ -136,7 +120,6 @@ impl EngineOptions {
             audit: Arc::new(AuditWriter::from_env()),
             capture: Arc::new(Capture::from_env()),
             plugins: Arc::new(NoPlugins),
-            relays: Arc::new(NoRelays),
             policy_paths: PolicyPaths::from_env(),
             watcher_paths: WatcherPaths::from_env(),
         }
@@ -205,7 +188,8 @@ pub struct Engine {
     watcher: Mutex<WatcherManager>,
     watcher_paths: WatcherPaths,
     plugins: Arc<dyn PluginLoader + Send + Sync>,
-    relays: Arc<dyn RelayHook>,
+    relay_jobs: tokio::sync::mpsc::UnboundedSender<RelayJob>,
+    relay_worker: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<RelayJob>>>,
     rate: Mutex<RateLimiter>,
     poisoned: Mutex<IndexMap<String, ()>>,
 }
@@ -306,6 +290,7 @@ impl Engine {
             burst: 50.0,
             passthrough: PassthroughMatcher::default(),
         };
+        let (relay_jobs, relay_rx) = tokio::sync::mpsc::unbounded_channel();
         let engine = Arc::new(Self {
             config_path: options.config_path,
             live: ArcSwap::from_pointee(refuse("no config loaded yet")),
@@ -319,7 +304,8 @@ impl Engine {
             watcher: Mutex::new(WatcherManager::default()),
             watcher_paths: options.watcher_paths,
             plugins: options.plugins,
-            relays: options.relays,
+            relay_jobs,
+            relay_worker: Mutex::new(Some(relay_rx)),
             rate: Mutex::new(RateLimiter::default()),
             poisoned: Mutex::new(IndexMap::new()),
         });
@@ -470,8 +456,15 @@ impl Engine {
             cfg.section("domains"),
             "passthrough",
         )));
-        self.relays
-            .apply(&cfg, chain.relay_inspectors(), log_allowed);
+        // Relays start once the runtime is serving (`start`); jobs queue
+        // until then and are applied in order.
+        let _ = self.relay_jobs.send(RelayJob::Sync(
+            cfg.clone(),
+            RelaySettings {
+                log_allowed,
+                inspectors: chain.relay_inspectors().into(),
+            },
+        ));
         let _ = self.capture.reconfigure(&cfg);
         self.apply_policy(&cfg);
         self.live.store(Arc::new(Live {
@@ -535,10 +528,26 @@ impl Engine {
         }
     }
 
-    /// Start the background loops: the watcher thread now; the config
-    /// poll and the grant sweeper as runtime tasks.
+    /// Start the background loops: the watcher thread now; the relay
+    /// worker, the config poll and the grant sweeper as runtime tasks.
     pub fn start(self: &Arc<Self>) {
         lock(&self.watcher).start();
+        if let Some(mut jobs) = lock(&self.relay_worker).take() {
+            let audit = Arc::clone(&self.audit) as Arc<dyn audit::AuditSink>;
+            tokio::spawn(async move {
+                let mut manager = RelayManager::new(audit);
+                while let Some(job) = jobs.recv().await {
+                    match job {
+                        RelayJob::Sync(cfg, settings) => manager.sync(&cfg, &settings).await,
+                        RelayJob::Shutdown(done) => {
+                            manager.shutdown().await;
+                            let _ = done.send(());
+                            return;
+                        }
+                    }
+                }
+            });
+        }
         let engine = Arc::clone(self);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(CONFIG_POLL);
@@ -569,10 +578,14 @@ impl Engine {
         });
     }
 
-    /// Stop the watcher and relays (shutdown).
-    pub fn shutdown(&self) {
+    /// Stop the watcher and drain the relays (an IMAP client in IDLE gets
+    /// its `BYE`), for an orderly exit.
+    pub async fn shutdown(&self) {
         lock(&self.watcher).shutdown();
-        self.relays.shutdown();
+        let (done, wait) = tokio::sync::oneshot::channel();
+        if self.relay_jobs.send(RelayJob::Shutdown(done)).is_ok() {
+            let _ = tokio::time::timeout(Duration::from_secs(10), wait).await;
+        }
     }
 
     /// The per-host token bucket: true when `host` may send now.
@@ -643,7 +656,6 @@ mod tests {
             audit,
             capture: Arc::new(Capture::new(None)),
             plugins: Arc::new(NoPlugins),
-            relays: Arc::new(NoRelays),
             policy_paths: PolicyPaths::new(dir.join("grants"), dir.join("dns/granted")),
             watcher_paths: WatcherPaths {
                 dir: dir.join("watcher"),

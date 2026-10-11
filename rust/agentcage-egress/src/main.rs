@@ -135,7 +135,7 @@ async fn run(args: RunArgs) -> Result<(), String> {
     // empty config: listeners and CA, with the empty config's policy.
     let engine = Engine::boot(EngineOptions::from_env(args.config.clone()));
     engine.start();
-    let handler = Arc::new(Pipeline::new(engine));
+    let handler = Arc::new(Pipeline::new(Arc::clone(&engine)));
     let mut proxy = Proxy::new(handler, Arc::clone(&ca), settings);
     if let Some(path) = &args.upstream_ca {
         use rustls::pki_types::CertificateDer;
@@ -156,5 +156,28 @@ async fn run(args: RunArgs) -> Result<(), String> {
             path.display()
         );
     }
-    bound.run().await.map_err(|e| e.to_string())
+    tokio::select! {
+        served = bound.run() => served.map_err(|e| e.to_string()),
+        () = terminated() => {
+            eprintln!("agentcage-egress: shutting down");
+            engine.shutdown().await;
+            Ok(())
+        }
+    }
+}
+
+/// SIGTERM (tini forwards the container stop) or SIGINT.
+async fn terminated() {
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        () = term => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
 }
