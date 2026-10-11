@@ -87,16 +87,10 @@ jobs:
   # Phases 1-6 against the Rust egress (AGENTCAGE_EGRESS_ENGINE=rust), the
   # second axis of the egress-engine matrix (EGRESS-PORT-PLAN.md P5.3).
   #
-  # GATED OFF until the proxy core lands: until then `agentcage-egress`
-  # is a placeholder that exits 2, every cage's egress fails to start, and
-  # this job would burn its timeout on a known failure. Turn it on with
-  # the repository variable AGENTCAGE_E2E_RUST_EGRESS=1. Even then it is
-  # `continue-on-error` -- informational until it has been green on its
-  # own for a while, when it should become required and the flag go.
+  # Required: the Rust egress passes the same phases as the Python one
+  # (it was gated off only while `agentcage-egress` was a placeholder).
   e2e-container-rust:
     name: E2E Container, Rust egress (Phases 1-6)
-    if: vars.AGENTCAGE_E2E_RUST_EGRESS == '1'
-    continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:

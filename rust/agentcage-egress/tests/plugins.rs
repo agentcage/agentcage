@@ -404,9 +404,11 @@ fn an_endless_loop_runs_out_of_fuel_and_blocks() {
             Limits::DEFAULT_FUEL
         )
     );
-    // The budget is meant to be tens of milliseconds; allow for a slow,
-    // unoptimised CI machine.
-    assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+    // The budget is meant to be tens of milliseconds. The bound only
+    // proves the loop is cut off at all: it also covers compiling the
+    // component in a debug build, which a parallel `cargo test
+    // --workspace` on a loaded machine has pushed past 5 s.
+    assert!(start.elapsed().as_secs() < 60, "{:?}", start.elapsed());
 }
 
 #[test]
