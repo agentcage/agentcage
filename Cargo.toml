@@ -18,6 +18,14 @@ members = [
     "rust/agentcage-state",
     "rust/agentcage-cli",
     "rust/agentcage-egress",
+    "rust/agentcage-inspector-sdk",
+    # Example custom inspectors (WebAssembly components). Members so they
+    # share the lockfile and are built and linted natively by
+    # `cargo test --workspace`; the egress tests build them for
+    # wasm32-wasip2 when that target is installed.
+    "examples/inspectors/header-policy",
+    "examples/inspectors/dlp-regex",
+    "rust/agentcage-egress/tests/fixtures/misbehaving-inspector",
 ]
 
 # ── Shared package metadata ──────────────────────────────────

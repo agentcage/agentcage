@@ -17,7 +17,7 @@ use super::content_type::ContentTypeInspector;
 use super::domain::{DomainInspector, parse_overlay};
 use super::entropy::EntropyInspector;
 use super::secrets::SecretsInspector;
-use super::{Context, Inspector, Verdict};
+use super::{Context, Direction, Inspector, Verdict};
 use crate::config::{Config, Mapping, Value};
 use crate::json::{self, DumpOptions, Json};
 
@@ -146,6 +146,8 @@ fn context(spec: &Json) -> Context {
         },
         body_bytes,
         prior_results: Vec::new(),
+        direction: Direction::Outbound,
+        websocket: false,
     }
 }
 
@@ -218,9 +220,13 @@ impl PluginLoader for CorpusPlugins {
             .ok_or_else(|| format!("cannot load {path}"))
     }
 
-    fn instantiate(&self, path: &str, _config: &Value) -> Result<Arc<dyn Inspector>, String> {
-        let name = self.declared_name("", path)?;
-        Ok(Arc::new(StubPlugin(name)))
+    fn instantiate(
+        &self,
+        name: &str,
+        _path: &str,
+        _config: &Value,
+    ) -> Result<Arc<dyn Inspector>, String> {
+        Ok(Arc::new(StubPlugin(name.to_owned())))
     }
 }
 

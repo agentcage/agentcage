@@ -104,6 +104,16 @@ arc-swap = "1"
 # Command-line parsing for `agentcage-egress run`, as the host CLI does it.
 clap = { version = "4", features = ["derive", "env"] }
 
+# Custom inspectors run as WebAssembly components (plan D2). Only the
+# runtime, the Cranelift compiler and the component model: no compile
+# cache, no WAT parser, no GC proposals, no async, no profiling, no
+# parallel compilation -- each of those is size or attack surface the
+# egress has no use for. wasmtime 49 needs rustc 1.96, above the
+# workspace's declared 1.85 floor; rust-toolchain.toml tracks stable.
+wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
+# Compiled plugins are cached by the SHA-256 of their bytes.
+sha2 = "0.10"
+
 # `SO_ORIGINAL_DST` for the transparent listener, through a safe wrapper
 # (`unsafe_code` is forbidden workspace-wide).
 [target.'cfg(target_os = "linux")'.dependencies]

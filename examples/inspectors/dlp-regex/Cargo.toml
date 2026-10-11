@@ -1,0 +1,19 @@
+[package]
+name = "dlp-regex-inspector"
+description = "Example agentcage custom inspector: block bodies, URLs or headers matching configured regular expressions."
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A WebAssembly component: `cargo build --release --target wasm32-wasip2`
+# writes target/wasm32-wasip2/release/dlp_regex_inspector.wasm. The
+# `rlib` half lets `cargo test --workspace` build and lint it natively.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+agentcage-inspector-sdk = { path = "../../../rust/agentcage-inspector-sdk" }
+# Linear-time matching: no pattern can be turned into a CPU bomb by the
+# traffic it scans, which matters under the egress's per-call fuel budget.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }

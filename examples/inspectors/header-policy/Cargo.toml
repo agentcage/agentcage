@@ -1,0 +1,16 @@
+[package]
+name = "header-policy-inspector"
+description = "Example agentcage custom inspector: require a tracing header on every outbound request."
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A WebAssembly component: `cargo build --release --target wasm32-wasip2`
+# writes target/wasm32-wasip2/release/header_policy_inspector.wasm. The
+# `rlib` half lets `cargo test --workspace` build and lint it natively.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+agentcage-inspector-sdk = { path = "../../../rust/agentcage-inspector-sdk" }
