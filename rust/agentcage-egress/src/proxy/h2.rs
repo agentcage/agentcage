@@ -196,9 +196,26 @@ pub(crate) async fn send(
     Ok(response_from_h2(&parts, body))
 }
 
+/// The per-stream receive window advertised on both sides.
+///
+/// HTTP/2's default is 64 KiB, and a receiver can never have more than
+/// one window in flight, so with the default a single download runs at
+/// one window per round trip: about 2.5 MB/s at 25 ms, a twentieth of
+/// what the same link does over HTTP/1. Bodies are buffered whole here
+/// (and capped by `TransportSettings::max_body`), so a large window
+/// costs no memory a body would not use anyway.
+const STREAM_WINDOW: u32 = 8 * 1024 * 1024;
+
+/// The connection-level receive window: room for a few streams at full
+/// speed at once.
+const CONNECTION_WINDOW: u32 = 32 * 1024 * 1024;
+
 /// Open an HTTP/2 client session on an upstream stream.
 pub(crate) async fn client(io: BoxIo) -> Result<h2::client::SendRequest<Bytes>, UpstreamError> {
-    let (sender, connection) = h2::client::handshake(io)
+    let (sender, connection) = h2::client::Builder::new()
+        .initial_window_size(STREAM_WINDOW)
+        .initial_connection_window_size(CONNECTION_WINDOW)
+        .handshake(io)
         .await
         .map_err(|e| UpstreamError::Protocol(e.to_string()))?;
     tokio::spawn(async move {
@@ -214,7 +231,12 @@ pub(crate) async fn serve<H: FlowHandler>(
     io: BoxIo,
     alpn_offers: Arc<Vec<Vec<u8>>>,
 ) {
-    let mut session = match h2::server::handshake(io).await {
+    let mut session = match h2::server::Builder::new()
+        .initial_window_size(STREAM_WINDOW)
+        .initial_connection_window_size(CONNECTION_WINDOW)
+        .handshake(io)
+        .await
+    {
         Ok(session) => session,
         Err(e) => {
             eprintln!(
