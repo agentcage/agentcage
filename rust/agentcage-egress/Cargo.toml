@@ -33,8 +33,9 @@ indexmap = "2"
 # standard base64 (`base64.b64encode` in the replaced implementation).
 base64 = "0.22"
 
-# The LLM decider's and watcher's outbound HTTPS client: small, blocking
-# (run off the async runtime), rustls with the ring provider and the
+# The outbound HTTPS client of the LLM decider, the watcher and the
+# google-jwt-bearer transform: small, blocking (run off the async
+# runtime), rustls with the ring provider and the
 # Mozilla roots from webpki-roots (plan D8). No OpenSSL, no cmake.
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
@@ -50,8 +51,27 @@ rand = { version = "0.9", default-features = false, features = ["std", "std_rng"
 # The secrets inspector's patterns and the content-type inspector's
 # base64 scan. Pure Rust, linear time on any input, so a hostile body
 # cannot make a scan blow up (the patterns need no backtracking; the
-# one lookaround pattern is hand-coded).
-regex = "1"
+# one lookaround pattern is hand-coded). Also secret redaction: the
+# per-secret encoded-form patterns (`regex::bytes`).
+regex = "1.13.1"
+
+# The substring scans that gate the redaction patterns (`memchr::memmem`).
+memchr = "2.8.3"
+
+# Content-Encoding removal for inspection and redaction, all pure Rust:
+# gzip/deflate (miniz_oxide backend), the gzip trailer CRC, brotli and
+# zstd decoders.
+flate2 = "1.1.10"
+crc32fast = "1.5.2"
+brotli-decompressor = "6.0.1"
+ruzstd = "0.8.2"
+
+# The charset tables behind `get_text` for the legacy single-byte and
+# GB 18030 encodings.
+encoding_rs = "0.8.35"
+
+# RS256 signing for the `google-jwt-bearer` transform.
+ring = "0.17.14"
 
 [dev-dependencies]
 # Test-only: the host's own grants-overlay reader and writer, so an
