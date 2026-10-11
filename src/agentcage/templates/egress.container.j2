@@ -37,6 +37,9 @@ Volume={{ inspectors_host_dir }}:/etc/agentcage/inspectors:ro,Z
 {% endif %}
 Environment="PYTHONUNBUFFERED=1"
 Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
+# The cage's name, for the subject of the CA the Rust egress generates
+# (`CN=agentcage egress CA (<name>)`). Ignored by the Python egress.
+Environment="AGENTCAGE_CAGE_NAME={{ name }}"
 # Upstream resolvers for policy-api granted zones. The supervisor
 # forwards a granted zone here (plus the default-route gateway when
 # derivable) rather than scraping the rendered baseline — under full
