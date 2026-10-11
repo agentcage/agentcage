@@ -339,6 +339,13 @@ impl Paths {
         self.cage_data_dir(name).join("capture")
     }
 
+    /// `<data_root>/<name>/inspectors` — the cage's staged custom
+    /// inspector plugins, mounted read-only into the egress.
+    #[must_use]
+    pub fn inspectors_dir(&self, name: &str) -> PathBuf {
+        self.cage_data_dir(name).join("inspectors")
+    }
+
     /// `<capture_dir>/capture.jsonl` — `state.capture_file`.
     #[must_use]
     pub fn capture_file(&self, name: &str) -> PathBuf {

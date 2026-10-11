@@ -96,7 +96,7 @@
     },
     {
       "name": "custom",
-      "path": "/etc/agentcage/inspectors/x.py"
+      "path": "plugins/x.wasm"
     }
   ],
   "isolation": "apple-container",

@@ -30,6 +30,11 @@ Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
 {% if dns_allowlist_enabled %}
 Volume={{ dns_allowlist_host_path }}:/etc/agentcage/dns-allowlist.conf:ro,Z
 {% endif %}
+{% if inspectors_enabled %}
+# Custom inspector plugins (WebAssembly components), copied here by
+# `cage create` / `cage update` from the paths cage.yaml names.
+Volume={{ inspectors_host_dir }}:/etc/agentcage/inspectors:ro,Z
+{% endif %}
 Environment="PYTHONUNBUFFERED=1"
 Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
 # Upstream resolvers for policy-api granted zones. The supervisor

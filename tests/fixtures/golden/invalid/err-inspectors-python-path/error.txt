@@ -1,0 +1,1 @@
+ValueError: inspectors[0] 'house-rules': custom Python inspectors (path: 'inspectors/house_rules.py') are no longer supported. Build the inspector as a WebAssembly component (.wasm) with the agentcage-inspector-sdk crate; see docs/how-to/custom-inspectors.md.

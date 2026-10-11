@@ -653,6 +653,7 @@ impl AppleBackend<'_> {
 
         let secrets_dir = self.paths.apple_secrets_dir(name);
         let grants_dir = self.paths.grants_dir(name);
+        let inspectors_dir = self.paths.inspectors_dir(name);
         let grants_wanted = meta.truthy("decider_enabled")
             || meta.truthy("has_expiring_domains")
             || meta.truthy("watcher_enabled");
@@ -684,6 +685,7 @@ impl AppleBackend<'_> {
             // shadow the egress image's own empty directory.
             secrets: has_entries(&secrets_dir).then_some(secrets_dir.as_path()),
             grants: grants_wanted.then_some(grants_dir.as_path()),
+            inspectors: has_entries(&inspectors_dir).then_some(inspectors_dir.as_path()),
         };
         let argv = egress_argv(
             name,
