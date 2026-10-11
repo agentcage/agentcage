@@ -91,7 +91,9 @@ HEADER_BODIES = [
     b"Subject: no body separator\r\nthis line is body\r\n",
     b"",
     b"Subject:\r\n\r\n",
-    b"Subject:   \r\n   \r\n\r\n",
+    # Not recorded: a whitespace-only folded value (b"Subject:   \r\n   \r\n")
+    # parses differently across CPython patch releases (3.12.12 vs 3.12.3 /
+    # 3.13 / 3.14), so no single expectation holds for every supported Python.
     b"X-Weird_Name!: v\r\n\r\n",
     b"Bad Name: v\r\n\r\n",
     b"Subject: no newline at end",

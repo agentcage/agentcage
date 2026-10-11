@@ -232,16 +232,6 @@
    ]
   },
   {
-   "body": "Subject:   \r\n   \r\n\r\n",
-   "content_type": "text/plain",
-   "headers": [
-    [
-     "Subject",
-     ""
-    ]
-   ]
-  },
-  {
    "body": "X-Weird_Name!: v\r\n\r\n",
    "content_type": "text/plain",
    "headers": [
