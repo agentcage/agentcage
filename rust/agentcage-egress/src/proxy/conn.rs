@@ -591,7 +591,7 @@ fn close_delimited(resp: &Response) -> bool {
 /// The request's destination when it reached the forward proxy:
 /// absolute-form names it; origin-form goes by `Host`.
 fn forward_target(head: &h1::RequestHead) -> Result<(String, String, u16, String), String> {
-    if let Some((scheme, rest)) = head.target.split_once("://") {
+    if let Some((scheme, rest)) = absolute_form(&head.target) {
         let scheme = scheme.to_ascii_lowercase();
         let (authority, path) = match rest.find('/') {
             Some(i) => (&rest[..i], rest[i..].to_string()),
@@ -618,6 +618,18 @@ fn forward_target(head: &h1::RequestHead) -> Result<(String, String, u16, String
         return Err("HTTP request has no host header, destination unknown.".into());
     }
     Ok(("http".into(), host, port.unwrap_or(80), head.target.clone()))
+}
+
+/// A request target in absolute form, split into its scheme and the rest
+/// (`http://h/p` → `("http", "h/p")`). Origin form (`/fetch?u=http://x`)
+/// is not, however many `://` its query carries: only a target that
+/// starts with a URI scheme is absolute.
+fn absolute_form(target: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = target.split_once("://")?;
+    let mut chars = scheme.chars();
+    let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    valid.then_some((scheme, rest))
 }
 
 /// What the next HTTP/1 request on a connection turned out to be.
@@ -654,7 +666,7 @@ fn request_target(
     } else {
         "http"
     };
-    let path = match parsed.target.split_once("://") {
+    let path = match absolute_form(&parsed.target) {
         Some((_, rest)) => rest
             .find('/')
             .map_or_else(|| "/".to_string(), |i| rest[i..].to_string()),
@@ -887,4 +899,19 @@ async fn connect_tunnel<H: FlowHandler>(
     tunnel.server_addr = Some(ServerAddr { host, port });
     tunnel.via_connect = true;
     intercept(shared, tunnel, client).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::absolute_form;
+
+    #[test]
+    fn only_a_leading_scheme_makes_a_target_absolute() {
+        assert_eq!(absolute_form("http://h/p"), Some(("http", "h/p")));
+        assert_eq!(absolute_form("HTTPS://h"), Some(("HTTPS", "h")));
+        // A URL in the query of an origin-form target is just a query.
+        assert_eq!(absolute_form("/fetch?url=http://httpbin.org/get"), None);
+        assert_eq!(absolute_form("/a://b"), None);
+        assert_eq!(absolute_form("*"), None);
+    }
 }
