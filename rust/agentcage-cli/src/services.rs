@@ -550,6 +550,25 @@ pub fn build_and_deploy(
     // is missing.
     paths.check_inspector_plugins_staged(deploy_name, config)?;
 
+    // The grants overlay directory, for the same reason and with the same
+    // failure: `state.grants_dir()` created it while `quadlets.py`
+    // rendered the egress unit, the pure renderer does not, and the unit
+    // bind-mounts it (`Volume=<dir>:/var/lib/agentcage`) behind an
+    // `ExecStartPre=` chgrp/chmod that both fail on a missing directory.
+    // So a new container cage with the decider or the watcher on (or an
+    // expiring allow entry) never started its egress; an existing cage
+    // only kept working because its directory predated the port.
+    //
+    // Guarded on the render's own condition (`agents_volume_enabled`).
+    // The vm backend mounts a guest-local directory instead, which it
+    // creates itself; a host directory there is unused but harmless.
+    if config.agents.decider.enable
+        || config.agents.watcher.enable
+        || !config.domains.expires.is_empty()
+    {
+        paths.ensure_grants_dir(deploy_name)?;
+    }
+
     let units = backend.generate_units(
         config,
         config_host_path,

@@ -336,6 +336,74 @@ fn capture_config(name: &str) -> Config {
     .expect("the fixture parses")
 }
 
+/// The same config, with the domains decider on.
+fn decider_config(name: &str) -> Config {
+    let host = FixedHost {
+        isolation: "container".to_owned(),
+        dns_servers: Ok(vec!["192.0.2.53".to_owned()]),
+    };
+    load(
+        "cage.yaml",
+        &format!(
+            "name: {name}\n\
+             container:\n  \
+               image: node:22-slim\n\
+             domains:\n  \
+               allow:\n    \
+                 - example.com\n\
+             agents:\n  \
+               decider:\n    \
+                 enable: true\n    \
+                 provider: anthropic\n    \
+                 model: claude-fake-1\n    \
+                 api_key: env:FAKE_DECIDER_KEY\n"
+        ),
+        &host,
+    )
+    .expect("the fixture parses")
+}
+
+/// The grants overlay directory has to exist after a deploy that mounts
+/// it — the capture directory's bug, a second time.
+///
+/// The egress unit bind-mounts it whenever the decider or the watcher is
+/// on, behind an `ExecStartPre=` chgrp/chmod that fails on a missing
+/// directory, so without the mkdir a new cage's egress never starts.
+#[test]
+fn a_decider_deploy_creates_the_grants_directory() {
+    let dir = TestDir::new("deploy-grants");
+    let paths = Paths::under(dir.path());
+    let fake = FakeRunner::new();
+    stub_deploy(&fake);
+
+    let grants = paths.grants_dir("acme");
+    assert!(!grants.exists(), "the fixture starts without it");
+
+    deploy(&paths, &fake, &decider_config("acme"), None);
+
+    assert!(
+        grants.is_dir(),
+        "deploying a cage with agents.decider.enable must create {}",
+        grants.display()
+    );
+}
+
+/// ... and a cage with neither agent nor expiring entry does not get one.
+#[test]
+fn a_deploy_without_agents_creates_no_grants_directory() {
+    let dir = TestDir::new("deploy-no-grants");
+    let paths = Paths::under(dir.path());
+    let fake = FakeRunner::new();
+    stub_deploy(&fake);
+
+    deploy(&paths, &fake, &config("acme"), None);
+
+    assert!(
+        !paths.grants_dir("acme").exists(),
+        "a cage without agents must not get a grants dir"
+    );
+}
+
 /// The capture directory has to EXIST after a deploy, not merely be
 /// named by one.
 ///
