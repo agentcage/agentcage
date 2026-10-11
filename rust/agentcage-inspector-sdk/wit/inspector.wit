@@ -11,7 +11,11 @@
 // This file is the stable contract: a plugin built against 1.x keeps
 // loading on every egress that speaks 1.x. Additions go in a new minor
 // version as new optional members; nothing here changes meaning.
-package agentcage:inspector@1.0.0;
+//
+// 1.1.0 added `phases` (the phases a plugin inspects). The egress looks
+// the export up by name and treats a component without it, built
+// against 1.0.0, as inspecting every phase.
+package agentcage:inspector@1.1.0;
 
 interface types {
     /// What a verdict asks for. There is no `allow`: an inspector with
@@ -49,6 +53,18 @@ interface types {
         response,
         /// One complete WebSocket message. `inspect-request` sees the
         /// ones the cage sends, `inspect-response` the ones it receives.
+        websocket,
+    }
+
+    /// A set of phases: the ones a plugin inspects.
+    @since(version = 1.1.0)
+    flags phase-set {
+        /// HTTP requests and relayed mail (`inspect-request` with
+        /// `phase::request`).
+        request,
+        /// HTTP responses (`inspect-response` with `phase::response`).
+        response,
+        /// WebSocket messages, both directions (`phase::websocket`).
         websocket,
     }
 
@@ -117,7 +133,7 @@ interface types {
 }
 
 world inspector {
-    use types.{context, verdict};
+    use types.{context, verdict, phase-set};
 
     /// Called once per instance, before any inspection, with the
     /// `config:` mapping from cage.yaml as a JSON object ("{}" when
@@ -130,4 +146,15 @@ world inspector {
 
     /// Inspect a message the cage receives. `none` abstains.
     export inspect-response: func(ctx: context) -> option<verdict>;
+
+    /// The phases this instance inspects, asked once after `configure`
+    /// succeeds; the answer may depend on the configuration. The egress
+    /// calls `inspect-*` only for these, and streams responses to the
+    /// cage instead of buffering them when no loaded inspector asks for
+    /// `response`. A trap here fails the load.
+    ///
+    /// Optional: a component that does not export it (one built against
+    /// 1.0.0) is asked about every phase.
+    @since(version = 1.1.0)
+    export phases: func() -> phase-set;
 }

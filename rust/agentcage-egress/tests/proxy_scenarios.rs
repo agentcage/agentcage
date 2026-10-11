@@ -32,6 +32,8 @@ use agentcage_egress::proxy::{
     WsVerdict, make_response, retarget_to_host,
 };
 
+mod support;
+
 // ── Test handler ─────────────────────────────────────────────
 
 #[derive(Default)]
@@ -1545,6 +1547,26 @@ fn pipeline(
     Sink,
     std::path::PathBuf,
 ) {
+    pipeline_with(
+        secrets,
+        capture,
+        "",
+        Arc::new(agentcage_egress::inspect::chain::NoPlugins),
+    )
+}
+
+/// [`pipeline`], with `extra` appended to the config and custom
+/// inspectors loaded through `plugins`.
+fn pipeline_with(
+    secrets: bool,
+    capture: bool,
+    extra: &str,
+    plugins: Arc<dyn agentcage_egress::inspect::chain::PluginLoader + Send + Sync>,
+) -> (
+    Arc<agentcage_egress::flow::Pipeline>,
+    Sink,
+    std::path::PathBuf,
+) {
     use agentcage_egress::engine::{Engine, EngineOptions};
     let dir = temp_dir("pipeline");
     std::fs::create_dir_all(&dir).unwrap();
@@ -1559,6 +1581,7 @@ fn pipeline(
     if capture {
         yaml.push_str("capture:\n  enable_har: true\n  max_body_size: 2048\n");
     }
+    yaml.push_str(extra);
     let config = dir.join("config.yaml");
     std::fs::write(&config, &yaml).unwrap();
     let sink = Sink::default();
@@ -1572,7 +1595,7 @@ fn pipeline(
         capture: Arc::new(agentcage_egress::capture::Capture::new(Some(
             capture_path.clone(),
         ))),
-        plugins: Arc::new(agentcage_egress::inspect::chain::NoPlugins),
+        plugins,
         policy_paths: agentcage_egress::policy::PolicyPaths::new(
             dir.join("grants"),
             dir.join("dns/granted"),
@@ -1737,6 +1760,71 @@ async fn large_responses_stream_past_the_buffer_cap_in_bounded_memory() {
             got.head
         );
         assert!(!audit.text().contains("upstream_error"), "{}", audit.text());
+    }
+}
+
+/// A custom inspector keeps responses buffered only if it declares the
+/// response phase: under a 1 MiB body cap, a 3 MiB response streams past
+/// a request-only plugin, and is refused (502, too large to buffer) when
+/// a loaded plugin inspects responses, or was built against 1.0.0 and so
+/// is asked about every phase.
+#[tokio::test]
+async fn responses_stream_unless_a_loaded_plugin_declares_responses() {
+    use agentcage_egress::plugin::{Limits, Loader, WasmPluginLoader};
+    let Some(dir) = support::plugin_dir() else {
+        return;
+    };
+    let root = test_root();
+    let up = mock(Kind::Plain, &root).await;
+    let p = up.addr.port();
+    let entry = |name: &str, file: &str, config: &str| {
+        format!("inspectors:\n  - name: {name}\n    path: {file}.wasm\n    config: {config}\n")
+    };
+    let cases = [
+        (
+            entry("header-policy", "header_policy_inspector", "{}"),
+            true,
+        ),
+        (
+            entry(
+                "dlp",
+                "dlp_regex_inspector",
+                "{patterns: [{name: n, regex: zzz-never}]}",
+            ),
+            true,
+        ),
+        (
+            entry(
+                "dlp",
+                "dlp_regex_inspector",
+                "{patterns: [{name: n, regex: zzz-never}], responses: true}",
+            ),
+            false,
+        ),
+        (entry("legacy", "legacy_inspector", "{}"), false),
+    ];
+    let n = 3 << 20;
+    for (yaml, streams) in cases {
+        let plugins = Arc::new(WasmPluginLoader::new(Loader::new(
+            vec![dir.to_path_buf()],
+            Limits::default(),
+        )));
+        let (handler, audit, _) = pipeline_with(false, false, &yaml, plugins);
+        let eg = egress(handler, &root, vec![p], 1 << 20, None).await;
+        let got = forward_get(&eg, p, &format!("/stream/{n}"), 16).await;
+        if streams {
+            assert!(got.head.starts_with("HTTP/1.1 200"), "{yaml}{}", got.head);
+            assert!(got.complete && got.len == n, "{yaml}{}", got.head);
+        } else {
+            assert!(got.head.starts_with("HTTP/1.1 502"), "{yaml}{}", got.head);
+            assert!(
+                audit
+                    .text()
+                    .contains("response body exceeds the 1048576-byte limit"),
+                "{yaml}{}",
+                audit.text()
+            );
+        }
     }
 }
 

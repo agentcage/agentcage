@@ -8,7 +8,7 @@
 //!     config:
 //!       action: block            # or flag; default block
 //!       severity: error          # default error
-//!       responses: false         # also scan responses; default false
+//!       responses: false         # also scan responses (and buffer them); default false
 //!       patterns:
 //!         - name: project-codename
 //!           regex: '(?i)\bblue[- ]?falcon\b'
@@ -20,7 +20,7 @@
 //! text: reasons are written to the audit log and returned to the cage.
 
 use agentcage_inspector_sdk::{
-    Action, Context, Inspector, Severity, Value, Verdict, export_inspector,
+    Action, Context, Inspector, Phases, Severity, Value, Verdict, export_inspector,
 };
 use regex::Regex;
 
@@ -89,6 +89,16 @@ impl Inspector for Dlp {
 
     fn inspect_response(&self, ctx: &Context) -> Option<Verdict> {
         if self.responses { self.scan(ctx) } else { None }
+    }
+
+    /// Requests and WebSocket messages always; responses only when
+    /// `responses: true`, so by default the egress keeps streaming them.
+    fn phases(&self) -> Phases {
+        if self.responses {
+            Phases::ALL
+        } else {
+            Phases::REQUEST | Phases::WEBSOCKET
+        }
     }
 }
 

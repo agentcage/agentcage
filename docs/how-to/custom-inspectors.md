@@ -10,7 +10,7 @@ Custom inspectors let you enforce your own rules on top of the built-in ones: da
 
 A custom inspector is a **WebAssembly component** that the egress proxy loads next to its built-in inspectors. It sees every request (and, if it wants, every response and WebSocket message) and can **flag** it (let it through, audited as `flagged`) or **block** it (the cage gets a 403). The plugin runs sandboxed: it has no filesystem, network, environment or clock, only the request it is handed, and every call has a CPU and memory budget.
 
-You write it in Rust with the `agentcage-inspector-sdk` crate. (Any language that can build a component for the `agentcage:inspector@1.0.0` WIT world works; the WIT file ships in the crate under `wit/inspector.wit`.)
+You write it in Rust with the `agentcage-inspector-sdk` crate. (Any language that can build a component for the `agentcage:inspector@1.1.0` WIT world works; the WIT file ships in the crate under `wit/inspector.wit`.)
 
 > Python inspectors (`path: something.py`) are no longer supported. They were never mounted into the egress, so no cage could have been running one. Port the logic to the SDK below; the `configure` / `inspect_request` / `inspect_response` shape is the same.
 
@@ -23,7 +23,7 @@ cd header-policy
 cargo add agentcage-inspector-sdk --git https://github.com/agentcage/agentcage
 ```
 
-The SDK is not on crates.io yet; depend on it from the agentcage repository (pin a release tag with `--tag vX.Y.Z` to keep builds reproducible). Its ABI is the WIT world `agentcage:inspector@1.0.0`: a plugin built against any 1.x SDK keeps loading on later egress releases.
+The SDK is not on crates.io yet; depend on it from the agentcage repository (pin a release tag with `--tag vX.Y.Z` to keep builds reproducible). Its ABI is the WIT world `agentcage:inspector@1.1.0`: a plugin built against any 1.x SDK keeps loading on later egress releases.
 
 In `Cargo.toml`, make it a `cdylib`:
 
@@ -43,7 +43,9 @@ Implement `Inspector` for a type that is `Default`, and export it with `export_i
 
 ```rust
 // src/lib.rs
-use agentcage_inspector_sdk::{export_inspector, Context, Inspector, Severity, Value, Verdict};
+use agentcage_inspector_sdk::{
+    export_inspector, Context, Inspector, Phases, Severity, Value, Verdict,
+};
 
 #[derive(Default)]
 struct HeaderPolicy {
@@ -84,6 +86,13 @@ impl Inspector for HeaderPolicy {
 
     // `inspect_response` defaults to abstaining; override it to inspect
     // responses and inbound WebSocket messages.
+
+    /// The phases this inspector inspects. Requests only: the egress
+    /// does not call it for anything else, and keeps streaming
+    /// responses (see "Declare the phases you inspect" below).
+    fn phases(&self) -> Phases {
+        Phases::REQUEST
+    }
 }
 
 export_inspector!(HeaderPolicy);
@@ -97,6 +106,22 @@ cargo build --release --target wasm32-wasip2
 ```
 
 Two complete examples live in the agentcage repository under `examples/inspectors/`: `header-policy` (the one above) and `dlp-regex` (block bodies, URLs or headers that match configured regular expressions).
+
+### Declare the phases you inspect
+
+`Inspector::phases` tells the egress which phases the plugin inspects:
+
+| Phase | Calls |
+| :-- | :-- |
+| `Phases::REQUEST` | `inspect_request` for HTTP requests and relayed mail |
+| `Phases::RESPONSE` | `inspect_response` for HTTP responses |
+| `Phases::WEBSOCKET` | `inspect_request` for WebSocket messages the cage sends, `inspect_response` for the ones it receives |
+
+Combine them with `|` (`Phases::REQUEST | Phases::WEBSOCKET`); `Phases::ALL` is every phase. The egress asks once per configuration, right after `configure` succeeds, so the answer may depend on the configuration: `dlp-regex` declares `Phases::RESPONSE` only when its `responses: true` option is set. A method is not called for a phase the plugin did not declare, even if the type implements it.
+
+The declaration decides whether responses stream. The egress normally relays a response to the cage as it arrives. A loaded inspector that declares `Phases::RESPONSE` makes it buffer each response whole first (under the egress's per-body limit), so `inspect_response` sees the complete body. A plugin that only inspects requests should declare so; it then costs nothing on downloads and LLM token streams.
+
+The default is `Phases::ALL`. That is always correct (nothing a plugin implements is skipped), but it keeps responses buffered. A plugin built before `phases` existed, against `agentcage:inspector@1.0.0`, keeps loading and is treated the same way: called for every phase, with responses buffered.
 
 ### What an inspector sees
 
@@ -124,7 +149,7 @@ A `Verdict` has an action (`block` or `flag`), a reason, a severity (`debug`, `i
 - **Fail closed.** A panic, trap, exhausted budget or malformed verdict becomes a `block` with the reason `inspector <name> failed: …`, and the broken instance is discarded.
 - **Concurrency.** The egress runs several instances of a plugin in parallel and replaces instances at will (after a failure, on a config change). Keep all state in `configure`; do not count on anything surviving between calls.
 - **Compilation.** Each component is compiled once and cached by the SHA-256 of its bytes; a config reload that keeps the same file only re-runs `configure`.
-- **Responses are buffered while a plugin is loaded.** The egress normally streams responses to the cage as they arrive. Because a custom inspector may inspect responses, any loaded plugin makes the egress buffer each response whole (under the egress's per-body limit) so `inspect_response` can see it. Keep that in mind for cages that download large files or stream LLM output.
+- **Responses are buffered only for a plugin that inspects them.** The egress normally streams responses to the cage as they arrive. A loaded plugin that declares `Phases::RESPONSE` (or declares nothing, or was built against 1.0.0) makes the egress buffer each response whole, under the egress's per-body limit, so `inspect_response` can see it. Keep that in mind for cages that download large files or stream LLM output, and declare only the phases you inspect.
 
 ---
 
