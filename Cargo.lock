@@ -65,6 +65,7 @@ version = "0.50.1"
 dependencies = [
  "agentcage-core",
  "agentcage-state",
+ "aho-corasick",
  "arc-swap",
  "base64 0.22.1",
  "brotli-decompressor",

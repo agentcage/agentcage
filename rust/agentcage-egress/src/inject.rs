@@ -48,6 +48,10 @@ use crate::message::{Headers, Request, Response};
 use crate::text::DecodeError;
 use crate::transforms::{Transform, TransformError};
 
+pub mod stream;
+
+pub use stream::{StreamRedactError, StreamRedactor};
+
 /// The keyword stems that make a header credential-bearing under strict
 /// injection (matched as case-insensitive substrings of its name).
 ///
@@ -1631,6 +1635,24 @@ impl Injector {
         })();
         let decoded = body.finish_keep(&mut resp.headers, &mut resp.body);
         (result.map(|()| names), decoded)
+    }
+
+    /// A redactor for a response body relayed in chunks, over the forms
+    /// redaction swaps back right now; `None` when there is nothing to
+    /// redact. Its output is byte-for-byte what
+    /// [`Injector::redact_response`] makes of the whole (decoded) body.
+    #[must_use]
+    pub fn stream_redactor(&self) -> Option<StreamRedactor> {
+        let forms = self.redaction_forms();
+        (!forms.is_empty()).then(|| StreamRedactor::new(forms))
+    }
+
+    /// Redact a response's headers with `forms` (a stream redactor's),
+    /// exactly as [`Injector::redact_response`] does; which forms were
+    /// found, by index.
+    #[must_use]
+    pub fn redact_headers_with(headers: &mut Headers, forms: &[Arc<SecretForms>]) -> Vec<bool> {
+        forms.iter().map(|f| redact_headers(headers, f)).collect()
     }
 
     /// `text` with every secret, in every form, swapped for its rule's

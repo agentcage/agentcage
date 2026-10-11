@@ -24,10 +24,11 @@ use super::tls::{UpstreamTls, server_config};
 use super::upstream::{self, UpstreamConn};
 use super::{
     ConnInfo, ConnectPurpose, ConnectTarget, FlowEnd, FlowHandler, ListenerKind, Refusal,
-    RequestAction, ServerAddr, TransportSettings, UpstreamError, h1, parse_authority,
+    RequestAction, ResponseStream, ServerAddr, StreamOutcome, TransportSettings, UpstreamError, h1,
+    parse_authority,
 };
 use crate::ca::{CertAuthority, LeafName};
-use crate::message::{Request, Response};
+use crate::message::{Headers, Request, Response};
 
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
@@ -91,6 +92,14 @@ pub(crate) enum Exchanged<F> {
     },
     /// Send this `101`, then treat the connection as a TCP bypass.
     RawUpgrade(Response),
+    /// Send this head, then relay the body through `stream` as it
+    /// arrives; the flow continues until the body is done.
+    Stream {
+        resp: Response,
+        flow: F,
+        stream: Box<dyn ResponseStream>,
+        body: UpstreamBody,
+    },
 }
 
 pub(crate) fn is_websocket(req: &Request, resp: &Response) -> bool {
@@ -128,6 +137,139 @@ fn upstream_sni(conn: &ConnInfo, req: &Request) -> Option<String> {
     match &conn.server_addr {
         Some(addr) if addr.host == req.host => conn.sni.clone().or_else(|| Some(req.host.clone())),
         _ => Some(req.host.clone()),
+    }
+}
+
+/// An upstream response body, not read yet.
+pub(crate) enum UpstreamBody {
+    /// HTTP/1: the connection it comes on.
+    H1 {
+        up: Buffered,
+        key: UpstreamKey,
+        framing: h1::Framing,
+        reader: h1::BodyReader,
+        reusable: bool,
+    },
+    /// HTTP/2: the stream, and the task still sending the request body.
+    H2 {
+        recv: h2::RecvStream,
+        headers: Headers,
+        _sending: Option<super::h2::AbortOnDrop>,
+        /// Flow-control credit not yet returned for the last piece.
+        unreleased: usize,
+    },
+}
+
+impl UpstreamBody {
+    fn h1(head: upstream::H1Head, up: Buffered, key: &UpstreamKey) -> (Response, Self) {
+        let body = Self::H1 {
+            up,
+            key: key.clone(),
+            framing: head.framing,
+            reader: h1::BodyReader::new(head.framing),
+            reusable: head.reusable,
+        };
+        (head.response, body)
+    }
+
+    fn h2(
+        resp: Response,
+        recv: h2::RecvStream,
+        sending: Option<super::h2::AbortOnDrop>,
+    ) -> (Response, Self) {
+        let headers = resp.headers.clone();
+        let body = Self::H2 {
+            recv,
+            headers,
+            _sending: sending,
+            unreleased: 0,
+        };
+        (resp, body)
+    }
+
+    /// The next piece of the body; `None` at its end. An HTTP/2 piece's
+    /// flow-control credit goes back only when the next one is asked
+    /// for, that is once the piece has been passed on: the upstream never
+    /// gets further ahead of the client than its window.
+    pub(crate) async fn next(&mut self) -> Result<Option<Bytes>, String> {
+        match self {
+            Self::H1 { up, reader, .. } => reader.next(up).await.map_err(|e| e.to_string()),
+            Self::H2 {
+                recv, unreleased, ..
+            } => {
+                if *unreleased > 0 {
+                    let _ = recv.flow_control().release_capacity(*unreleased);
+                    *unreleased = 0;
+                }
+                match recv.data().await {
+                    None => Ok(None),
+                    Some(Ok(chunk)) => {
+                        *unreleased = chunk.len();
+                        Ok(Some(chunk))
+                    }
+                    Some(Err(e)) => Err(e.to_string()),
+                }
+            }
+        }
+    }
+
+    /// Read the whole body (the buffered path), capped at `max` and
+    /// reserved on `budget`.
+    async fn read_all(
+        &mut self,
+        max: usize,
+        budget: &mut super::budget::Reservation,
+    ) -> Result<Vec<u8>, UpstreamError> {
+        match self {
+            Self::H1 {
+                up,
+                framing,
+                reader,
+                ..
+            } => {
+                let limit = budget.limit();
+                let body = h1::read_body(up, *framing, max, budget)
+                    .await
+                    .map_err(|e| match e {
+                        h1::ReadError::BodyTooLarge => {
+                            UpstreamError::ResponseBodyTooLarge { limit: max }
+                        }
+                        h1::ReadError::BudgetExhausted => {
+                            UpstreamError::BodyBudgetExhausted { limit }
+                        }
+                        other => UpstreamError::Protocol(other.to_string()),
+                    })?;
+                *reader = h1::BodyReader::new(h1::Framing::Length(0));
+                Ok(body)
+            }
+            Self::H2 { recv, headers, .. } => {
+                super::h2::read_response_body(recv, headers, max, budget).await
+            }
+        }
+    }
+
+    /// The body has been read whole: an HTTP/1 connection goes back to
+    /// `slot` when it can carry another request, or comes back for a
+    /// `101` upgrade.
+    fn finish(self, status: u16, slot: &mut H1Slot) -> Option<Buffered> {
+        match self {
+            Self::H1 {
+                up,
+                key,
+                reusable,
+                reader,
+                ..
+            } => {
+                if status == 101 {
+                    return Some(up);
+                }
+                if reusable && reader.is_done() {
+                    *slot = Some((key, up));
+                }
+                None
+            }
+            Self::H2 { .. } => None,
+        }
     }
 }
 
@@ -172,22 +314,32 @@ pub(crate) async fn exchange<H: FlowHandler>(
     } else {
         alpn_offers.to_vec()
     };
-    let result = send(
-        shared,
-        conn,
-        &req,
-        &key,
-        &offers,
-        pool,
-        slot,
-        max,
-        resp_budget,
-    )
-    .await;
-    let (mut resp, upgraded) = match result {
+    let (mut resp, mut body) = match send(shared, conn, &mut req, &key, &offers, pool, slot).await {
         Ok(ok) => ok,
         Err(err) => return Exchanged::Done(handler.upstream_error(conn, flow, &req, &err)),
     };
+    // A body the handler does not need whole is relayed as it arrives.
+    if resp.status != 101
+        && h1::response_has_body(&req.method, resp.status)
+        && h1::plain_transfer_coding(&resp.headers)
+    {
+        if let Some(stream) = handler
+            .response_head(conn, &mut flow, &mut req, &mut resp)
+            .await
+        {
+            return Exchanged::Stream {
+                resp,
+                flow,
+                stream,
+                body,
+            };
+        }
+    }
+    match body.read_all(max, resp_budget).await {
+        Ok(bytes) => resp.body = bytes,
+        Err(err) => return Exchanged::Done(handler.upstream_error(conn, flow, &req, &err)),
+    }
+    let upgraded = body.finish(resp.status, slot);
     handler.response(conn, &mut flow, &mut req, &mut resp).await;
     if resp.status == 101 {
         if let (true, Some(upstream)) = (is_websocket(&req, &resp), upgraded) {
@@ -206,23 +358,21 @@ pub(crate) async fn exchange<H: FlowHandler>(
 }
 
 /// Send on a reused connection when there is one (retrying once on a
-/// fresh connection when a reused one turns out dead), else on a new one.
-/// A `101` comes back with its connection for the upgrade.
+/// fresh connection when a reused one turns out dead), else on a new one;
+/// the response head and its unread body.
 #[allow(clippy::too_many_arguments)]
 async fn send<H: FlowHandler>(
     shared: &Shared<H>,
     conn: &ConnInfo,
-    req: &Request,
+    req: &mut Request,
     key: &UpstreamKey,
     offers: &[Vec<u8>],
     pool: &UpstreamPool,
     slot: &mut H1Slot,
-    max: usize,
-    budget: &mut super::budget::Reservation,
-) -> Result<(Response, Option<Buffered>), UpstreamError> {
+) -> Result<(Response, UpstreamBody), UpstreamError> {
     if let Some(sender) = pool.get(key) {
-        match super::h2::send(&sender, req, max, budget).await {
-            Ok(resp) => return Ok((resp, None)),
+        match super::h2::send_head(&sender, req).await {
+            Ok((resp, recv, sending)) => return Ok(UpstreamBody::h2(resp, recv, sending)),
             Err(UpstreamError::Protocol(_)) => pool.forget(key),
             Err(other) => return Err(other),
         }
@@ -232,8 +382,8 @@ async fn send<H: FlowHandler>(
         _ => None,
     };
     if let Some(mut up) = reused {
-        match upstream::send_h1(&mut up, req, max, budget).await {
-            Ok(done) => return Ok(finish_h1(done, up, key, slot)),
+        match upstream::send_h1_head(&mut up, req).await {
+            Ok(head) => return Ok(UpstreamBody::h1(head, up, key)),
             Err((_, true)) => {}
             Err((err, false)) => return Err(err),
         }
@@ -255,32 +405,123 @@ async fn send<H: FlowHandler>(
     .await?
     {
         UpstreamConn::H2(sender) => {
-            let resp = super::h2::send(&sender, req, max, budget).await?;
+            let (resp, recv, sending) = super::h2::send_head(&sender, req).await?;
             pool.put(key.clone(), sender);
-            Ok((resp, None))
+            Ok(UpstreamBody::h2(resp, recv, sending))
         }
         UpstreamConn::H1(mut up) => {
-            let done = upstream::send_h1(&mut up, req, max, budget)
+            let head = upstream::send_h1_head(&mut up, req)
                 .await
                 .map_err(|(err, _)| err)?;
-            Ok(finish_h1(done, up, key, slot))
+            Ok(UpstreamBody::h1(head, up, key))
         }
     }
 }
 
-fn finish_h1(
-    done: upstream::H1Exchange,
-    up: Buffered,
-    key: &UpstreamKey,
+/// Drive a streamed response until it has a piece for the client:
+/// upstream chunks go in only while it has nothing to give. `None` once
+/// the body is complete. What the stream holds back is kept reserved on
+/// the body budget.
+pub(crate) async fn next_piece(
+    stream: &mut dyn ResponseStream,
+    body: &mut UpstreamBody,
+    ended: &mut bool,
+    held: &mut super::budget::Reservation,
+) -> Result<Option<Bytes>, StreamOutcome> {
+    loop {
+        match stream.next_out() {
+            Err(reason) => return Err(StreamOutcome::Refused(reason)),
+            Ok(Some(piece)) => return Ok(Some(piece)),
+            Ok(None) if *ended => return Ok(None),
+            Ok(None) => {}
+        }
+        match body.next().await {
+            Ok(Some(chunk)) => stream.push(chunk),
+            Ok(None) => {
+                *ended = true;
+                stream.end();
+            }
+            Err(e) => return Err(StreamOutcome::UpstreamFailed(e)),
+        }
+        let now = stream.held();
+        if !held.grow_to(now).await {
+            return Err(StreamOutcome::Refused(
+                UpstreamError::BodyBudgetExhausted {
+                    limit: held.limit(),
+                }
+                .to_string(),
+            ));
+        }
+        held.shrink_to(now);
+    }
+}
+
+/// How a streamed flow ended, for [`FlowHandler::flow_end`].
+pub(crate) fn stream_flow_end(outcome: &StreamOutcome) -> FlowEnd {
+    match outcome {
+        StreamOutcome::Completed => FlowEnd::Completed,
+        StreamOutcome::ClientGone => FlowEnd::Aborted("client went away".into()),
+        StreamOutcome::UpstreamFailed(reason) | StreamOutcome::Refused(reason) => {
+            FlowEnd::Aborted(reason.clone())
+        }
+    }
+}
+
+/// Relay a streamed response to an HTTP/1 client; whether the connection
+/// can carry another request.
+#[allow(clippy::too_many_arguments)]
+async fn relay_h1<H: FlowHandler>(
+    shared: &Shared<H>,
+    info: &ConnInfo,
+    client: &mut Buffered,
+    req_version: &str,
+    resp: &Response,
+    flow: H::Flow,
+    mut stream: Box<dyn ResponseStream>,
+    mut body: UpstreamBody,
     slot: &mut H1Slot,
-) -> (Response, Option<Buffered>) {
-    if done.response.status == 101 {
-        return (done.response, Some(up));
+) -> bool {
+    let framing = if stream.passthrough() && resp.headers.contains("content-length") {
+        h1::StreamFraming::Length
+    } else if req_version == "HTTP/1.0" {
+        h1::StreamFraming::Close
+    } else {
+        h1::StreamFraming::Chunked
+    };
+    let mut held = super::budget::Reservation::new(&shared.budget);
+    let mut ended = false;
+    let outcome = if client
+        .write_all(&h1::encode_stream_head(resp, framing))
+        .await
+        .is_err()
+    {
+        StreamOutcome::ClientGone
+    } else {
+        loop {
+            match next_piece(&mut *stream, &mut body, &mut ended, &mut held).await {
+                Ok(Some(piece)) => {
+                    if h1::write_piece(client, &piece, framing).await.is_err() {
+                        break StreamOutcome::ClientGone;
+                    }
+                }
+                Ok(None) => {
+                    if h1::write_end(client, framing).await.is_err() {
+                        break StreamOutcome::ClientGone;
+                    }
+                    break StreamOutcome::Completed;
+                }
+                Err(outcome) => break outcome,
+            }
+        }
+    };
+    let completed = outcome == StreamOutcome::Completed;
+    let end = stream_flow_end(&outcome);
+    stream.close(outcome);
+    shared.handler.flow_end(info, flow, end);
+    if completed {
+        let _ = body.finish(resp.status, slot);
     }
-    if done.reusable {
-        *slot = Some((key.clone(), up));
-    }
-    (done.response, None)
+    completed && framing != h1::StreamFraming::Close
 }
 
 /// Serve one accepted TCP connection.
@@ -838,6 +1079,7 @@ pub(crate) async fn serve_h1<H: FlowHandler>(
         };
         let close = h1::connection_close(&req.http_version, &req.headers);
         let method = req.method.clone();
+        let version = req.http_version.clone();
         // Held until the response is written.
         let mut resp_budget = super::budget::Reservation::new(&shared.budget);
         match exchange(
@@ -889,6 +1131,30 @@ pub(crate) async fn serve_h1<H: FlowHandler>(
                 let _ = client.write_all(&h1::encode_head_only(&resp)).await;
                 shared.handler.tcp_bypass(&info);
                 return;
+            }
+            Exchanged::Stream {
+                resp,
+                flow,
+                stream,
+                body,
+            } => {
+                let reusable = relay_h1(
+                    &shared,
+                    &info,
+                    &mut client,
+                    &version,
+                    &resp,
+                    flow,
+                    stream,
+                    body,
+                    &mut slot,
+                )
+                .await;
+                let resp_close = resp.http_version.starts_with("HTTP/1")
+                    && h1::connection_close(&resp.http_version, &resp.headers);
+                if !reusable || close || resp_close {
+                    return;
+                }
             }
         }
     }

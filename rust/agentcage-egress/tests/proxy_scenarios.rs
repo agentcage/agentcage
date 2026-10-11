@@ -269,6 +269,22 @@ fn client_tls(root: &CertificateDer<'static>, alpn: &[&[u8]]) -> tokio_rustls::T
 
 // ── Mock upstreams ───────────────────────────────────────────
 
+/// Bytes the `/counted/` mock managed to write.
+static STREAMED: AtomicUsize = AtomicUsize::new(0);
+
+/// A gzip body that echoes the real secret back.
+fn gzip_secret() -> Vec<u8> {
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    for i in 0..200 {
+        std::io::Write::write_all(
+            &mut e,
+            format!("line {i}: token=REALSECRETVALUE12345\n").as_bytes(),
+        )
+        .unwrap();
+    }
+    e.finish().unwrap()
+}
+
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 
@@ -355,6 +371,67 @@ async fn serve_h1_echo(mut io: Box<dyn Io>) {
             let _ = io.shutdown().await;
             r.clear();
             return;
+        } else if let Some(n) = path
+            .strip_prefix("/stream/")
+            .or_else(|| path.strip_prefix("/counted/"))
+        {
+            let counted = path.starts_with("/counted/");
+            // A long chunked body of text lines, written as the reader
+            // takes it.
+            let n: usize = n.parse().unwrap();
+            let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+            if io.write_all(head).await.is_err() {
+                return;
+            }
+            let line = b"0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop\n";
+            let block: Vec<u8> = line.iter().copied().cycle().take(64 * 1024).collect();
+            let mut sent = 0;
+            while sent < n {
+                let take = block.len().min(n - sent);
+                let mut frame = format!("{take:x}\r\n").into_bytes();
+                frame.extend_from_slice(&block[..take]);
+                frame.extend_from_slice(b"\r\n");
+                if io.write_all(&frame).await.is_err() {
+                    if counted {
+                        STREAMED.fetch_add(sent, Ordering::SeqCst);
+                    }
+                    return;
+                }
+                sent += take;
+            }
+            if counted {
+                STREAMED.fetch_add(sent, Ordering::SeqCst);
+            }
+            b"0\r\n\r\n".to_vec()
+        } else if path == "/drip" {
+            let head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+            if io.write_all(head).await.is_err() {
+                return;
+            }
+            for i in 0..3 {
+                let event = format!("data: tick {i} REALSECRETVALUE12345\n\n");
+                let frame = format!("{:x}\r\n{event}\r\n", event.len());
+                if io.write_all(frame.as_bytes()).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+            b"0\r\n\r\n".to_vec()
+        } else if path == "/gzip-secret" {
+            let body = gzip_secret();
+            let mut r = format!(
+                "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            r.extend(body);
+            r
+        } else if path == "/reset" {
+            let mut r = b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n".to_vec();
+            r.extend(std::iter::repeat_n(b'r', 1000));
+            let _ = io.write_all(&r).await;
+            let _ = io.shutdown().await;
+            return;
         } else if path == "/chunked" {
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Up: 1\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n".to_vec()
         } else {
@@ -398,13 +475,52 @@ async fn serve_h2_echo(io: Box<dyn Io>) {
                 let _ = writeln!(text, "{}: {}", k, v.to_str().unwrap_or("?"));
             }
             text.push_str(&String::from_utf8_lossy(&data));
-            let resp = http::Response::builder()
-                .status(200)
-                .header("x-mock", "h2")
-                .body(())
+            let path = parts.uri.path().to_string();
+            let mut resp = http::Response::builder().status(200).header("x-mock", "h2");
+            if path == "/gzip-secret" {
+                resp = resp.header("content-encoding", "gzip");
+            }
+            let mut stream = respond
+                .send_response(resp.body(()).unwrap(), false)
                 .unwrap();
-            let mut stream = respond.send_response(resp, false).unwrap();
-            let _ = stream.send_data(Bytes::from(text), true);
+            match path.as_str() {
+                "/gzip-secret" => {
+                    let _ = stream.send_data(Bytes::from(gzip_secret()), true);
+                }
+                "/reset" => {
+                    let _ = stream.send_data(Bytes::from(vec![b'r'; 1000]), false);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    stream.send_reset(h2::Reason::INTERNAL_ERROR);
+                }
+                p if p.starts_with("/stream/") => {
+                    let n: usize = p["/stream/".len()..].parse().unwrap();
+                    let line = b"0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop\n";
+                    let block = Bytes::from(
+                        line.iter()
+                            .copied()
+                            .cycle()
+                            .take(16 * 1024)
+                            .collect::<Vec<u8>>(),
+                    );
+                    let mut sent = 0;
+                    while sent < n {
+                        let take = block.len().min(n - sent);
+                        stream.reserve_capacity(take);
+                        let Some(Ok(_)) = std::future::poll_fn(|cx| stream.poll_capacity(cx)).await
+                        else {
+                            return;
+                        };
+                        if stream.send_data(block.slice(..take), false).is_err() {
+                            return;
+                        }
+                        sent += take;
+                    }
+                    let _ = stream.send_data(Bytes::new(), true);
+                }
+                _ => {
+                    let _ = stream.send_data(Bytes::from(text), true);
+                }
+            }
         });
     }
 }
@@ -510,8 +626,8 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-async fn egress(
-    handler: Arc<Recorder>,
+async fn egress<H: FlowHandler>(
+    handler: Arc<H>,
     root: &TestRoot,
     ports: Vec<u16>,
     max_body: usize,
@@ -520,8 +636,8 @@ async fn egress(
     egress_with_budget(handler, root, ports, max_body, reverse_target, None).await
 }
 
-async fn egress_with_budget(
-    handler: Arc<Recorder>,
+async fn egress_with_budget<H: FlowHandler>(
+    handler: Arc<H>,
     root: &TestRoot,
     ports: Vec<u16>,
     max_body: usize,
@@ -1386,4 +1502,376 @@ async fn curl_through_the_forward_proxy_when_installed() {
         assert!(text.ends_with(expected), "{http}: {text}");
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+// ── Streamed responses (the real pipeline) ───────────────────
+
+const SECRET: &str = "REALSECRETVALUE12345";
+const PLACEHOLDER: &str = "agentcage:secret:TEST_TOKEN:0011";
+
+#[derive(Clone, Default)]
+struct Sink(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Sink {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Sink {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// The request pipeline over an engine allowing `localhost`, with a
+/// secret-injection rule (`secrets`) and capture (`capture`): the
+/// pipeline, its audit output and the capture file.
+fn pipeline(
+    secrets: bool,
+    capture: bool,
+) -> (
+    Arc<agentcage_egress::flow::Pipeline>,
+    Sink,
+    std::path::PathBuf,
+) {
+    use agentcage_egress::engine::{Engine, EngineOptions};
+    let dir = temp_dir("pipeline");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut yaml =
+        String::from("domains:\n  allow: [localhost]\nrate_limit:\n  requests_per_second: 0\n");
+    if secrets {
+        let _ = write!(
+            yaml,
+            "secret_injection:\n  rules:\n    - env: TEST_TOKEN\n      placeholder: \"{PLACEHOLDER}\"\n      inject_to: [localhost]\n"
+        );
+    }
+    if capture {
+        yaml.push_str("capture:\n  enable_har: true\n  max_body_size: 2048\n");
+    }
+    let config = dir.join("config.yaml");
+    std::fs::write(&config, &yaml).unwrap();
+    let sink = Sink::default();
+    let audit = Arc::new(
+        agentcage_egress::audit::AuditWriter::new(None).with_stderr(Box::new(sink.clone())),
+    );
+    let capture_path = dir.join("capture.jsonl");
+    let engine = Engine::boot(EngineOptions {
+        config_path: Some(config),
+        audit,
+        capture: Arc::new(agentcage_egress::capture::Capture::new(Some(
+            capture_path.clone(),
+        ))),
+        plugins: Arc::new(agentcage_egress::inspect::chain::NoPlugins),
+        policy_paths: agentcage_egress::policy::PolicyPaths::new(
+            dir.join("grants"),
+            dir.join("dns/granted"),
+        ),
+        watcher_paths: agentcage_egress::watcher::WatcherPaths {
+            dir: dir.join("watcher"),
+            capture: None,
+        },
+    });
+    let cfg = agentcage_egress::config::Config::parse("t", &yaml).unwrap();
+    engine.injector.configure_with(
+        cfg.get("secret_injection"),
+        &|_| SECRET.to_owned(),
+        &agentcage_egress::transforms::build,
+    );
+    (
+        Arc::new(agentcage_egress::flow::Pipeline::new(engine)),
+        sink,
+        capture_path,
+    )
+}
+
+/// Read a response head, then its body (chunked or `Content-Length`)
+/// without keeping it: its length, the first `keep` bytes, the time to
+/// the first body byte and to the end.
+struct Streamed {
+    head: String,
+    len: usize,
+    kept: Vec<u8>,
+    first: Duration,
+    total: Duration,
+    complete: bool,
+}
+
+async fn read_streamed(io: &mut (impl AsyncRead + Unpin), keep: usize) -> Streamed {
+    let started = std::time::Instant::now();
+    let mut buf = Vec::new();
+    let end = loop {
+        if let Some(end) = find(&buf, b"\r\n\r\n") {
+            break end;
+        }
+        read_more(io, &mut buf).await.expect("a head");
+    };
+    let head = String::from_utf8_lossy(&buf[..end + 4]).into_owned();
+    buf.drain(..end + 4);
+    let lower = head.to_ascii_lowercase();
+    let mut out = Streamed {
+        head,
+        len: 0,
+        kept: Vec::new(),
+        first: Duration::ZERO,
+        total: Duration::ZERO,
+        complete: false,
+    };
+    let take = |out: &mut Streamed, data: &[u8]| {
+        if out.len == 0 && !data.is_empty() {
+            out.first = started.elapsed();
+        }
+        out.len += data.len();
+        let room = keep.saturating_sub(out.kept.len());
+        out.kept.extend_from_slice(&data[..room.min(data.len())]);
+    };
+    if lower.contains("transfer-encoding: chunked") {
+        loop {
+            while find(&buf, b"\r\n").is_none() {
+                if read_more(io, &mut buf).await.is_none() {
+                    out.total = started.elapsed();
+                    return out;
+                }
+            }
+            let line_end = find(&buf, b"\r\n").unwrap();
+            let size = usize::from_str_radix(String::from_utf8_lossy(&buf[..line_end]).trim(), 16)
+                .unwrap();
+            buf.drain(..line_end + 2);
+            let mut left = size;
+            while left > 0 {
+                if buf.is_empty() && read_more(io, &mut buf).await.is_none() {
+                    out.total = started.elapsed();
+                    return out;
+                }
+                let n = left.min(buf.len());
+                take(&mut out, &buf[..n]);
+                buf.drain(..n);
+                left -= n;
+            }
+            while buf.len() < 2 {
+                if read_more(io, &mut buf).await.is_none() {
+                    out.total = started.elapsed();
+                    return out;
+                }
+            }
+            buf.drain(..2);
+            if size == 0 {
+                out.complete = true;
+                break;
+            }
+        }
+    } else if let Some(pos) = lower.find("content-length:") {
+        let n: usize = lower[pos + 15..]
+            .lines()
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        loop {
+            let chunk = std::mem::take(&mut buf);
+            take(&mut out, &chunk);
+            if out.len >= n {
+                out.complete = out.len == n;
+                break;
+            }
+            if read_more(io, &mut buf).await.is_none() {
+                break;
+            }
+        }
+    }
+    out.total = started.elapsed();
+    out
+}
+
+async fn forward_get(eg: &Egress, port: u16, path: &str, keep: usize) -> Streamed {
+    let mut s = TcpStream::connect(eg.regular).await.unwrap();
+    s.write_all(
+        format!("GET http://localhost:{port}{path} HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n")
+            .as_bytes(),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(120), read_streamed(&mut s, keep))
+        .await
+        .expect("response in time")
+}
+
+#[tokio::test]
+async fn large_responses_stream_past_the_buffer_cap_in_bounded_memory() {
+    let root = test_root();
+    let up = mock(Kind::Plain, &root).await;
+    let p = up.addr.port();
+    // A 1 MiB body cap and an 8 MiB budget: a buffered 300 MB response
+    // would be a 502.
+    for secrets in [false, true] {
+        let (handler, audit, _) = pipeline(secrets, false);
+        let eg = egress_with_budget(handler, &root, vec![p], 1 << 20, None, Some(8 << 20)).await;
+        let n = if secrets { 64 << 20 } else { 300 << 20 };
+        let got = forward_get(&eg, p, &format!("/stream/{n}"), 64).await;
+        assert!(got.head.starts_with("HTTP/1.1 200"), "{}", got.head);
+        assert!(got.complete, "secrets={secrets} {}", got.head);
+        assert_eq!(got.len, n);
+        assert_eq!(&got.kept[..10], b"0123456789");
+        let lower = got.head.to_ascii_lowercase();
+        assert!(lower.contains("transfer-encoding: chunked"), "{}", got.head);
+        // A body of known length keeps it when it goes on unchanged, and
+        // loses it when redaction may change it.
+        let got = forward_get(&eg, p, "/big/3000000", 0).await;
+        assert!(got.complete && got.len == 3_000_000, "{}", got.head);
+        let lower = got.head.to_ascii_lowercase();
+        assert_eq!(
+            lower.contains("content-length: 3000000"),
+            !secrets,
+            "{}",
+            got.head
+        );
+        assert!(!audit.text().contains("upstream_error"), "{}", audit.text());
+    }
+}
+
+#[tokio::test]
+async fn a_slow_event_stream_reaches_the_client_as_it_is_produced() {
+    let root = test_root();
+    let up = mock(Kind::Plain, &root).await;
+    let p = up.addr.port();
+    let (handler, _, _) = pipeline(true, true);
+    let eg = egress(handler, &root, vec![p], 1 << 20, None).await;
+    let got = forward_get(&eg, p, "/drip", 4096).await;
+    assert!(got.complete, "{}", got.head);
+    assert!(
+        got.first < Duration::from_millis(300) && got.total >= Duration::from_millis(1000),
+        "first byte {:?}, total {:?}",
+        got.first,
+        got.total
+    );
+    let text = String::from_utf8(got.kept).unwrap();
+    assert_eq!(text.matches(PLACEHOLDER).count(), 3, "{text}");
+    assert!(!text.contains(SECRET), "{text}");
+}
+
+#[tokio::test]
+async fn a_compressed_secret_echo_is_redacted_and_sent_identity() {
+    let root = test_root();
+    let up = mock(Kind::Plain, &root).await;
+    let p = up.addr.port();
+    let (handler, _, capture) = pipeline(true, true);
+    let eg = egress(handler, &root, vec![p], 1 << 20, None).await;
+    let got = forward_get(&eg, p, "/gzip-secret", 1 << 20).await;
+    assert!(got.complete, "{}", got.head);
+    let lower = got.head.to_ascii_lowercase();
+    assert!(!lower.contains("content-encoding"), "{}", got.head);
+    assert!(!lower.contains("content-length"), "{}", got.head);
+    let text = String::from_utf8(got.kept).unwrap();
+    assert_eq!(text.matches(PLACEHOLDER).count(), 200);
+    assert!(!text.contains(SECRET));
+    // The capture entry holds the redacted, decoded body, cut at its
+    // max_body_size, with the whole size.
+    let line = std::fs::read_to_string(&capture).unwrap();
+    assert!(!line.contains(SECRET), "{line}");
+    assert!(line.contains("\"bodyTruncated\":true"), "{line}");
+    assert!(
+        line.contains(&format!("\"bodyOriginalSize\":{}", text.len())),
+        "{line}"
+    );
+
+    // Over HTTP/2 both ways.
+    let up2 = mock(Kind::Tls(&[b"h2"]), &root).await;
+    let (handler, _, _) = pipeline(true, false);
+    let eg = egress(handler, &root, vec![up2.addr.port()], 1 << 20, None).await;
+    *eg.original_dst.lock().unwrap() = up2.addr;
+    let tcp = TcpStream::connect(eg.transparent).await.unwrap();
+    let tls = client_tls(&eg.ca, &[b"h2"])
+        .connect(sn("localhost"), tcp)
+        .await
+        .unwrap();
+    let authority = format!("localhost:{}", up2.addr.port());
+    let (status, body) = h2_get(tls, &authority, "/gzip-secret", b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(body.matches(PLACEHOLDER).count(), 200, "{body}");
+    assert!(!body.contains(SECRET));
+}
+
+#[tokio::test]
+async fn an_upstream_reset_mid_body_cuts_the_client_off_and_is_audited_once() {
+    let root = test_root();
+    let up = mock(Kind::Plain, &root).await;
+    let p = up.addr.port();
+    let (handler, audit, _) = pipeline(true, false);
+    let eg = egress(handler, &root, vec![p], 1 << 20, None).await;
+    let got = forward_get(&eg, p, "/reset", 0).await;
+    assert!(got.head.starts_with("HTTP/1.1 200"), "{}", got.head);
+    assert!(!got.complete, "the client sees a cut-off body");
+    // What redaction still held when the upstream failed is never sent.
+    assert!(got.len <= 1000);
+    let log = audit.text();
+    assert_eq!(log.matches("\"upstream_error\"").count(), 1, "{log}");
+
+    // HTTP/2: the stream is reset.
+    let up2 = mock(Kind::Tls(&[b"h2"]), &root).await;
+    let (handler, audit, _) = pipeline(false, false);
+    let eg = egress(handler, &root, vec![up2.addr.port()], 1 << 20, None).await;
+    *eg.original_dst.lock().unwrap() = up2.addr;
+    let tcp = TcpStream::connect(eg.transparent).await.unwrap();
+    let tls = client_tls(&eg.ca, &[b"h2"])
+        .connect(sn("localhost"), tcp)
+        .await
+        .unwrap();
+    let (sender, conn) = h2::client::handshake(tls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let mut sender = sender.ready().await.unwrap();
+    let req = http::Request::builder()
+        .uri(format!("https://localhost:{}/reset", up2.addr.port()))
+        .body(())
+        .unwrap();
+    let (resp, _) = sender.send_request(req, true).unwrap();
+    let resp = resp.await.unwrap();
+    let mut recv = resp.into_body();
+    let mut got = 0;
+    let mut failed = false;
+    while let Some(chunk) = recv.data().await {
+        if let Ok(c) = chunk {
+            got += c.len();
+        } else {
+            failed = true;
+            break;
+        }
+    }
+    assert!(failed, "reset, not a clean end ({got} bytes)");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(audit.text().matches("\"upstream_error\"").count(), 1);
+}
+
+#[tokio::test]
+async fn a_client_that_goes_away_stops_the_upstream_read() {
+    let root = test_root();
+    let up = mock(Kind::Plain, &root).await;
+    let p = up.addr.port();
+    let (handler, _, _) = pipeline(false, false);
+    let eg = egress(handler, &root, vec![p], 1 << 20, None).await;
+    let before = STREAMED.load(Ordering::SeqCst);
+    let n: usize = 2 << 30;
+    let mut s = TcpStream::connect(eg.regular).await.unwrap();
+    s.write_all(
+        format!("GET http://localhost:{p}/counted/{n} HTTP/1.1\r\nHost: localhost:{p}\r\n\r\n")
+            .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut read = 0;
+    while read < 4 << 20 {
+        read += s.read(&mut buf).await.unwrap();
+    }
+    drop(s);
+    // The mock's writes fail soon after: far less than the body was sent.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let sent = STREAMED.load(Ordering::SeqCst) - before;
+    assert!(sent > 0 && sent < 256 << 20, "{sent}");
 }

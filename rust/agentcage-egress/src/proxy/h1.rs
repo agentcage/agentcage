@@ -16,7 +16,7 @@
 
 use std::io;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::budget::Reservation;
@@ -489,6 +489,237 @@ async fn read_chunked(
         if &crlf[..] != b"\r\n" {
             return Err(ReadError::Malformed("missing CRLF after chunk".into()));
         }
+    }
+}
+
+/// How much one streaming read asks the socket for.
+const STREAM_READ: usize = 64 * 1024;
+
+/// Where an incremental chunked read is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Chunk {
+    /// Expecting a chunk-size line.
+    Size,
+    /// Inside a chunk's data, this many bytes left.
+    Data(u64),
+    /// Expecting the CRLF after a chunk's data.
+    DataEnd,
+}
+
+/// A body read a piece at a time, as it arrives, for streaming: each
+/// piece is a slice of the connection's read buffer handed on without a
+/// copy.
+#[derive(Debug)]
+pub(crate) struct BodyReader {
+    framing: Framing,
+    /// Bytes left of a `Content-Length` body.
+    remaining: u64,
+    chunk: Chunk,
+    done: bool,
+}
+
+impl BodyReader {
+    pub(crate) fn new(framing: Framing) -> Self {
+        let remaining = match framing {
+            Framing::Length(n) => n,
+            _ => 0,
+        };
+        Self {
+            framing,
+            remaining,
+            chunk: Chunk::Size,
+            done: matches!(framing, Framing::Length(0)),
+        }
+    }
+
+    /// Whether the whole body has been read.
+    pub(crate) fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// Read more into `conn`'s buffer; end of stream is an error saying
+    /// `truncated` (`None`: a clean end, `Ok(false)`).
+    async fn fill(conn: &mut Buffered, truncated: Option<&str>) -> Result<bool, ReadError> {
+        if conn.buf.capacity() - conn.buf.len() < 4096 {
+            conn.buf.reserve(STREAM_READ);
+        }
+        let n = conn
+            .io
+            .read_buf(&mut conn.buf)
+            .await
+            .map_err(ReadError::Io)?;
+        match (n, truncated) {
+            (0, Some(why)) => Err(ReadError::Malformed(why.into())),
+            (0, None) => Ok(false),
+            _ => Ok(true),
+        }
+    }
+
+    /// The next piece of the body; `None` once it is complete.
+    pub(crate) async fn next(&mut self, conn: &mut Buffered) -> Result<Option<Bytes>, ReadError> {
+        if self.done {
+            return Ok(None);
+        }
+        match self.framing {
+            Framing::Length(_) => {
+                if conn.buf.is_empty() {
+                    Self::fill(conn, Some("connection closed before the body was complete"))
+                        .await?;
+                }
+                let take = usize::try_from(self.remaining)
+                    .unwrap_or(usize::MAX)
+                    .min(conn.buf.len());
+                self.remaining -= take as u64;
+                self.done = self.remaining == 0;
+                Ok(Some(conn.buf.split_to(take).freeze()))
+            }
+            Framing::UntilEof => {
+                if conn.buf.is_empty() && !Self::fill(conn, None).await? {
+                    self.done = true;
+                    return Ok(None);
+                }
+                Ok(Some(conn.buf.split().freeze()))
+            }
+            Framing::Chunked => self.next_chunked(conn).await,
+        }
+    }
+
+    async fn next_chunked(&mut self, conn: &mut Buffered) -> Result<Option<Bytes>, ReadError> {
+        const CLOSED: &str = "connection closed inside a chunked body";
+        loop {
+            match self.chunk {
+                Chunk::Size => {
+                    let line = read_line(conn).await?;
+                    let size_text = line[..].split(|&b| b == b';').next().unwrap_or_default();
+                    let size_text = std::str::from_utf8(size_text)
+                        .map_err(|_| ReadError::Malformed("invalid chunk size".into()))?
+                        .trim();
+                    let size = u64::from_str_radix(size_text, 16).map_err(|_| {
+                        ReadError::Malformed(format!("invalid chunk size: {size_text:?}"))
+                    })?;
+                    if size == 0 {
+                        // Trailers are read and dropped.
+                        while !read_line(conn).await?.is_empty() {}
+                        self.done = true;
+                        return Ok(None);
+                    }
+                    self.chunk = Chunk::Data(size);
+                }
+                Chunk::Data(left) => {
+                    if conn.buf.is_empty() {
+                        Self::fill(conn, Some(CLOSED)).await?;
+                    }
+                    let take = usize::try_from(left)
+                        .unwrap_or(usize::MAX)
+                        .min(conn.buf.len());
+                    let left = left - take as u64;
+                    self.chunk = if left == 0 {
+                        Chunk::DataEnd
+                    } else {
+                        Chunk::Data(left)
+                    };
+                    return Ok(Some(conn.buf.split_to(take).freeze()));
+                }
+                Chunk::DataEnd => {
+                    while conn.buf.len() < 2 {
+                        Self::fill(conn, Some(CLOSED)).await?;
+                    }
+                    if &conn.buf.split_to(2)[..] != b"\r\n" {
+                        return Err(ReadError::Malformed("missing CRLF after chunk".into()));
+                    }
+                    self.chunk = Chunk::Size;
+                }
+            }
+        }
+    }
+}
+
+/// How a streamed body is framed towards an HTTP/1 client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamFraming {
+    /// As many bytes as the head's `Content-Length` says, as they come.
+    Length,
+    /// Chunked transfer coding, one chunk per piece.
+    Chunked,
+    /// Until the connection closes (an HTTP/1.0 client, which cannot
+    /// read chunked).
+    Close,
+}
+
+/// The head of a streamed response, its framing headers made to match
+/// `framing`: a `Content-Length` kept only for [`StreamFraming::Length`],
+/// `Transfer-Encoding: chunked` only for [`StreamFraming::Chunked`].
+pub(crate) fn encode_stream_head(resp: &Response, framing: StreamFraming) -> Vec<u8> {
+    let mut headers = resp.headers.clone();
+    let (version, reason) = if resp.http_version.starts_with("HTTP/1") {
+        (resp.http_version.as_str(), resp.reason.clone())
+    } else {
+        ("HTTP/1.1", super::reason_phrase(resp.status).to_string())
+    };
+    match framing {
+        StreamFraming::Length => headers.remove("transfer-encoding"),
+        StreamFraming::Chunked => {
+            headers.remove("content-length");
+            if !is_chunked(&headers) {
+                headers.remove("transfer-encoding");
+                headers.add("transfer-encoding", "chunked");
+            }
+        }
+        StreamFraming::Close => {
+            headers.remove("content-length");
+            headers.remove("transfer-encoding");
+        }
+    }
+    let mut out = format!("{version} {} {reason}\r\n", resp.status).into_bytes();
+    put_headers(&mut out, &headers);
+    out
+}
+
+/// Write one piece of a streamed body, flushed: a token stream reaches
+/// the client as it is produced.
+pub(crate) async fn write_piece(
+    conn: &mut Buffered,
+    piece: &[u8],
+    framing: StreamFraming,
+) -> io::Result<()> {
+    if piece.is_empty() {
+        return Ok(());
+    }
+    if framing != StreamFraming::Chunked {
+        conn.io.write_all(piece).await?;
+        return conn.io.flush().await;
+    }
+    let size = format!("{:x}\r\n", piece.len());
+    if piece.len() <= 16 * 1024 {
+        let mut frame = Vec::with_capacity(size.len() + piece.len() + 2);
+        frame.extend_from_slice(size.as_bytes());
+        frame.extend_from_slice(piece);
+        frame.extend_from_slice(b"\r\n");
+        conn.io.write_all(&frame).await?;
+    } else {
+        conn.io.write_all(size.as_bytes()).await?;
+        conn.io.write_all(piece).await?;
+        conn.io.write_all(b"\r\n").await?;
+    }
+    conn.io.flush().await
+}
+
+/// End a streamed body.
+pub(crate) async fn write_end(conn: &mut Buffered, framing: StreamFraming) -> io::Result<()> {
+    match framing {
+        StreamFraming::Chunked => conn.write_all(b"0\r\n\r\n").await,
+        StreamFraming::Length => conn.io.flush().await,
+        StreamFraming::Close => conn.io.shutdown().await,
+    }
+}
+
+/// Whether a response's transfer coding allows streaming: none, or plain
+/// `chunked` (a body that is also transfer-compressed is kept whole and
+/// passed on as it is).
+pub(crate) fn plain_transfer_coding(headers: &Headers) -> bool {
+    match values(headers, "transfer-encoding").first() {
+        None => true,
+        Some(te) => parse_transfer_encoding(te).is_ok_and(|t| t == "chunked"),
     }
 }
 

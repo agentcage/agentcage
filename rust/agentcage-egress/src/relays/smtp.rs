@@ -352,7 +352,7 @@ fn message_context(body: &[u8], upstream_host: &str) -> Context {
         method: "SMTP_DATA".to_owned(),
         headers,
         content_type,
-        body_bytes: Some(body.to_vec()),
+        body_bytes: Some(bytes::Bytes::copy_from_slice(body)),
         body_text: Some(String::from_utf8_lossy(body).into_owned()),
         body_size: body.len(),
         body_entropy: (!body.is_empty()).then(|| shannon_entropy(body)),

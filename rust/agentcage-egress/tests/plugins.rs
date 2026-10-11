@@ -115,7 +115,7 @@ fn ctx(headers: &[(&str, &str)], body: Option<&str>) -> Context {
             .filter(|b| !b.is_empty())
             .map(agentcage_egress::inspect::shannon_entropy),
         body_text: body.map(str::to_owned),
-        body_bytes,
+        body_bytes: body_bytes.map(Into::into),
         ..Context::default()
     }
 }

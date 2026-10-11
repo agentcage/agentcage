@@ -150,8 +150,9 @@ pub struct Context {
     /// The `Content-Type` header value, or `""`.
     pub content_type: String,
     /// The decoded (Content-Encoding removed) body, or `None` when there is
-    /// no body.
-    pub body_bytes: Option<Vec<u8>>,
+    /// no body. Shared, not copied, when the context is cloned or handed
+    /// on.
+    pub body_bytes: Option<bytes::Bytes>,
     /// The body as text, decoded the way [`crate::text::get_text`] does, or
     /// `None` when there is no body or it cannot be decoded.
     pub body_text: Option<String>,

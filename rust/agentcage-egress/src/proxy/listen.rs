@@ -126,6 +126,7 @@ pub(crate) async fn bind<H: FlowHandler>(
         })?;
         listeners.push((spec.clone(), listener));
     }
+    proxy.handler.body_budget(&proxy.budget);
     Ok(BoundProxy {
         shared: Arc::new(Shared {
             handler: proxy.handler,

@@ -35,6 +35,8 @@ use std::borrow::Cow;
 
 use crate::message::Headers;
 
+pub mod stream;
+
 // ── Content-Encoding ─────────────────────────────────────
 
 /// Why a body's `Content-Encoding` could not be removed.
@@ -996,7 +998,7 @@ mod tests {
     use super::*;
     use crate::json::{Json, parse};
 
-    fn corpus() -> Json {
+    pub(crate) fn corpus() -> Json {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/fixtures/egress/get_text.json"
@@ -1012,7 +1014,7 @@ mod tests {
         }
     }
 
-    fn headers_of(v: &Json) -> Headers {
+    pub(crate) fn headers_of(v: &Json) -> Headers {
         let Json::Array(pairs) = v else {
             panic!("headers")
         };

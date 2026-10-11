@@ -59,6 +59,11 @@ regex = "1.13.1"
 # The substring scans that gate the redaction patterns (`memchr::memmem`).
 memchr = "2.8.3"
 
+# One multi-pattern scan for every secret form's literal, anchor and base64
+# cores, so a streamed body segment without any of them is relayed as it
+# came (already in the tree through regex).
+aho-corasick = "1.1.5"
+
 # Content-Encoding removal for inspection and redaction, all pure Rust:
 # gzip/deflate (miniz_oxide backend), the gzip trailer CRC, brotli and
 # zstd decoders.
