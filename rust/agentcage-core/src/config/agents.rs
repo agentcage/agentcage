@@ -1,10 +1,5 @@
-//! `validate_config`'s in-egress agent rules — `agents.decider` and
-//! `agents.watcher`.
-//!
-//! PR C3 of docs/history/rust-port-plan.md's Track C, and the last three blocks of
-//! `config.py`'s `validate_config` (the "Policy API validation",
-//! "agents.decider validation" and "agents.watcher validation"
-//! sections, `config.py:2224` onward).
+//! Validation of the in-egress agents — the Policy API's control host,
+//! `agents.decider` and `agents.watcher`.
 //!
 //! # Why they are a block of their own
 //!
@@ -24,21 +19,15 @@
 //!
 //! # Ordering
 //!
-//! `validate_config` runs these last, after the identity, image,
-//! isolation, logging, port and domain checks that PR C2 owns. Within
-//! the block the order is `config.py`'s, because a config with two
-//! faults reports the first one reached and the golden corpus records
-//! which.
+//! Validation runs these last, after the identity, image, isolation,
+//! logging, port and domain checks. Within the block the order is
+//! fixed, because a config with two faults reports the first one
+//! reached and the golden corpus records which.
 //!
-//! # No `validate_config` here
+//! # No driver here
 //!
-//! This module is the C3 *half* of `validate_config`; PR C2 holds the
-//! domain, port, secret and placeholder half. The single ordered
-//! driver that calls both is deliberately not in either PR — the two
-//! land in parallel, and a function whose body is half one branch and
-//! half another is a merge conflict with a security-relevant ordering
-//! inside it. [`validate_agents`] is a self-contained step that driver
-//! will call last.
+//! [`validate_agents`] is a self-contained step; the ordered driver in
+//! [`mod@super::validate`] calls it last.
 
 use std::collections::BTreeSet;
 
@@ -54,7 +43,7 @@ pub const AGENT_MAX_TOKENS_FLOOR: i64 = 1024;
 
 /// The providers either roster entry may name.
 ///
-/// NOT lowercased before the comparison, in `config.py` or here: a
+/// NOT lowercased before the comparison: a
 /// `provider: Anthropic` is refused rather than accepted, because the
 /// value is a dispatch key in the egress and a near-miss that silently
 /// worked on one side would be worse than a refusal.
@@ -68,13 +57,12 @@ pub const VALID_AGENT_KEY_SCHEMES: [&str; 2] = ["env", "systemd-creds"];
 
 /// The whole `agents.*` half of `validate_config`.
 ///
-/// Returns the warnings it accumulates, in the order `config.py`
-/// appends them.
+/// Returns the warnings it accumulates, in their recorded order.
 ///
 /// # Errors
 ///
 /// [`ConfigError::Value`] for every fatal rule below, with
-/// `config.py`'s wording byte for byte.
+/// the recorded wording byte for byte.
 pub fn validate_agents(config: &Config) -> Checked<Vec<String>> {
     let mut warnings = Vec::new();
 
@@ -349,11 +337,11 @@ fn validate_llm_client(
 /// `_validate_agent_max_tokens` — reject a completion budget that would
 /// starve the forced tool call.
 ///
-/// `config.py`'s first branch ("must be an integer") is structurally
-/// unreachable — `_llm_client` coerces with `int()` before validation
+/// A "must be an integer" branch would be structurally unreachable —
+/// the LLM client fields are coerced to an integer before validation
 /// and a bool is caught by the earlier "must be a number, not a
-/// boolean" guard — and the type is an `i64` here for the same reason,
-/// so only the floor survives the port. `RAISE-COVERAGE.md` §3.
+/// boolean" guard — and the type is an `i64` for the same reason, so
+/// only the floor is checked. `RAISE-COVERAGE.md` §3.
 ///
 /// # Errors
 ///
@@ -403,15 +391,14 @@ pub fn validate_agent_api_key(api_key: &str, label: &str) -> Checked<()> {
 
 /// The `source:NAME` split alone, without the scheme rules.
 ///
-/// Separate because `config.py` makes this half of the check **twice
-/// and in two places**: `load_config` runs it as soon as the roster
-/// entry is built (`config.py:1316`, `:1408`), and `validate_config`
-/// runs the whole of [`validate_agent_api_key`] later. The wording is
+/// Separate because this half of the check runs **twice and in two
+/// places**: loading runs it as soon as the roster entry is built, and
+/// validation runs the whole of [`validate_agent_api_key`] later. The wording is
 /// identical, so which one fires is invisible — until the config has a
-/// *second* fault that one of C2's `validate_config` rules would catch
-/// in between, and then the order decides what the user is told.
+/// *second* fault that another validation rule would catch in
+/// between, and then the order decides what the user is told.
 ///
-/// Returns the scheme and the name, which `load_config` needs: an
+/// Returns the scheme and the name, which loading needs: an
 /// `env:` key names a host variable that must be stripped from the
 /// cage's environment.
 ///
@@ -444,7 +431,7 @@ pub fn require_api_key_shape<'a>(api_key: &'a str, label: &str) -> Checked<(&'a 
 /// rejected with the length in the message so the operator knows how
 /// much to trim.
 fn validate_context(context: &str, path: &str) -> Checked<()> {
-    let length = python_strip(context).chars().count();
+    let length = strip_space(context).chars().count();
     if length > 4096 {
         return Err(ConfigError::value(format!(
             "{path} is too long ({length} chars, max 4096) — trim it or move details \
@@ -459,9 +446,10 @@ fn validate_context(context: &str, path: &str) -> Checked<()> {
 /// `re.match(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z", host)`.
 ///
 /// Hand-written rather than a regex crate, because the *anchor* is the
-/// whole subtlety and a crate would hide it. Python's `$` matches at
-/// end of string **or immediately before one trailing newline**, so
-/// `agentcage.local\n` satisfied this pattern until the anchor sweep.
+/// whole subtlety and a crate would hide it. A regex `$` (in Python's
+/// `re`, and in many other engines) matches at end of string **or
+/// immediately before one trailing newline**, so `agentcage.local\n`
+/// satisfied the original `$`-anchored pattern until the anchor sweep.
 ///
 /// That was a real hole — the control host rides into
 /// `proxy-config.yaml`, and a host carrying a newline is the same shape
@@ -528,19 +516,20 @@ fn urlsplit(url: &str) -> (String, String) {
     (scheme, hostname.to_lowercase())
 }
 
-/// Python's `str.strip()`.
+/// Trim surrounding whitespace, counting the C0 separators as
+/// whitespace.
 ///
-/// Rust's `trim` uses the Unicode `White_Space` property; CPython's
-/// `str.isspace` adds the four C0 file/group/record/unit separators on
-/// top of it. The difference only shows up in a context blob written
+/// Rust's `trim` uses the Unicode `White_Space` property; the strip
+/// earlier releases measured with adds the four C0
+/// file/group/record/unit separators on top of it. The difference only shows up in a context blob written
 /// with a stray `\x1c`, and reproducing it costs one predicate — the
 /// length is in the error message, so a one-character disagreement is
 /// a visible one.
-fn python_strip(text: &str) -> &str {
+fn strip_space(text: &str) -> &str {
     text.trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
 }
 
-/// Python's `format(n, ",")` — thousands separators.
+/// Thousands separators: `1234567` → `1,234,567`.
 fn thousands(value: i64) -> String {
     let digits = value.unsigned_abs().to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
@@ -559,7 +548,7 @@ fn thousands(value: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        matches_control_host_shape, python_strip, thousands, urlsplit, validate_agent_api_key,
+        matches_control_host_shape, strip_space, thousands, urlsplit, validate_agent_api_key,
         validate_agent_max_tokens, validate_agents,
     };
     use crate::config::{FixedHost, load};
@@ -586,11 +575,11 @@ mod tests {
         assert!(matches_control_host_shape("a"));
     }
 
-    /// End to end, against a config `config.py` now refuses.
+    /// End to end, against a config validation now refuses.
     ///
-    /// Measured, not reasoned about: `load_config` + `validate_config`
-    /// on CPython 3.13 raise this exact `ValueError` for this document.
-    /// So must this, or the host CLI and the egress `policy_api` —
+    /// The expected message is the one earlier releases printed for
+    /// this document, measured rather than reasoned about. It must stay
+    /// so, or the host CLI and the egress `policy_api` —
     /// which resolves the same control host out of `proxy-config.yaml`
     /// — disagree about what the control host is.
     ///
@@ -599,7 +588,7 @@ mod tests {
     /// written before the sweep is readable, and it is the validator that
     /// reports why it will not deploy.
     #[test]
-    fn a_control_host_with_a_trailing_newline_is_refused_exactly_as_python_refuses_it() {
+    fn a_control_host_with_a_trailing_newline_is_refused_with_the_recorded_message() {
         let host = FixedHost::linux(&["192.0.2.53"]);
         let document = "name: c\ncontainer:\n  image: alpine\ndomains:\n  allow: [example.com]\n\
                         agents:\n  decider:\n    enable: true\n    host: \"agentcage.local\\n\"\n    \
@@ -607,9 +596,7 @@ mod tests {
         let config = load("<test>", document, &host).expect("parse");
         assert_eq!(config.agents.decider.host, "agentcage.local\n");
         assert_eq!(
-            validate_agents(&config)
-                .expect_err("python raises")
-                .message(),
+            validate_agents(&config).expect_err("refused").message(),
             "agents.decider.host 'agentcage.local\\n' must be a dotted hostname \
              (e.g. 'agentcage.local'), not an IP literal or single label"
         );
@@ -684,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn thousands_matches_pythons_comma_format() {
+    fn thousands_groups_by_three_with_commas() {
         assert_eq!(thousands(0), "0");
         assert_eq!(thousands(999), "999");
         assert_eq!(thousands(1000), "1,000");
@@ -694,9 +681,9 @@ mod tests {
     }
 
     #[test]
-    fn strip_covers_pythons_extra_separators() {
-        assert_eq!(python_strip("  hi \t\n"), "hi");
-        assert_eq!(python_strip("\u{1c}hi\u{1f}"), "hi");
-        assert_eq!(python_strip("\u{85}hi"), "hi");
+    fn strip_covers_the_c0_separators() {
+        assert_eq!(strip_space("  hi \t\n"), "hi");
+        assert_eq!(strip_space("\u{1c}hi\u{1f}"), "hi");
+        assert_eq!(strip_space("\u{85}hi"), "hi");
     }
 }

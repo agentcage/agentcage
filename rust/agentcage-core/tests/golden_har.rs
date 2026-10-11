@@ -1,7 +1,7 @@
 //! The HAR port against the golden corpus.
 //!
-//! `tests/fixtures/golden/shared/har/` was produced by running the
-//! Python `har.py` over the committed `_inputs/capture.jsonl` (PR A3;
+//! `tests/fixtures/golden/shared/har/` was produced by running an
+//! earlier release's HAR builder over the committed `_inputs/capture.jsonl` (PR A3;
 //! see that directory's README). Those five files are the specification
 //! this port is held to, and the comparison is byte-for-byte: the README
 //! reserves parsed-value comparison for YAML, and every JSON artifact is
@@ -29,7 +29,7 @@ fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/golden")
 }
 
-/// `_json_text` from `scripts/gen-golden-corpus.py`.
+/// The recording harness's JSON layout.
 fn corpus_text(value: &Json) -> String {
     let options = DumpOptions {
         indent: Some(2),

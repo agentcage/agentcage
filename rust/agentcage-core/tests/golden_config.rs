@@ -1,26 +1,25 @@
 //! The golden corpus, against the Rust config parser.
 //!
 //! `tests/fixtures/golden/` holds 125 valid `cage.yaml` cases, each with
-//! the `resolved-config.json` that `config.py`'s `load_config` produced
-//! from it. Reproducing all 125 byte for byte is PR C1's acceptance
-//! check, and it is what turns "did I port 2,473 lines of parsing
-//! correctly?" into a diff (docs/history/rust-port-plan.md §4, Layer 1).
+//! the `resolved-config.json` an earlier release produced from it.
+//! Reproducing all 125 byte for byte is the parser's acceptance check
+//! (docs/history/rust-port-plan.md §4, Layer 1).
 //!
 //! `tests/fixtures/scaffold-configs/` is the same comparison over the
 //! eight built-in scaffolds' rendered `cage.yaml`. The corpus is a
 //! matrix written *for* the corpus; the scaffolds are what
 //! `agentcage init --scaffold claude-code` actually hands a new user,
 //! and they exercise shapes the matrix does not. They were generated
-//! from the Python CLI by `scripts/gen-scaffold-configs.py` (removed with
-//! it); a scaffold template change now updates them by hand, and
+//! by an earlier release; a scaffold template change now updates them
+//! by hand, and
 //! `scaffold.rs`'s render-diff test fails until it does.
 //!
-//! The `invalid/` half is mostly **not** this PR's. C1 parses and
-//! rejects structural problems; the value checks belong to C2 and C3.
+//! The `invalid/` half is mostly validation's (`golden_validate.rs`).
+//! The parser rejects structural problems;
 //! [`the_structural_invalid_cases_match_verbatim`] pins exactly which
-//! messages C1 already reproduces, and — more usefully — asserts that
-//! no case produces a *different* error than Python's. A case C1 accepts
-//! is recorded as deferred, not as a pass.
+//! messages it reproduces, and — more usefully — asserts that no case
+//! produces a *different* error than the recorded one. A case the
+//! parser accepts is recorded as deferred, not as a pass.
 
 mod common;
 
@@ -290,7 +289,7 @@ fn every_committed_config_parses() {
 ///
 /// `crate::yaml` resolves 1.1 **booleans** and nothing else, so a plain
 /// `0755` reaches the parser as the string `"0755"` where PyYAML gave
-/// `config.py` the integer 493. The parser refuses such a value rather
+/// the integer 493. The parser refuses such a value rather
 /// than guessing, and this asserts the case is theoretical: if it ever
 /// stops being, this test names the file, and the reader's coverage
 /// becomes a real bug rather than a documented gap.
@@ -351,11 +350,9 @@ fn no_committed_config_uses_an_unresolved_yaml_1_1_scalar() {
 /// Which `invalid/` cases the parser already reproduces verbatim.
 ///
 /// The point of this test is not the list — it is the third bucket. A
-/// case that *errors* with different wording than `config.py` is a
-/// failure, because that is a message a user would read. A case that
-/// is accepted is fine: it is a value check, and C2 or C3 will add it.
-/// So the two lists below grow as those PRs land, one per PR, and
-/// nothing else here has to be touched.
+/// case that *errors* with different wording than the corpus records is
+/// a failure, because that is a message a user would read. A case that
+/// is accepted is fine: it is a value check, and validation makes it.
 #[test]
 fn the_structural_invalid_cases_match_verbatim() {
     let root = corpus().join("invalid");
@@ -385,7 +382,7 @@ fn the_structural_invalid_cases_match_verbatim() {
                     deferred.push(case);
                 } else {
                     differed.push(format!(
-                        "  {case}\n      python: {}\n      rust:   {}",
+                        "  {case}\n      expected: {}\n      actual:   {}",
                         expected.trim_end(),
                         produced.trim_end()
                     ));
@@ -396,8 +393,8 @@ fn the_structural_invalid_cases_match_verbatim() {
 
     assert!(
         differed.is_empty(),
-        "{} invalid cases produced a DIFFERENT message than config.py. Either the port \
-         is wrong, or the divergence is deliberate and belongs in KNOWN_DIVERGENT with a \
+        "{} invalid cases produced a DIFFERENT message than the corpus records. Either \
+         the parser is wrong, or the divergence is deliberate and belongs in KNOWN_DIVERGENT with a \
          reason:\n{}",
         differed.len(),
         differed.join("\n")
@@ -478,17 +475,17 @@ const C1_OWNED: &[&str] = &[
     "err-secrets-scope-invalid",
 ];
 
-/// The `invalid/` cases PR C3 added to the *parse* path.
+/// The relay and API-key `invalid/` cases on the *parse* path.
 ///
-/// `config.py` calls `relays/_validate.validate_relay_entry` from
-/// inside `load_config` and runs the `source:NAME` shape check on each
-/// agent API key as soon as the roster entry is built, so these are
-/// `load` errors rather than `validate_config` errors — which is why
+/// Loading runs the relay validator on each entry and the
+/// `source:NAME` shape check on each agent API key as soon as the
+/// roster entry is built, so these are `load` errors rather than
+/// validation errors — which is why
 /// they belong in this test and not in `golden_validate_agents.rs`.
 ///
 /// Every relay message here comes from [`agentcage_core::relays`], the
-/// module the egress proxy's `_validate.py` is now a second copy of;
-/// `tests/contract_relay_entry.rs` holds it to the A4 fixture, and
+/// same module the egress applies;
+/// `tests/contract_relay_entry.rs` holds it to the contract fixture, and
 /// this list is the corpus half of the same claim.
 const C3_OWNED: &[&str] = &[
     "err-agents-decider-api-key-no-scheme",
@@ -504,9 +501,9 @@ const C3_OWNED: &[&str] = &[
     "err-relay-write-mode-invalid",
 ];
 
-/// Cases where C1 errors, deliberately, with wording of its own.
+/// Cases where the parser errors, deliberately, with wording of its own.
 ///
-/// Each needs a reason, and "the Python message is nicer" is not one —
+/// Each needs a reason, and "the recorded message is nicer" is not one —
 /// if the wording can be matched it should be.
 const KNOWN_DIVERGENT: &[&str] = &[
     // PyYAML's scanner text ("expected ',' or ']', but got '<stream
@@ -525,13 +522,13 @@ fn first_difference(expected: &str, produced: &str) -> String {
     for (index, (want, got)) in expected.lines().zip(produced.lines()).enumerate() {
         if want != got {
             return format!(
-                "      line {}\n      python: {want}\n      rust:   {got}",
+                "      line {}\n      expected: {want}\n      actual:   {got}",
                 index + 1
             );
         }
     }
     format!(
-        "      same prefix; python has {} lines, rust has {}",
+        "      same prefix; expected has {} lines, actual has {}",
         expected.lines().count(),
         produced.lines().count()
     )

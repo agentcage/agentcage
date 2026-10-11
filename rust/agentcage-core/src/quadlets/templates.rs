@@ -1,15 +1,11 @@
-//! The minijinja environment, configured to match `quadlets._make_env`.
+//! The minijinja environment, configured to match the Jinja2 one the
+//! templates were written for.
 //!
 //! # Matching Jinja2's settings
 //!
-//! ```python
-//! SandboxedEnvironment(
-//!     loader=FileSystemLoader(str(_TEMPLATES_DIR)),
-//!     keep_trailing_newline=True,
-//!     trim_blocks=True,
-//!     lstrip_blocks=True,
-//! )
-//! ```
+//! Earlier releases rendered these templates with a Jinja2 environment
+//! set to `keep_trailing_newline=True, trim_blocks=True,
+//! lstrip_blocks=True`, and the golden corpus pins its output.
 //!
 //! All three whitespace settings are load-bearing, because a systemd
 //! unit file is line-oriented:
@@ -26,22 +22,21 @@
 //!   newline is still parsed by systemd, but it is not what the corpus
 //!   records, and POSIX text files end in a newline.
 //!
-//! `init.py::_make_env` builds the same environment plus the
-//! `placeholder` global, which is why [`environment`] registers both
-//! extensions: one environment, used by the quadlet renderer here and by
-//! the config/scaffold renderer Track D will add.
+//! Scaffold rendering uses the same environment plus the `placeholder`
+//! global (see [`render_source`]): one environment, used by the quadlet
+//! renderer here and by `agentcage init`'s config/scaffold renderer.
 //!
 //! # On `SandboxedEnvironment`
 //!
-//! The Python deliberately uses Jinja2's **sandbox**, not a plain
+//! Earlier releases deliberately used Jinja2's **sandbox**, not a plain
 //! `Environment`. What that buys is specific: Jinja2 evaluates
-//! expressions against *live Python objects*, so `{{ x.__class__ }}`,
+//! expressions against live interpreter objects, so `{{ x.__class__ }}`,
 //! `{{ x.__init__.__globals__ }}` or `{{ "".format(...) }}` in a
 //! template are a path from template text to arbitrary objects in the
 //! interpreter — the classic Jinja2 sandbox escape. `SandboxedEnvironment`
 //! blocks it by intercepting attribute access (`is_safe_attribute`) and
 //! calls (`is_safe_callable`). That matters because not every template
-//! agentcage renders is first-party: `init.py`'s loader searches
+//! agentcage renders is first-party: `agentcage init` searches
 //! `./.agentcage/scaffolds/` and `~/.config/agentcage/scaffolds/`, so a
 //! scaffold a user checked out from someone else's repository is
 //! rendered by the same environment.
@@ -59,7 +54,7 @@
 //! handing templates custom `Object` implementations with
 //! `call_method`, which it does not.
 //!
-//! Two residual risks the Python sandbox does not cover either, noted so
+//! Two residual risks the Jinja2 sandbox does not cover either, noted so
 //! the absence is a decision rather than an oversight: a hostile
 //! template can still loop for a very long time (minijinja's `fuel`
 //! feature would bound that; Jinja2 has no equivalent, so enabling it
@@ -73,15 +68,13 @@ use minijinja::{Environment, Error, ErrorKind};
 
 /// The `.j2` sources, as embedded by `agentcage-assets`.
 ///
-/// Registered under the same names `FileSystemLoader` gives them —
-/// `network.j2`, `lima/lima.yaml.j2` — so `get_template` calls read the
-/// same as the Python's.
+/// Registered under their paths relative to `templates/` —
+/// `network.j2`, `lima/lima.yaml.j2`.
 fn register_templates(environment: &mut Environment<'static>) -> Result<(), Error> {
     for (name, file) in agentcage_assets::tree("templates") {
         let Ok(source) = std::str::from_utf8(file.bytes) else {
             // A non-UTF-8 file under templates/ cannot be a Jinja
-            // source. Python's loader would raise on reading it; here it
-            // is simply not a template.
+            // source, so it is simply not a template.
             continue;
         };
         environment.add_template(name, source)?;
@@ -91,16 +84,16 @@ fn register_templates(environment: &mut Environment<'static>) -> Result<(), Erro
 
 /// The shared environment, built once.
 ///
-/// Building it parses every template, which is why it is cached: the
-/// Python pays the same cost once per `generate_quadlets` call because
-/// Jinja2's own template cache is per-`Environment`, and a CLI that
-/// renders a cage's five units should not parse the sources five times.
+/// Building it parses every template, which is why it is cached: a CLI
+/// that renders a cage's five units should not parse the sources five
+/// times.
 fn shared() -> &'static Environment<'static> {
     static ENVIRONMENT: OnceLock<Environment<'static>> = OnceLock::new();
     ENVIRONMENT.get_or_init(|| environment().expect("embedded templates parse"))
 }
 
-/// Build the environment `quadlets.py` and `init.py` share.
+/// Build the environment the quadlet renderer and scaffold rendering
+/// share.
 ///
 /// # Errors
 ///
@@ -113,11 +106,11 @@ pub fn environment() -> Result<Environment<'static>, Error> {
     environment.set_trim_blocks(true);
     environment.set_lstrip_blocks(true);
     // The one Jinja2 behaviour minijinja does not carry: `mapping.items()`
-    // is a *Python* method, and minijinja exposes the same thing as the
+    // is a method in Jinja2, and minijinja exposes the same thing as the
     // `items` filter instead, so `{% for k, v in env.items() %}` —
     // which `cage.container.j2` uses twice — fails with `UnknownMethod`.
-    // Rewriting the templates to `env|items` was not an option: Python
-    // renders the same files until cutover. This is the shim minijinja
+    // The templates stay valid Jinja2 (user scaffolds written against
+    // earlier releases use the same syntax), so this is the shim minijinja
     // documents for exactly that case (`set_unknown_method_callback`),
     // and it is deliberately narrow — one method, on maps, with no
     // arguments — so an unrelated typo in a template is still an error
@@ -163,25 +156,18 @@ pub(crate) fn render(name: &str, context: Value) -> Result<String, Error> {
     shared().get_template(name)?.render(context)
 }
 
-/// The environment `lima/provisioning.py` builds, which is **not** the
-/// one above.
+/// The environment the Lima config is rendered with, which is **not**
+/// the one above: `keep_trailing_newline` only.
 ///
-/// ```python
-/// SandboxedEnvironment(
-///     loader=FileSystemLoader(str(_TEMPLATES_DIR)),
-///     keep_trailing_newline=True,
-/// )
-/// ```
-///
-/// No `trim_blocks`, no `lstrip_blocks`. That is not an oversight in
-/// the Python to be tidied away here: `lima.yaml.j2` wraps its `vz`
+/// No `trim_blocks`, no `lstrip_blocks`. That is not an oversight to be
+/// tidied away here: `lima.yaml.j2` wraps its `vz`
 /// block and its `portForwards` block in `{% if %}` tags on their own
 /// lines, and without `trim_blocks` each of those tags leaves its
 /// newline behind. A QEMU cage's Lima YAML therefore has *two* blank
 /// lines after `vmType: qemu` where a trimmed render has one. YAML does
 /// not care and a human would not notice, but the fixture is a byte
-/// comparison against the Python's output, and "close enough" is not a
-/// category the port works in.
+/// comparison against what earlier releases rendered, and "close
+/// enough" is not a category this renderer works in.
 ///
 /// Built once and cached, like [`shared`].
 fn lima() -> &'static Environment<'static> {
@@ -209,7 +195,7 @@ pub(crate) fn render_untrimmed(name: &str, context: Value) -> Result<String, Err
 /// Render a template that is not one of the embedded ones, with a live
 /// `placeholder()`.
 ///
-/// This is what `init.py`'s second environment does: a scaffold's
+/// A scaffold's
 /// `cage.yaml.j2` is read from wherever the scaffold was found — a
 /// project checkout, `~/.config`, or the extracted asset tree — so it
 /// cannot come from the embedded set, but it must be rendered by the
@@ -238,15 +224,8 @@ pub fn render_source<S: serde::Serialize>(
 
 /// [`render_source`] with Jinja2's *default* whitespace handling.
 ///
-/// The environment `apple_container/wrapper.py` builds for
-/// `Containerfile.wrapper.j2`:
-///
-/// ```python
-/// SandboxedEnvironment(
-///     loader=FileSystemLoader(str(_DATA_DIR)),
-///     keep_trailing_newline=True,
-/// )
-/// ```
+/// The environment `Containerfile.wrapper.j2` (apple-container) is
+/// rendered with: `keep_trailing_newline` only.
 ///
 /// No `trim_blocks` and no `lstrip_blocks`, which is load-bearing
 /// rather than incidental: the template opens with a 35-line `{# … #}`
@@ -255,8 +234,8 @@ pub fn render_source<S: serde::Serialize>(
 /// with a blank line, and `container build` is handed those bytes.
 ///
 /// No `placeholder` global and no filters beyond `indent` — the
-/// template uses neither, and the narrower environment is the honest
-/// mirror of the Python's.
+/// template uses neither, and a narrower environment is easier to
+/// reason about.
 ///
 /// # Errors
 ///
@@ -275,10 +254,10 @@ pub fn render_source_untrimmed<S: serde::Serialize>(
         .render(Value::from_serialize(context))
 }
 
-/// The `systemd_exec` filter — `quadlets._systemd_exec_join`.
+/// The `systemd_exec` filter — [`super::systemd_exec_join`].
 ///
-/// Takes the command list the way Jinja2 hands a Python `list[str]` to
-/// a filter. A non-list, or a list holding a non-string, is a template
+/// Takes the command as a list of strings. A non-list, or a list
+/// holding a non-string, is a template
 /// bug rather than a user error, so it is an error rather than a
 /// coercion — `Exec=` is the cage's entrypoint and a silently
 /// stringified value there is a container that starts and does the
@@ -302,7 +281,7 @@ fn systemd_exec(args: &Value) -> Result<String, Error> {
 /// minijinja ships an `indent` filter, and it is not the same function.
 /// Jinja2's opens with a comment-worthy quirk:
 ///
-/// ```python
+/// ```text
 /// s += newline  # this quirk is necessary for splitlines method
 /// ```
 ///
@@ -319,10 +298,10 @@ fn systemd_exec(args: &Value) -> Result<String, Error> {
 /// ```
 ///
 /// so the difference is a missing blank line between the provisioning
-/// script and `portForwards:` in every Lima config the port generates.
-/// YAML does not care; the fixture comparison against the Python's
+/// script and `portForwards:` in every Lima config generated.
+/// YAML does not care; the fixture comparison against the recorded
 /// bytes does, and a renderer that is "equivalent" rather than equal is
-/// how a port stops being checkable.
+/// one that stops being checkable.
 ///
 /// Registered on both environments rather than only the Lima one: the
 /// quadlet templates do not use `indent` today, and if one starts to,
@@ -391,7 +370,7 @@ fn jinja_indent(value: Value, rest: minijinja::value::Rest<Value>) -> Result<Str
 /// which is the one construct in the scaffold corpus minijinja's builtin
 /// cannot express. Without this filter the render fails outright on the
 /// extra argument, and with only the two-argument semantics it would
-/// succeed and emit `none` — `port` is passed as Python's `None`, which
+/// succeed and emit `none` — `port` is passed as a none value, which
 /// is defined-but-falsy, so `{% if port %}` and `default(..., true)`
 /// have to agree that it is absent.
 ///
@@ -413,7 +392,7 @@ fn jinja_default(value: &Value, rest: minijinja::value::Rest<Value>) -> Value {
 
 /// Install a `placeholder(env_name)` global backed by `generator`.
 ///
-/// `init.py:132` installs `config.generate_placeholder` here so a
+/// `agentcage init` installs a placeholder generator here so a
 /// rendered starter `cage.yaml` carries a concrete, unguessable token
 /// rather than something the operator has to fill in later. The
 /// generator is a parameter because it draws entropy — an I/O-shaped
@@ -421,7 +400,7 @@ fn jinja_default(value: &Value, rest: minijinja::value::Rest<Value>) -> Value {
 /// it to a counter.
 ///
 /// The quadlet templates never call it; `init-config.yaml.j2` and the
-/// scaffolds do (Track D).
+/// scaffolds do.
 pub fn with_placeholder_global(
     mut environment: Environment<'static>,
     generator: impl Fn(&str) -> String + Send + Sync + 'static,
@@ -582,7 +561,7 @@ mod tests {
         // `port` is defined-but-None: the boolean form substitutes, the
         // two-argument form keeps it (which is Jinja2's behaviour too,
         // and why the scaffold passes `true`) and renders it as `None`,
-        // the Python spelling minijinja also uses.
+        // the spelling both use.
         assert_eq!(rendered, "18789|x|None|19999|fallback");
     }
 
@@ -622,7 +601,7 @@ mod tests {
     }
 
     /// There is no route from a template expression back into the host
-    /// program — the property `SandboxedEnvironment` enforces in Python
+    /// program — the property Jinja2's `SandboxedEnvironment` enforces
     /// and minijinja has by construction. Undefined, not an object.
     #[test]
     fn values_expose_no_host_internals() {

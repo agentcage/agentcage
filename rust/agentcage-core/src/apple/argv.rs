@@ -3,14 +3,14 @@
 //!
 //! # `audit_argv` is not a fourth copy of the same thing
 //!
-//! PR D8 established that **there is no host-side `audit.jsonl` for a
-//! `container` or `vm` cage**: the egress addon writes its audit trail
+//! **There is no host-side `audit.jsonl` for a
+//! `container` or `vm` cage**: the egress writes its audit trail
 //! to stderr and the host reads it back out of `journalctl`. Only
 //! apple-container bind-mounts the file, at
 //! `<apple_state>/<cage>/logs/audit.jsonl`
 //! (`agentcage_state::Paths::apple_audit_file`, the only such helper in
 //! that module). So this is the one audit path in agentcage that reads
-//! a file, and nothing else in the port covers it.
+//! a file.
 //!
 //! Two consequences visible in the argv:
 //!
@@ -43,9 +43,9 @@
 
 use std::fmt;
 
-/// `BackendUnsupported`, the exception both argv builders raise.
+/// Why an argv builder refused.
 ///
-/// Two variants because the Python has two messages and they are UX:
+/// Two variants because there are two messages and they are UX:
 /// one names the services that exist, the other names the download
 /// page. The order matters too — `exec_argv` validates the service
 /// *before* it looks for the binary, so `cage exec --service proxy` on
@@ -92,7 +92,7 @@ impl Service {
     /// or an error.
     ///
     /// The empty string is the CLI's "no `--service` given" and means
-    /// the cage, exactly as in the Python's `service in ("cage", "")`.
+    /// the cage, exactly as `"cage"` does.
     ///
     /// # Errors
     ///
@@ -141,13 +141,13 @@ setpriv --reuid=1000 --regid=1000 --clear-groups \
 /// Note where `cmd` lands: after the wrap and after the `env` prefix,
 /// not straight after the target. There is no `--` of agentcage's own
 /// anywhere in the result — a separator the operator typed was consumed
-/// by the parser (PR D12) and never reaches this function, and one that
+/// by the parser and never reaches this function, and one that
 /// is a genuine argument is forwarded verbatim like any other.
 ///
 /// # Errors
 ///
 /// [`AppleArgvError::UnknownService`] first, then
-/// [`AppleArgvError::NoContainerBinary`] — the Python's order.
+/// [`AppleArgvError::NoContainerBinary`] — the pinned order.
 pub fn exec_argv(
     binary: Option<&str>,
     name: &str,
@@ -217,11 +217,11 @@ pub fn exec_argv(
 /// `services` is scanned in order and the **first** recognized entry
 /// wins; an unrecognized one is skipped, so `["proxy"]` — a name from
 /// the legacy single-VM model — quietly tails the cage rather than
-/// failing. That is the Python's behaviour, loop and all.
+/// failing. That is the pinned behaviour, loop and all.
 ///
 /// Apple's `container logs` accepts neither `-n` nor a level filter, so
-/// `lines` and `min_level` have no parameters here; `cli.py` passes
-/// them for protocol parity and the Python marks both `# noqa: ARG002`.
+/// `lines` and `min_level` have no parameters here, although the other
+/// backends' log commands take them.
 ///
 /// # Errors
 ///
@@ -259,8 +259,8 @@ pub fn logs_argv(
 /// egress microVM, which is the whole reason this backend's audit works
 /// differently from the other two (see the module docs).
 ///
-/// `since` has no parameter for the reason the module docs give — the
-/// Python takes it only to satisfy the protocol and never reads it.
+/// `since` has no parameter for the reason the module docs give — it
+/// would be accepted only to be ignored.
 #[must_use]
 pub fn audit_argv(audit_path: &str, follow: bool) -> Vec<String> {
     let mut argv = owned(&["tail", "-n"]);
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(Service::parse("egress").expect("egress"), Service::Egress);
     }
 
-    /// The property PR D12 proved for the container backend, restated
+    /// The property the container backend's tests pin, restated
     /// here: `cage exec foo -- ls -la` and the separator-less spelling
     /// parse to the same `command`, so they must build the same argv —
     /// and neither carries a `--` of agentcage's own.

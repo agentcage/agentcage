@@ -16,17 +16,16 @@
 /// returned as it came in.
 #[must_use]
 pub fn normalize_cpus(value: &str) -> String {
-    // `float(value)` — Python accepts surrounding whitespace, a sign,
-    // and `inf`/`nan` spellings; `str::parse::<f64>` accepts the same
-    // set, which is why this is a parse rather than a hand-written
-    // scan.
+    // Surrounding whitespace, a sign, and `inf`/`nan` spellings are
+    // accepted, as earlier releases accepted them; `str::parse::<f64>`
+    // takes the same set, which is why this is a parse rather than a
+    // hand-written scan.
     let Ok(parsed) = value.trim().parse::<f64>() else {
         return value.to_owned();
     };
-    // `int(f)` raises on a non-finite float, and the Python would
-    // propagate that. Here there is no exception to propagate and a
-    // panicking cast would be worse than Apple's own complaint, so a
-    // non-finite value takes the pass-through branch.
+    // Earlier releases crashed on a non-finite value here. A saturating
+    // cast would be worse than Apple's own complaint, so a non-finite
+    // value takes the pass-through branch.
     if !parsed.is_finite() {
         return value.to_owned();
     }
@@ -39,14 +38,14 @@ pub fn normalize_cpus(value: &str) -> String {
     }
 }
 
-/// `_normalize_memory` — Apple's `--memory` wants an UPPERCASE suffix.
+/// Apple's `--memory` wants an UPPERCASE suffix.
 ///
 /// `512m` and `2g`, which podman and docker take, are rejected. The
 /// suffix is uppercased in place; everything that does not match
 /// `<number><suffix?>` is passed through, so a raw byte count still
 /// reaches Apple unchanged.
 ///
-/// The accepted shape is the Python's regex,
+/// The accepted shape is the regex
 /// `^(\d+(?:\.\d+)?)\s*([kKmMgGtTpP][iI]?[bB]?)?\Z`, hand-written
 /// because this crate carries no regex engine. Note what that pattern
 /// allows and this therefore allows too: whitespace *between* the
@@ -56,11 +55,9 @@ pub fn normalize_memory(value: &str) -> String {
     let trimmed = value.trim();
     let rest = trimmed;
 
-    // `\d+(?:\.\d+)?` — ASCII digits only. Python's `\d` on a `str`
-    // matches Unicode decimal digits as well, but `int`/`float` would
-    // then accept them and Apple would not; no config in the corpus
-    // reaches that, and narrowing to ASCII here is the safer of the
-    // two divergences.
+    // `\d+(?:\.\d+)?` — ASCII digits only. A Unicode `\d` would let
+    // through digits Apple does not accept; no config in the corpus
+    // reaches that, and narrowing to ASCII is the safer choice.
     let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
     if digits == 0 {
         return value.to_owned();
@@ -147,8 +144,8 @@ mod tests {
     fn an_unparseable_cpu_count_is_passed_through() {
         assert_eq!(normalize_cpus("all"), "all");
         assert_eq!(normalize_cpus(""), "");
-        // Non-finite: `int(float('inf'))` raises in Python, and a cast
-        // here would saturate silently. Pass-through instead.
+        // Non-finite: a cast here would saturate silently.
+        // Pass-through instead.
         assert_eq!(normalize_cpus("inf"), "inf");
     }
 

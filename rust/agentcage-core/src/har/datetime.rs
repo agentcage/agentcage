@@ -1,18 +1,20 @@
-//! Just enough of Python's `datetime` for `--since`.
+//! Just enough date-time handling for `--since`.
 //!
-//! `har.py` uses four things from it: `datetime.now(timezone.utc)`,
-//! `datetime.fromisoformat`, `timedelta` subtraction, and the `<`
-//! comparison between a capture entry's timestamp and the cutoff. The
-//! last one carries a behaviour worth keeping: comparing an aware
-//! datetime with a naive one raises `TypeError` in Python, and
-//! `CaptureFilter.matches` catches that and *keeps* the entry. So
-//! awareness is not a detail to normalize away — it decides whether the
-//! filter applies at all. [`DateTime::lt`] returns `None` for that case
-//! rather than guessing an offset.
+//! The HAR filter needs four things: the current UTC time, parsing an
+//! ISO 8601 timestamp (with the leniency of Python's
+//! `datetime.fromisoformat`, which is what accepted `--since` values and
+//! capture timestamps since the earliest releases), subtracting a
+//! duration, and the `<` comparison between a capture entry's timestamp
+//! and the cutoff. The last one carries a behaviour worth keeping: an
+//! aware timestamp and a naive one do not compare, and
+//! [`super::CaptureFilter::matches`] *keeps* such an entry. So awareness
+//! is not a detail to normalize away — it decides whether the filter
+//! applies at all. [`DateTime::lt`] returns `None` for that case rather
+//! than guessing an offset.
 //!
 //! This is deliberately not a general date library and not a reason to
 //! take a dependency on one. It handles the proleptic Gregorian calendar
-//! over Python's year range, whole-second UTC offsets, and microsecond
+//! over years 1–9999, whole-second UTC offsets, and microsecond
 //! resolution.
 
 use std::fmt::Write as _;
@@ -21,10 +23,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MICROS_PER_SECOND: i64 = 1_000_000;
 const SECONDS_PER_DAY: i64 = 86_400;
 
-/// Python's `datetime.min`, as microseconds of civil time since the Unix
-/// epoch: `0001-01-01T00:00:00`.
+/// The earliest representable moment, as microseconds of civil time
+/// since the Unix epoch: `0001-01-01T00:00:00`.
 const MIN_CIVIL_MICROS: i64 = -62_135_596_800 * MICROS_PER_SECOND;
-/// Python's `datetime.max`: `9999-12-31T23:59:59.999999`.
+/// The latest representable moment: `9999-12-31T23:59:59.999999`.
 const MAX_CIVIL_MICROS: i64 = 253_402_300_799 * MICROS_PER_SECOND + 999_999;
 
 /// A moment in time, aware or naive, with microsecond resolution.
@@ -38,12 +40,12 @@ pub struct DateTime {
 }
 
 impl DateTime {
-    /// `datetime.now(timezone.utc)`.
+    /// The current time, in UTC.
     ///
     /// The only clock read in `agentcage-core`. It is here because
     /// `parse_since("1h")` and `capture_to_har`'s fallback timestamp are
-    /// both defined relative to "now" in the Python; every other entry
-    /// point takes the value it needs.
+    /// both defined relative to "now"; every other entry point takes the
+    /// value it needs.
     #[must_use]
     pub fn now_utc() -> Self {
         let micros = SystemTime::now()
@@ -98,8 +100,8 @@ impl DateTime {
         self.offset_seconds.is_some()
     }
 
-    /// `dt.replace(tzinfo=timezone.utc)` when `dt` is naive, otherwise
-    /// `dt` — the last two lines of `parse_since`.
+    /// This value read as UTC when it is naive, otherwise unchanged —
+    /// the last step of `parse_since`.
     #[must_use]
     pub fn assume_utc(self) -> Self {
         Self {
@@ -108,22 +110,20 @@ impl DateTime {
         }
     }
 
-    /// `self - timedelta(seconds=seconds)`.
+    /// `self` minus `seconds`.
     ///
-    /// `None` where Python raises `OverflowError`, which is outside
-    /// `datetime.min`/`datetime.max`. `parse_since` does not catch that,
-    /// so Python propagates it out of the CLI; returning `None` here
-    /// lands the caller on the same "no cutoff" path an unparseable
-    /// `--since` takes.
+    /// `None` when the result falls outside years 1–9999. Returning
+    /// `None` lands the caller on the same "no cutoff" path an
+    /// unparseable `--since` takes (earlier releases crashed with an
+    /// overflow error there instead).
     #[must_use]
     pub fn checked_sub_seconds(self, seconds: i64) -> Option<Self> {
         self.checked_sub_micros(seconds.checked_mul(MICROS_PER_SECOND)?)
     }
 
-    /// `self - timedelta(microseconds=micros)`, for a delta that is not a
-    /// whole number of seconds (`timedelta(seconds=3600.5)` is
-    /// microsecond-exact). `None` outside `datetime.min`/`datetime.max`,
-    /// as [`DateTime::checked_sub_seconds`].
+    /// `self` minus `micros`, for a delta that is not a whole number of
+    /// seconds (`--since 3600.5s` is microsecond-exact). `None` outside
+    /// years 1–9999, as [`DateTime::checked_sub_seconds`].
     #[must_use]
     pub fn checked_sub_micros(self, micros: i64) -> Option<Self> {
         let civil_micros = self.civil_micros.checked_sub(micros)?;
@@ -136,16 +136,16 @@ impl DateTime {
         })
     }
 
-    /// `self < other`, or `None` where Python raises `TypeError` for
-    /// "can't compare offset-naive and offset-aware datetimes".
+    /// `self < other`, or `None` when one side is naive and the other
+    /// aware, which have no meaningful order.
     #[must_use]
     pub fn lt(&self, other: &Self) -> Option<bool> {
         let (left, right) = self.comparable_with(other)?;
         Some(left < right)
     }
 
-    /// `(self - other).total_seconds()`, rounded to whole seconds the
-    /// way Python's `round` does, or `None` for a naive/aware mix.
+    /// `self - other` in seconds, rounded half-to-even to whole seconds,
+    /// or `None` for a naive/aware mix.
     #[must_use]
     pub fn seconds_since(&self, other: &Self) -> Option<i64> {
         let (left, right) = self.comparable_with(other)?;
@@ -153,7 +153,7 @@ impl DateTime {
     }
 
     /// The pair of microsecond counts to compare, or `None` when one
-    /// side is naive and the other is not — the `TypeError` case.
+    /// side is naive and the other is not.
     ///
     /// Two aware datetimes compare as instants, so their offsets count;
     /// two naive ones compare as wall-clock fields, which is the same
@@ -173,7 +173,7 @@ impl DateTime {
         self.civil_micros - i64::from(offset) * MICROS_PER_SECOND
     }
 
-    /// `dt.isoformat()`: `YYYY-MM-DDTHH:MM:SS`, `.ffffff` only when
+    /// ISO 8601 text: `YYYY-MM-DDTHH:MM:SS`, `.ffffff` only when
     /// there are microseconds, then the offset as `+HH:MM` — with
     /// `:SS` appended when the offset is not a whole number of minutes.
     #[must_use]
@@ -213,17 +213,19 @@ impl DateTime {
         )
     }
 
-    /// `datetime.fromisoformat`, over the subset a `--since` value or a
-    /// capture timestamp can realistically be.
+    /// Parse an ISO 8601 timestamp, over the subset a `--since` value or
+    /// a capture timestamp can realistically be, with the leniency of
+    /// Python's `datetime.fromisoformat`.
     ///
     /// Accepted: a complete date, extended (`2024-01-01`) or basic
-    /// (`20240101`); optionally a separator — Python accepts *any* single
-    /// character where ISO 8601 wants `T` — then a time as `HH`,
-    /// `HH:MM`, `HH:MM:SS` or their basic forms, with an optional `.`
-    /// or `,` fraction; then optionally `Z`, `z` or `±HH[:MM[:SS]]`.
+    /// (`20240101`); optionally a separator — *any* single character
+    /// where ISO 8601 wants `T` — then a time as `HH`, `HH:MM`,
+    /// `HH:MM:SS` or their basic forms, with an optional `.` or `,`
+    /// fraction; then optionally `Z` (uppercase only) or
+    /// `±HH[:MM[:SS]]`.
     ///
     /// Not accepted, and rejected rather than guessed: ISO week dates
-    /// (`2024-W01-1`), which Python 3.11+ does take. Nothing in agentcage
+    /// (`2024-W01-1`), which `fromisoformat` takes. Nothing in agentcage
     /// writes one, and a wrong answer there is worse than none — `--since`
     /// falls back to "no cutoff", and a capture entry that fails to parse
     /// is kept.
@@ -234,7 +236,7 @@ impl DateTime {
         if rest.is_empty() {
             return Self::from_parts((year, month, day), (0, 0, 0, 0), None);
         }
-        // Python takes whatever character sits between date and time.
+        // Whatever character sits between date and time is the separator.
         let separator = rest.chars().next()?;
         let (hour, minute, second, microsecond, offset) =
             parse_time(&rest[separator.len_utf8()..])?;
@@ -246,7 +248,7 @@ impl DateTime {
     }
 }
 
-/// `round(x / divisor)` with Python's banker's rounding.
+/// `x / divisor`, rounded half-to-even (banker's rounding).
 fn round_half_even(value: i64, divisor: i64) -> i64 {
     let quotient = value.div_euclid(divisor);
     let remainder = value.rem_euclid(divisor);
@@ -274,7 +276,7 @@ fn days_in_month(year: i64, month: u32) -> u32 {
 
 /// Days from `1970-01-01` to `year-month-day`, proleptic Gregorian.
 /// Howard Hinnant's `days_from_civil`, which is exact for every year
-/// Python's `datetime` can hold.
+/// from 1 to 9999.
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let month = i64::from(month);
     let year = if month <= 2 { year - 1 } else { year };
@@ -334,7 +336,7 @@ fn parse_time(text: &str) -> Option<TimeFields> {
 
 /// Split `HH:MM:SS.ffffff` from the `Z` or `±HH:MM` that may follow it.
 fn split_offset(text: &str) -> Option<(&str, Option<i32>)> {
-    // Uppercase only: CPython rejects a lowercase `z`.
+    // Uppercase only: a lowercase `z` is rejected.
     if let Some(clock) = text.strip_suffix('Z') {
         return Some((clock, Some(0)));
     }
@@ -346,8 +348,9 @@ fn split_offset(text: &str) -> Option<(&str, Option<i32>)> {
     if offset_text.len() < 2 {
         return None;
     }
-    // Python parses a sub-second offset too; agentcage never writes one,
-    // and a whole-second offset is all `isoformat` can render back.
+    // A sub-second offset parses but its fraction is dropped; agentcage
+    // never writes one, and a whole-second offset is all `isoformat`
+    // can render back.
     let (hour, minute, second, _) = parse_clock(&offset_text[1..])?;
     let magnitude = i32::try_from(hour * 3600 + minute * 60 + second).ok()?;
     Some((clock, Some(sign * magnitude)))
@@ -388,8 +391,8 @@ fn parse_clock(text: &str) -> Option<(u32, u32, u32, u32)> {
     Some((hour, minute, second, parse_fraction(fraction)?))
 }
 
-/// A decimal fraction of a second as microseconds. Python takes any
-/// number of digits and truncates past the sixth.
+/// A decimal fraction of a second as microseconds. Any number of
+/// digits is accepted and truncated past the sixth.
 fn parse_fraction(fraction: Option<&str>) -> Option<u32> {
     let Some(digits) = fraction else {
         return Some(0);
@@ -413,9 +416,8 @@ fn parse_two_digits(text: &str) -> Option<u32> {
     parse_digits(text)
 }
 
-/// A run of ASCII digits, and nothing else — `int()` on a Python `str`
-/// would also take `+`, surrounding whitespace and non-ASCII digits, but
-/// `fromisoformat` reaches these through a fixed-width slice.
+/// A run of ASCII digits, and nothing else — no sign, no whitespace, no
+/// non-ASCII digits. Every caller passes a fixed-width slice.
 fn parse_digits(text: &str) -> Option<u32> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -431,11 +433,11 @@ mod tests {
         DateTime::from_isoformat(text).map(|dt| dt.isoformat())
     }
 
-    /// Each expectation is `datetime.fromisoformat(s).isoformat()` read
-    /// off `CPython` 3.14, which is the newest interpreter the corpus is
-    /// generated on.
+    /// Each expectation is what CPython 3.14's
+    /// `datetime.fromisoformat(s).isoformat()` gives, the reference this
+    /// parser's leniency is pinned to.
     #[test]
-    fn from_isoformat_agrees_with_python() {
+    fn from_isoformat_accepts_the_pinned_forms() {
         let accepted: &[(&str, &str)] = &[
             ("2024-01-01", "2024-01-01T00:00:00"),
             ("20240101", "2024-01-01T00:00:00"),
@@ -479,10 +481,10 @@ mod tests {
             "2024-01-01T12:34:56.",
             "2024-01-01T",
             "2024-01-01T12:34:56+",
-            // CPython wants an uppercase Z.
+            // Only an uppercase Z.
             "2024-01-01T12:34:56z",
-            // A gap, not an accident: ISO week dates parse in Python and
-            // are refused here rather than guessed at.
+            // A gap, not an accident: ISO week dates parse with
+            // `fromisoformat` and are refused here rather than guessed at.
             "2024-W01-1",
         ];
         for text in rejected {
@@ -499,8 +501,8 @@ mod tests {
         assert!(iso("2023-02-29").is_none());
     }
 
-    /// Python raises `TypeError` for a naive/aware comparison, and
-    /// `CaptureFilter.matches` turns that into "keep the entry".
+    /// A naive/aware comparison has no answer, and
+    /// `CaptureFilter::matches` turns that into "keep the entry".
     #[test]
     fn naive_and_aware_do_not_compare() {
         let naive = DateTime::from_isoformat("2024-01-01T00:00:00").unwrap();
@@ -523,13 +525,13 @@ mod tests {
     }
 
     #[test]
-    fn subtraction_stops_at_pythons_range() {
+    fn subtraction_stops_at_the_representable_range() {
         let start = DateTime::from_isoformat("2024-01-01T00:00:00+00:00").unwrap();
         assert_eq!(
             start.checked_sub_seconds(86_400).map(|d| d.isoformat()),
             Some("2023-12-31T00:00:00+00:00".to_string())
         );
-        // Before year 1 is `OverflowError` in Python.
+        // Before year 1 is out of range.
         assert_eq!(start.checked_sub_seconds(i64::MAX / 4), None);
         assert_eq!(start.checked_sub_seconds(i64::MAX), None);
     }

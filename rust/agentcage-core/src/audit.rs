@@ -2,7 +2,7 @@
 //!
 //! Pure-function module — no subprocess/IO, independently testable.
 //!
-//! This is a port of `src/agentcage/audit.py`. The proxy addon writes one
+//! The egress writes one
 //! JSON object per audited event (an HTTP or DNS decision, a relay command,
 //! a Policy API request, ...) to stderr; `cage audit` reads them back out of
 //! `journalctl` (container/vm) or a bind-mounted `audit.jsonl`
@@ -10,8 +10,8 @@
 //! a summary. Everything in here is on the "decide" side of that: callers
 //! hand it lines and get values back.
 //!
-//! The formatting functions are held to *byte* equality with the Python
-//! they replace by `tests/fixtures/golden/shared/audit/*` — see
+//! The formatting functions are held to *byte* equality with the output
+//! of earlier releases by `tests/fixtures/golden/shared/audit/*` — see
 //! `tests/golden_audit.rs`. That includes the colour escapes and the
 //! column widths, oddities and all.
 
@@ -21,9 +21,8 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 // `AuditEntry`, `AuditFilter` and `AuditSummary` repeat the module name on
-// purpose: they are the names the Python module exports and the names the
-// port plan's cross-reference table uses. Renaming them to `Entry` /
-// `Filter` would make every `audit.py` line harder to find from here.
+// purpose: they are the names callers and the docs use, and a bare
+// `Entry` / `Filter` would be ambiguous at every import site.
 #[allow(clippy::module_name_repetitions)]
 /// Parsed audit log entry.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -76,10 +75,8 @@ pub struct AuditEntry {
 
 /// Read a string field, defaulting to `""`.
 ///
-/// Python's `d.get("host", "")` returns whatever is under the key, so a
-/// non-string would flow into a `str`-typed field and only blow up later
-/// (`len(entry.ts)` on an int). There is no such thing as "later" here, so
-/// a wrongly-typed field is treated as absent. No producer writes one and
+/// A wrongly-typed field is treated as absent (earlier releases let it
+/// through and failed later, on first use). No producer writes one and
 /// the golden corpus does not cover it.
 fn get_str(d: &Map<String, Value>, key: &str) -> String {
     d.get(key)
@@ -90,9 +87,9 @@ fn get_str(d: &Map<String, Value>, key: &str) -> String {
 
 /// Read a list-of-strings field, defaulting to empty.
 ///
-/// Non-string elements are dropped rather than kept: Python keeps them in
-/// the list and then raises `TypeError` from the `", ".join(...)` in
-/// [`format_table_row`], which is not behaviour worth reproducing.
+/// Non-string elements are dropped rather than kept: earlier releases
+/// kept them and then failed joining the list in [`format_table_row`],
+/// which is not behaviour worth reproducing.
 fn get_str_list(d: &Map<String, Value>, key: &str) -> Vec<String> {
     d.get(key)
         .and_then(Value::as_array)
@@ -166,8 +163,8 @@ impl AuditEntry {
     /// True for a control-plane record: the Policy API's and the
     /// watcher's own bookkeeping, not traffic.
     ///
-    /// The same split as `_CONTROL_RECORD_KINDS` in the egress's
-    /// `watcher.py`, which keeps these out of its digest's flow count.
+    /// The same split as `CONTROL_RECORD_KINDS` in the egress traffic
+    /// watcher's digest, which keeps these out of its flow count.
     /// The discriminator cannot be "has a kind": relay records carry one
     /// too, and they are traffic.
     #[must_use]
@@ -265,9 +262,9 @@ impl AuditFilter {
 
     /// True if the entry is at/after `since`.
     ///
-    /// A missing or unparseable timestamp is kept (fail-open), mirroring
-    /// `CaptureFilter` in `har.py` so a malformed record is never silently
-    /// dropped by a time window.
+    /// A missing or unparseable timestamp is kept (fail-open), as
+    /// [`crate::har::CaptureFilter`] does, so a malformed record is never
+    /// silently dropped by a time window.
     fn after_since(&self, entry: &AuditEntry) -> bool {
         if entry.ts.is_empty() {
             return true;
@@ -275,10 +272,9 @@ impl AuditFilter {
         let Some(entry_ts) = Timestamp::parse_iso(&entry.ts) else {
             return true;
         };
-        // Naive timestamps on either side are read as UTC, which is what
-        // Python's `replace(tzinfo=timezone.utc)` does to both the entry
-        // and the cutoff before comparing. `Timestamp` folds that in at
-        // parse time, so there is nothing left to reconcile here.
+        // Naive timestamps on either side are read as UTC, for both the
+        // entry and the cutoff. `Timestamp` folds that in at parse time,
+        // so there is nothing left to reconcile here.
         let Some(since) = self.since else { return true };
         entry_ts >= since
     }
@@ -286,9 +282,9 @@ impl AuditFilter {
     fn meets_severity(&self, entry: &AuditEntry) -> bool {
         // The ladder mixes two vocabularies: the inspector severities
         // (debug..critical, the classic order) and the traffic watcher's
-        // model-facing enum (info/low/medium/high/critical — see
-        // data/proxy/watcher.py _record_finding, which ranks its findings
-        // here). Without the low/medium/high entries, a lookup miss
+        // model-facing enum (info/low/medium/high/critical, which the
+        // egress watcher records its findings with). Without the
+        // low/medium/high entries, a lookup miss
         // scoring 0 would rank a watcher finding the model called "high"
         // BELOW "info" — invisible to every `cage audit --severity
         // warning` query. Ranked on the same scale: low ≙ info, medium ≙
@@ -337,15 +333,13 @@ impl AuditFilter {
 ///
 /// The only thing audit filtering does with a timestamp is compare two of
 /// them, and the only producer of `ts` is
-/// `datetime.now(timezone.utc).isoformat()` in the proxy addon. A date-time
+/// the egress, which writes an aware UTC ISO 8601 timestamp. A date-time
 /// crate would bring a calendar, a locale story and a leap-second opinion
 /// to a problem that is one `i64` comparison. See the crate docs on keeping
 /// the dependency surface deliberate.
 ///
-/// Naive (offset-less) timestamps are read as UTC. Python reaches the same
-/// place by `replace(tzinfo=timezone.utc)`-ing both sides of the comparison
-/// in `AuditFilter._after_since`; doing it at parse time means the rest of
-/// the module never has to think about it.
+/// Naive (offset-less) timestamps are read as UTC; doing it at parse time
+/// means the rest of the module never has to think about it.
 ///
 /// [`datetime.fromisoformat`]: https://docs.python.org/3/library/datetime.html#datetime.datetime.fromisoformat
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -366,9 +360,10 @@ impl Timestamp {
         Self { micros }
     }
 
-    /// Parse an ISO-8601 string the way `CPython` 3.11+'s
-    /// `datetime.fromisoformat` does, returning `None` where it would raise
-    /// `ValueError`.
+    /// Parse an ISO-8601 string with the leniency of Python 3.11+'s
+    /// `datetime.fromisoformat` (the reference `--since` and the audit
+    /// `ts` field have been pinned to), returning `None` where it would
+    /// refuse.
     ///
     /// Supported, because `fromisoformat` supports them: extended and basic
     /// calendar dates (`2024-01-01`, `20240101`), ISO week dates
@@ -379,7 +374,7 @@ impl Timestamp {
     /// rounded), and the offsets `Z`, `±HH`, `±HHMM`, `±HH:MM`, `±HHMMSS`,
     /// `±HH:MM:SS` and `±HH:MM:SS.ffffff`.
     ///
-    /// Deliberately rejected, also matching `CPython`: a lowercase `z`,
+    /// Deliberately rejected, also matching `fromisoformat`: a lowercase `z`,
     /// unpadded components (`2024-1-1`), an offset of 24 hours or more,
     /// and a trailing `.` with no digits.
     #[must_use]
@@ -391,10 +386,10 @@ impl Timestamp {
     /// offset (`Z` or `±HH…`), i.e. whether `fromisoformat` would have
     /// returned an *aware* datetime.
     ///
-    /// Callers that compare against an aware "now" need this: Python
-    /// raises `TypeError` comparing a naive datetime with an aware one,
-    /// and code that catches it (the egress domain inspector's expiry
-    /// check fails open on it) must not see a naive value read as UTC.
+    /// Callers that compare against an aware "now" need this: a naive
+    /// value has no instant to compare, and code that treats that case
+    /// specially (the egress domain inspector's expiry check fails open
+    /// on it) must not see a naive value read as UTC.
     #[must_use]
     pub fn parse_iso_aware(s: &str) -> Option<(Self, bool)> {
         let b = s.as_bytes();
@@ -407,8 +402,8 @@ impl Timestamp {
             let micros = days.checked_mul(86_400_000_000)?;
             return Some((Self { micros }, false));
         }
-        // Any single character separates date from time — CPython does not
-        // care whether it is `T`.
+        // Any single character separates date from time — it need not
+        // be `T`.
         let rest = &b[date_len + 1..];
         let (time_micros, offset_micros) = parse_iso_time(rest)?;
         // `parse_iso_time` splits the offset at the first of these, so a
@@ -520,7 +515,7 @@ fn parse_iso_date(b: &[u8]) -> Option<(i64, usize)> {
 ///
 /// The weekday is optional and defaults to Monday, which makes finding the
 /// end of the date the fiddly part: whatever follows the week number is
-/// either the weekday or the date/time separator. `CPython` decides by
+/// either the weekday or the date/time separator. `fromisoformat` decides by
 /// shape — extended form takes a weekday only behind a `-`, basic form
 /// only when the next character is a digit — so `2024-W01T00:00` and
 /// `2024W01T00:00` both parse while `2024W01-1` does not.
@@ -601,7 +596,7 @@ fn parse_iso_time(b: &[u8]) -> Option<(i64, i64)> {
 }
 
 /// Parse a trailing `.`/`,` fraction into microseconds. Digits past the
-/// sixth are discarded — `CPython` truncates rather than rounds.
+/// sixth are discarded — truncated rather than rounded.
 fn parse_iso_fraction(b: &[u8]) -> Option<i64> {
     if b.is_empty() {
         return Some(0);
@@ -658,10 +653,11 @@ fn parse_iso_offset(b: &[u8]) -> Option<i64> {
 
 // ── line extraction ──────────────────────────────────────────
 
-/// Python's `str.isspace()`, which is what `str.strip()` trims.
+/// Whitespace as a line is trimmed: Unicode `White_Space` plus the four
+/// ASCII separator controls (U+001C–U+001F), the set Python's
+/// `str.isspace()` uses and earlier releases trimmed.
 ///
-/// Wider than Rust's `char::is_whitespace`: Python also counts the four
-/// ASCII separator controls (U+001C–U+001F). Journald has been known to
+/// Wider than Rust's `char::is_whitespace`. Journald has been known to
 /// pass control bytes through, so the difference is not purely theoretical.
 fn is_strip_space(c: char) -> bool {
     c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}')
@@ -673,11 +669,11 @@ fn strip_space(s: &str) -> &str {
 
 /// Strip a VM-mode log prefix, if present.
 ///
-/// Matches Python's `^\[(?:proxy|dns):(?:debug|info|warning|error|critical)\]\s*(.*)$`,
+/// Matches the regex `^\[(?:proxy|dns):(?:debug|info|warning|error|critical)\]\s*(.*)$`,
 /// hand-rolled rather than pulled from a regex crate for one fixed shape.
 ///
 /// The `$`-with-`.` detail is load-bearing and easy to lose: `.` does not
-/// match a newline and `$` (no `re.MULTILINE`) only anchors at the end of
+/// match a newline and `$` (not in multi-line mode) only anchors at the end of
 /// the string, so a prefixed line that still contains an embedded newline
 /// does *not* match — it falls through to the `{` check below and is
 /// dropped. Reproduced here by the explicit newline test.
@@ -772,12 +768,11 @@ impl OrderedCounts {
 }
 
 impl Serialize for OrderedCounts {
-    /// Serializes as a JSON object, like the `dict` Python hands back.
+    /// Serializes as a JSON object.
     ///
     /// The insertion order kept above is dropped here on purpose: the
-    /// corpus writes these with `json.dumps(..., sort_keys=True)`, and
-    /// `serde_json`'s `Map` is a `BTreeMap`, which sorts by the same
-    /// code-point order Python does.
+    /// corpus stores these with sorted keys, and `serde_json`'s `Map` is
+    /// a `BTreeMap`, which sorts in the same code-point order.
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.collect_map(self.0.iter().map(|(k, v)| (k, v)))
     }
@@ -845,7 +840,7 @@ pub struct AuditSummary {
     /// Count per method, in first-seen order. Case is not normalized, so a
     /// proxy that wrote `post` and one that wrote `POST` show up as two
     /// rows — visible in the golden corpus, and arguably a bug, but it is
-    /// the Python behaviour. A record with no method is not counted.
+    /// the pinned behaviour. A record with no method is not counted.
     pub methods: OrderedCounts,
     /// Count per `kind`, traffic and control plane alike, in first-seen
     /// order. HTTP and DNS decisions have no kind and are not counted.
@@ -917,12 +912,11 @@ pub fn compute_summary(entries: &[AuditEntry]) -> AuditSummary {
 
 // ── formatting ───────────────────────────────────────────────
 
-/// SGR colour for each decision, matching `_DECISION_COLORS` in the Python.
+/// SGR colour for each decision.
 ///
-/// These are the codes `click.style(fg=...)` emits; the reset is click's
-/// default `reset=True` tail. Click is not a dependency of this crate and a
-/// colour crate would be three constants' worth of overhead, so the escape
-/// is written out.
+/// The plain foreground codes, with a full reset as the tail, as earlier
+/// releases printed them. A colour crate would be three constants' worth
+/// of overhead, so the escape is written out.
 const fn decision_color(decision: &str) -> Option<&'static str> {
     match decision.as_bytes() {
         b"blocked" => Some("31"),
@@ -932,7 +926,7 @@ const fn decision_color(decision: &str) -> Option<&'static str> {
     }
 }
 
-/// Truncate to at most `n` characters, like Python's `s[:n]`.
+/// Truncate to at most `n` characters (not bytes).
 fn truncate(s: &str, n: usize) -> &str {
     match s.char_indices().nth(n) {
         Some((i, _)) => &s[..i],
@@ -940,7 +934,7 @@ fn truncate(s: &str, n: usize) -> &str {
     }
 }
 
-/// Pad `s` on the right to `width` characters, like Python's `f"{s:<width}"`.
+/// Pad `s` on the right to `width` characters.
 ///
 /// `format!("{s:<width$}")` would do the same thing; this exists so the
 /// column arithmetic below reads as data rather than as a wall of format
@@ -1117,11 +1111,11 @@ pub fn format_table_row(entry: &AuditEntry, color: bool) -> String {
     // SGR escapes from a coloured table yields the plain table byte for
     // byte. `colour_only_adds_escapes` pins that invariant.
     //
-    // The Python used to pad DIRECTION to 4 here while the header and the
+    // Earlier releases padded DIRECTION to 4 here while the header and the
     // plain branch used 10, which shifted every column from METHOD onward
     // by a different amount depending on whether the direction read
     // OUTBOUND, INBOUND or empty. Colour is the default, so that was what
-    // `cage audit` normally printed. Fixed in the same commit as this port.
+    // `cage audit` normally printed. Fixed since.
     let colored_decision = format!("\u{1b}[{fg}m{}\u{1b}[0m", ljust(decision, 10));
     format!(
         "{} {} {} {} {} {} {colored_decision} {reason}",
@@ -1136,7 +1130,7 @@ pub fn format_table_row(entry: &AuditEntry, color: bool) -> String {
 
 /// Format `count` as `(NN%)` of `total`, or `""` when there is no total.
 ///
-/// Integer division, floored — Python's `//`. 7 of 8 reads as 87%, not 88%.
+/// Integer division, floored. 7 of 8 reads as 87%, not 88%.
 fn percent(count: u64, total: usize) -> String {
     if total == 0 {
         String::new()
@@ -1228,13 +1222,12 @@ mod tests {
     /// The golden corpus exercises exactly three timestamp shapes — aware,
     /// naive and unparseable — because that is all `audit.jsonl` contains.
     /// This table is the rest of the surface, and it is not hand-reasoned:
-    /// every row was produced by running the string through `CPython`'s
+    /// every row was produced by running the string through CPython's
     /// `datetime.fromisoformat` and converting the result to microseconds
-    /// since the epoch (naive read as UTC, which is what
-    /// `AuditFilter._after_since` does to both sides before comparing).
-    /// A `None` is a `ValueError` there.
+    /// since the epoch (naive read as UTC, as the filter does to both
+    /// sides before comparing). A `None` is a `ValueError` there.
     #[test]
-    fn iso_timestamps_agree_with_cpython() {
+    fn iso_timestamps_agree_with_fromisoformat() {
         let cases: &[(&str, Option<i64>)] = &[
             // the two shapes the proxy addon actually writes
             ("2024-01-01T00:00:00+00:00", Some(1_704_067_200_000_000)),

@@ -1,25 +1,25 @@
 //! Shared parsing and validation for user-declared host bind mounts.
 //!
-//! Port of `src/agentcage/volume_mounts.py`. Everything here turns a
+//! Everything here turns a
 //! user-authored string from `cage.yaml` into something that ends up in a
 //! container runtime's mount arguments, so a parsing mistake here is a
 //! containment mistake, not a cosmetic one. Two rules follow from that and
 //! are worth stating before the code:
 //!
-//! **Parse exactly as Python does, colon for colon.** `split_volume_spec`
+//! **Parse exactly as specified, colon for colon.** `split_volume_spec`
 //! splits on at most two colons, so the *third* field swallows every
 //! remaining colon. A host path containing a colon therefore does not mean
 //! what its author expects — `/a:b:/dst` parses as source `/a`, target `b`,
 //! options `/dst` — and that is also how Podman's own `--volume` parser
 //! behaves. Reproducing it is the point; "fixing" it here would make the
-//! Rust host disagree with the runtime it drives.
+//! host disagree with the runtime it drives.
 //!
 //! **Do not expand anything.** No `~`, no `$VAR`, no `realpath`, no
-//! `Path::canonicalize`. The Python module is equally inert: expansion
-//! happens later and elsewhere, at the three sites that actually build
-//! runtime arguments (`quadlets.py:639`, `run.py:200`,
-//! `backends/apple_container.py:438`), each of which pairs it with a
-//! containment check against `$HOME`. Expanding earlier would change what a
+//! `Path::canonicalize`. Expansion happens later and elsewhere, at the
+//! three sites that actually build runtime arguments (the quadlet
+//! renderer, `agentcage-cli`'s `run.rs`, and the apple-container
+//! backend), each of which pairs it with a containment check against
+//! `$HOME`. Expanding earlier would change what a
 //! config *means*: the stored `cage.yaml` and the fingerprint would capture a
 //! resolved path instead of the operator's `${HOME}/project`, so the same
 //! config would stop meaning the same thing for a different user, and a
@@ -28,8 +28,7 @@
 //! pins this: every `source` it records is the literal `${HOME}/…` text.
 //!
 //! This crate is also forbidden to touch the filesystem (see the crate docs),
-//! which lines up: none of these functions ask the disk anything, exactly as
-//! the Python does not.
+//! which lines up: none of these functions ask the disk anything.
 //!
 //! # The tmpfs mask logic
 //!
@@ -75,7 +74,7 @@ pub const TMPFS_COPYUP_OPTIONS: [&str; 2] = ["tmpcopyup", "notmpcopyup"];
 
 /// Split `host:target[:options]` into its three fields.
 ///
-/// Mirrors Python's `spec.split(":", 2)`: at most two splits, so any further
+/// At most two splits, so any further
 /// colon stays inside the options field. A spec with no colon at all is all
 /// source and no target, and a trailing colon yields an empty options field
 /// rather than being trimmed away.
@@ -86,7 +85,7 @@ pub fn split_volume_spec(spec: &str) -> (&str, &str, &str) {
     // only there to keep the expression total.
     let source = parts.next().unwrap_or(spec);
     let Some(target) = parts.next() else {
-        // `len(parts) < 2` in the Python: no colon, so nothing is a target.
+        // No colon, so nothing is a target.
         return (spec, "", "");
     };
     (source, target, parts.next().unwrap_or(""))
@@ -114,8 +113,8 @@ pub fn is_non_persistent_volume(spec: &str) -> bool {
 /// A volume spec whose `np` option cannot compose with its other options.
 ///
 /// Carries the parts rather than a formatted string so a caller can render
-/// it differently; [`fmt::Display`] reproduces the Python `ValueError`
-/// message byte-for-byte, because `cage create` puts it in front of a user.
+/// it differently; [`fmt::Display`] reproduces the pinned message
+/// byte-for-byte, because `cage create` puts it in front of a user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NonPersistentVolumeError {
     /// The offending spec, verbatim.
@@ -250,12 +249,12 @@ pub struct EnclosingMount<'a> {
 /// mount the backend emits.
 ///
 /// Returns the longest matching mount, or [`None`] when no mount encloses
-/// `target` (the Python returns `("", "")` here; `None` says the same thing
-/// without an in-band empty string, since a matched mount's target is never
-/// empty). A mount at `/` never matches: it would make every path in the cage
+/// `target` (a matched mount's target is never empty, so `None` needs no
+/// in-band empty string). A mount at `/` never matches: it would make every
+/// path in the cage
 /// look nested.
 ///
-/// Ties go to the *last* candidate, matching the Python's `>=`. That only
+/// Ties go to the *last* candidate. That only
 /// bites when two mounts declare the same container target, which the runtime
 /// itself resolves last-wins, so this agrees with what would actually be
 /// mounted.
@@ -331,7 +330,7 @@ pub struct MaskMountpointDirs {
 /// attributed to the named volume and therefore skipped.
 ///
 /// The result is ordered by first appearance of each host source — the
-/// insertion order of the Python `dict`, which the golden corpus records —
+/// order the golden corpus records —
 /// and each `dirs` list is ordered deepest first, so removing
 /// `<project>/.git/hooks` is attempted before the `<project>/.git` parent that
 /// the same mask also created.
@@ -392,10 +391,9 @@ pub fn mask_mountpoint_dirs(
             }
         }
     }
-    // A stable sort by component count, descending — Python's
-    // `sort(key=..., reverse=True)` keeps equal keys in insertion order, and
-    // `slice::sort_by_key` is stable too, so equal-depth siblings from
-    // different masks stay in declaration order.
+    // A stable sort by component count, descending: equal-depth siblings
+    // from different masks stay in declaration order, as the golden corpus
+    // records them.
     for entry in &mut result {
         entry.dirs.sort_by_key(|path| Reverse(count_slashes(path)));
     }
@@ -590,8 +588,8 @@ fn join_host_path(base: &str, parts: &[&str]) -> String {
 /// `os.path.normpath` for the POSIX paths this module sees.
 ///
 /// Collapses repeated separators, drops `.` components, and resolves `..`
-/// lexically — *without* consulting the filesystem, exactly as the Python
-/// does, so a `..` through a symlink is not silently followed. Two POSIX
+/// lexically — *without* consulting the filesystem, so a `..` through a
+/// symlink is not silently followed. Two POSIX
 /// quirks are deliberate rather than accidental: a path beginning with
 /// exactly two slashes keeps them (POSIX reserves `//` for the
 /// implementation), and `..` at the root of an absolute path is discarded
@@ -634,24 +632,28 @@ pub fn normpath(path: &str) -> String {
     }
 }
 
-/// Render a string the way Python's `repr()` would.
+/// A string as a quoted literal, in the convention
+/// [`crate::value_fmt`] documents.
 ///
-/// [`NonPersistentVolumeError`]'s message interpolates the spec with `{!r}`,
-/// and that message is UX: `cage create` prints it verbatim, and
+/// [`NonPersistentVolumeError`]'s message interpolates the spec quoted, and
+/// that message is UX: `cage create` prints it verbatim, and
 /// `tests/fixtures/golden` pins the bytes. So the quoting rules have to
-/// match, not merely look similar — Python prefers `'`, switches to `"` when
-/// the string contains a `'` but no `"`, and escapes the quote character only
-/// when it could not switch away from it.
+/// match, not merely look similar — `'` by default, `"` when the string
+/// contains a `'` but no `"`, and the quote character escaped only when it
+/// could not switch away from it.
 ///
 /// Scope: exact over the whole of Latin-1, verified character by character
-/// against `CPython`. Beyond it Python decides printability from the Unicode
-/// category table — `U+200B` renders `\u200b`, not as itself — and carrying
-/// that table to render one error message about a path nobody can type by
-/// accident is not a trade worth making, so such a character is emitted
-/// literally here. It is a divergence in an error string only; no parsing
-/// decision depends on this function. If it ever matters, the fix is a shared
-/// `quote_path` alongside the rest of `config.py`'s message formatting rather
-/// than a second copy here.
+/// against CPython's `repr()`, the reference for the convention. Beyond it
+/// the reference decides printability from the Unicode category table —
+/// `U+200B` renders `\u200b`, not as itself — and carrying that table to
+/// render one error message about a path nobody can type by accident is not
+/// a trade worth making, so such a character is emitted literally here. It
+/// is a divergence in an error string only; no parsing decision depends on
+/// this function.
+///
+/// This is a separate copy of [`crate::value_fmt::quote_text`], and not
+/// identical to it: this one also escapes NBSP (`U+00A0`) and the soft
+/// hyphen (`U+00AD`), which `quote_text` emits literally.
 fn quote_path(value: &str) -> String {
     let quote = if value.contains('\'') && !value.contains('"') {
         '"'
@@ -670,7 +672,8 @@ fn quote_path(value: &str) -> String {
                 out.push('\\');
                 out.push(c);
             }
-            // Every character Latin-1 has that Python calls non-printable:
+            // Every character Latin-1 has that the convention calls
+            // non-printable:
             // the C0 controls, DEL, the C1 controls, NBSP and the soft
             // hyphen. All render `\xNN`.
             c if (c as u32) < 0x20 || ('\u{7f}'..='\u{a0}').contains(&c) || c == '\u{ad}' => {
@@ -766,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn repr_switches_quotes_like_python() {
+    fn quote_path_switches_quotes_by_content() {
         assert_eq!(quote_path("/a:/b"), "'/a:/b'");
         assert_eq!(quote_path("it's"), "\"it's\"");
         assert_eq!(quote_path("say \"hi\""), "'say \"hi\"'");

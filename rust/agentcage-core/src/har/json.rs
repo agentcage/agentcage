@@ -1,13 +1,14 @@
-//! A JSON value with Python's `dict` semantics, and a `json.dumps` clone.
+//! An insertion-ordered JSON value, and a serializer that writes the
+//! layout of Python's `json` module.
 //!
 //! # Why this is not `serde_json`
 //!
-//! `har.py` reaches `json.dumps` twice, and both calls are byte-sensitive:
+//! The HAR export serializes JSON twice, and both are byte-sensitive:
 //!
-//! * `cli.py`'s `cage har` prints `json.dumps(har, indent=2)` — Python
-//!   dict order, `ensure_ascii=True`, two-space indent.
-//! * `har.py` itself embeds `json.dumps(metadata)` as each entry's
-//!   `comment` *string*, so that text is part of the HAR document. The
+//! * `cage har` prints the document with a two-space indent, keys in
+//!   insertion order, non-ASCII escaped.
+//! * Each entry's `comment` is itself a JSON *string* holding the
+//!   capture metadata, so that text is part of the HAR document. The
 //!   metadata carries the capture entry's own `inspectors` list, copied
 //!   straight out of the capture JSONL, so the key order of objects
 //!   *read from the input* survives into the output. The golden corpus
@@ -21,7 +22,11 @@
 //! landing alongside this one. A local value type keeps that choice from
 //! leaking and keeps `agentcage-core`'s dependency list empty.
 //!
-//! # What "Python-shaped" means here
+//! # The layout
+//!
+//! Earlier releases wrote HAR and capture text with Python's `json`
+//! module, and the golden corpus pins that output, so this module
+//! reproduces the module's conventions:
 //!
 //! | `json` module | this module |
 //! | :-- | :-- |
@@ -36,30 +41,29 @@
 use std::fmt;
 use std::fmt::Write as _;
 
-/// A parsed JSON value, ordered the way Python's `json.loads` orders one.
+/// A parsed JSON value, with objects kept in document order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Json {
-    /// `null`, Python's `None`.
+    /// `null`.
     Null,
     /// `true` or `false`.
     Bool(bool),
     /// An integer that fits in an `i64`.
     Int(i64),
-    /// An integer that does not. Python's `int` is unbounded, so the
-    /// literal digits are kept verbatim and re-emitted unchanged rather
-    /// than being rounded into an `f64` — `json.loads` would not round
-    /// them either.
+    /// An integer that does not. The literal digits are kept verbatim
+    /// and re-emitted unchanged rather than being rounded into an `f64`,
+    /// so a large integer in a capture line survives the round trip.
     BigInt(String),
-    /// A float, including the `NaN` and infinities Python's `json`
-    /// accepts and emits by default.
+    /// A float, including `NaN` and the infinities, which the pinned
+    /// format accepts and emits.
     Float(f64),
     /// A string.
     Str(String),
     /// An array.
     Array(Vec<Json>),
-    /// An object, in insertion order. Python's `dict` keeps the position
-    /// of a key's *first* appearance and the value of its last, and so
-    /// does [`Json::set`].
+    /// An object, in insertion order. A repeated key keeps the position
+    /// of its *first* appearance and the value of its last, both when
+    /// parsed and through [`Json::set`].
     Object(Vec<(String, Json)>),
 }
 
@@ -69,8 +73,8 @@ impl Json {
         Self::Str(value.into())
     }
 
-    /// The value for `key`, or `None` — Python's `dict.get`, and `None`
-    /// for anything that is not an object, where Python would raise.
+    /// The value for `key`, or `None` — also `None` for anything that
+    /// is not an object.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
@@ -79,7 +83,7 @@ impl Json {
         }
     }
 
-    /// Set `key`, Python-style: an existing key keeps its position and
+    /// Set `key`: an existing key keeps its position and
     /// takes the new value; a new key goes on the end. No-op on a
     /// non-object.
     pub fn set<S: Into<String>>(&mut self, key: S, value: Self) {
@@ -102,7 +106,7 @@ impl Json {
         }
     }
 
-    /// Python truthiness: empty containers and strings, zero numbers,
+    /// Truthiness: empty containers and strings, zero numbers,
     /// `False` and `None` are false; everything else is true.
     #[must_use]
     pub fn is_truthy(&self) -> bool {
@@ -330,9 +334,9 @@ impl Parser<'_> {
             }
             self.pos = mark;
         }
-        // Python can hold a lone surrogate in a `str` and Rust cannot, so
-        // an unpaired one becomes U+FFFD. `capture.jsonl` is written by
-        // `json.dumps`, which never emits one.
+        // A Rust `String` cannot hold a lone surrogate, so an unpaired
+        // one becomes U+FFFD. The capture writer escapes only valid
+        // characters, so it never emits one.
         out.push(char::from_u32(first).unwrap_or(char::REPLACEMENT_CHARACTER));
         Ok(())
     }
@@ -403,12 +407,12 @@ impl Parser<'_> {
 
 // ── Serializing ──────────────────────────────────────────────
 
-/// The `json.dumps` keyword arguments this port needs, with Python's
-/// defaults.
+/// Serializer options, named after the `json.dumps` keyword arguments
+/// they correspond to, with that function's defaults.
 #[derive(Clone, Copy, Debug)]
 pub struct DumpOptions {
     /// `indent`: `None` for the one-line form, `Some(n)` for `n` spaces
-    /// per level. Python drops the trailing space from the item
+    /// per level. The layout drops the trailing space from the item
     /// separator when an indent is set, so the one-line form separates
     /// with `", "` and the indented form with `","` plus a newline.
     pub indent: Option<usize>,
@@ -416,11 +420,11 @@ pub struct DumpOptions {
     /// insertion order.
     pub sort_keys: bool,
     /// `ensure_ascii`: escape every non-ASCII character as `\uXXXX`.
-    /// True is Python's default, and what `cage har` and the `comment`
+    /// True by default, and what `cage har` and the `comment`
     /// string both get.
     pub ensure_ascii: bool,
     /// `separators`: `(item_separator, key_separator)`. `None` asks for
-    /// Python's own defaulting, which depends on `indent`: `(", ", ": ")`
+    /// the default, which depends on `indent`: `(", ", ": ")`
     /// on one line, `(",", ": ")` once an indent supplies the space
     /// itself. `fingerprint.stable_json` is the caller that overrides it,
     /// with `(",", ":")` — the compact form, and the one place in this
@@ -440,7 +444,7 @@ impl Default for DumpOptions {
 }
 
 impl DumpOptions {
-    /// `json.dumps(value, indent=2)` — what `cli.py` writes a HAR with.
+    /// Two-space indent — what `cage har` writes a HAR with.
     #[must_use]
     pub fn indented() -> Self {
         Self {
@@ -483,7 +487,7 @@ fn write_value(out: &mut String, value: &Json, options: DumpOptions, depth: usiz
     }
 }
 
-/// Python emits `[]` and `{}` for empty containers even under `indent`,
+/// Empty containers are `[]` and `{}` even under `indent`,
 /// so the newline and the indent only appear once there is an item.
 fn write_array(out: &mut String, items: &[Json], options: DumpOptions, depth: usize) {
     if items.is_empty() {
@@ -510,8 +514,8 @@ fn write_object(out: &mut String, pairs: &[(String, Json)], options: DumpOptions
     }
     let mut order: Vec<&(String, Json)> = pairs.iter().collect();
     if options.sort_keys {
-        // Python compares `str` by code point; Rust compares `String` by
-        // UTF-8 bytes, and for valid UTF-8 those orders agree.
+        // Keys sort by code point; Rust compares `String` by UTF-8
+        // bytes, and for valid UTF-8 those orders agree.
         order.sort_by(|a, b| a.0.cmp(&b.0));
     }
     let (item_separator, key_separator) = options.resolved_separators();
@@ -577,10 +581,11 @@ fn push_hex_escape(out: &mut String, code: u32) {
     let _ = write!(out, "\\u{code:04x}");
 }
 
-/// Format a float the way Python's `repr` — and so `json.dumps` — does.
+/// Format a float the way CPython's `repr` (and so its `json` module)
+/// does, which is the spelling every pinned float uses.
 ///
-/// Both languages print the shortest decimal that round-trips, so the
-/// digits always agree; the layout does not. Python switches to
+/// Both print the shortest decimal that round-trips, so the digits
+/// always agree with Rust's; the layout does not. CPython switches to
 /// exponent notation when the decimal point sits at or below -4 or above
 /// 16, writes the exponent with a sign and at least two digits
 /// (`1e+16`, `1e-05`), and keeps a `.0` on a float with no fraction.
@@ -589,8 +594,8 @@ fn push_hex_escape(out: &mut String, code: u32) {
 /// exactly the shortest digits and decimal exponent to rebuild from.
 #[must_use]
 pub fn format_float(value: f64) -> String {
-    // `json.dumps` emits these three by default; `allow_nan=False` is
-    // what turns them into an error, and nothing here passes it.
+    // The pinned format emits these three as bare words rather than
+    // refusing them.
     if value.is_nan() {
         return "NaN".to_string();
     }
@@ -642,9 +647,9 @@ pub fn format_float(value: f64) -> String {
 mod tests {
     use super::{DumpOptions, Json, dumps, format_float, parse};
 
-    /// Every expectation here is `json.dumps` output, read off `CPython`.
+    /// Every expectation here is CPython's `json.dumps` output.
     #[test]
-    fn floats_render_the_way_python_repr_does() {
+    fn floats_render_in_the_pinned_spelling() {
         let cases: &[(f64, &str)] = &[
             (0.0, "0.0"),
             (-0.0, "-0.0"),
@@ -678,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn strings_escape_the_way_python_does() {
+    fn strings_escape_in_the_pinned_spelling() {
         let ascii = DumpOptions::default();
         let raw = DumpOptions {
             ensure_ascii: false,
@@ -719,8 +724,8 @@ mod tests {
         assert_eq!(dumps(&value, sorted), r#"{"a": 2, "b": 1, "c": 3}"#);
     }
 
-    /// Python keeps a repeated key where it first appeared and gives it
-    /// the last value.
+    /// A repeated key stays where it first appeared and takes the last
+    /// value.
     #[test]
     fn a_repeated_key_keeps_its_position() {
         let value = parse(r#"{"a": 1, "b": 2, "a": 3}"#).unwrap();
@@ -754,7 +759,7 @@ mod tests {
             dumps(&value, DumpOptions::default()),
             r#"{"b": [1, 2], "a": {"c": null}}"#
         );
-        // An explicit separator survives `indent`, where Python would
+        // An explicit separator survives `indent`, which would
         // otherwise have defaulted the item separator to a bare comma.
         let indented = DumpOptions {
             separators: Some((",", ": ")),
@@ -768,7 +773,7 @@ mod tests {
 
     #[test]
     fn numbers_survive_the_round_trip() {
-        // Python's `int` is unbounded and `json.loads` keeps every digit.
+        // An integer too large for an `i64` keeps every digit.
         let big = "123456789012345678901234567890";
         assert_eq!(dumps(&parse(big).unwrap(), DumpOptions::default()), big);
         assert_eq!(parse("-0").unwrap(), Json::Int(0));
@@ -804,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn truthiness_follows_python() {
+    fn truthiness_treats_empty_and_zero_as_false() {
         for falsy in [
             Json::Null,
             Json::Bool(false),

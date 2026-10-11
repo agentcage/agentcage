@@ -1,19 +1,16 @@
-//! Quadlet unit files, rendered from the same `.j2` templates Python uses.
+//! Quadlet unit files, rendered from the `.j2` templates under
+//! `src/agentcage/templates/`.
 //!
-//! This is PR C8 of docs/history/rust-port-plan.md's Track C: the port of
-//! `src/agentcage/quadlets.py` and the four templates under
-//! `src/agentcage/templates/` it renders.
-//!
-//! # The templates are not rewritten
+//! # The templates are Jinja2
 //!
 //! `network.j2`, `volume.j2`, `cage.container.j2` and
-//! `egress.container.j2` are used **unmodified**. They have to be: the
-//! Python renders the same files until cutover, so any edit would have
-//! to keep working for both implementations, and a systemd unit file is
-//! line-oriented — a stray blank line or a lost one is a behaviour
-//! change, not a formatting one. minijinja is Jinja2-compatible enough
-//! to render them as they stand; [`templates`] is where the environment
-//! is configured to match `quadlets._make_env()` setting for setting.
+//! `egress.container.j2` are the same Jinja2 templates earlier releases
+//! rendered, and a systemd unit file is line-oriented — a stray blank
+//! line or a lost one is a behaviour change, not a formatting one, and
+//! it changes the units already deployed hosts compare against. minijinja
+//! is Jinja2-compatible enough to render them as they stand;
+//! [`templates`] is where the environment's whitespace and undefined
+//! handling are configured to match.
 //!
 //! The bytes come from [`agentcage_assets`], which already embeds
 //! `templates/` for this purpose, rather than from a second
@@ -22,7 +19,7 @@
 //! # What "faithful" means here
 //!
 //! The golden corpus (`tests/fixtures/golden/`) records every unit file
-//! `quadlets.generate_quadlets` produced for 120 of its 125 valid cases,
+//! earlier releases generated for 120 of its 125 valid cases,
 //! and the corpus README puts quadlets on the **byte-exact** side of its
 //! comparison line — systemd is a byte-sensitive consumer. So the
 //! acceptance check is a diff, not a judgement: `tests/golden_quadlets.rs`
@@ -31,8 +28,8 @@
 //!
 //! The five cases with no units are the `apple-container` ones, which
 //! carry a `NOT-APPLICABLE.txt`: that backend builds `container run`
-//! argv and a launchd plist in `backends/apple_container.py` and never
-//! reaches this module. They are Track E's, not this PR's.
+//! argv and a launchd plist (`crate::apple`) and never reaches this
+//! module.
 //!
 //! # I/O
 //!
@@ -42,16 +39,15 @@
 //! directory, skips one that does not exist, and stages a single-file
 //! source for the VM backend by *copying* it. The crate still performs
 //! no I/O itself: every one of those goes through [`QuadletHost`], which
-//! `agentcage-cli` implements against the real filesystem (Track D) and
+//! `agentcage-cli` implements against the real filesystem and
 //! the golden-corpus test implements against a temporary tree.
 //!
 //! # What stayed behind
 //!
-//! `quadlets.collect_used_octets` is not here. It walks
-//! `~/.config/agentcage/cages/*/metadata.json`, which is `state.py`'s
-//! territory (Track D); this module takes the resulting set as
-//! [`GenerateOptions::used_octets`], exactly as the Python function
-//! takes it as an argument.
+//! Collecting the octets other cages already use is not here. It walks
+//! `~/.config/agentcage/cages/*/metadata.json`, which is state, so
+//! `agentcage-cli`'s `services::collect_used_octets` does it and this
+//! module takes the resulting set as [`GenerateOptions::used_octets`].
 
 pub mod render;
 pub mod templates;
@@ -65,9 +61,8 @@ use crate::config::Config;
 
 /// The network addresses a cage's units are pinned to.
 ///
-/// The Python returns a `dict` with these three keys and splats it into
-/// every template as part of `common`; the field names are the template
-/// variable names and must not drift.
+/// Serialized into every template as part of `common`; the field names
+/// are the template variable names and must not drift.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CageNetworkAddrs {
     /// The cage's `/24`, e.g. `10.89.42.0/24`.
@@ -121,7 +116,7 @@ impl CageNetworkAddrs {
 /// `used_octets` is ignored when `network_octet` is set.
 ///
 /// The hash is MD5, and it stays MD5 because it is a compatibility
-/// constraint rather than a security one: every cage Python deployed has
+/// constraint rather than a security one: every cage already deployed has
 /// its podman network pinned to the octet MD5 chose, and a "better" hash
 /// would move every one of them.
 ///
@@ -242,7 +237,7 @@ pub fn vm_local_grants_file(name: &str) -> String {
 /// VM-local dir of the traffic watcher's output (findings + scan state).
 ///
 /// Sibling of the grants overlay INSIDE the guest: the in-egress watcher
-/// (`data/proxy/watcher.py`) writes `watcher/findings.jsonl` and
+/// writes `watcher/findings.jsonl` and
 /// `watcher/state.json` next to the overlay on the same guest-local
 /// volume, and the host-side `agentcage watcher` CLI pulls them back
 /// over `limactl shell` exactly like `pull_grants` does (same
@@ -351,11 +346,11 @@ pub fn reserved_volume_entry(entry: &str, source: &str) -> Option<String> {
 
 /// Characters that require quoting in systemd `Exec=` lines.
 ///
-/// The Python is `re.compile(r'[\s"\\$%]')`, matched against a `str`, so
-/// `\s` is Python's *Unicode* whitespace class. That is Rust's
+/// Whitespace, `"`, `\`, `$` or `%`. Whitespace here is Rust's
 /// [`char::is_whitespace`] plus the four ASCII information separators
-/// `\x1c`–`\x1f`, which Python counts as whitespace and the Unicode
-/// `White_Space` property does not.
+/// `\x1c`–`\x1f`, which the Unicode `White_Space` property leaves out
+/// but earlier releases' Unicode `\s` matched — so the same arguments
+/// stay quoted in deployed units.
 fn systemd_needs_quote(arg: &str) -> bool {
     arg.chars().any(|c| {
         c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}') || matches!(c, '"' | '\\' | '$' | '%')
@@ -419,8 +414,9 @@ const LLM_PROVIDER_DNS_HOSTS: [(&str, &str); 3] = [
 /// cage still can't reach these hosts over HTTP — only the
 /// egress-internal component that needs them can.
 ///
-/// This lives here because it does in Python: `state.save_dns_allowlist`
-/// imports it from `quadlets` to build `dns-allowlist.conf`.
+/// Shared with the code that writes `dns-allowlist.conf`
+/// (`agentcage_state::derived` and the apple-container egress config),
+/// so the dnsmasq allowlist and the units agree.
 #[must_use]
 pub fn effective_dns_allowlist(config: &Config) -> Vec<String> {
     if config.domains.mode != "allowlist" {
@@ -475,7 +471,7 @@ pub fn effective_dns_allowlist(config: &Config) -> Vec<String> {
 ///
 /// Lowercased and with any `user:password@`, port and IPv6 brackets
 /// stripped, which is what `.hostname` does. A `base_url` that parses to
-/// nothing (no `//`) yields `""`, as it does in Python.
+/// nothing (no `//`) yields `""`.
 fn url_hostname(url: &str) -> String {
     let after_scheme = match url.split_once("://") {
         Some((_scheme, rest)) => rest,
@@ -551,10 +547,10 @@ pub fn b64(value: &str) -> String {
 
 /// The same, over bytes.
 ///
-/// `base64.b64encode` takes bytes and every caller that matters hands
-/// it bytes: `vm.py`'s host-to-guest pushes read `proxy-config.yaml`,
-/// `dns-allowlist.conf` and `placeholders.env` with `read_bytes()` and
-/// pipe the result through `base64 -d` in the guest. Routing those
+/// Every caller that matters has bytes: the VM backend's host-to-guest
+/// pushes (`agentcage-cli`'s `vm.rs`) read `proxy-config.yaml`,
+/// `dns-allowlist.conf` and `placeholders.env` as raw bytes and pipe
+/// the result through `base64 -d` in the guest. Routing those
 /// through a `str` would mean a lossy decode in the middle of a
 /// pipeline whose whole point is that it is byte-exact.
 #[must_use]
@@ -591,7 +587,6 @@ mod tests {
         load("cage.yaml", yaml, &FixedHost::linux(&["192.0.2.53"])).expect("valid config")
     }
 
-    /// `tests/test_quadlets.py::test_systemd_exec_join*`.
     #[test]
     fn systemd_exec_quotes_only_what_needs_it() {
         let args =
@@ -623,9 +618,9 @@ mod tests {
     }
 
     /// The octet is MD5-derived and must not move: a deployed cage's
-    /// podman network is pinned to the one Python computed.
+    /// podman network is pinned to the one earlier releases computed.
     #[test]
-    fn network_addrs_reproduce_the_python_hash() {
+    fn network_addrs_reproduce_the_pinned_hash() {
         let addrs = cage_network_addrs("test", None, None).expect("allocates");
         // md5("test") = 098f6bcd…, and 0x098f6bcd % 254 + 1 = 48.
         assert_eq!(addrs.subnet, "10.89.48.0/24");
@@ -661,13 +656,13 @@ mod tests {
     }
 
     #[test]
-    fn base64_matches_python() {
+    fn base64_is_standard_padded() {
         assert_eq!(b64(""), "");
         assert_eq!(b64("a"), "YQ==");
         assert_eq!(b64("ab"), "YWI=");
         assert_eq!(b64("abc"), "YWJj");
         assert_eq!(b64("/home/luca/project\n"), "L2hvbWUvbHVjYS9wcm9qZWN0Cg==");
-        // Non-ASCII goes through as UTF-8, as `value.encode()` does.
+        // Non-ASCII goes through as UTF-8.
         assert_eq!(b64("é"), "w6k=");
     }
 

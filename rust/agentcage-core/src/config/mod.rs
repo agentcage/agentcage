@@ -1,78 +1,66 @@
-//! `cage.yaml`, as a Rust type — the port of `config.py`'s parser.
+//! `cage.yaml`, as a Rust type: parsing, structural checks and
+//! validation.
 //!
-//! # Scope
+//! # Layout
 //!
-//! This is PR C1 of docs/history/rust-port-plan.md's Track C, and it is deliberately
-//! only half of `config.py`:
+//! | | Module |
+//! | :-- | :-- |
+//! | the type tree | [`types`] |
+//! | `load` — reading a document into that tree | [`parse`] |
+//! | structural rejection (a list where a mapping belongs) | [`parse`] |
+//! | `resolved-config.json` | [`json`] |
+//! | domains, ports, secrets, placeholders | [`domain`], [`secret`], [`placeholder`], [`mod@validate`] |
+//! | agent rules | [`agents`] |
+//! | inspector warnings | [`inspectors`] |
+//! | one `protocol_relays` entry | [`crate::relays`] |
 //!
-//! | | Here | Elsewhere |
-//! | :-- | :-- | :-- |
-//! | the type tree | [`types`] | |
-//! | `load_config` — reading a document into that tree | [`parse`] | |
-//! | structural rejection (a list where a mapping belongs) | [`parse`] | |
-//! | `resolved-config.json` | [`json`] | |
-//! | domains, ports, secrets, placeholders | [`domain`], [`secret`], [`placeholder`], [`mod@validate`] | |
-//! | `validate_config`'s agent rules | [`agents`] | |
-//! | `validate_config`'s inspector warnings | [`inspectors`] | |
-//! | one `protocol_relays` entry | [`crate::relays`] | |
+//! Validation is two self-contained halves: the relay, agent, capture
+//! and inspector half, and the domain, port, secret and placeholder
+//! half. Each runs its checks in a fixed order internally, and the
+//! order is observable — the first failing check is the one reported.
 //!
-//! PR C3 added the last three rows. It owns the relay, agent, capture
-//! and inspector half of `validate_config`; PR C2 owns the domain,
-//! port, secret and placeholder half. The single ordered driver that
-//! calls both is in neither: the two PRs land in parallel, and a
-//! function whose body is half one branch and half the other is a
-//! merge conflict with an observable ordering inside it. Each half is
-//! a self-contained step, in `config.py`'s order internally.
+//! "Capture" has no validator of its own — `capture.max_body_size` and
+//! `capture.max_file_size` are bounded by their defaults rather than by
+//! a check. What that area does own is a cross-boundary constant:
+//! [`types::MAX_CAPTURE_FILE_BYTES`] must equal the literal the
+//! egress's capture writer falls back to, which `shared_constants.json`
+//! pins and `tests/contract_relay_entry.rs` asserts.
 //!
-//! "Capture" has no validator of its own — `config.py` bounds
-//! `capture.max_body_size` and `capture.max_file_size` by their
-//! defaults rather than by a check. What C3 owed that area was the
-//! cross-boundary constant: [`types::MAX_CAPTURE_FILE_BYTES`] must
-//! equal the literal `capture.CaptureWriter` falls back to, which
-//! `shared_constants.json` pins and
-//! `tests/contract_relay_entry.rs` asserts.
-//!
-//! The line between the halves is **structure versus value**. "`ports`
-//! must be a mapping" is structural and lives here; "port 70000 is out
-//! of range" is a value judgement and does not. `config.py` does not
-//! draw that line in one place — `load_config` raises on some values
-//! itself, and delegates others to `validate_config`,
-//! `secret_resolver` and `relays/_validate` — so the split is by the
-//! *kind* of complaint, not by which Python function makes it. Every
-//! value check `load_config` performs inline and this module does not
-//! is listed in [`parse`]'s docs, so C2 and C3 have a checklist rather
-//! than a diff to go hunting through.
+//! The line between parsing and validation is **structure versus
+//! value**. "`ports` must be a mapping" is structural and lives in
+//! [`parse`]; "port 70000 is out of range" is a value judgement and
+//! does not. The few value checks [`parse`] performs inline anyway are
+//! listed in its docs.
 //!
 //! # What "faithful" means here
 //!
 //! The acceptance test is mechanical: [`json::to_json`] over every
 //! config in `tests/fixtures/golden/valid/` must reproduce that case's
-//! `resolved-config.json` byte for byte, all 125 of them. That is what
-//! turns "did I port 2,473 lines correctly?" into a diff
-//! (docs/history/rust-port-plan.md §4, Layer 1). `tests/golden_config.rs` is the
-//! test.
+//! recorded `resolved-config.json` byte for byte, all 125 of them, and
+//! every case under `tests/fixtures/golden/invalid/` must fail with its
+//! recorded message. `tests/golden_config.rs` is the test.
 //!
-//! Faithful does **not** mean transliterated. `config.py` reads its
-//! fields with Python's `dict.get`, `or`-fallbacks and `str()`/`int()`
-//! coercions, and a handful of those combinations produce values no
-//! user meant — `list("node")` is four one-character strings, and a
-//! wrongly-typed `restart_sec` becomes a `RestartSec=` line systemd
-//! then refuses. Where Python would carry such a value forward, this
-//! module returns an error instead. Each one is noted at the site, and
-//! they are collected in [`parse`]'s docs under "Deliberate
-//! divergences".
+//! Faithful does **not** mean permissive. The lenient reads earlier
+//! releases did — defaults for missing keys, falling back on falsy
+//! values, coercing scalars to strings or integers — accepted a handful
+//! of combinations that produced values no user meant: `"node"` read
+//! as a list is four one-character strings, and a wrongly-typed
+//! `restart_sec` becomes a `RestartSec=` line systemd then refuses.
+//! Where such a value used to be carried forward, this module returns
+//! an error instead. Each one is noted at the site, and they are
+//! collected in [`parse`]'s docs under "Deliberate divergences".
 //!
 //! # No I/O
 //!
 //! `agentcage-core` does not touch the outside world (see the crate
-//! docs), but `load_config` does, twice: it reads the file, and it
+//! docs), but loading a config does, twice: it reads the file, and it
 //! probes the host for a default isolation backend and for the
 //! resolvers in `/etc/resolv.conf`. So [`load`] takes the file's text
 //! from its caller and takes the two probes as a [`HostProbe`]. The
-//! probe is a trait rather than two arguments because
-//! `_host_dns_servers()` is only called when `dns_servers:` is absent
-//! and can *fail* when it is — a config that sets its own resolvers
-//! must load on a host that has none.
+//! probe is a trait rather than two arguments because the resolver
+//! probe is only called when `dns_servers:` is absent and can *fail*
+//! when it is — a config that sets its own resolvers must load on a
+//! host that has none.
 
 pub mod agents;
 pub mod domain;
@@ -115,19 +103,18 @@ pub use validate::{FixedValidationHost, ValidationHost, validate};
 
 use std::fmt;
 
-/// What `load_config` raises.
+/// Why a config failed to load.
 ///
-/// `config.py` raises two exception types and the golden corpus records
-/// both, as `"<ExceptionType>: <message>"` in `error.txt`. The type is
-/// part of the recorded string, so it is part of the port: the CLI
-/// turns a `ValueError` into a clean one-line message and lets a
-/// `RuntimeError` through as the more unusual failure it is.
+/// Two classes, and the golden corpus records both, as
+/// `"<Class>: <message>"` in `error.txt` — the class names are the ones
+/// earlier releases printed. The CLI turns a `Value` error into a clean
+/// one-line message and lets a `Runtime` error through as the more
+/// unusual failure it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigError {
-    /// Python's `ValueError` — almost everything.
+    /// `ValueError` — almost everything.
     Value(String),
-    /// Python's `RuntimeError` — raised by `_host_dns_servers()` alone,
-    /// when the host has no usable upstream resolver to inherit.
+    /// `RuntimeError` — raised by the host resolver probe alone, when the host has no usable upstream resolver to inherit.
     Runtime(String),
 }
 
@@ -142,7 +129,7 @@ impl ConfigError {
         Self::Runtime(message.to_string())
     }
 
-    /// The Python exception class name, for the corpus's `error.txt`.
+    /// The class name, for the corpus's `error.txt`.
     #[must_use]
     pub fn error_class(&self) -> &'static str {
         match self {
@@ -159,7 +146,7 @@ impl ConfigError {
         }
     }
 
-    /// `"<ExceptionType>: <message>"` — the corpus's recorded form.
+    /// `"<Class>: <message>"` — the corpus's recorded form.
     #[must_use]
     pub fn as_error_line(&self) -> String {
         format!("{}: {}", self.error_class(), self.message())
@@ -174,25 +161,23 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// The two host probes `load_config` makes.
+/// The two host probes loading a config makes.
 ///
-/// Both are I/O, and both are lazy in Python — `default_isolation()`
-/// runs only when `isolation:` is absent, `_host_dns_servers()` only
-/// when `dns_servers:` is. Keeping them lazy is not a micro-
+/// Both are I/O, and both are lazy — `default_isolation()` runs only
+/// when `isolation:` is absent, `dns_servers()` only when
+/// `dns_servers:` is. Keeping them lazy is not a micro-
 /// optimisation: a laptop with a broken `/etc/resolv.conf` must still
 /// be able to load a config that names its own resolvers, and eager
 /// evaluation would take that away.
 pub trait HostProbe {
-    /// `config.default_isolation()` — the best isolation backend for
-    /// this host.
+    /// The best isolation backend for this host.
     ///
     /// Linux → `container`. macOS 26+ on Apple Silicon with the
     /// `container` CLI installed → `apple-container`. Any other macOS →
     /// `vm`.
     fn default_isolation(&self) -> String;
 
-    /// `config._host_dns_servers()` — the host's usable upstream
-    /// resolvers.
+    /// The host's usable upstream resolvers.
     ///
     /// # Errors
     ///
@@ -255,7 +240,7 @@ mod tests {
             "RuntimeError: no DNS"
         );
         // Display is the message alone, so a caller that wants to print
-        // it without the Python class name can.
+        // it without the class name can.
         assert_eq!(error.to_string(), "'name' is required in config");
     }
 }

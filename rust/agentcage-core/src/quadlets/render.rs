@@ -1,9 +1,9 @@
-//! `quadlets.generate_quadlets` — the five unit files a cage deploys.
+//! [`generate_quadlets`] — the five unit files a cage deploys.
 //!
-//! The Python function is one 600-line body that interleaves filesystem
-//! probing with context building. This keeps the same order of
-//! operations, because the order is observable: warnings are emitted as
-//! the volume loop walks, and the corpus records them in that order.
+//! Filesystem probing and context building are interleaved in one
+//! body, because the order of operations is observable: warnings are
+//! emitted as the volume loop walks, and the corpus records them in
+//! that order.
 
 use std::collections::BTreeSet;
 
@@ -88,15 +88,14 @@ const NESTED_CAPABILITIES: [&str; 16] = [
 /// `agentcage-cli` and against a temporary tree by the golden-corpus
 /// test.
 ///
-/// Every method is named after the Python call it replaces, so the two
-/// can be read side by side.
+/// Each method's doc names the POSIX/`os.path` semantics it must have.
 pub trait QuadletHost {
     /// `os.environ.get(name)` — used by `expandvars`, and for `HOME`.
     fn env_var(&self, name: &str) -> Option<String>;
 
     /// `os.path.realpath(path)`.
     ///
-    /// Non-strict, like Python's: components that do not exist are kept
+    /// Non-strict: components that do not exist are kept
     /// rather than erroring, and a relative path resolves against the
     /// process's working directory.
     fn realpath(&self, path: &str) -> String;
@@ -107,8 +106,8 @@ pub trait QuadletHost {
     /// `os.path.isdir(path)`, following symlinks.
     fn is_dir(&self, path: &str) -> bool;
 
-    /// `quadlets._stage_vm_file_volume` — copy a single-file volume
-    /// source somewhere the VM can see it, and return the staged path.
+    /// Copy a single-file volume source somewhere the VM can see it,
+    /// and return the staged path.
     ///
     /// Lima's virtiofs shares directories, not single files, so a volume
     /// whose host source is a regular file (a scaffold mounting one
@@ -122,19 +121,18 @@ pub trait QuadletHost {
     /// Staging runs on every deploy, so the seed tracks the host file
     /// over time.
     ///
-    /// Note that the Python spells this directory with a literal
-    /// `~/.local/share`, ignoring `XDG_DATA_HOME`, unlike every other
-    /// state path. The behaviour belongs to the implementation rather
-    /// than to this trait, but a port of it should keep the quirk: a
-    /// cage deployed by the Python has its seed there.
+    /// Note that this directory is a literal `~/.local/share`, ignoring
+    /// `XDG_DATA_HOME`, unlike every other state path. The behaviour
+    /// belongs to the implementation rather than to this trait, but an
+    /// implementation should keep the quirk: cages deployed by earlier
+    /// releases have their seed there.
     ///
     /// # Errors
     ///
     /// The message to surface when the copy fails.
     fn stage_vm_file_volume(&self, source: &str, deploy_name: &str) -> Result<String, String>;
 
-    /// `secret_resolver.detect_default_scope()` — whether user-scoped
-    /// systemd-creds encryption works on this host.
+    /// Whether user-scoped systemd-creds encryption works on this host.
     ///
     /// `Some("user")`, `Some("system")`, or `None` when neither is
     /// usable. Only consulted when `secrets.scope` is `auto` *and* the
@@ -145,8 +143,7 @@ pub trait QuadletHost {
     /// `os.path.expanduser("~")`, before `realpath`.
     ///
     /// The default is `$HOME`; an implementation with access to the
-    /// password database can override it, which is what Python falls
-    /// back to when `HOME` is unset.
+    /// password database can override it, for when `HOME` is unset.
     fn home(&self) -> String {
         self.env_var("HOME").unwrap_or_default()
     }
@@ -154,9 +151,8 @@ pub trait QuadletHost {
     /// The home directory of another user, for the `~user` form.
     ///
     /// `None` — the default — leaves `~user/...` unexpanded, which is
-    /// what `posixpath.expanduser` does when `getpwnam` raises
-    /// `KeyError`. An implementation that can read the password database
-    /// should.
+    /// what `expanduser` conventionally does for an unknown user. An
+    /// implementation that can read the password database should.
     fn user_home(&self, _user: &str) -> Option<String> {
         None
     }
@@ -164,11 +160,10 @@ pub trait QuadletHost {
 
 /// Where a deployment's files live on disk.
 ///
-/// `state.py` composes these from `XDG_CONFIG_HOME` / `XDG_DATA_HOME`
-/// once at import time and the renderer calls the resulting helpers.
-/// Porting `state.py` is Track D's; this is the slice of it
-/// `generate_quadlets` reads, passed in rather than recomputed so there
-/// is one definition of the layout when that PR lands.
+/// Composed from `XDG_CONFIG_HOME` / `XDG_DATA_HOME` by the caller
+/// (`agentcage-state` owns the full layout); this is the slice of it
+/// [`generate_quadlets`] reads, passed in rather than recomputed so
+/// there is one definition of the layout.
 #[derive(Clone, Debug)]
 pub struct StatePaths {
     /// `$XDG_CONFIG_HOME/agentcage`, absolute.
@@ -208,8 +203,8 @@ impl StatePaths {
         format!("{}/dns-allowlist.conf", self.deployment_dir(name))
     }
 
-    /// `state.capture_dir(name)`. Path only — the Python helper also
-    /// creates it, and the deploy path still has to.
+    /// `state.capture_dir(name)`. Path only — the deploy path creates
+    /// it.
     #[must_use]
     pub fn capture_dir(&self, name: &str) -> String {
         format!("{}/{name}/capture", self.data_root)
@@ -246,7 +241,7 @@ pub struct GenerateOptions<'a> {
     pub rootless: bool,
     /// Third octets already taken by other deployed cages, or `None` to
     /// skip collision resolution. `collect_used_octets` builds it; it
-    /// reads deployment metadata, so it is Track D's, not this module's.
+    /// reads deployment metadata, so it lives in `agentcage-cli`.
     pub used_octets: Option<&'a BTreeSet<u32>>,
     /// Pins the cage to a specific `10.89.<octet>.0/24` subnet,
     /// bypassing hash-based allocation. Used by `cage update` to
@@ -273,9 +268,9 @@ pub struct GenerateOptions<'a> {
     pub state: &'a StatePaths,
     /// The version to stamp into the units, and the egress image tag.
     ///
-    /// `importlib.metadata.version("agentcage")` in Python; the binary's
-    /// own [`VERSION`](crate::VERSION) in the port, except in the golden
-    /// corpus, which pins it so a release does not churn the fixtures.
+    /// The binary's own [`VERSION`](crate::VERSION), except in the
+    /// golden corpus, which pins it so a release does not churn the
+    /// fixtures.
     pub version: &'a str,
     /// The egress image's tag, `<version>-<content hash>`.
     ///
@@ -287,16 +282,16 @@ pub struct GenerateOptions<'a> {
 /// What a render produced.
 #[derive(Clone, Debug, Default)]
 pub struct Quadlets {
-    /// `{filename: content}`, in the order the Python dict built them:
+    /// `{filename: content}`, in the order earlier releases wrote them:
     /// network, the two cert volumes, the egress container, the
     /// nested-podman volume when there is one, and the cage container.
     pub files: IndexMap<String, String>,
-    /// What the Python wrote to stderr with `click.echo(..., err=True)`.
+    /// Warnings for stderr.
     ///
     /// Returned rather than printed: `agentcage-core` has no stdout.
     /// The corpus records these in `render-warnings.txt`, one per line
     /// including the trailing newline, so a caller that prints them
-    /// verbatim reproduces the Python's stderr.
+    /// verbatim reproduces the recorded stderr.
     pub warnings: Vec<String>,
 }
 
@@ -438,8 +433,8 @@ struct CageContext<'a> {
 ///
 /// # Errors
 ///
-/// [`ConfigError::Value`] for the operator-facing refusals the Python
-/// raises as `ValueError`: a volume host path that resolves outside the
+/// [`ConfigError::Value`] for the operator-facing refusals: a volume
+/// host path that resolves outside the
 /// home directory, an `np` option that cannot compose, and a published
 /// port that collides with the egress's own 8080/8443.
 /// [`ConfigError::Runtime`] when every cage subnet is taken, when the VM
@@ -460,7 +455,7 @@ pub fn generate_quadlets(
 ) -> Result<Quadlets, ConfigError> {
     let name = config.name.as_str();
     let cc = &config.container;
-    // `deploy_name or name` — the Python's fallback, spelled once.
+    // `deploy_name`, falling back to `name` — spelled once.
     let deploy = if options.deploy_name.is_empty() {
         name
     } else {
@@ -972,8 +967,7 @@ pub fn generate_quadlets(
     // time.
     let mut creds_scope_flag = "";
     if !creds_secrets.is_empty() {
-        // `resolve_scope` raises on an unusable host and the Python
-        // swallows that into "system".
+        // An unusable or invalid scope falls back to "system".
         let scope = resolve_scope(&config.secrets.scope, host).unwrap_or_else(|| "system".into());
         if scope == "user" {
             creds_scope_flag = "--user ";
@@ -987,7 +981,7 @@ pub fn generate_quadlets(
     let (proxy_config_path, grants_dir) = if config.isolation == "vm" {
         // Grants overlay: VM-local too. The addon writes it in-guest
         // (atomic rename, no sshfs cache) and the reconcile round-trips
-        // it via limactl (backends.vm.pull_grants/push_grants).
+        // it via limactl (the VM backend's `pull_grants`/`push_grants`).
         (
             vm_local_proxy_config_path(deploy),
             vm_local_grants_dir(deploy),
@@ -995,9 +989,9 @@ pub fn generate_quadlets(
     } else {
         (
             options.config_host_path.to_owned(),
-            // Note `name`, not `deploy`: the Python reads
-            // `state.grants_dir(name)` here while every sibling path in
-            // this function uses `deploy_name or name`. The two differ
+            // Note `name`, not `deploy`: the grants dir is keyed by
+            // `name` here while every sibling path in this function
+            // uses `deploy_name`, falling back to `name`. The two differ
             // only when a cage is deployed under another name, and the
             // host-side grants watcher resolves the same way, so the
             // inconsistency is harmless — but it is load-bearing for
@@ -1353,17 +1347,16 @@ fn mask_copyup_owner(user: &str) -> String {
     }
 }
 
-/// Python's `str.isdigit()` for the ASCII case, which is the only one a
-/// uid can be — `int()` accepts other Unicode digits, but a uid spelled
-/// in Devanagari is not a uid systemd would take either.
+/// ASCII digits only, which is the only form a uid can take — a uid
+/// spelled in Devanagari is not a uid systemd would take either.
 fn is_digits(text: &str) -> bool {
     !text.is_empty() && text.chars().all(|c| c.is_ascii_digit())
 }
 
-/// `secret_resolver.resolve_scope`, minus the error message.
+/// The configured systemd-creds scope, resolved, minus the error message.
 ///
-/// The one caller wraps it in `except ValueError: _scope = "system"`, so
-/// the distinction between "invalid scope" and "no usable scope" is not
+/// The one caller falls back to `"system"` on any failure, so the
+/// distinction between "invalid scope" and "no usable scope" is not
 /// observable here; `None` covers both.
 fn resolve_scope(configured: &str, host: &dyn QuadletHost) -> Option<String> {
     match configured {
@@ -1373,10 +1366,9 @@ fn resolve_scope(configured: &str, host: &dyn QuadletHost) -> Option<String> {
     }
 }
 
-/// `"scheme:rest".partition(":")` — the head and the tail.
+/// Split `"scheme:rest"` at the first `:` — the head and the tail.
 ///
-/// Python's `partition` returns `(s, "", "")` when the separator is
-/// absent, so a bare `NAME` keeps the whole string as the scheme and
+/// With no separator, a bare `NAME` keeps the whole string as the scheme and
 /// has an *empty* argument. That emptiness is what the call sites test:
 /// a source with no `:` is not a store reference.
 fn partition(source: &str) -> (&str, &str) {
@@ -1400,14 +1392,15 @@ fn dirname(path: &str) -> &str {
 
 /// `shlex.quote`.
 ///
-/// Returns the text unchanged when every character is in Python's
-/// `_find_unsafe` safe set, and otherwise wraps it in single quotes with
-/// any embedded `'` spliced out as `'"'"'`.
+/// Returns the text unchanged when every character is in the safe set
+/// Python's `shlex.quote` uses (ASCII alphanumerics and `@%+=:,./-_`),
+/// and otherwise wraps it in single quotes with any embedded `'` spliced
+/// out as `'"'"'`. Deployed unit files carry text quoted this way.
 ///
 /// Public because the `vm` backend needs the same function for a
 /// different consumer: it composes `sh -c` scripts that run *inside the
-/// Lima guest* (`vm.py`'s `push_config_files`, `pull_grants`,
-/// `push_grants`) and quotes every guest path with it. One
+/// Lima guest* (`push_config_files`, `pull_grants`, `push_grants`) and
+/// quotes every guest path with it. One
 /// implementation, because two would diverge on exactly the character
 /// that mattered.
 #[must_use]
@@ -1429,8 +1422,7 @@ pub fn shlex_quote(text: &str) -> String {
 ///
 /// `~` and `~/...` use the host's home directory; `~user/...` needs the
 /// password database, which [`QuadletHost::user_home`] may or may not
-/// provide — when it does not, the path is returned unchanged, exactly
-/// as Python does on `KeyError`.
+/// provide — when it does not, the path is returned unchanged.
 pub fn expanduser(path: &str, host: &dyn QuadletHost) -> String {
     if !path.starts_with('~') {
         return path.to_owned();
@@ -1630,7 +1622,7 @@ secret_injection:
         assert!(!cage.contains("DIRECT"), "{cage}");
 
         // The tag names the image, the version is stamped into the unit,
-        // and the file set is the five the Python builds, in its order.
+        // and the file set is the pinned five, in the pinned order.
         assert!(egress.contains("Image=localhost/agentcage-egress:9.9.9-0123456789ab\n"));
         assert!(egress.contains("Environment=\"AGENTCAGE_VERSION=9.9.9\"\n"));
         assert_eq!(
@@ -1980,8 +1972,7 @@ dns_servers: [192.0.2.53]
         assert_eq!(expanduser("~/x", &host), "/home/tester/x");
         assert_eq!(expanduser("/abs/x", &host), "/abs/x");
         assert_eq!(expanduser("rel/x", &host), "rel/x");
-        // No password database: `~other` is left alone, as Python's
-        // `KeyError` branch does.
+        // No password database: `~other` is left alone.
         assert_eq!(expanduser("~other/x", &host), "~other/x");
     }
 
@@ -2008,7 +1999,7 @@ dns_servers: [192.0.2.53]
     }
 
     #[test]
-    fn shlex_quote_matches_python() {
+    fn shlex_quote_quotes_only_unsafe_text() {
         assert_eq!(shlex_quote("/home/luca/project"), "/home/luca/project");
         assert_eq!(shlex_quote(""), "''");
         assert_eq!(shlex_quote("a b"), "'a b'");
@@ -2017,7 +2008,7 @@ dns_servers: [192.0.2.53]
             "%t/agentcage/x/mounts"
         );
         assert_eq!(shlex_quote("it's"), "'it'\"'\"'s'");
-        // A brace is unsafe to Python's `_find_unsafe`, which matters
+        // A brace is outside the safe set, which matters
         // for the golden corpus: its scrubbed `{{HOME}}` paths would be
         // quoted, so the test renders real paths and scrubs afterwards.
         assert_eq!(shlex_quote("{{HOME}}/x"), "'{{HOME}}/x'");
@@ -2036,7 +2027,7 @@ dns_servers: [192.0.2.53]
     fn partition_leaves_a_bare_name_with_an_empty_argument() {
         assert_eq!(partition("env:API_KEY"), ("env", "API_KEY"));
         assert_eq!(partition("systemd-creds:K"), ("systemd-creds", "K"));
-        // No separator: Python's `partition` keeps the whole string as
+        // No separator: the whole string is
         // the head, and the empty tail is what the call sites test.
         assert_eq!(partition("API_KEY"), ("API_KEY", ""));
         assert_eq!(partition(""), ("", ""));

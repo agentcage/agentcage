@@ -4,7 +4,7 @@
 //! `proxy-config.yaml` by the egress proxy inside the egress container,
 //! `cage.yaml` by the user and then by the next `cage` invocation. Both
 //! readers go through [`load`], whose scalar resolution is PyYAML's —
-//! the semantics every `cage.yaml` written before the Rust port was
+//! the semantics every `cage.yaml` written for earlier releases was
 //! read with, which a user's hand-written file must keep.
 //!
 //! Use [`load`] and [`dump`] rather than `serde_norway` directly. The
@@ -41,8 +41,8 @@
 //! [`pyyaml`] for the predicate, which is PyYAML's own implicit-resolver
 //! table transliterated rather than a list of tokens someone tested.
 //!
-//! [`load`] resolves the reading side at parse time, so it hands Track
-//! C's validators the same values `yaml.safe_load` hands `config.py`.
+//! [`load`] resolves the reading side at parse time, so it hands the
+//! config validators the same values `yaml.safe_load` would.
 //! That needs the scalar's *style*, which every serde YAML crate throws
 //! away, so it costs a second parse by a pure-Rust event parser — see
 //! [`style`] for the mechanism, the alignment rules and how it fails
@@ -50,40 +50,40 @@
 //!
 //! # The reading side, in full
 //!
-//! A user's hand-written `cage.yaml` must not change meaning across the
-//! port. Measured against PyYAML 6.0.3:
+//! A user's hand-written `cage.yaml` must not change meaning between
+//! releases. Measured against PyYAML 6.0.3:
 //!
 //! | In `cage.yaml` | PyYAML gives | [`load`] gives | |
 //! | :-- | :-- | :-- | :-- |
 //! | `tls: no` | `False` | `Bool(false)` | **resolved** — [`style`] |
-//! | `tls: 'no'` | `"no"` | `String("no")` | **resolved** — the quote is honoured, so `bool()` still says `True` as it does today |
+//! | `tls: 'no'` | `"no"` | `String("no")` | **resolved** — the quote is honoured, so [`is_truthy`] still says `true` |
 //! | `tls: !!str no` | `"no"` | `String("no")` | **resolved** — an explicit tag is not a plain scalar |
 //! | `no: 1` (a key) | `{False: 1}` | `{Bool(false): 1}` | **resolved** — keys are rewritten too |
 //! | `port: 0755` | `493` | `String("0755")` | a string where an int is wanted: a loud type error |
 //! | `size: 1_000` | `1000` | `String("1_000")` | same |
 //! | `at: 1:30` | `90` | `String("1:30")` | same |
 //! | `when: 2024-01-02` | `datetime.date` | `String(…)` | no field takes a date |
-//! | `n: 1e3` | `"1e3"` | `Number(1000.0)` | the port is *more* permissive |
+//! | `n: 1e3` | `"1e3"` | `Number(1000.0)` | [`load`] is *more* permissive |
 //! | `n: 0o17` | `"0o17"` | `Number(15)` | same |
 //! | `k: !!bool no` | `False` | **error** | `serde_norway` refuses the tag; loud, not silent |
-//! | `<<: *anchor` | merged into the mapping | merged into the mapping | **resolved** — [`merge`]. PR B2 left this open as the one reader divergence that was neither resolved nor loud; PR C1 closed it, because the quiet wrong answer is an emptied `domains.allow` |
+//! | `<<: *anchor` | merged into the mapping | merged into the mapping | **resolved** — [`merge`], because the quiet wrong answer is an emptied `domains.allow` |
 //! | `k: <<`, `k: =` | **raises** | **error** | **resolved** — [`merge`]; PyYAML has no constructor for either tag outside key position |
 //!
 //! The booleans are resolved because they are the only row that can flip
-//! a *value* without changing its type — and `relays/_validate.py:76` is
-//! `bool(upstream.get("tls", True))`, so the flip lands on whether a
-//! relay carrying credentials upstream uses TLS. Everything below the
+//! a *value* without changing its type — and a relay's `upstream.tls`
+//! is read with [`is_truthy`], so the flip lands on whether a relay
+//! carrying credentials upstream uses TLS. Everything below the
 //! line yields a value of the wrong type for its field, which the
 //! validators reject with a message; they are listed so a later reader
 //! can see they were weighed rather than missed.
 //!
-//! [`is_truthy`] is the other half of that story: `config.py` coerces
-//! with `bool(x)`, and reproducing *that* faithfully is why the quoted
-//! `'no'` has to stay a string.
+//! [`is_truthy`] is the other half of that story: lenient boolean
+//! fields coerce with truthiness, and keeping *that* stable is why the
+//! quoted `'no'` has to stay a string.
 //!
 //! # Why `serde_norway`
 //!
-//! The ADR is in the PR body; the short version:
+//! The short version:
 //!
 //! - `serde_yaml` is deprecated (`0.9.34+deprecated`, 2024-03-25).
 //! - `serde_yml` is [RUSTSEC-2025-0068]: unsound and unmaintained. That
@@ -94,18 +94,18 @@
 //!   `unsafe-libyaml-norway`, and has shipped fixes to it
 //!   (0.2.15 vs 0.2.11).
 //! - `saphyr` and `yaml-rust2` are pure-Rust and healthier as projects,
-//!   but have no serde integration, and `config.py` is 2,473 lines that
-//!   want `#[derive(Deserialize)]`.
+//!   but have no serde integration, and the config types want
+//!   `#[derive(Deserialize)]`.
 //!
-//! Mapping order — the hard requirement, because `save_raw_config` uses
-//! `sort_keys=False` and key order in `cage.yaml` is visible to the user
+//! Mapping order — the hard requirement, because the raw config is
+//! saved unsorted and key order in `cage.yaml` is visible to the user
 //! after `cage edit` — comes from `Mapping` being an `IndexMap`. It is
 //! asserted, not assumed: [`eq_with_key_order`] is order-sensitive,
 //! [`dump`] checks itself with it, and `tests/yaml_config_roundtrip.rs`
 //! runs every committed config through it.
 //!
 //! The crate is named in exactly two files (this module and
-//! `Cargo.toml`), and the rest of the port goes through the re-exports
+//! `Cargo.toml`), and the rest of the workspace goes through the re-exports
 //! here, so a future swap is a change to this directory.
 //!
 //! [RUSTSEC-2025-0068]: https://rustsec.org/advisories/RUSTSEC-2025-0068
@@ -123,9 +123,9 @@ pub use serde_norway::{Error, Location, Mapping, Number, Sequence, Value};
 /// Build a [`Error`] from a message of our own.
 ///
 /// `serde_norway::Error` is kept as *the* error type rather than wrapped:
-/// it carries a [`Location`] for parse failures, which is what
-/// `config.py:954`'s hand-written "line N, column M" message exists to
-/// produce, and a wrapper would have to re-expose it anyway.
+/// it carries a [`Location`] for parse failures, which is what the
+/// config loader's "line N, column M" message is built from, and a
+/// wrapper would have to re-expose it anyway.
 fn custom_error(message: impl std::fmt::Display) -> Error {
     <Error as serde::ser::Error>::custom(message)
 }
@@ -133,8 +133,8 @@ fn custom_error(message: impl std::fmt::Display) -> Error {
 /// Parse a YAML document, the way `yaml.safe_load` does.
 ///
 /// An empty document gives [`Value::Null`], matching `safe_load("")`
-/// returning `None` — which is why `state.py` writes
-/// `yaml.safe_load(f) or {}`.
+/// returning `None`, so callers that want a mapping treat `Null` as
+/// empty.
 ///
 /// Plain `yes`/`no`/`on`/`off` come back as [`Value::Bool`], exactly as
 /// PyYAML resolves them, while the quoted `'no'` stays a string. That
@@ -213,8 +213,7 @@ pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
 /// Block style, two-space indent, sequences at their key's indentation:
 /// the shape `yaml.safe_dump(default_flow_style=False, sort_keys=False)`
 /// produces, and the shape every config in the repo is already written
-/// in. Key order is preserved. Comments are not — `state.py:195` says
-/// the Python implementation drops them too.
+/// in. Key order is preserved. Comments are not, and never were.
 ///
 /// # Errors
 ///
@@ -252,8 +251,8 @@ pub fn is_yaml_1_1_ambiguous(scalar: &str) -> bool {
 /// [`Value`]'s own `PartialEq` uses `IndexMap`'s, which ignores order —
 /// two mappings with the same pairs in a different order are equal. That
 /// is the wrong answer here twice over: `cage edit` shows the user their
-/// own key order, and `save_raw_config` passes `sort_keys=False`
-/// precisely to keep it.
+/// own key order, and the raw config is saved unsorted precisely to
+/// keep it.
 #[must_use]
 pub fn eq_with_key_order(left: &Value, right: &Value) -> bool {
     match (left, right) {
@@ -277,15 +276,16 @@ pub fn eq_with_key_order(left: &Value, right: &Value) -> bool {
     }
 }
 
-/// Python's `bool(x)` on a value that came out of [`load`].
+/// Truthiness of a value that came out of [`load`]: `false` for null,
+/// `false`, zero and empty strings, sequences and mappings; `true`
+/// otherwise.
 ///
-/// Not a YAML concern at all — it is `config.py`'s coercion, and it is
-/// here because reproducing it correctly is the whole reason [`load`]
-/// does a second parse.
+/// Not a YAML concern at all — it is the config's lenient boolean
+/// coercion, and it is here because keeping it correct is the whole
+/// reason [`load`] does a second parse.
 ///
-/// `relays/_validate.py:76` is `tls = bool(upstream.get("tls", True))`,
-/// and `config.py` has nine more of these. CPython's `bool` is truthy
-/// for any non-empty string, so:
+/// A relay's `upstream.tls` (default on) is read this way, as are nine
+/// more config fields. Any non-empty string is truthy, so:
 ///
 /// ```text
 /// tls: no       load() -> Bool(false)    -> false   (TLS off)
@@ -295,16 +295,15 @@ pub fn eq_with_key_order(left: &Value, right: &Value) -> bool {
 /// tls: []       load() -> Sequence([])   -> false
 /// ```
 ///
-/// The second line is a bug in the Python: someone who writes `'no'`
-/// means "off" and gets "on". It is reproduced here rather than fixed
-/// because it fails *safe* — the mistake leaves TLS enabled — and
-/// because a port is not the place to change what an existing config
-/// means. Fixing it is a behaviour change that belongs in its own
-/// commit, on both sides of the boundary at once.
+/// The second line is a known wart: someone who writes `'no'` means
+/// "off" and gets "on". It is kept rather than fixed because it fails
+/// *safe* — the mistake leaves TLS enabled — and because changing what
+/// an existing config means is a behaviour change that belongs in its
+/// own commit, on both sides of the boundary at once.
 ///
-/// Fields that must be a *real* boolean (`config.py:945`, `:1255`,
-/// `:1320`) are a different check: those reject a string outright, so
-/// they want `matches!(value, Value::Bool(_))` and not this.
+/// Fields that must be a *real* boolean are a different check: those
+/// reject a string outright, so they want
+/// `matches!(value, Value::Bool(_))` and not this.
 #[must_use]
 pub fn is_truthy(value: &Value) -> bool {
     match value {
@@ -314,8 +313,8 @@ pub fn is_truthy(value: &Value) -> bool {
         Value::String(text) => !text.is_empty(),
         Value::Sequence(items) => !items.is_empty(),
         Value::Mapping(mapping) => !mapping.is_empty(),
-        // `bool(x)` on an arbitrary object is `True`; a tagged node is
-        // as close as this gets to one.
+        // Any other object is truthy; a tagged node is as close as
+        // this gets to one.
         Value::Tagged(_) => true,
     }
 }
@@ -350,10 +349,9 @@ mod tests {
         );
     }
 
-    /// The four corners, in Rust. `yaml_pyyaml_crossing.rs` asserts the
-    /// same table against a running PyYAML, which is the version that
-    /// counts; this one keeps `cargo test` honest without an
-    /// interpreter.
+    /// The four corners: plain and quoted, `no` and `false`. The full
+    /// table, recorded from PyYAML, is `tests/fixtures/yaml_1_1_scalars.json`
+    /// (see `tests/yaml_hazard_fixture.rs`).
     #[test]
     fn plain_and_quoted_booleans_are_different_values() {
         // Plain: PyYAML resolves it, so we do.
@@ -363,8 +361,8 @@ mod tests {
             Value::Bool(false)
         );
 
-        // Quoted: PyYAML leaves it a string, so we do -- and
-        // `bool("no")` is how it stays `True` in Python today.
+        // Quoted: PyYAML leaves it a string, so we do -- and its
+        // truthiness is how it stays `true`.
         assert_eq!(
             load("tls: 'no'\n").expect("load")["tls"],
             Value::String("no".to_owned())
@@ -374,7 +372,7 @@ mod tests {
             Value::String("false".to_owned())
         );
 
-        // And the coercion `config.py` actually applies.
+        // And the coercion the config actually applies.
         assert!(!is_truthy(&load("tls: no\n").expect("load")["tls"]));
         assert!(is_truthy(&load("tls: 'no'\n").expect("load")["tls"]));
         assert!(!is_truthy(&load("tls: false\n").expect("load")["tls"]));
@@ -451,14 +449,14 @@ mod tests {
 
         // No `deserialize_with` anywhere: `load` already turned the
         // plain `no` into a boolean, so plain `#[derive(Deserialize)]`
-        // is all Track C needs.
+        // is all the config types need.
         let off: Upstream = super::from_str("tls: no\n").expect("no");
         assert!(!off.tls);
         let on: Upstream = super::from_str("tls: true\n").expect("true");
         assert!(on.tls);
 
         // A quoted spelling is a string, and a `bool` field refuses it
-        // -- which is `config.py:1255`'s behaviour, not a regression.
+        // -- which is how strict boolean fields have always behaved.
         let error = super::from_str::<Upstream>("tls: 'no'\n").expect_err("quoted");
         assert!(error.to_string().contains("invalid type"), "{error}");
     }

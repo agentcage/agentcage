@@ -3,9 +3,8 @@
 //! The host copies the operator's `agents` block into `proxy-config.yaml`
 //! as written, so a key left out is resolved on both sides: here, where
 //! validation and the spend warning use it, and in the egress, which runs
-//! with it. The proxy half (`TestAgentsDefaults` in
-//! `tests/test_contract_fixtures.py`) pins the egress fallbacks to the
-//! same fixture; this is the host half.
+//! with it. The egress side pins its fallbacks to the same fixture;
+//! this is the host half.
 
 mod common;
 

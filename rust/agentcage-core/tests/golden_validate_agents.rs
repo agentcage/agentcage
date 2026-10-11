@@ -1,30 +1,28 @@
-//! The golden corpus, against PR C3's half of `validate_config`.
+//! The golden corpus, against the agents and inspector half of
+//! validation.
 //!
 //! `tests/fixtures/golden/` records, for every generated `cage.yaml`,
-//! what `config.py` produced from it: `error.txt` when
-//! `load_config`/`validate_config` raised, `warnings.txt` when they
-//! did not. Both are captured verbatim, because both are UX — a user
+//! what loading and validating it produced: `error.txt` when it was
+//! refused, `warnings.txt` when it was not. Both are captured verbatim, because both are UX — a user
 //! reads them (README, "Byte-exact vs. semantic comparison").
 //!
 //! `tests/golden_config.rs` holds the parser to the corpus. This
 //! binary holds [`validate_agents`] and [`inspector_warnings`] to it:
 //! the `agents.decider`, `agents.watcher` and inspector-chain rules
-//! that PR C3 owns.
+//! of that half.
 //!
-//! # Why this is not one test with C2's
+//! # Why this half is tested on its own
 //!
-//! `validate_config` is one Python function whose checks interleave —
-//! identity, image, ports, domains, then the agent blocks — and the
-//! ordered driver that reassembles it belongs to neither C2 nor C3
-//! (see [`agentcage_core::config`]). So each half is exercised on its
-//! own here, which is sound because every corpus case carries exactly
+//! Validation's checks run in a fixed order — identity, image, ports,
+//! domains, then the agent blocks (see [`agentcage_core::config`]). This
+//! half is exercised on its own here, which is sound because every corpus case carries exactly
 //! **one** fault: a case whose recorded message is an agents message
-//! passed every earlier check in Python, so running the agents rules
+//! passed every earlier check when it was recorded, so running the agents rules
 //! alone reaches the same verdict.
 //!
 //! The cases where that is *not* true are the point of
 //! [`SHADOWED_BY_C2`]: a config whose agents block is also wrong, but
-//! which Python rejects earlier for a different reason. Those are
+//! which is rejected earlier for a different reason. Those are
 //! listed rather than ignored, so the day the driver lands the list
 //! either empties or names a real ordering bug.
 
@@ -128,7 +126,7 @@ fn every_agents_invalid_case_matches_verbatim() {
                     deferred += 1;
                 } else {
                     differed.push(format!(
-                        "  {case}\n      python: {}\n      rust:   {}",
+                        "  {case}\n      expected: {}\n      actual:   {}",
                         expected.trim_end(),
                         produced.trim_end()
                     ));
@@ -139,8 +137,8 @@ fn every_agents_invalid_case_matches_verbatim() {
 
     assert!(
         differed.is_empty(),
-        "{} invalid cases produced a DIFFERENT message than config.py. Either the port is \
-         wrong, or an earlier C2 check shadows this one in Python and the case belongs in \
+        "{} invalid cases produced a DIFFERENT message than the corpus records. Either the \
+         check is wrong, or an earlier check shadows this one and the case belongs in \
          SHADOWED_BY_C2 with a reason:\n{}",
         differed.len(),
         differed.join("\n")
@@ -163,8 +161,8 @@ fn every_agents_invalid_case_matches_verbatim() {
 /// The second half is the one with teeth. Two corpus cases record the
 /// watcher's spend warnings and one records the apple-container
 /// inspector warnings; the number formatting in them (`166M`,
-/// `100,000 tokens`, `1440 scans`) is Python's `format`, which is
-/// where a port quietly goes wrong.
+/// `100,000 tokens`, `1440 scans`) is where a reimplementation
+/// quietly goes wrong.
 #[test]
 fn every_valid_case_validates_with_the_warnings_it_recorded() {
     let mut wrong: Vec<String> = Vec::new();
@@ -191,8 +189,8 @@ fn every_valid_case_validates_with_the_warnings_it_recorded() {
                 checked += 1;
                 let mut produced = agent_warnings;
                 produced.extend(inspector_warnings(&config));
-                // `config.py` appends the inspector warnings ahead of
-                // the watcher's, so compare as sets-in-order-of-kind
+                // The recorded warnings put the inspector warnings ahead
+                // of the watcher's, so compare as sets-in-order-of-kind
                 // rather than assuming one interleaving: what is under
                 // test is the TEXT, and the driver PR owns the order
                 // in which the two halves are concatenated.
@@ -202,7 +200,7 @@ fn every_valid_case_validates_with_the_warnings_it_recorded() {
                 expected.sort_unstable();
                 if produced != expected {
                     wrong.push(format!(
-                        "  {case}\n      python: {expected:#?}\n      rust:   {produced:#?}"
+                        "  {case}\n      expected: {expected:#?}\n      actual:   {produced:#?}"
                     ));
                 } else if !expected.is_empty() {
                     with_warnings += 1;
@@ -229,7 +227,7 @@ fn every_valid_case_validates_with_the_warnings_it_recorded() {
 /// The warning lines PR C3 produces.
 ///
 /// A prefix match, not a guess: each one is the literal opening of a
-/// `warnings.append` in `config.py`'s agent and inspector blocks.
+/// recorded warning from the agent and inspector blocks.
 fn is_c3_warning(line: &str) -> bool {
     line.starts_with("inspectors[")
         || line.starts_with("agents.watcher may send up to")
@@ -271,8 +269,8 @@ const C3_OWNED: &[&str] = &[
     "err-watcher-window-zero",
 ];
 
-/// Cases whose agents block is also wrong, but which `config.py`
-/// rejects earlier for a reason PR C2 owns.
+/// Cases whose agents block is also wrong, but which are rejected
+/// earlier by another validation step.
 ///
 /// Empty today, and that is a finding rather than an omission: every
 /// corpus case carries exactly one fault, so no case reaches an agents

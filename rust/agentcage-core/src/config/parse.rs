@@ -1,86 +1,71 @@
-//! `load_config` — a `cage.yaml` document into a [`Config`].
+//! Loading — a `cage.yaml` document into a [`Config`].
 //!
-//! Read alongside `src/agentcage/config.py`; the order of the sections
-//! below is `load_config`'s order, because error precedence is
-//! observable. A config with two faults reports the first one
-//! `load_config` reaches, and the golden corpus records which.
+//! The order of the sections below is the load order, because error
+//! precedence is observable: a config with two faults reports the first
+//! one loading reaches, and the golden corpus records which.
 //!
-//! # Value checks this module does *not* make
+//! # Value checks made during loading
 //!
-//! `load_config` raises on a handful of *values* inline, rather than
-//! leaving them to `validate_config`. Those are still value checks, so
-//! they belong to PR C2 (domains, ports, secrets, placeholders) and PR
-//! C3 (relays, agents, capture, inspectors) with the rest. The full
-//! list, so neither PR has to find them by reading:
+//! Loading raises on a handful of *values* inline, rather than leaving
+//! them to [`mod@super::validate`]. The full list:
 //!
-//! | `config.py` | Message | Owner |
+//! | Check | Message | Where |
 //! | :-- | :-- | :-- |
-//! | `secrets.scope` not in `_VALID_SECRET_SCOPES` | `invalid secrets.scope: …` | C2 — **done**, below |
-//! | `secrets.backend` not in `KNOWN_BACKENDS` | `invalid secrets.backend: …` | C2 — **done**, below |
-//! | `secret_resolver.validate_env_name` | `invalid env name: …` | C2 — **done**, below |
-//! | `config.validate_transform` | `unknown secret_injection transform: …` | C2 — **done**, below |
-//! | `relays/_validate.validate_relay_entry`, past its required-key check | 15 messages | C3 — **landed**, [`crate::relays`] |
-//! | `agents.{decider,watcher}.api_key` scheme shape | `must use the 'source:NAME' scheme …` | C3 — **landed**, [`api_key_shape`] |
-//! The checks themselves live in [`super::secret`]; this module calls
-//! them where `load_config` calls them, because the call site is what
-//! fixes their precedence against everything else here.
+//! | `secrets.scope` not a valid scope | `invalid secrets.scope: …` | [`super::secret`] |
+//! | `secrets.backend` not in `KNOWN_BACKENDS` | `invalid secrets.backend: …` | [`super::secret`] |
+//! | secret env name | `invalid env name: …` | [`super::secret`] |
+//! | `secret_injection` transform | `unknown secret_injection transform: …` | [`super::secret`] |
+//! | a relay entry, past its required-key check | 15 messages | [`crate::relays`] |
+//! | `agents.{decider,watcher}.api_key` scheme shape | `must use the 'source:NAME' scheme …` | `api_key_shape` |
 //!
-//! Two of those have a structural *part* that this module does make,
-//! because parsing cannot continue without it:
-//! `validate_relay_entry`'s "requires name/type/listen" (`load_config`
-//! then indexes `entry["name"]`, which would be a `KeyError`), and the
-//! `api_key` split into scheme and name (which decides whether the
-//! name is stripped from the cage's environment).
+//! This module calls them where loading calls them, because the call
+//! site is what fixes their precedence against everything else here.
 //!
-//! PR C3 closed the last two rows by calling the real thing from this
-//! module rather than by re-deriving it: the relay loop runs
-//! [`crate::relays::validate_relay_entry`] whole, in `load_config`'s
-//! position, and each roster entry runs the `source:NAME` shape check
-//! as soon as it is built. Both are places `config.py` raises from
-//! `load_config`, not from `validate_config`, and the distinction is
-//! observable — it decides which of two faults a user is told about.
+//! Two of those have a structural *part* that parsing cannot continue
+//! without: a relay entry's "requires name/type/listen" (the entry is
+//! indexed by `name` next), and the `api_key` split into scheme and
+//! name (which decides whether the name is stripped from the cage's
+//! environment).
 //!
-//! The one thing still missing from the relay call is its
-//! `source_validator` hook, which is `secret_resolver.validate_source`
-//! and therefore C2's. `crate::relays` takes it as an argument, so
-//! turning it on is one call-site edit; until then
-//! `err-relay-auth-source-scheme` is the single corpus case that
-//! reaches this module and is not refused.
+//! The relay loop runs [`crate::relays::validate_relay_entry`] whole,
+//! with [`super::secret`]'s source validator as its hook, and each
+//! roster entry runs the `source:NAME` shape check as soon as it is
+//! built. Both raise during loading rather than validation, and the
+//! distinction is observable — it decides which of two faults a user
+//! is told about.
 //!
 //! # Dead error strings
 //!
-//! Five `raise` sites in `load_config` are unreachable, because
-//! `validate_agents_raw` rejects the same input first with
+//! Five messages from earlier releases are unreachable, because
+//! [`validate_agents_raw`] rejects the same input first with
 //! *different*, suffix-free wording — `agents.decider.enable`,
 //! `agents.watcher.enable`, `auto_revoke` and `dedup_samples`, each of
 //! which would otherwise append `— got <type>`. The corpus's
-//! `RAISE-COVERAGE.md` §2 lists them. They are not ported: reproducing
-//! them would be reproducing dead code, and if those messages are the
-//! ones users should see, the fix is to relax the earlier guard in
-//! `config.py`, not to write both here.
+//! `RAISE-COVERAGE.md` §2 lists them. They are not reproduced: if those
+//! messages are the ones users should see, the fix is to relax the
+//! earlier guard, not to write both here.
 //!
 //! # Deliberate divergences
 //!
-//! Each is noted again at its site. All of them turn a value Python
-//! carries silently forward into an error, and none changes a config
-//! that works today:
+//! Each is noted again at its site. All of them turn a value earlier
+//! releases carried silently forward into an error, and none changes a
+//! config that works:
 //!
-//! 1. **A scalar where a list or mapping belongs is an error.** Python
-//!    calls `list(x)` / `dict(x)`, and `list("node")` is
-//!    `['n','o','d','e']` — a `command:` written as a bare string
-//!    becomes four one-character arguments. No config can be relying on
-//!    that.
-//! 2. **A sequence or mapping where a string belongs is an error.**
-//!    Python's `str([1, 2])` is the text `"[1, 2]"`, which then lands
+//! 1. **A scalar where a list or mapping belongs is an error.** Earlier
+//!    releases iterated a string as a list, so a `command:` written as
+//!    the bare string `node` became four one-character arguments. No
+//!    config can be relying on that.
+//! 2. **A sequence or mapping where a string belongs is an error.** It
+//!    used to be stringified to text like `"[1, 2]"`, which then landed
 //!    in a systemd unit.
-//! 3. **A non-numeric value in a numeric field is an error.** Python
-//!    leaves `restart_sec` uncoerced, so a string reaches the quadlet
-//!    template and systemd refuses the unit at start time. The error
-//!    moves from deploy to parse.
+//! 3. **A non-numeric value in a numeric field is an error.**
+//!    `restart_sec` used to be left uncoerced, so a string reached the
+//!    quadlet template and systemd refused the unit at start time. The
+//!    error moves from deploy to parse.
 //! 4. **A YAML-1.1-ambiguous string in a numeric field is an error.**
 //!    See "Numbers that are not numbers yet" below.
-//! 5. **A malformed top-level section is a `ValueError`, not an
-//!    `AttributeError`.** `container: nope` makes `config.py` fail with
+//! 5. **A malformed top-level section is a clean error.**
+//!    `container: nope` used to fail with
 //!    `'str' object has no attribute 'get'` and a traceback; here it is
 //!    a sentence.
 //!
@@ -100,10 +85,10 @@
 //! that disagrees.
 //!
 //! The string-valued fields are a separate question, and the answer
-//! there is "nothing to do, with one caveat". `str()` of a
-//! `datetime.date` is `"2030-01-01"`, which is what the text said, so a
-//! plain date in a string field means the same thing on both sides. A
-//! `datetime` with a *time* does not: Python renders it
+//! there is "nothing to do, with one caveat". A plain date read by
+//! PyYAML and stringified is `"2030-01-01"`, which is what the text
+//! said, so a plain date in a string field means the same thing to both
+//! readers. A timestamp with a *time* does not: it stringified as
 //! `"2030-01-01 00:00:00+00:00"` where the text said
 //! `2030-01-01T00:00:00Z`. The one field shaped like that is
 //! `domains.expires`, whose values are ISO-8601 timestamps — every
@@ -135,10 +120,9 @@ type Parsed<T> = Result<T, ConfigError>;
 /// Parse `text` as a `cage.yaml`.
 ///
 /// `source` is the path the text came from — it appears in the YAML
-/// syntax-error message and nowhere else, mirroring `load_config`'s
-/// `path` argument. This crate does no I/O (see the crate docs), so
-/// reading the file and reporting an `OSError` belong to the caller;
-/// `config.py`'s wording for that one is
+/// syntax-error message and nowhere else. This crate does no I/O (see
+/// the crate docs), so reading the file and reporting a read failure
+/// belong to the caller; the recorded wording for that one is
 /// `could not read {path}: {os_error}`.
 ///
 /// # Errors
@@ -146,21 +130,19 @@ type Parsed<T> = Result<T, ConfigError>;
 /// [`ConfigError::Value`] for malformed YAML and for every structural
 /// problem in the document; [`ConfigError::Runtime`] when the config
 /// omits `dns_servers:` and the host has none to lend.
-// One long function on purpose. `load_config` is 630 lines of ordered
+// One long function on purpose. Loading is a long run of ordered
 // reads, and the order is observable: a config with two faults reports
 // whichever one comes first, and the golden corpus records which.
 // Splitting it into a dozen helpers would hide that ordering behind
-// call sites and make the two files impossible to read side by side,
-// which is how this port is reviewed.
+// call sites.
 #[allow(clippy::too_many_lines)]
 pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
-    // `yaml.YAMLError` -> "<path> is not valid YAML at line N, column
-    // M: <problem>". `config.py` builds that from PyYAML's
-    // `problem_mark`, so that a malformed file reads like a compiler
+    // A YAML error -> "<path> is not valid YAML at line N, column
+    // M: <problem>", so that a malformed file reads like a compiler
     // error instead of a traceback. The location comes from
     // `serde_norway`; the wording of the problem itself is its own and
-    // cannot match PyYAML's scanner text, which is the one part of
-    // this message the port does not reproduce.
+    // differs from the PyYAML scanner text earlier releases printed,
+    // which is the one part of this message that changed.
     let document = yaml::load_named(source, text).map_err(|error| {
         let where_ = match error.location() {
             Some(location) => format!(" at line {}, column {}", location.line(), location.column()),
@@ -240,9 +222,9 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         user: raw_string(c.get("user"), "1000:1000", "container.user")?,
         memory: string_or_empty(c.get("memory"), "container.memory")?,
         cpus: string_or_empty(c.get("cpus"), "container.cpus")?,
-        // `config.py` stores these three uncoerced and the quadlet
-        // template tests them with `{% if %}`, so Python's truthiness
-        // is the behaviour to reproduce, not an `isinstance` check.
+        // These are read with truthiness, not checked for a real
+        // boolean: the quadlet template has always tested them with
+        // `{% if %}`, so a truthy string has always meant "on".
         read_only: bool_field(c.get("read_only"), true),
         no_new_privileges: bool_field(c.get("no_new_privileges"), true),
         nested_containers: bool_field(c.get("nested_containers"), false),
@@ -270,8 +252,8 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // `restart_sec` and the two timeouts differ in how they treat an
     // explicit null, and the difference is not decorative:
     // `restart_sec: null` is the default 10, while `timeout_stop_sec:
-    // null` is 0. `config.py` writes the first with `is not None` and
-    // the second with `or`, and `container-timeouts-zero` pins both.
+    // null` is 0 (the first falls back only on null, the second on any
+    // falsy value), and `container-timeouts-zero` pins both.
     container.restart_sec = match c.get("restart_sec") {
         None | Some(Value::Null) => 10,
         Some(value) => int_value(value, "container.restart_sec")?,
@@ -298,10 +280,10 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // ── Secrets ─────────────────────────────────────────
     //
     // The two enum checks (`scope`, `backend`) are value checks and
-    // belong to C2; the strings are parsed here. `str()` is applied
-    // with no `or`, so an explicit null becomes the text "None" and
-    // C2's message reads `invalid secrets.scope: 'None'` — matching
-    // `config.py`.
+    // are in `super::secret`; the strings are parsed here. They are
+    // coerced to strings with no fallback for null, so an explicit
+    // null becomes the text "None" and the message reads
+    // `invalid secrets.scope: 'None'`, as it always has.
     let secrets_raw = section(raw.get("secrets"), "secrets")?;
     let scope = str_field(secrets_raw.get("scope"), "auto");
     validate_enum("secrets.scope", &scope, &VALID_SECRET_SCOPES)?;
@@ -338,7 +320,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     for entry in rules.iter() {
         let entry = mapping_of(entry, "secret_injection rule")?;
         // A rule with no `env` is skipped outright, placeholder and
-        // all. `config.py` guards the whole body with `if env_name:`.
+        // all; a falsy `env` counts as none.
         let Some(env_value) = entry.get("env") else {
             continue;
         };
@@ -394,12 +376,11 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
 
     // ── Inspectors ──────────────────────────────────────
     //
-    // Preserved as raw mappings so the proxy addon's dispatch logic
-    // stays the single source of truth for valid keys. A non-list
-    // value leaves the field empty rather than raising — that is
-    // `config.py`'s `if isinstance(insp_raw, list)`, and it is
-    // reproduced rather than tightened because C3 owns what an
-    // inspector entry may contain.
+    // Preserved as raw mappings so the egress's dispatch logic stays
+    // the single source of truth for valid keys. A non-list value
+    // leaves the field empty rather than raising, as it always has; it
+    // is kept rather than tightened because `super::inspectors` owns
+    // what an inspector entry may contain.
     if let Some(Value::Sequence(items)) = raw.get("inspectors") {
         config.inspectors = items
             .iter()
@@ -414,20 +395,16 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     let relays_raw = value_list(raw.get("protocol_relays"), "protocol_relays")?;
     let mut relay_secret_names: BTreeSet<String> = BTreeSet::new();
     for entry in &relays_raw {
-        // `validate_relay_entry(entry, source_validator=validate_source)`
-        // — the whole of it, not a part. `config.py:15` imports this
-        // validator from `agentcage.data.proxy.relays._validate`,
-        // which is the same module the egress proxy imports as
-        // `relays._validate`; after the port it is [`crate::relays`]
-        // here and `_validate.py` there, held together by the A4
-        // fixture rather than by `import`
-        // (docs/history/rust-port-plan.md §2.2).
+        // The whole relay validator, not a part — the same
+        // [`crate::relays`] the egress applies to the same entries
+        // (docs/history/rust-port-plan.md §2.2), pinned by the shared
+        // contract fixture.
         //
-        // It runs before any field is read because `load_config` does:
-        // the validator is what makes `entry["name"]` on the next line
-        // an index rather than a `KeyError`.
+        // It runs before any field is read: the validator is what
+        // guarantees `name`, `type` and `listen` exist for the next
+        // lines.
         //
-        // The `source_validator` hook is C2's
+        // The `source_validator` hook is
         // [`super::secret::validate_source`], the same function
         // `secret_injection` rules are checked with. Passing it here is
         // what refuses a relay credential naming an unknown scheme
@@ -446,8 +423,8 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         // three relays needs to say which one.
         let at = format!("protocol_relays[{name}]");
         // `validate_relay_entry`'s wording for these two carries no
-        // `(got X)` suffix; matched exactly so the message does not
-        // change when C3 takes the rest of that validator over.
+        // `(got X)` suffix; matched exactly so the message stays the
+        // recorded one.
         let upstream_raw = match entry.get("upstream") {
             Some(value) if yaml::is_truthy(value) => match value {
                 Value::Mapping(mapping) => Cow::Borrowed(mapping),
@@ -715,7 +692,8 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // The mode is derived from which keys are present, not from their
     // contents: an empty `allow: []` is still allowlist mode, and the
     // `domains: cannot specify both 'allow' and 'block' lists` check
-    // that catches the ambiguous case is a value check, so it is C2's.
+    // that catches the ambiguous case is a value check, so it is in
+    // `super::validate`.
     let (mode, allow, block) = if domains_raw.contains_key("allow") {
         // New format: explicit allow/block lists.
         (
@@ -735,8 +713,8 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         )
     } else if domains_raw.contains_key("mode") {
         // Backward compat: mode + list. An unrecognised mode keeps its
-        // entries nowhere, exactly as `config.py` does — validation
-        // then reports the mode.
+        // entries nowhere, as it always has — validation then reports
+        // the mode.
         let mode = raw_string(domains_raw.get("mode"), "", "domains.mode")?;
         let entries = string_list(domains_raw.get("list"), "domains.list")?;
         match mode.as_str() {
@@ -845,16 +823,16 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
 
     // ── Egress ──────────────────────────────────────────
     //
-    // Added after the Python port, so no `config.py` behaviour to match:
-    // the section is validated whole here, by the parser the egress runs
+    // A newer section with no earlier behaviour to match: it is
+    // validated whole here, by the parser the egress runs
     // on the same keys (see `super::egress`).
     config.egress =
         super::egress::EgressConfig::from_yaml(raw.get("egress")).map_err(ConfigError::value)?;
 
     // ── Ports ───────────────────────────────────────────
     //
-    // Nested by protocol. Per-entry range and duplicate checks are
-    // C2's, so that all bad entries are reported together. The
+    // Nested by protocol. Per-entry range and duplicate checks are in
+    // `super::validate`, so that all bad entries are reported together. The
     // structural shape (mappings at each level) is checked here so a
     // malformed config like `ports: "yes"` or `ports.tcp: [80, 443]`
     // (operator forgot the `allow:` key) raises a clean error rather
@@ -868,7 +846,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     config.help = string_or_empty(raw.get("help"), "help")?;
 
     // Exec aliases. A value that is not a list is dropped without
-    // complaint — `config.py`'s `if isinstance(v, list)`.
+    // complaint, as it always has been.
     let aliases_raw = section(raw.get("exec_aliases"), "exec_aliases")?;
     for (key, value) in aliases_raw.as_ref() {
         if let Value::Sequence(items) = value {
@@ -892,16 +870,16 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
 /// disabled. Silently ignoring old settings could turn off monitoring
 /// or change egress policy.
 ///
-/// Public because it is not only [`load`]'s business: `state.py` calls
-/// it from `save_deployment`, `save_raw_config` and `load_raw_config`,
-/// so the stored `cage.yaml` is re-checked on the way in *and* on the
+/// Public because it is not only [`load`]'s business: the state store
+/// calls it when saving a deployment and when saving or loading the
+/// raw config, so the stored `cage.yaml` is re-checked on the way in *and* on the
 /// way out without a full parse. [`validate_agents_document`] is the
 /// entry point those three want, since they hold a whole YAML document
 /// rather than a mapping.
 ///
 /// # Errors
 ///
-/// [`ConfigError::Value`] with `config.py`'s wording byte for byte.
+/// [`ConfigError::Value`] with the recorded wording byte for byte.
 pub fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
     let domains = agent_mapping(raw.get("domains"), "domains")?;
     if domains.contains_key("auto") {
@@ -947,7 +925,7 @@ pub fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
             if let Some(value) = block.get(flag)
                 && !matches!(value, Value::Bool(_))
             {
-                // `bool("false")` is True, so a hand-edited `enable:
+                // The string "false" is truthy, so a hand-edited `enable:
                 // "false"` would silently turn an agent — and with the
                 // decider, the caged agent's ability to grant egress —
                 // ON against the operator's written intent.
@@ -962,16 +940,14 @@ pub fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
 
 /// `validate_agents_raw` over a whole YAML document.
 ///
-/// The Python signature is `validate_agents_raw(raw: dict)` and every
-/// caller in `state.py` reaches it as `validate_agents_raw(yaml.safe_load(f)
-/// or {})`. Two behaviours hide in that expression and both are here:
+/// Every caller holds a whole parsed document rather than a mapping.
+/// Two behaviours earlier releases had at that boundary are kept:
 ///
-/// * `... or {}` — a *falsy* document (null, `{}`, `[]`, `0`, `""`)
+/// * a *falsy* document (null, `{}`, `[]`, `0`, `""`)
 ///   becomes an empty mapping and passes. That is why an empty
 ///   `cage.yaml` is storable.
-/// * a truthy non-mapping (a populated list, a bare string) reaches
-///   `if not isinstance(raw, dict): raise ValueError("config must be a
-///   mapping")`.
+/// * a truthy non-mapping (a populated list, a bare string) is refused
+///   with `config must be a mapping`.
 ///
 /// # Errors
 ///
@@ -979,7 +955,7 @@ pub fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
 /// `"config must be a mapping"` for a truthy non-mapping document.
 pub fn validate_agents_document(document: &Value) -> Parsed<()> {
     if !yaml::is_truthy(document) {
-        // `or {}` — nothing to check.
+        // A falsy document — nothing to check.
         return Ok(());
     }
     let Value::Mapping(raw) = document else {
@@ -1024,7 +1000,7 @@ fn llm_client(
     };
 
     // The `source:NAME` split. The *shape* check that rejects a bare
-    // name is C3's; what happens here is the part parsing needs — an
+    // name is [`api_key_shape`]'s; what happens here is the part parsing needs — an
     // `env:` key names a host variable that must be stripped from the
     // cage's environment, because an egress-only credential must never
     // reach the cage even as a placeholder.
@@ -1037,22 +1013,20 @@ fn llm_client(
     Ok(client)
 }
 
-/// `load_config`'s half of the agent API-key check.
+/// Loading's half of the agent API-key check.
 ///
-/// `config.py` runs the `source:NAME` *shape* check here, right after
-/// the roster entry is built and before the next one is read, and runs
-/// it again — along with the `cmd:` and unknown-scheme rules — in
-/// `validate_config`. Both spell the message identically, so which one
+/// The `source:NAME` *shape* check runs here, right after the roster
+/// entry is built and before the next one is read, and again — along
+/// with the `cmd:` and unknown-scheme rules — during validation. Both spell the message identically, so which one
 /// fires is invisible until the config has a second fault that a
-/// `validate_config` rule would catch in between. Reproducing the
+/// validation rule would catch in between. Reproducing the
 /// early one keeps that ordering.
 ///
-/// `if _key:` guards it: an empty key is "required" in
-/// `validate_config`'s words, not "malformed" in these.
+/// An empty key skips it: an empty key is "required" in validation's
+/// words, not "malformed" in these.
 ///
-/// The `validate_source(_key)` call that follows it in `config.py` is
-/// PR C2's (`secret_resolver`), and the `env:` name it collects for
-/// stripping is already gathered by [`llm_client`].
+/// The full source check is validation's, and the `env:` name to strip
+/// is already gathered by [`llm_client`].
 fn api_key_shape(api_key: &str, label: &str) -> Parsed<()> {
     if api_key.is_empty() {
         return Ok(());
@@ -1067,7 +1041,7 @@ fn api_key_shape(api_key: &str, label: &str) -> Parsed<()> {
 /// rather than `str()`-coerced: a mapping would otherwise ride the
 /// agent's system prompt as a misleading repr like
 /// `{'enable': True}`. The 4096-char cap is a value check, so it is
-/// C3's.
+/// in [`super::agents`].
 fn agent_context(value: Option<&Value>, path: &str) -> Parsed<String> {
     match value {
         None | Some(Value::Null) => Ok(String::new()),
@@ -1176,13 +1150,13 @@ fn protocol_section(
 
 /// `ports.*.allow` / `ports.tcp.passthrough` — a list of integers.
 ///
-/// `config.py` keeps the entries raw and lets `validate_config` reject
-/// a non-integer with `ports.tcp.allow entries must be integers (got:
-/// …)`. That message is reproduced here rather than in C2 because the
-/// field is typed `Vec<i64>`: a raw list would push the type problem
+/// Earlier releases kept the entries raw and let validation reject a
+/// non-integer with `ports.tcp.allow entries must be integers (got:
+/// …)`. That message is produced here rather than in validation
+/// because the field is typed `Vec<i64>`: a raw list would push the type problem
 /// into every consumer. The only observable difference is precedence —
 /// a config with both a bad port and a bad name reports the port
-/// first, where `config.py` reports the name.
+/// first, where earlier releases reported the name.
 fn port_list(value: Option<&Value>, path: &str) -> Parsed<Vec<i64>> {
     let items = match value {
         Some(value) if yaml::is_truthy(value) => match value {
@@ -1199,10 +1173,8 @@ fn port_list(value: Option<&Value>, path: &str) -> Parsed<Vec<i64>> {
     items
         .iter()
         .map(|item| match item {
-            // A YAML bool is an int in Python (`True == 1`), so the
-            // check `config.py` makes is `isinstance(e, int) and not
-            // isinstance(e, bool)` — a bare `isinstance` would let
-            // `- true` through as port 1.
+            // A YAML bool must not count as an integer here — treating
+            // `true` as 1 would let `- true` through as port 1.
             Value::Number(number) if number.is_i64() || number.is_u64() => number
                 .as_i64()
                 .or_else(|| number.as_u64().and_then(|n| i64::try_from(n).ok()))
@@ -1222,7 +1194,7 @@ fn port_list(value: Option<&Value>, path: &str) -> Parsed<Vec<i64>> {
 
 // ── small helpers over the raw document ─────────────────
 
-/// `x.get(key)` filtered through Python's `not in (None, "")`.
+/// A key's value, treating null and the empty string as absent.
 fn present(value: Option<&Value>) -> Option<&Value> {
     match value {
         None | Some(Value::Null) => None,
@@ -1231,12 +1203,12 @@ fn present(value: Option<&Value>) -> Option<&Value> {
     }
 }
 
-/// `bool(x)` on an optional key; an absent key is `False`.
+/// Truthiness of an optional key; an absent key is `false`.
 fn truthy(value: Option<&Value>) -> bool {
     value.is_some_and(yaml::is_truthy)
 }
 
-/// `raw.get(key) or {}` — a section that a falsy value empties.
+/// A section that a falsy value empties.
 fn section<'a>(value: Option<&'a Value>, path: &str) -> Parsed<Cow<'a, Mapping>> {
     match value {
         Some(value) if yaml::is_truthy(value) => mapping_of(value, path),
@@ -1248,8 +1220,8 @@ fn section<'a>(value: Option<&'a Value>, path: &str) -> Parsed<Cow<'a, Mapping>>
 /// operator errors.
 ///
 /// Note the difference from [`section`]: `[]` is falsy, so `section`
-/// would quietly empty it, while this rejects it. `config.py` uses
-/// this stricter form for `domains`, `agents` and the two roster
+/// would quietly empty it, while this rejects it. This stricter form
+/// is used for `domains`, `agents` and the two roster
 /// entries, where silently ignoring a removed setting could change
 /// egress policy.
 fn agent_mapping<'a>(value: Option<&'a Value>, path: &str) -> Parsed<Cow<'a, Mapping>> {
@@ -1305,7 +1277,7 @@ fn string_map(value: Option<&Value>, path: &str) -> Parsed<OrderedMap<String>> {
         .collect()
 }
 
-/// A scalar, as the string Python's `str()` would make of it.
+/// A scalar, as its [`coerce_to_string`] text.
 ///
 /// Divergence 2: a sequence or mapping is an error rather than its own
 /// repr.
@@ -1323,11 +1295,9 @@ fn scalar_string(value: &Value, path: &str) -> Parsed<String> {
 /// `x.get(key, default)` with no coercion — an absent key takes the
 /// default, an explicit null becomes the empty string.
 ///
-/// Null maps to `""` rather than to Python's `None` because every
-/// consumer of these fields tests them for emptiness (`if not
-/// config.name`) or feeds them to a regex, and `None` would be a
-/// `TypeError` there. The empty string keeps the falsiness and drops
-/// the crash.
+/// Null maps to `""` because every consumer of these fields tests
+/// them for emptiness or matches them against a pattern; the empty
+/// string keeps the falsiness.
 fn raw_string(value: Option<&Value>, default: &str, path: &str) -> Parsed<String> {
     match value {
         None => Ok(default.to_owned()),
@@ -1335,8 +1305,9 @@ fn raw_string(value: Option<&Value>, default: &str, path: &str) -> Parsed<String
     }
 }
 
-/// `str(x.get(key, default))` — an explicit null becomes the text
-/// `"None"`, which is what `config.py` then reports back to the user.
+/// A key coerced to a string, defaulting only when absent — an
+/// explicit null becomes the text `"None"`, which is what the error
+/// message then reports back to the user.
 fn str_field(value: Option<&Value>, default: &str) -> String {
     match value {
         None => default.to_owned(),
@@ -1344,7 +1315,7 @@ fn str_field(value: Option<&Value>, default: &str) -> String {
     }
 }
 
-/// `str(x.get(key) or default)` — any falsy value takes the default.
+/// A key coerced to a string; any falsy value takes the default.
 fn or_string(value: Option<&Value>, default: &str, path: &str) -> Parsed<String> {
     match value {
         Some(value) if yaml::is_truthy(value) => scalar_string(value, path),
@@ -1352,13 +1323,12 @@ fn or_string(value: Option<&Value>, default: &str, path: &str) -> Parsed<String>
     }
 }
 
-/// `str(x.get(key, "") or "")`.
+/// [`or_string`] with an empty default.
 fn string_or_empty(value: Option<&Value>, path: &str) -> Parsed<String> {
     or_string(value, "", path)
 }
 
-/// `bool(x.get(key, default))` — Python truthiness, not an
-/// `isinstance` check.
+/// A key read with truthiness, not checked for a real boolean.
 fn bool_field(value: Option<&Value>, default: bool) -> bool {
     match value {
         None => default,
@@ -1368,8 +1338,7 @@ fn bool_field(value: Option<&Value>, default: bool) -> bool {
 
 /// A field that must be a **real** boolean.
 ///
-/// `config.py:1343` and `:1350`: `bool("false")` is `True`, so a
-/// hand-edited string would silently invert the operator's intent.
+/// The string `"false"` is truthy, so a hand-edited string would silently invert the operator's intent.
 /// Only the watcher's `auto_revoke` and `dedup_samples` reach this
 /// through a live path — `validate_agents_raw` has already rejected a
 /// non-boolean with different wording, so this is the belt to that
@@ -1448,9 +1417,10 @@ fn strip_secrets(container: &mut ContainerConfig, names: &BTreeSet<String>) {
     container.env.retain(|key, _| !names.contains(key));
 }
 
-// ── Python's int() and float() ──────────────────────────
+// ── Lenient integer and float coercion ──────────────────
 
-/// `int(value)`, returning CPython's own exception text on failure.
+/// A value coerced to an integer, with the recorded error text on
+/// failure (Python's `int()` wording, which earlier releases printed).
 ///
 /// The text matters: `_llm_client` wraps it as
 /// `agents.decider: invalid LLM client value (<text>)`, and the corpus
@@ -1487,7 +1457,8 @@ fn coerce_int(value: &Value) -> Result<i64, String> {
     }
 }
 
-/// `float(value)`, returning CPython's own exception text on failure.
+/// A value coerced to a float, with the recorded error text on failure
+/// (Python's `float()` wording, as for [`coerce_int`]).
 fn coerce_float(value: &Value) -> Result<f64, String> {
     match value {
         Value::Bool(flag) => Ok(if *flag { 1.0 } else { 0.0 }),
@@ -1506,12 +1477,12 @@ fn coerce_float(value: &Value) -> Result<f64, String> {
     }
 }
 
-/// Refuse a string that Python would turn into a *different* number.
+/// Refuse a string that PyYAML would read as a *different* number.
 ///
 /// `crate::yaml`'s reader resolves YAML 1.1 booleans and nothing else,
-/// so a plain `0755` arrives here as the text `"0755"` where
-/// `config.py` received the integer 493 — PyYAML reads a leading zero
-/// as octal. `int("0755")` is 755, so parsing it would be a silent
+/// so a plain `0755` arrives here as the text `"0755"` where PyYAML
+/// produced the integer 493 — it reads a leading zero as octal. A
+/// decimal parse of `"0755"` is 755, so parsing it would be a silent
 /// wrong answer by a factor of 1.5.
 ///
 /// The guard is narrow on purpose. Most of the 1.1-only patterns are
@@ -1548,15 +1519,15 @@ fn reject_ambiguous(text: &str) -> Result<(), String> {
     }
 }
 
-/// CPython's `int(str)`: optional sign, decimal digits, underscores
-/// between digits, surrounding whitespace allowed.
+/// A base-10 integer literal: optional sign, decimal digits, single
+/// underscores between digits (PEP 515), surrounding whitespace allowed.
 fn parse_int_literal(text: &str) -> Option<i64> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
     }
     let digits = trimmed.replace('_', "");
-    // `replace` would also accept `1__0` and `_1`, which CPython
+    // `replace` would also accept `1__0` and `_1`, which PEP 515
     // rejects. Guard those explicitly rather than hand-rolling a
     // scanner: a leading, trailing or doubled underscore is the whole
     // difference.
@@ -1735,9 +1706,8 @@ mod tests {
         let config = parse(
             "name: c\nagents:\n  decider:\n    enable: false\n    provider: anthropic\n    model: m\n",
         );
-        // The operator's provider and model are discarded, exactly as
-        // `config.py` discards them: the block is only read when
-        // `enable` is true.
+        // The operator's provider and model are discarded: the block is
+        // only read when `enable` is true.
         assert_eq!(config.agents.decider.llm.provider, "");
         assert!(!config.agents.decider.enable);
     }
@@ -1827,8 +1797,7 @@ mod tests {
             error("name: c\nports:\n  tcp:\n    allow: ['443']\n").message(),
             "ports.tcp.allow entries must be integers (got: '443')"
         );
-        // `True == 1` in Python, so an `isinstance(e, int)` alone would
-        // let this through as port 1.
+        // Treating `true` as 1 would let this through as port 1.
         assert_eq!(
             error("name: c\nports:\n  udp:\n    allow: [true]\n").message(),
             "ports.udp.allow entries must be integers (got: True)"
@@ -1866,8 +1835,8 @@ mod tests {
 
     /// The idle timeout the host records is the one the egress runs.
     ///
-    /// `relays/imap.py` defaults it to 1800 (so RFC 2177 IDLE heartbeats,
-    /// every ~29 minutes, do not trip it) and `relays/smtp.py` to 300
+    /// The IMAP relay defaults it to 1800 (so RFC 2177 IDLE heartbeats,
+    /// every ~29 minutes, do not trip it) and the SMTP relay to 300
     /// (RFC 5321 §4.5.3.2). The host used to record 0 — "disabled" —
     /// for an unset key while the relay enforced its own default, so
     /// the parsed config said the opposite of what ran.
@@ -2003,7 +1972,7 @@ mod tests {
 
     #[test]
     fn a_scalar_where_a_list_belongs_is_refused() {
-        // `list("node")` is four one-character arguments in Python.
+        // Read as a list, `node` would be four one-character arguments.
         assert_eq!(
             error("name: c\ncontainer:\n  command: node\n").message(),
             "container.command must be a list (got str)"

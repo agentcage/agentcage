@@ -1,72 +1,62 @@
-//! `validate_config` — the value checks, and the warnings.
+//! Validation — the value checks, and the warnings.
 //!
-//! Read alongside `src/agentcage/config.py:1597`. As in [`super::parse`],
-//! the order of this file is the Python function's order, because **error
-//! precedence is observable**: a config with two faults reports whichever
-//! check runs first, and that is what an operator fixing errors one at a
-//! time experiences. The golden corpus records the answer for 127 invalid
-//! configs.
+//! As in [`super::parse`], the order of this file is the check order,
+//! because **error precedence is observable**: a config with two faults
+//! reports whichever check runs first, and that is what an operator
+//! fixing errors one at a time experiences. The golden corpus records
+//! the answer for 127 invalid configs.
 //!
 //! # Scope
 //!
-//! This is PR C2. `validate_config` is one 620-line function, so the file
-//! exists in full here, with C3's checks left as marked holes rather than
-//! as a second copy of the skeleton:
-//!
-//! | | Owner |
+//! | | Where |
 //! | :-- | :-- |
-//! | name, image, volumes, isolation, lifecycle, logging, vm | C2 |
-//! | `container.ports` specs, `ports.{tcp,udp,icmp}`, the three collision checks | C2 |
-//! | domains: `allow`/`block` exclusivity, per-entry syntax | C2 |
-//! | secrets: scope, backend, env names, source schemes, transforms | C2 (in [`super::parse`], where `load_config` makes them) |
-//! | placeholders: the canonical-form warning | C2 |
-//! | `agents.decider` / `agents.watcher` | C3 |
-//! | the apple-container inspector-chain warnings | C3 |
+//! | name, image, volumes, isolation, lifecycle, logging, vm | here |
+//! | `container.ports` specs, `ports.{tcp,udp,icmp}`, the three collision checks | here |
+//! | domains: `allow`/`block` exclusivity, per-entry syntax | here |
+//! | secrets: scope, backend, env names, source schemes, transforms | [`super::parse`], where loading makes them |
+//! | placeholders: the canonical-form warning | here |
+//! | `agents.decider` / `agents.watcher` | [`super::agents::validate_agents`], called from here |
+//! | the apple-container inspector-chain warnings | inline at the end of `apple_container_warnings` |
 //!
-//! Both C3 rows were left as `── C3 ──` comments at the exact point
-//! `config.py` makes the check, so that filling them in would be an
-//! insertion rather than a merge. **Both are filled.** The first
-//! delegates to [`super::agents::validate_agents`], which C3 wrote but
-//! never called from here; the second is inline at the end of
-//! `apple_container_warnings`. Until they were, this function validated
-//! every config *except* its agents — and `tests/golden_validate.rs`
-//! measured the cost at thirty-one invalid corpus cases the port
-//! accepted and `config.py` refused.
+//! `tests/golden_validate.rs` runs every invalid corpus case through
+//! [`validate`], agents included; when the agents step was briefly
+//! unwired it measured the cost at thirty-one cases accepted that
+//! should have been refused.
 //!
-//! # One Python behaviour reproduced rather than fixed
+//! # One long-standing behaviour kept rather than fixed
 //!
 //! It is noted again at its site. It is not fixed here, but it looks
 //! like a bug rather than a choice:
 //!
-//! 1. **`_check_port_entry` runs after seven other checks.** It is the
-//!    one type check in `validate_config` rather than in `load_config`,
-//!    which is why this port reports it earlier than Python does — see
+//! 1. **The port-entry type check runs after seven other checks.** It
+//!    was the one type check in validation rather than in loading,
+//!    which is why it is now reported earlier than it used to be — see
 //!    "Error precedence" below.
 //!
 //! # Error precedence and the `Vec<i64>` ports
 //!
-//! PR C1 typed `ports.tcp.allow` and friends as `Vec<i64>` rather than as
-//! raw values, so that `ports.tcp.allow entries must be integers (got:
-//! '443')` could be reproduced byte-for-byte at all. The cost is that the
-//! check moves from `validate_config` to `load_config`, and `load_config`
-//! runs first.
+//! `ports.tcp.allow` and friends are typed `Vec<i64>` rather than kept
+//! as raw values, so that `ports.tcp.allow entries must be integers
+//! (got: '443')` could be reproduced byte-for-byte at all. The cost is
+//! that the check moved from validation to loading, and loading runs
+//! first.
 //!
 //! For a config with *one* fault that makes no difference, which is why
 //! every corpus case still matches. It shows up only when a config has
 //! **two**, and then the divergence is total in one direction: a string
 //! or boolean port entry now preempts **every** check in this file,
-//! `name` included. `name: BAD` with `ports.tcp.allow: ['443']` reports
-//! the name in Python and the port here.
+//! `name` included. `name: BAD` with `ports.tcp.allow: ['443']` used to
+//! report the name and now reports the port.
 //!
-//! Its position relative to the rest of `load_config` is unchanged —
+//! Its position relative to the rest of loading is unchanged —
 //! `validate_agents_raw`, the `secrets:` section and `protocol_relays`
 //! still win, because the parser reaches them before the `ports:`
 //! section — so the boundary that moved is exactly one wide.
 //!
 //! `tests/golden_validate.rs`'s `error_precedence_matches_the_corpus` maps
-//! it: twenty pairs, every expectation taken from running the same
-//! document through `config.py` on CPython 3.13.0, five of which are the
-//! divergence and fifteen of which are not.
+//! it: twenty pairs, every expectation recorded from an earlier release
+//! running the same document, five of which are the divergence and
+//! fifteen of which are not.
 
 use std::collections::BTreeSet;
 
@@ -88,21 +78,20 @@ use crate::yaml::{Value, is_truthy};
 
 type Validated<T> = Result<T, ConfigError>;
 
-/// What `validate_config` reads from the world around it.
+/// What validation reads from the world around it.
 ///
-/// `config.py` calls `platform.system()`, `platform.machine()` and
-/// `os.environ` directly. This crate does no I/O (see the crate docs), so
-/// they arrive as a trait — a separate one from [`super::HostProbe`], which
+/// The host OS, the CPU architecture and the environment. This crate
+/// does no I/O (see the crate docs), so they arrive as a trait — a separate one from [`super::HostProbe`], which
 /// [`super::load`] takes, because the two are asked at different times
 /// and a caller may well answer them from different places.
 pub trait ValidationHost {
-    /// `platform.system()` — `"Linux"`, `"Darwin"`, …
+    /// The OS name — `"Linux"`, `"Darwin"`, …
     fn system(&self) -> &str;
 
-    /// `platform.machine()` — `"x86_64"`, `"arm64"`, …
+    /// The machine architecture — `"x86_64"`, `"arm64"`, …
     fn machine(&self) -> &str;
 
-    /// `name in os.environ`.
+    /// Whether the environment variable `name` is set.
     ///
     /// Only ever asked about a name a `${...}` reference in
     /// `container.env` mentioned, and only to decide whether to warn.
@@ -154,11 +143,11 @@ impl ValidationHost for FixedValidationHost {
 ///
 /// # Errors
 ///
-/// [`ConfigError::Value`] for the first fatal problem found, in
-/// `config.py`'s order. Warnings are returned, never raised: every one of
+/// [`ConfigError::Value`] for the first fatal problem found, in the
+/// recorded order. Warnings are returned, never raised: every one of
 /// them describes a config that deploys and runs, and several fire on
 /// stock scaffolds.
-// One long function, for the reason `load_config`'s port is one long
+// One long function, for the reason [`super::load`] is one long
 // function: the order is the contract, and splitting it into helpers
 // would hide the ordering behind call sites.
 #[allow(clippy::too_many_lines)]
@@ -177,7 +166,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     if config.container.image.is_empty() {
         return Err(ConfigError::value("container.image is required in config"));
     }
-    // Before the image-reference check, matching `config.py`. The
+    // Before the image-reference check, as it always has been. The
     // ordering is not obviously deliberate, but it is observable.
     for volume in &config.container.volumes {
         validate_non_persistent_volume(volume).map_err(ConfigError::value)?;
@@ -191,7 +180,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
 
     // ── Volumes agentcage owns ──────────────────────────
     //
-    // Not a `config.py` check: it came with the per-cage CA guarantee
+    // A newer check: it came with the per-cage CA guarantee
     // (`docs/history/egress-port-plan.md` D11). A cage mounting `agentcage-certs-*`
     // reads a CA private key, so every name agentcage creates volumes
     // under is refused here, on every backend.
@@ -224,7 +213,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     if !VALID_LIFECYCLES.contains(&config.lifecycle.as_str()) {
         return Err(ConfigError::value(format!(
             "lifecycle must be one of {} (got: {})",
-            python_tuple(&VALID_LIFECYCLES),
+            tuple_literal(&VALID_LIFECYCLES),
             quote_text(&config.lifecycle)
         )));
     }
@@ -261,7 +250,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     if !VALID_LOG_LEVELS.contains(&config.logging.level.as_str()) {
         return Err(ConfigError::value(format!(
             "logging.level must be one of {} (got: {})",
-            python_tuple(&VALID_LOG_LEVELS),
+            tuple_literal(&VALID_LOG_LEVELS),
             quote_text(&config.logging.level)
         )));
     }
@@ -273,7 +262,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         if !value.is_empty() && !VALID_LOG_LEVELS.contains(&value.as_str()) {
             return Err(ConfigError::value(format!(
                 "logging.{service} must be one of {} or empty (got: {})",
-                python_tuple(&VALID_LOG_LEVELS),
+                tuple_literal(&VALID_LOG_LEVELS),
                 quote_text(value)
             )));
         }
@@ -290,7 +279,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     {
         return Err(ConfigError::value(format!(
             "capture.min_action must be one of {} (got: {})",
-            python_tuple(&VALID_CAPTURE_MIN_ACTIONS),
+            tuple_literal(&VALID_CAPTURE_MIN_ACTIONS),
             quote_text(min_action)
         )));
     }
@@ -341,8 +330,8 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // get one either — the egress cannot audit UDP — so the reserved-port
     // checks do not apply to them.
     //
-    // The `entries must be integers` half of `_check_port_entry` is not
-    // here: PR C1's `Vec<i64>` makes it a parse error. See the module
+    // The `entries must be integers` half of the port-entry check is not
+    // here: the `Vec<i64>` type makes it a parse error. See the module
     // docs on error precedence.
     let tcp_allow = validate_port_list(&config.ports.tcp.allow, "ports.tcp.allow")?;
     let tcp_passthrough =
@@ -351,8 +340,8 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
 
     let inspected: BTreeSet<i64> = tcp_allow.difference(&tcp_passthrough).copied().collect();
 
-    // `sorted(inspected_tcp_ports)` in Python, because CPython set order
-    // is not deterministic and an operator with two violations would
+    // Sorted, because an unordered set would make the order
+    // nondeterministic and an operator with two violations would
     // otherwise see a different "first violation" on each run. A
     // `BTreeSet` is sorted already; the note is why the sort exists.
     for port in &inspected {
@@ -598,7 +587,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     }
 
     // Unset `${VAR}` references in container.env. Scanned by hand rather
-    // than by regex because `config.py` does: it walks for `${`, takes
+    // than by regex, keeping the recorded behaviour: it walks for `${`, takes
     // everything up to the next `}`, and resumes *after* that `}`, so a
     // malformed `${` with no closing brace ends the scan rather than
     // being skipped over.
@@ -622,7 +611,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
 
     // ── custom inspectors ───────────────────────────────
     //
-    // Not a `config.py` check: plugins became WebAssembly components
+    // A newer check: plugins became WebAssembly components
     // with the Rust egress (`docs/history/egress-port-plan.md` D2), and a `path:` the
     // host cannot stage, or the egress cannot load, is refused here.
     super::inspectors::validate_plugins(config)?;
@@ -648,11 +637,11 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         }
     }
 
-    // ── C3: the agents blocks ───────────────────────────
+    // ── the agents blocks ───────────────────────────────
     //
-    // `config.py`'s "Policy API validation", "agents.decider validation"
-    // and "agents.watcher validation" run last, in that order, and
-    // [`super::agents::validate_agents`] reproduces all three:
+    // Policy API, `agents.decider` and `agents.watcher` validation run
+    // last, in that order, all three in
+    // [`super::agents::validate_agents`]:
     //
     //   * `agents.{decider,watcher}.timeout_seconds must be finite and > 0`
     //     for each enabled role, both roles checked before either one's
@@ -666,12 +655,11 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     //     checks field for field, then interval / window / max_flows /
     //     max_digest_tokens, the two spend warnings, and context length.
     //
-    // C3 wrote that function and left this as a seam. The seam stayed
-    // empty, so until it was filled the CLI validated every config
-    // *except* its agents: a bad control host, an `api_key` in a scheme
-    // the egress cannot resolve, or a `max_tokens` under the measured
-    // 1024 floor all passed here and were caught only by the Python.
-    // The last of those is the one that hurt — 0.38.0 added that floor
+    // This call was briefly missing, and while it was the CLI validated
+    // every config *except* its agents: a bad control host, an
+    // `api_key` in a scheme the egress cannot resolve, or a
+    // `max_tokens` under the measured 1024 floor all passed here. The
+    // last of those is the one that hurt — 0.38.0 added that floor
     // precisely because a starved decider denies every request while
     // looking healthy.
     warnings.extend(super::agents::validate_agents(config)?);
@@ -758,14 +746,14 @@ fn capture_min_action_alias(value: &str) -> Option<&'static str> {
 /// backend; until then, this tells the operator which of their entries
 /// are decorative here. Tracked as issue #120.
 ///
-/// Two absences are deliberate and documented in `config.py`:
+/// Two absences are deliberate:
 /// `container.volumes` and `container.tmpfs` are both wired through
 /// `container run` argv now, and `container.add_capabilities` is inert on
 /// every backend (the cage workload runs as uid 1000 with an empty cap
 /// set) while every stock package-manager scaffold sets it — so warning
 /// about it was pure noise on the common path.
-// As long as `validate` itself, and for the same reason: `config.py`
-// builds this list in one place and in one order, and the order is what
+// As long as `validate` itself, and for the same reason: the list is
+// built in one place and in one order, and the order is what
 // the corpus records.
 #[allow(clippy::too_many_lines)]
 fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
@@ -990,7 +978,7 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
         }
     }
 
-    // ── C3: the inspector chain ─────────────────────────
+    // ── the inspector chain ─────────────────────────────
     //
     // Last in this block, one warning per `config.inspectors` entry.
     // Built-in inspectors run end to end on apple-container and are
@@ -1003,14 +991,14 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     // backend like on the others (and refused by `validate_plugins` if
     // it cannot be), so it draws no warning.
     //
-    // `name` is `entry.get("name", "")`, so a missing key is the empty
-    // string and `{name!r}` renders it `''`. A non-string name is not
-    // in the built-in set either, and [`value_fmt::display_value`] renders it the
-    // way Python's `!r` would — `5`, not `'5'`.
+    // A missing `name` is the empty string, which
+    // [`value_fmt::display_value`] renders `''`. A non-string name is
+    // not in the built-in set either, and renders as its literal — `5`,
+    // not `'5'`.
     //
     // `config.inspectors` is already filtered to mappings at parse
-    // time, so the index here is the post-filter one, exactly as in
-    // `config.py`: both enumerate the same already-filtered list.
+    // time, so the index here is the post-filter one, as it always has
+    // been.
     let empty = Value::String(String::new());
     for (index, entry) in config.inspectors.iter().enumerate() {
         let name = entry.get("name").unwrap_or(&empty);
@@ -1028,10 +1016,10 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     }
 }
 
-/// `name in _BUILTIN_INSPECTOR_NAMES`.
+/// Whether `name` is in [`BUILTIN_INSPECTOR_NAMES`].
 ///
-/// A non-string is never in a `frozenset` of strings, so it falls to
-/// the warning — which is what `config.py` does.
+/// A non-string is never in a set of strings, so it falls to the
+/// warning.
 fn is_builtin_inspector(name: &Value) -> bool {
     name.as_str()
         .is_some_and(|text| BUILTIN_INSPECTOR_NAMES.contains(&text))
@@ -1062,15 +1050,15 @@ fn tmpfs_options(entry: &str) -> Vec<&str> {
     })
 }
 
-// ── Python-shaped helpers ────────────────────────────────
+// ── message helpers ──────────────────────────────────────
 
-/// `display_value()` of a Python tuple of strings.
+/// A list of valid values, written as a parenthesised tuple literal.
 ///
-/// `lifecycle` and `logging.level` interpolate their valid-value tuple
-/// with `{}`, which for a tuple is its `repr` — `('service',
+/// `lifecycle` and `logging.level` messages have always listed their
+/// valid values this way — `('service',
 /// 'interactive', 'ephemeral')`, trailing comma and all if it ever holds
 /// one element.
-fn python_tuple(values: &[&str]) -> String {
+fn tuple_literal(values: &[&str]) -> String {
     let rendered: Vec<String> = values.iter().map(|value| quote_text(value)).collect();
     if rendered.len() == 1 {
         format!("({},)", rendered[0])
@@ -1083,8 +1071,9 @@ fn python_tuple(values: &[&str]) -> String {
 ///
 /// # The anchor
 ///
-/// This pattern anchored on `$` until the anchor sweep. Python's `$` matches at
-/// the end of the string **or immediately before one trailing newline**,
+/// This pattern anchored on `$` until the anchor sweep. A regex `$`
+/// matches at the end of the string **or immediately before one
+/// trailing newline**,
 /// so `"my-cage\n"` used to pass — and the name goes on to become a
 /// systemd unit name, a podman object name and a directory under the
 /// state dir. `valid_domain` had always anchored on `\Z` for exactly
@@ -1140,17 +1129,18 @@ fn matches_image_reference(image: &str) -> bool {
     }
 }
 
-/// `int(text)`, for the strings inside a `container.ports` spec.
+/// A base-10 integer literal, for the strings inside a
+/// `container.ports` spec.
 ///
-/// Python's `int` is more forgiving than `str::parse`, and the
+/// More forgiving than `str::parse`, and the
 /// difference is reachable here because these strings come out of a
 /// user-written `"127.0.0.1: 8080 :3000"`. It accepts surrounding
 /// whitespace, an optional sign, and single underscores between digits
 /// (PEP 515). It does **not** accept an empty string, a bare sign, a
 /// leading or trailing underscore, or two in a row.
 ///
-/// Whitespace is Python's, not Rust's — see `domain::is_strip_space`
-/// for why those differ.
+/// Whitespace is [`super::domain::is_strip_space`]'s, not Rust's — see
+/// there for why those differ.
 fn parse_int_literal(text: &str) -> Option<i64> {
     let trimmed = text.trim_matches(super::domain::is_strip_space);
     let (negative, digits) = match trimmed.strip_prefix('-') {
@@ -1188,7 +1178,7 @@ fn parse_int_literal(text: &str) -> Option<i64> {
 mod tests {
     use super::{
         FixedValidationHost, matches_image_reference, matches_name, parse_int_literal,
-        python_tuple, validate,
+        tuple_literal, validate,
     };
     use crate::config::types::Config;
 
@@ -1211,15 +1201,15 @@ mod tests {
     }
 
     #[test]
-    fn the_tuple_messages_read_like_pythons() {
-        assert_eq!(python_tuple(&["a", "b"]), "('a', 'b')");
-        assert_eq!(python_tuple(&["a"]), "('a',)");
+    fn tuple_literals_keep_the_single_element_comma() {
+        assert_eq!(tuple_literal(&["a", "b"]), "('a', 'b')");
+        assert_eq!(tuple_literal(&["a"]), "('a',)");
     }
 
     /// The `\Z` anchor — see [`matches_name`]. A trailing newline used
     /// to pass both patterns and no longer does, on either side.
     #[test]
-    fn a_trailing_newline_fails_name_and_image_exactly_as_it_does_in_python() {
+    fn a_trailing_newline_fails_name_and_image() {
         assert!(matches_name("my-cage"));
         assert!(!matches_name("my-cage\n"));
         assert!(!matches_name("my-cage\n\n"));
@@ -1278,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn python_int_is_more_forgiving_than_parse() {
+    fn int_literals_are_more_forgiving_than_parse() {
         assert_eq!(parse_int_literal(" 80 "), Some(80));
         assert_eq!(parse_int_literal("+80"), Some(80));
         assert_eq!(parse_int_literal("1_000"), Some(1000));

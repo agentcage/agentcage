@@ -11,8 +11,8 @@
 //! * `launchd/io.agentcage.<cage>.plist` — what
 //!   `_install_launchd_plist` writes. The harness calls the **real**
 //!   installer with `_gui_domain_reachable` pinned to `False`, so the
-//!   recorded bytes come from the Python's own f-string rather than
-//!   from a copy of it in the generator.
+//!   recorded bytes come from the shipped installer rather than from a
+//!   copy of it in the generator.
 //!
 //! Before PR E3 both directories were a single `NOT-APPLICABLE.txt`
 //! (PR C8 recorded the gap and assigned it to Track E). This test is
@@ -21,8 +21,8 @@
 //! # Why this one does not build a filesystem
 //!
 //! `golden_quadlets.rs` rebuilds the harness's sandbox and renders
-//! against real absolute paths, because `quadlets.py` runs
-//! `shlex.quote` over host paths and `shlex.quote("{{HOME}}/x")` quotes
+//! against real absolute paths, because quadlet rendering shell-quotes
+//! host paths and `shlex.quote("{{HOME}}/x")` quotes
 //! where `shlex.quote("/tmp/…/home/x")` does not — so the scrub has to
 //! happen *after* the render.
 //!
@@ -157,8 +157,7 @@ impl QuadletHost for ScrubbedHost {
 /// `Paths::apple_state_dir`, in scrubbed space.
 ///
 /// `~/.config/agentcage/apple-container/<cage>` —
-/// `backends/apple_container.py:206`, an `expanduser` with no XDG
-/// lookup anywhere near it. The corpus cannot tell that apart from an
+/// a home-relative path with no XDG lookup anywhere near it. The corpus cannot tell that apart from an
 /// XDG-derived root: the harness's sandbox sets `XDG_CONFIG_HOME` to
 /// `$HOME/.config` and the scrubber prefers the longer rule, so the
 /// recorded plist says `{{XDG_CONFIG_HOME}}`. The distinction is real —

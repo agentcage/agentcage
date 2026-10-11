@@ -1,29 +1,27 @@
 //! `resolved-config.json` — a [`Config`] the way the golden corpus
 //! records one.
 //!
-//! The corpus harness writes each case's parsed config with
-//!
-//! ```python
-//! json.dumps(dataclasses_to_jsonable(cfg), indent=2, sort_keys=True,
-//!            ensure_ascii=False) + "\n"
-//! ```
-//!
-//! and `tests/fixtures/golden/README.md` puts JSON on the **byte-exact**
-//! side of its comparison rule — only YAML artifacts are compared by
-//! parsed value. So this is not a convenience serializer: reproducing
-//! those bytes for all 125 valid cases is PR C1's acceptance check.
+//! The corpus records each case's parsed config as JSON with a
+//! two-space indent, sorted keys, literal non-ASCII and a trailing
+//! newline, and `tests/fixtures/golden/README.md` puts JSON on the
+//! **byte-exact** side of its comparison rule — only YAML artifacts are
+//! compared by parsed value. The same document feeds the deploy
+//! fingerprint, so its bytes are also what decides whether a cage
+//! deployed by an earlier release needs redeploying. So this is not a
+//! convenience serializer: reproducing those bytes for all 125 valid
+//! cases is its acceptance check.
 //!
 //! # Why not `serde_json`
 //!
 //! Three reasons, and the first is enough on its own.
 //!
 //! * **Floats.** `agents.decider.timeout_seconds` is `15.0` in the
-//!   corpus, not `15`. Python's `repr` keeps the decimal point on an
-//!   integral float, and `serde_json` only agrees when the value went
+//!   corpus, not `15`: the recorded format keeps the decimal point on
+//!   an integral float, and `serde_json` only agrees when the value went
 //!   in as an `f64` — which survives a struct but not a round trip
 //!   through a generic `Value`. `crate::har::json` already owns a
-//!   measured `repr` clone for exactly this reason.
-//! * **Non-finite floats.** `json.dumps(float('inf'))` is `Infinity`,
+//!   measured float formatter for exactly this reason.
+//! * **Non-finite floats.** The recorded format spells infinity `Infinity`,
 //!   and `serde_json::to_value` refuses the number outright. A config
 //!   carrying `timeout_seconds: .inf` is rejected by validation, not by
 //!   parsing, so it has to be *printable* first.
@@ -33,14 +31,12 @@
 //!
 //! # Shape
 //!
-//! `_dataclass_to_jsonable` walks the dataclass tree by
-//! `dataclasses.fields`, so the JSON has one key per field, nested
-//! exactly as the types nest — with one wrinkle. `DeciderAgentConfig`
-//! and `WatcherAgentConfig` *inherit* their LLM client fields in
-//! Python, so those appear flat alongside `enable` and `host`;
-//! `crate::config::types` makes the shared fields a nested
+//! One key per field, nested exactly as the types nest — with one
+//! wrinkle. The recorded layout has `DeciderAgentConfig`'s and
+//! `WatcherAgentConfig`'s LLM client fields flat alongside `enable` and
+//! `host`; `crate::config::types` makes the shared fields a nested
 //! [`LlmAgentConfig`] instead, and this module flattens them back out.
-//! Key order is irrelevant either way, because `sort_keys=True`.
+//! Key order is irrelevant either way, because keys are sorted.
 
 use crate::har::json::{DumpOptions, Json, dumps};
 use crate::yaml::Value;
@@ -63,9 +59,9 @@ pub fn to_json(config: &Config) -> String {
         // `ensure_ascii=False`: a `help:` string with an em dash stays
         // an em dash rather than becoming `—`.
         ensure_ascii: false,
-        // `None` is Python's own indent-dependent defaulting, which is
-        // what the harness's plain `json.dumps(..., indent=2)` gets.
-        // Only `fingerprint.stable_json` overrides this (PR C4).
+        // `None` is the indent-dependent default (`","` and `": "`
+        // when indenting), which is what the recorded files use. Only
+        // `fingerprint`'s `stable_json` overrides this.
         separators: None,
     };
     format!("{}\n", dumps(&to_value(config), options))
@@ -74,8 +70,8 @@ pub fn to_json(config: &Config) -> String {
 /// The [`Json`] tree behind [`to_json`].
 #[must_use]
 pub fn to_value(config: &Config) -> Json {
-    let mut value = python_fields(config);
-    // `egress:` came after the Python port. It is rendered only when it
+    let mut value = base_fields(config);
+    // `egress:` was added later. It is rendered only when it
     // differs from the defaults: this document feeds the deploy
     // fingerprint, and a key every cage gained would redeploy every cage
     // for a setting none of them changed (the same reason
@@ -98,8 +94,8 @@ fn uint(n: u64) -> Json {
     Json::Int(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
-/// The fields `config.Config` had, as the Python harness dumped them.
-fn python_fields(config: &Config) -> Json {
+/// The fields the recorded layout has always had.
+fn base_fields(config: &Config) -> Json {
     object([
         ("name", Json::string(&config.name)),
         ("isolation", Json::string(&config.isolation)),
@@ -292,8 +288,7 @@ fn agents(agents: &AgentsConfig) -> Json {
     ])
 }
 
-/// The LLM client fields, flattened as Python's inheritance leaves
-/// them.
+/// The LLM client fields, flattened as the recorded layout has them.
 fn with_llm(llm: &LlmAgentConfig, own: Vec<(String, Json)>) -> Json {
     let mut fields = vec![
         ("provider".to_owned(), Json::string(&llm.provider)),
@@ -428,19 +423,18 @@ fn string_map(map: &OrderedMap<String>) -> Json {
     )
 }
 
-/// A raw YAML value, as `json.dumps` would render the Python object
-/// `yaml.safe_load` built from it.
+/// A raw YAML value, rendered as JSON in the recorded format.
 ///
 /// Reached by `inspectors` and by `secret_injection[].transform_config`,
-/// the two fields `config.py` deliberately keeps as raw dicts so the
-/// proxy addon stays the single source of truth for their contents.
+/// the two fields deliberately kept as raw mappings so the egress
+/// stays the single source of truth for their contents.
 /// Public because the egress renders a custom inspector's `config:`
 /// with it, so a plugin receives the same JSON this file records.
 ///
-/// A non-string mapping key is rendered the way `json.dumps` renders
-/// one: an `int` by its digits, a `bool` as `true`/`false` — **not**
-/// Python's `str(True)`, which is `"True"` — and `None` as `null`.
-/// `sort_keys=True` then orders by the rendered key, as it does here.
+/// A non-string mapping key is rendered as a JSON key the way the
+/// recorded files have it: an integer by its digits, a boolean as
+/// `true`/`false` — **not** `"True"` — and null as `null`. Keys are
+/// then sorted by the rendered text.
 #[must_use]
 pub fn from_yaml(value: &Value) -> Json {
     match value {
@@ -464,8 +458,8 @@ pub fn from_yaml(value: &Value) -> Json {
                 .map(|(key, entry)| (json_key(key), from_yaml(entry)))
                 .collect(),
         ),
-        // `yaml.safe_load` raises on an unknown tag, so no Python
-        // `Config` can hold one. Rendering the tag keeps this total.
+        // No tagged node survives config loading, so no `Config` can
+        // hold one. Rendering the tag keeps this total.
         Value::Tagged(tagged) => Json::string(format!("{}", tagged.tag)),
     }
 }
@@ -489,7 +483,7 @@ mod tests {
     /// Integral floats keep their decimal point, which is the whole
     /// reason this module does not use `serde_json`.
     #[test]
-    fn floats_render_like_python_repr() {
+    fn integral_floats_keep_their_decimal_point() {
         let json = to_json(&Config::default());
         assert!(json.contains("\"timeout_seconds\": 15.0"), "{json}");
         assert!(json.contains("\"interval_seconds\": 900.0"), "{json}");
@@ -507,7 +501,7 @@ mod tests {
         assert!(agents < container, "sort_keys=True");
     }
 
-    /// The LLM fields are flat, as Python's inheritance leaves them.
+    /// The LLM fields are flat, as the recorded layout has them.
     #[test]
     fn the_llm_client_fields_are_flattened() {
         let json = to_json(&Config::default());

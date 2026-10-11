@@ -4,20 +4,19 @@
 //! # The problem this solves
 //!
 //! `yaml.safe_load` resolves a **plain** `no` to `False` and a
-//! **quoted** `'no'` to the string `"no"`. `relays/_validate.py:76` then
-//! does `tls = bool(upstream.get("tls", True))`, so today:
+//! **quoted** `'no'` to the string `"no"`. A relay's `upstream.tls` is
+//! then read with truthiness ([`super::is_truthy`], default on), so:
 //!
 //! ```text
-//! tls: no     ->  False  ->  bool(False) = False  ->  TLS off
-//! tls: 'no'   ->  'no'   ->  bool('no')  = True   ->  TLS on
+//! tls: no     ->  false  ->  truthy(false) = false  ->  TLS off
+//! tls: 'no'   ->  'no'   ->  truthy('no')  = true   ->  TLS on
 //! ```
 //!
-//! The second line is a bug in the Python — `bool()` of a non-empty
-//! string is always `True` — but it is a bug that fails *safe*, on a
-//! relay that carries real credentials upstream. A port that resolved
-//! both spellings to `false` would turn it into a silent TLS
-//! **downgrade**, and that is not a trade a port gets to make, however
-//! rare the spelling.
+//! The second line is a wart — any non-empty string is truthy — but it
+//! fails *safe*, on a relay that carries real credentials upstream.
+//! Resolving both spellings to `false` would turn it into a silent TLS
+//! **downgrade** for configs that have always read the other way, and
+//! that is not a trade to make quietly, however rare the spelling.
 //!
 //! So agentcage has to tell `no` from `'no'`. Every serde YAML crate
 //! throws scalar style away: `serde_norway` hands back
@@ -40,9 +39,9 @@
 //!    twelve YAML 1.1-only boolean spellings, **and** whose scalar was
 //!    written plain and untagged, becomes a `Value::Bool`.
 //!
-//! After that, [`super::load`] hands Track C's validators the same thing
-//! `yaml.safe_load` hands `config.py`, and `bool()`-shaped coercions
-//! port across literally.
+//! After that, [`super::load`] hands the config validators the same
+//! thing `yaml.safe_load` would, and truthiness coercions behave as
+//! they always have.
 //!
 //! Why `saphyr-parser` and not `yaml-rust2`: both are pure Rust with the
 //! same `arraydeque` dependency, and both expose scalar style. Only the
