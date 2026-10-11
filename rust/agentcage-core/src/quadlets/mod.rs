@@ -196,6 +196,13 @@ pub fn vm_local_proxy_config_path(name: &str) -> String {
     format!("{}/proxy-config.yaml", vm_local_config_dir(name))
 }
 
+/// VM-local copy of the cage's custom inspector plugins, mounted into
+/// the egress at `/etc/agentcage/inspectors`. See [`vm_local_config_dir`].
+#[must_use]
+pub fn vm_local_inspectors_dir(name: &str) -> String {
+    format!("{}/inspectors", vm_local_config_dir(name))
+}
+
 /// VM-local copy of the cage-env dir. See [`vm_local_config_dir`].
 #[must_use]
 pub fn vm_local_cage_env_dir(name: &str) -> String {

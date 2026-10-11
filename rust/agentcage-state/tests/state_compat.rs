@@ -768,6 +768,7 @@ fn a_stored_python_fingerprint_is_read_back_as_a_match() {
             units: jstr(components, "units"),
             image_digests: jstr(components, "image_digests"),
             scaffold_version: jstr(components, "scaffold_version"),
+            inspector_plugins: None,
         },
         fingerprint: jstr(&stored, "fingerprint"),
     };

@@ -212,8 +212,11 @@ def _chain_build(step: dict):
             raise ImportError(f"cannot load {path}")
         return _StubPlugin(declared)
 
-    saved = (_addon.load_inspector_from_file, _addon.ctx)
-    _addon.load_inspector_from_file = load
+    # Patched at the addon's custom-inspector seam, below its `.wasm`
+    # stand-in: these cases record the chain's precedence rules, which
+    # the Rust port applies to its WebAssembly plugins.
+    saved = (_addon._load_custom_inspector, _addon.ctx)
+    _addon._load_custom_inspector = lambda path, _name: load(path)
     _addon.ctx = types.SimpleNamespace(log=types.SimpleNamespace(
         warn=warnings.append, info=lambda *_: None))
     try:
@@ -236,7 +239,7 @@ def _chain_build(step: dict):
             "warnings": warnings,
         }
     finally:
-        _addon.load_inspector_from_file, _addon.ctx = saved
+        _addon._load_custom_inspector, _addon.ctx = saved
 
 
 # ── Python whitespace (``\s`` / ``str.isspace``) ──────────────

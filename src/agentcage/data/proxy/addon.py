@@ -152,6 +152,44 @@ def _relay_credentials_digest(entry: dict) -> str:
     return hashlib.sha256("\0".join(values).encode()).hexdigest()
 
 
+class _WasmInspectorUnavailable(Inspector):
+    """Stands in for a WebAssembly custom inspector this egress cannot run.
+
+    The host stages ``.wasm`` plugins for the Rust egress, which loads
+    them; this implementation has no WebAssembly runtime. Skipping the
+    entry would run the cage without an inspector its operator relies
+    on, so it fails closed instead: every request (and relayed mail) is
+    blocked with a reason that says why.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name or "custom"
+        ctx.log.warn(
+            f"agentcage: inspector {self.name!r} is a WebAssembly plugin, which "
+            "this egress cannot run; blocking every request until the cage "
+            "runs the Rust egress or the entry is removed")
+
+    def inspect_request(self, ctx_):
+        return InspectionResult(
+            inspector=self.name,
+            action="block",
+            reason=(f"inspector {self.name} failed: WebAssembly inspectors "
+                    "are not supported by this egress"),
+            severity="error",
+        )
+
+
+def _load_custom_inspector(path, name: str) -> Inspector:
+    """Load the custom inspector an ``inspectors:`` entry's ``path`` names.
+
+    A ``.wasm`` path gets the fail-closed stand-in; anything else goes
+    through the Python file loader.
+    """
+    if str(path).endswith(".wasm"):
+        return _WasmInspectorUnavailable(name)
+    return load_inspector_from_file(path)
+
+
 # ── Orchestrator ─────────────────────────────────────────
 
 
@@ -1081,7 +1119,7 @@ class Agentcage:
                 inspector = claim(lambda i: any(
                     p == path and i is loaded for p, loaded in path_loaded))
                 if inspector is None:
-                    inspector = load_inspector_from_file(path)
+                    inspector = _load_custom_inspector(path, name)
                 slot = slot_named(inspector.name)
                 if slot is not None:
                     slot[1] = cfg

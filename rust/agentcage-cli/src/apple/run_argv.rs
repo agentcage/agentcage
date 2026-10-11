@@ -88,6 +88,11 @@ pub struct EgressPaths<'a> {
     /// legacy-cleanup helper still reads it, so the source has to be
     /// that exact location.
     pub grants: Option<&'a Path>,
+    /// `inspectors_dir(name)` → `/etc/agentcage/inspectors:ro`, when
+    /// `cage create` / `cage update` staged custom inspector plugins
+    /// there. `None` for a cage without plugins, which then runs with the
+    /// argv it always had.
+    pub inspectors: Option<&'a Path>,
 }
 
 /// `start()` step 2 — the egress sibling's `container run` argv.
@@ -169,6 +174,13 @@ pub fn egress_argv(
     if let Some(secrets) = paths.secrets {
         argv.push("--volume".to_owned());
         argv.push(format!("{}:/home/acproxy/secrets:ro", secrets.display()));
+    }
+    if let Some(inspectors) = paths.inspectors {
+        argv.push("--volume".to_owned());
+        argv.push(format!(
+            "{}:/etc/agentcage/inspectors:ro",
+            inspectors.display()
+        ));
     }
     if let Some(grants) = paths.grants {
         argv.push("--volume".to_owned());
@@ -532,7 +544,37 @@ mod tests {
             egress_config: Path::new("/s/egress-config"),
             secrets: None,
             grants: None,
+            inspectors: None,
         }
+    }
+
+    /// Staged plugins are mounted read-only where the egress looks for
+    /// them, and nothing is mounted for a cage without any.
+    #[test]
+    fn staged_plugins_are_mounted_read_only() {
+        let without = egress_argv("demo", "demo-net", "img", "1", &meta("{}"), &egress_paths());
+        assert!(
+            !without
+                .iter()
+                .any(|a| a.contains("/etc/agentcage/inspectors"))
+        );
+        let dir = Path::new("/d/demo/inspectors");
+        let with = egress_argv(
+            "demo",
+            "demo-net",
+            "img",
+            "1",
+            &meta("{}"),
+            &EgressPaths {
+                inspectors: Some(dir),
+                ..egress_paths()
+            },
+        );
+        let at = with
+            .iter()
+            .position(|a| a == "/d/demo/inspectors:/etc/agentcage/inspectors:ro")
+            .expect("mounted");
+        assert_eq!(with[at - 1], "--volume");
     }
 
     /// #407, which is the whole reason this backend works at all: the

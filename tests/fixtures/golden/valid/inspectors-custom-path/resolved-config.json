@@ -90,7 +90,7 @@
   "inspectors": [
     {
       "name": "house-rules",
-      "path": "/etc/agentcage/inspectors/house_rules.py"
+      "path": "plugins/house_rules.wasm"
     }
   ],
   "isolation": "container",

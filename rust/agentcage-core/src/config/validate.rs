@@ -621,6 +621,13 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         }
     }
 
+    // ── custom inspectors ───────────────────────────────
+    //
+    // Not a `config.py` check: plugins became WebAssembly components
+    // with the Rust egress (`EGRESS-PORT-PLAN.md` D2), and a `path:` the
+    // host cannot stage, or the egress cannot load, is refused here.
+    super::inspectors::validate_plugins(config)?;
+
     // ── protocol_relays credential schemes ──────────────
     //
     // Parse time already refused an unknown scheme (`vault:`); this is
@@ -956,10 +963,12 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     // Built-in inspectors run end to end on apple-container and are
     // accepted in silence. The two that are not:
     //
-    //   * an entry with `path:` — a custom Python file — is not staged
-    //     into the wrapper image, so the in-cage addon skips it;
     //   * an unrecognised built-in name, so a typo does not no-op
     //     silently.
+    //
+    // An entry with `path:` is a custom inspector, staged on this
+    // backend like on the others (and refused by `validate_plugins` if
+    // it cannot be), so it draws no warning.
     //
     // `name` is `entry.get("name", "")`, so a missing key is the empty
     // string and `{name!r}` renders it `''`. A non-string name is not
@@ -973,14 +982,9 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     for (index, entry) in config.inspectors.iter().enumerate() {
         let name = entry.get("name").unwrap_or(&empty);
         if entry.get("path").is_some_and(python_bool) {
-            warnings.push(format!(
-                "inspectors[{index}] {}: custom Python file inspectors (path: ...) are \
-                 not yet staged into the apple-container wrapper image — the in-cage \
-                 addon will skip this entry. Use a built-in inspector or stay on the \
-                 container backend.",
-                repr(name)
-            ));
-        } else if python_bool(name) && !is_builtin_inspector(name) {
+            continue;
+        }
+        if python_bool(name) && !is_builtin_inspector(name) {
             warnings.push(format!(
                 "inspectors[{index}] {}: not a known built-in inspector — the in-cage \
                  addon will skip this entry. Valid names: {}.",

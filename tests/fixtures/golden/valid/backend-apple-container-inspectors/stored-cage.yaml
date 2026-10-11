@@ -15,4 +15,4 @@ inspectors:
 - name: domain
 - name: not-a-real-inspector
 - name: custom
-  path: /etc/agentcage/inspectors/x.py
+  path: plugins/x.wasm
