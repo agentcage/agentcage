@@ -109,6 +109,7 @@ impl Paths {
         // path with a wall of certificate. Here the values were cloned
         // into `proxy` above, so `raw` is already untouched.
         self.resolve_relay_ca_files(&mut proxy)?;
+        rewrite_plugin_paths(&mut proxy);
         proxy.insert(
             Value::String("agentcage_version".to_owned()),
             Value::String(version.to_owned()),
@@ -127,6 +128,9 @@ impl Paths {
     }
 
     /// `state.resolve_relay_ca_files` — inline each relay's CA.
+    ///
+    /// (Custom inspector paths get the same treatment for the same
+    /// reason, by [`rewrite_plugin_paths`].)
     ///
     /// The relay runs inside the proxy container, where a host path
     /// means nothing. Rather than bind-mount the file — which pins an
@@ -327,6 +331,30 @@ fn strerror(error: &std::io::Error) -> String {
             }
         }
         None => error.to_string(),
+    }
+}
+
+/// Point each custom inspector at its staged copy.
+///
+/// A `path:` in cage.yaml is a host path, relative to the cage.yaml's
+/// directory. The egress sees the plugins `cage create` / `cage update`
+/// staged ([`crate::plugins`]), by file name, in its plugin directory,
+/// so that file name is what the proxy config carries. Only truthy
+/// string paths are touched; validation refused anything else.
+fn rewrite_plugin_paths(proxy_cfg: &mut Mapping) {
+    let Some(Value::Sequence(entries)) = proxy_cfg.get_mut("inspectors") else {
+        return;
+    };
+    for entry in entries {
+        let Value::Mapping(entry) = entry else {
+            continue;
+        };
+        let Some(Value::String(path)) = entry.get_mut("path") else {
+            continue;
+        };
+        if !path.is_empty() {
+            *path = agentcage_core::config::plugin_file_name(path).to_owned();
+        }
     }
 }
 

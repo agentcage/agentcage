@@ -210,7 +210,8 @@ impl Paths {
         atomic_write_text(&path, &text)
     }
 
-    /// `state.remove_deployment` — delete the state directory.
+    /// `state.remove_deployment` — delete the state directory, and the
+    /// staged custom inspector plugins.
     ///
     /// A missing directory is success, as `if d.is_dir()` makes it.
     ///
@@ -218,6 +219,14 @@ impl Paths {
     ///
     /// [`StateError::Io`] if the tree exists and cannot be removed.
     pub fn remove_deployment(&self, name: &str) -> Result<()> {
+        // The staged inspector plugins are part of the deployment, not
+        // of the data the cage produced (capture, grants), so they go
+        // with it.
+        let plugins = self.inspectors_dir(name);
+        if plugins.is_dir() {
+            fs::remove_dir_all(&plugins)
+                .map_err(|e| StateError::io(&plugins, "remove directory", e))?;
+        }
         let dir = self.deployment_dir(name);
         if !dir.is_dir() {
             return Ok(());

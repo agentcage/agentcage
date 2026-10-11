@@ -12,4 +12,4 @@ dns_servers:
 - 192.0.2.53
 inspectors:
 - name: house-rules
-  path: /etc/agentcage/inspectors/house_rules.py
+  path: plugins/house_rules.wasm

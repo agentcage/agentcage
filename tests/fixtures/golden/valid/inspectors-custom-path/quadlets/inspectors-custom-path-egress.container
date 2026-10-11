@@ -28,6 +28,9 @@ Network=podman
 Volume={{WORK}}/patches/resolv-egress-inspectors-custom-path.conf:/etc/resolv.conf:rw,Z
 Volume={{XDG_CONFIG_HOME}}/agentcage/cages/inspectors-custom-path/cage.yaml:/etc/agentcage/config.yaml:ro,Z
 Volume={{XDG_CONFIG_HOME}}/agentcage/cages/inspectors-custom-path/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro,Z
+# Custom inspector plugins (WebAssembly components), copied here by
+# `cage create` / `cage update` from the paths cage.yaml names.
+Volume={{XDG_DATA_HOME}}/agentcage/inspectors-custom-path/inspectors:/etc/agentcage/inspectors:ro,Z
 Environment="PYTHONUNBUFFERED=1"
 Environment="AGENTCAGE_VERSION=0.0.0-golden"
 # Upstream resolvers for policy-api granted zones. The supervisor

@@ -162,6 +162,7 @@ fn corpus_fingerprint(case: &Path) -> Fingerprint {
         units: &units,
         image_digests: &image_digests,
         scaffold_version,
+        inspector_plugins: &BTreeMap::new(),
     })
     .unwrap_or_else(|error| panic!("{}: {error}", case.display()))
 }
@@ -238,6 +239,7 @@ fn the_deployed_cage_fingerprint_is_reproduced() {
         units: &units,
         image_digests: &image_digests,
         scaffold_version: &"deadbeef".repeat(8),
+        inspector_plugins: &BTreeMap::new(),
     })
     .expect("computes");
 
