@@ -142,9 +142,10 @@ pub(crate) async fn send_h1(
     up: &mut Buffered,
     req: &Request,
     max: usize,
+    budget: &mut super::budget::Reservation,
 ) -> Result<H1Exchange, (UpstreamError, bool)> {
     let protocol = |e: String| UpstreamError::Protocol(e);
-    if let Err(e) = up.write_all(&h1::encode_request(req)).await {
+    if let Err(e) = h1::write_request(up, req).await {
         return Err((protocol(e.to_string()), true));
     }
     loop {
@@ -172,12 +173,18 @@ pub(crate) async fn send_h1(
         )?;
         let framing = h1::response_framing(&req.method, parsed.status, &parsed.headers)
             .map_err(|e| (protocol(e), false))?;
-        let body = h1::read_body(up, framing, max).await.map_err(|e| match e {
-            h1::ReadError::BodyTooLarge => {
-                (UpstreamError::ResponseBodyTooLarge { limit: max }, false)
-            }
-            other => (protocol(other.to_string()), false),
-        })?;
+        let limit = budget.limit();
+        let body = h1::read_body(up, framing, max, budget)
+            .await
+            .map_err(|e| match e {
+                h1::ReadError::BodyTooLarge => {
+                    (UpstreamError::ResponseBodyTooLarge { limit: max }, false)
+                }
+                h1::ReadError::BudgetExhausted => {
+                    (UpstreamError::BodyBudgetExhausted { limit }, false)
+                }
+                other => (protocol(other.to_string()), false),
+            })?;
         let reusable = parsed.status != 101
             && framing != h1::Framing::UntilEof
             && !h1::connection_close(&req.http_version, &req.headers)

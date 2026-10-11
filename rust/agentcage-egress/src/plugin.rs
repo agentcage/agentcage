@@ -629,6 +629,10 @@ impl Inspector for Plugin {
     fn inspect_response(&self, ctx: &Context) -> Option<Verdict> {
         self.call(ctx, true)
     }
+
+    fn inspects_responses(&self) -> bool {
+        true
+    }
 }
 
 /// The first line of an error's display, without wasmtime's backtrace

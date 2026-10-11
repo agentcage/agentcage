@@ -459,6 +459,10 @@ impl Inspector for RelaySecrets {
     fn inspect_response(&self, ctx: &Context) -> Option<Verdict> {
         self.adjust(self.inner.inspect_response(ctx))
     }
+
+    fn inspects_responses(&self) -> bool {
+        self.inner.inspects_responses()
+    }
 }
 
 #[cfg(test)]

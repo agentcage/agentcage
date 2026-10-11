@@ -198,6 +198,15 @@ pub trait Inspector: Send + Sync + std::fmt::Debug {
     fn inspect_response(&self, _ctx: &Context) -> Option<Verdict> {
         None
     }
+
+    /// Whether [`Inspector::inspect_response`] can return anything: an
+    /// inspector that overrides `inspect_response` must override this to
+    /// return `true`. The pipeline skips building a response's inspection
+    /// context (a copy of the body, its text and its entropy) when no
+    /// inspector in the chain inspects responses.
+    fn inspects_responses(&self) -> bool {
+        false
+    }
 }
 
 /// Run `inspectors` over `ctx` in order.

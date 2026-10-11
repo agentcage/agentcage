@@ -37,6 +37,7 @@ pub(crate) struct Shared<H> {
     pub(crate) ca: Arc<CertAuthority>,
     pub(crate) upstream_tls: Arc<UpstreamTls>,
     pub(crate) settings: Arc<ArcSwap<TransportSettings>>,
+    pub(crate) budget: Arc<super::budget::BodyBudget>,
 }
 
 /// Which upstream an HTTP connection may be reused for.
@@ -138,6 +139,7 @@ pub(crate) async fn exchange<H: FlowHandler>(
     pool: &UpstreamPool,
     slot: &mut H1Slot,
     alpn_offers: &[Vec<u8>],
+    resp_budget: &mut super::budget::Reservation,
 ) -> Exchanged<H::Flow> {
     let handler = &*shared.handler;
     strip_h2c(&mut req);
@@ -170,7 +172,18 @@ pub(crate) async fn exchange<H: FlowHandler>(
     } else {
         alpn_offers.to_vec()
     };
-    let result = send(shared, conn, &req, &key, &offers, pool, slot, max).await;
+    let result = send(
+        shared,
+        conn,
+        &req,
+        &key,
+        &offers,
+        pool,
+        slot,
+        max,
+        resp_budget,
+    )
+    .await;
     let (mut resp, upgraded) = match result {
         Ok(ok) => ok,
         Err(err) => return Exchanged::Done(handler.upstream_error(conn, flow, &req, &err)),
@@ -205,9 +218,10 @@ async fn send<H: FlowHandler>(
     pool: &UpstreamPool,
     slot: &mut H1Slot,
     max: usize,
+    budget: &mut super::budget::Reservation,
 ) -> Result<(Response, Option<Buffered>), UpstreamError> {
     if let Some(sender) = pool.get(key) {
-        match super::h2::send(&sender, req, max).await {
+        match super::h2::send(&sender, req, max, budget).await {
             Ok(resp) => return Ok((resp, None)),
             Err(UpstreamError::Protocol(_)) => pool.forget(key),
             Err(other) => return Err(other),
@@ -218,7 +232,7 @@ async fn send<H: FlowHandler>(
         _ => None,
     };
     if let Some(mut up) = reused {
-        match upstream::send_h1(&mut up, req, max).await {
+        match upstream::send_h1(&mut up, req, max, budget).await {
             Ok(done) => return Ok(finish_h1(done, up, key, slot)),
             Err((_, true)) => {}
             Err((err, false)) => return Err(err),
@@ -241,12 +255,12 @@ async fn send<H: FlowHandler>(
     .await?
     {
         UpstreamConn::H2(sender) => {
-            let resp = super::h2::send(&sender, req, max).await?;
+            let resp = super::h2::send(&sender, req, max, budget).await?;
             pool.put(key.clone(), sender);
             Ok((resp, None))
         }
         UpstreamConn::H1(mut up) => {
-            let done = upstream::send_h1(&mut up, req, max)
+            let done = upstream::send_h1(&mut up, req, max, budget)
                 .await
                 .map_err(|(err, _)| err)?;
             Ok(finish_h1(done, up, key, slot))
@@ -634,8 +648,9 @@ fn absolute_form(target: &str) -> Option<(&str, &str)> {
 
 /// What the next HTTP/1 request on a connection turned out to be.
 enum Next {
-    /// A complete request, body read.
-    Request(Request),
+    /// A complete request, body read, with what its body holds against
+    /// the body budget.
+    Request(Request, super::budget::Reservation),
     /// `CONNECT` on the forward proxy.
     Connect(h1::RequestHead),
     /// The connection is over (closed, or answered with an error).
@@ -643,7 +658,7 @@ enum Next {
 }
 
 async fn reply(client: &mut Buffered, resp: &Response, method: &str) {
-    let _ = client.write_all(&h1::encode_response(resp, method)).await;
+    let _ = h1::write_response(client, resp, method).await;
 }
 
 /// Scheme, host, port and path of a request: from the request line on the
@@ -759,14 +774,34 @@ async fn next_request<H: FlowHandler>(
         }
         req.headers.remove("expect");
     }
-    match h1::read_body(client, framing, settings.max_body).await {
+    read_request_body(shared, info, client, settings, framing, req).await
+}
+
+/// Read the body of `req` into it (reserving it on the body budget), or
+/// refuse it: 413 over the cap, 503 over the budget, 400 malformed.
+async fn read_request_body<H: FlowHandler>(
+    shared: &Shared<H>,
+    info: &ConnInfo,
+    client: &mut Buffered,
+    settings: &TransportSettings,
+    framing: h1::Framing,
+    mut req: Request,
+) -> Next {
+    let mut reservation = super::budget::Reservation::new(&shared.budget);
+    match h1::read_body(client, framing, settings.max_body, &mut reservation).await {
         Ok(body) => {
             req.body = body;
-            Next::Request(req)
+            Next::Request(req, reservation)
         }
-        Err(h1::ReadError::BodyTooLarge) => {
-            let refusal = Refusal::RequestBodyTooLarge {
-                limit: settings.max_body,
+        Err(e @ (h1::ReadError::BudgetExhausted | h1::ReadError::BodyTooLarge)) => {
+            let refusal = if matches!(e, h1::ReadError::BudgetExhausted) {
+                Refusal::BodyBudgetExhausted {
+                    limit: shared.budget.limit(),
+                }
+            } else {
+                Refusal::RequestBodyTooLarge {
+                    limit: settings.max_body,
+                }
             };
             let resp = shared.handler.transport_refusal(info, Some(&req), &refusal);
             reply(client, &resp, &req.method).await;
@@ -793,8 +828,8 @@ pub(crate) async fn serve_h1<H: FlowHandler>(
         // Loaded per request, so a reload applies to the next request on a
         // kept-alive connection without disturbing it.
         let settings = shared.settings.load_full();
-        let req = match next_request(&shared, &info, &mut client, &settings).await {
-            Next::Request(req) => req,
+        let (req, _req_budget) = match next_request(&shared, &info, &mut client, &settings).await {
+            Next::Request(req, reservation) => (req, reservation),
             Next::Connect(head) => {
                 Box::pin(connect_tunnel(shared, &info, client, &head)).await;
                 return;
@@ -803,10 +838,21 @@ pub(crate) async fn serve_h1<H: FlowHandler>(
         };
         let close = h1::connection_close(&req.http_version, &req.headers);
         let method = req.method.clone();
-        match exchange(&shared, &info, req, &pool, &mut slot, &alpn_offers).await {
+        // Held until the response is written.
+        let mut resp_budget = super::budget::Reservation::new(&shared.budget);
+        match exchange(
+            &shared,
+            &info,
+            req,
+            &pool,
+            &mut slot,
+            &alpn_offers,
+            &mut resp_budget,
+        )
+        .await
+        {
             Exchanged::Done(resp) => {
-                if client
-                    .write_all(&h1::encode_response(&resp, &method))
+                if h1::write_response(&mut client, &resp, &method)
                     .await
                     .is_err()
                 {

@@ -25,6 +25,7 @@
 //! decider call — runs on blocking workers, so one large body never
 //! stalls the runtime.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use agentcage_core::config::is_global_ip;
@@ -153,58 +154,84 @@ fn headers_text(headers: &crate::message::Headers) -> Vec<(String, String)> {
     headers.to_strings()
 }
 
-/// The inspection context of a request (or, with `resp`, of its
-/// response), built before injection so inspectors see placeholders.
-///
-/// # Errors
-///
-/// The body's Content-Encoding cannot be removed.
-fn build_context(
+/// The inspection context of a message whose decoded body is `content`
+/// (`headers` are the message's own), built before injection so
+/// inspectors see placeholders.
+fn context(
     req: &Request,
-    resp: Option<&Response>,
+    headers: &crate::message::Headers,
+    content: Vec<u8>,
     direction: AuditDirection,
-) -> Result<Context, text::DecodeError> {
-    let (headers, raw) = match resp {
-        Some(r) => (&r.headers, &r.body),
-        None => (&req.headers, &req.body),
-    };
-    let body = text::decoded_body(headers, raw)?.into_owned();
-    let body_text = text::get_text(headers, raw);
-    let size = body.len();
-    let entropy = (!body.is_empty()).then(|| shannon_entropy(&body));
-    Ok(Context {
+) -> Context {
+    // `get_text` over the decoded body: the lenient decode it starts from
+    // is the strict one whenever the strict one succeeds, which it did.
+    let content_type = headers.get("content-type").unwrap_or_default();
+    let body_text = text::decode_text(&content_type, &content);
+    let size = content.len();
+    let entropy = (!content.is_empty()).then(|| shannon_entropy(&content));
+    Context {
         url: req.url(),
         host: req.host.clone(),
         method: req.method.clone(),
         headers: headers_text(headers),
-        content_type: headers.get("content-type").unwrap_or_default(),
-        body_bytes: Some(body),
+        content_type,
+        body_bytes: Some(content),
         body_text: Some(body_text),
         body_size: size,
         body_entropy: entropy,
         prior_results: Vec::new(),
         direction: inspect_direction(direction),
         websocket: false,
-    })
+    }
 }
 
-fn lenient_body(headers: &crate::message::Headers, raw: &[u8]) -> Vec<u8> {
-    text::decoded_body_lenient(headers, raw).into_owned()
+/// The inspection context of a request. A body without a
+/// Content-Encoding is moved into the context rather than copied (the
+/// second value says so); [`restore_body`] puts it back once the chain
+/// has run.
+///
+/// # Errors
+///
+/// The body's Content-Encoding cannot be removed.
+fn request_context(
+    req: &mut Request,
+    direction: AuditDirection,
+) -> Result<(Context, bool), text::DecodeError> {
+    let (content, moved) = match text::decoded_body(&req.headers, &req.body)? {
+        Cow::Owned(decoded) => (decoded, false),
+        Cow::Borrowed(_) => (std::mem::take(&mut req.body), true),
+    };
+    Ok((context(req, &req.headers, content, direction), moved))
 }
 
-/// Run the live chain over `ctx` off the runtime.
+/// Give a request back the body [`request_context`] moved out of it.
+fn restore_body(req: &mut Request, ctx: &mut Context, moved: bool) {
+    if moved {
+        req.body = ctx.body_bytes.take().unwrap_or_default();
+    }
+}
+
+/// The body capture records: the lenient decode, borrowed (no copy)
+/// when the body has no Content-Encoding.
+fn lenient_body<'a>(headers: &crate::message::Headers, raw: &'a [u8]) -> Cow<'a, [u8]> {
+    text::decoded_body_lenient(headers, raw)
+}
+
+/// Run the live chain over `ctx` off the runtime; the context comes
+/// back with the verdicts.
 async fn run_inspectors(
     live: &Arc<Live>,
     mut ctx: Context,
     phase: Phase,
     skip_domain: bool,
-) -> Result<Vec<Verdict>, String> {
+) -> Result<(Vec<Verdict>, Context), String> {
     let live = Arc::clone(live);
     blocking(move || {
         let chain = &live.chain;
-        run_chain(chain.inspectors(), &mut ctx, phase, &|i| {
+        let results = run_chain(chain.inspectors(), &mut ctx, phase, &|i| {
             skip_domain && chain.is_domain(i)
-        })
+        });
+        (results, ctx)
     })
     .await
 }
@@ -265,7 +292,7 @@ impl Pipeline {
         }
         let method = req.method.clone();
         let path = req.path.clone();
-        let body = lenient_body(&req.headers, &req.body);
+        let body = lenient_body(&req.headers, &req.body).into_owned();
         let headers = headers_text(&req.headers);
         let answer = blocking(move || {
             api.handle(&ControlRequest {
@@ -430,7 +457,7 @@ impl Pipeline {
             .injector
             .check_injection_policy(req)
             .map_err(|e| e.to_string())?;
-        let mut ctx = build_context(req, None, direction).map_err(|e| e.to_string())?;
+        let (mut ctx, moved) = request_context(req, direction).map_err(|e| e.to_string())?;
         let mut results = Vec::new();
         if let Some(verdict) = inject_result {
             results.push(verdict.clone());
@@ -452,7 +479,10 @@ impl Pipeline {
             }
         }
         // Step 11: the chain, off the runtime; no domain check inbound.
-        results.extend(run_inspectors(&live, ctx, Phase::Request, reverse).await?);
+        let (verdicts, mut ctx) = run_inspectors(&live, ctx, Phase::Request, reverse).await?;
+        restore_body(req, &mut ctx, moved);
+        drop(ctx);
+        results.extend(verdicts);
         // Step 12: verdict.
         if results.iter().any(|r| r.action == Action::Block) {
             let resp = self.blocked(&live, req, direction, &source, &results);
@@ -522,8 +552,26 @@ impl Pipeline {
         engine
             .capture
             .refresh_request(&flow.id, req, &lenient_body(&req.headers, &req.body));
-        let ctx = build_context(req, Some(resp), flow.direction).map_err(|e| e.to_string())?;
-        let results = run_inspectors(&flow.live, ctx, Phase::Response, false).await?;
+        // The body decoded once, for the inspectors, redaction and capture
+        // alike (`None`: it has no Content-Encoding and is read in place).
+        // A body that cannot be decoded fails the flow closed here.
+        let decoded = match text::decoded_body(&resp.headers, &resp.body) {
+            Ok(Cow::Owned(decoded)) => Some(decoded),
+            Ok(Cow::Borrowed(_)) => None,
+            Err(e) => return Err(e.to_string()),
+        };
+        // No built-in inspects responses: unless a plugin (or a refusing
+        // chain) does, the context — a copy of the body, its text and its
+        // entropy — is never built.
+        let results = if flow.live.chain.inspects_responses() {
+            let content = decoded.clone().unwrap_or_else(|| resp.body.clone());
+            let ctx = context(req, &resp.headers, content, flow.direction);
+            run_inspectors(&flow.live, ctx, Phase::Response, false)
+                .await?
+                .0
+        } else {
+            Vec::new()
+        };
         if let Some(block) = results.iter().find(|r| r.action == Action::Block) {
             // The reason can quote a secret the server echoed: redacted
             // before it is JSON-encoded into the 403.
@@ -551,9 +599,9 @@ impl Pipeline {
         }
         let injector = Arc::clone(&engine.injector);
         let mut owned = std::mem::take(resp);
-        let (owned, redacted) = blocking(move || {
-            let r = injector.redact_response(&mut owned);
-            (owned, r)
+        let (owned, redacted, decoded) = blocking(move || {
+            let (r, decoded) = injector.redact_response_decoded(&mut owned, decoded);
+            (owned, r, decoded)
         })
         .await?;
         *resp = owned;
@@ -564,11 +612,12 @@ impl Pipeline {
                 .get("upgrade")
                 .is_some_and(|u| u.eq_ignore_ascii_case("websocket"))
             && req.headers.get("sec-websocket-version").as_deref() == Some("13");
-        engine.capture.finish_response(
-            &flow.id,
-            (resp, &lenient_body(&resp.headers, &resp.body)),
-            websocket,
-        );
+        // What redaction left decoded, else the body as it is now (no
+        // Content-Encoding, or rewritten without one).
+        let content = decoded.as_deref().unwrap_or(&resp.body);
+        engine
+            .capture
+            .finish_response(&flow.id, (resp, content), websocket);
         Ok(())
     }
 
@@ -638,7 +687,7 @@ impl Pipeline {
             results.push(v.clone());
             ctx.prior_results.push(v);
         }
-        results.extend(run_inspectors(live, ctx, Phase::Request, reverse).await?);
+        results.extend(run_inspectors(live, ctx, Phase::Request, reverse).await?.0);
         if let Some(block) = results.iter().find(|r| r.action == Action::Block) {
             let reason = format!("websocket: {}", block.reason);
             record(
@@ -686,7 +735,7 @@ impl Pipeline {
         reverse: bool,
     ) -> Result<(WsVerdict, Decision), String> {
         let engine = &self.engine;
-        let results = run_inspectors(live, ctx, Phase::Response, reverse).await?;
+        let results = run_inspectors(live, ctx, Phase::Response, reverse).await?.0;
         if let Some(block) = results.iter().find(|r| r.action == Action::Block) {
             let reason = format!("websocket: {}", block.reason);
             record(
@@ -783,7 +832,7 @@ impl FlowHandler for Pipeline {
             &reason,
         ));
         let (reason, _) = self.engine.injector.redact_text(&reason);
-        json_response(502, block_body(false, &reason, &req.host))
+        json_response(err.status(), block_body(false, &reason, &req.host))
     }
 
     fn transport_refusal(
@@ -804,6 +853,11 @@ impl FlowHandler for Pipeline {
             Refusal::RequestBodyTooLarge { limit } => (
                 413,
                 format!("request body exceeds the egress limit of {limit} bytes"),
+                req.map(|r| r.host.clone()).unwrap_or_default(),
+            ),
+            Refusal::BodyBudgetExhausted { limit } => (
+                503,
+                UpstreamError::BodyBudgetExhausted { limit: *limit }.to_string(),
                 req.map(|r| r.host.clone()).unwrap_or_default(),
             ),
         };

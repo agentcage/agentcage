@@ -31,17 +31,52 @@ fn connection_specific(name: &[u8], value: &[u8]) -> bool {
 /// Why an HTTP/2 body could not be read.
 pub(crate) enum BodyError {
     TooLarge,
+    Budget,
     Stream(h2::Error),
 }
 
+/// The declared `content-length` of a head, if it has a valid one.
+fn declared_length(headers: &http::HeaderMap) -> Option<usize> {
+    headers
+        .get(http::header::CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+}
+
 /// Read a whole HTTP/2 body, returning flow-control credit as it goes.
-pub(crate) async fn read_body(body: &mut RecvStream, max: usize) -> Result<Vec<u8>, BodyError> {
+///
+/// Every byte is reserved on `budget` before it is buffered, and every
+/// allocation is fallible (see [`super::h1::read_body`]). With a declared
+/// `content-length` the body is refused before a byte is read when it is
+/// over `max`, and otherwise read into one allocation of exactly that
+/// size (the codec itself enforces that the stream carries exactly that
+/// many bytes); without one it grows by a quarter at a time.
+pub(crate) async fn read_body(
+    body: &mut RecvStream,
+    max: usize,
+    declared: Option<usize>,
+    budget: &mut super::budget::Reservation,
+) -> Result<Vec<u8>, BodyError> {
     let mut out = Vec::new();
+    if let Some(n) = declared {
+        if n > max {
+            return Err(BodyError::TooLarge);
+        }
+        if !budget.grow_to(n).await {
+            return Err(BodyError::Budget);
+        }
+        out.try_reserve_exact(n).map_err(|_| BodyError::Budget)?;
+    }
     while let Some(chunk) = body.data().await {
         let chunk = chunk.map_err(BodyError::Stream)?;
         let _ = body.flow_control().release_capacity(chunk.len());
         if out.len() + chunk.len() > max {
             return Err(BodyError::TooLarge);
+        }
+        if !budget.make_room(&mut out, chunk.len()).await {
+            return Err(BodyError::Budget);
         }
         out.extend_from_slice(&chunk);
     }
@@ -175,6 +210,7 @@ pub(crate) async fn send(
     sender: &h2::client::SendRequest<Bytes>,
     req: &Request,
     max: usize,
+    budget: &mut super::budget::Reservation,
 ) -> Result<Response, UpstreamError> {
     let protocol = |e: h2::Error| UpstreamError::Protocol(e.to_string());
     let head = request_to_h2(req).map_err(UpstreamError::Protocol)?;
@@ -189,11 +225,35 @@ pub(crate) async fn send(
     }
     let response = response.await.map_err(protocol)?;
     let (parts, mut body) = response.into_parts();
-    let body = read_body(&mut body, max).await.map_err(|e| match e {
-        BodyError::TooLarge => UpstreamError::ResponseBodyTooLarge { limit: max },
-        BodyError::Stream(e) => protocol(e),
-    })?;
+    let declared = declared_length(&parts.headers);
+    let limit = budget.limit();
+    let body = read_body(&mut body, max, declared, budget)
+        .await
+        .map_err(|e| match e {
+            BodyError::TooLarge => UpstreamError::ResponseBodyTooLarge { limit: max },
+            BodyError::Budget => UpstreamError::BodyBudgetExhausted { limit },
+            BodyError::Stream(e) => protocol(e),
+        })?;
     Ok(response_from_h2(&parts, body))
+}
+
+/// Send `data` as the end of `stream`, a window's worth at a time as
+/// the peer's flow control admits it, so the whole body is never queued
+/// in the codec at once and the caller holds its budget until it is out.
+async fn send_body(stream: &mut h2::SendStream<Bytes>, mut data: Bytes) -> Result<(), h2::Error> {
+    while !data.is_empty() {
+        stream.reserve_capacity(data.len());
+        let granted = match std::future::poll_fn(|cx| stream.poll_capacity(cx)).await {
+            Some(granted) => granted?,
+            None => return Ok(()),
+        };
+        if granted == 0 {
+            continue;
+        }
+        let chunk = data.split_to(granted.min(data.len()));
+        stream.send_data(chunk, data.is_empty())?;
+    }
+    Ok(())
 }
 
 /// The per-stream receive window advertised on both sides.
@@ -285,11 +345,26 @@ async fn stream<H: FlowHandler>(
     let max = shared.settings.load().max_body;
     let (parts, mut body) = request.into_parts();
     let method = parts.method.as_str().to_string();
-    let response = match read_body(&mut body, max).await {
+    let declared = declared_length(&parts.headers);
+    // Held until the response body has been handed to the codec.
+    let mut req_budget = super::budget::Reservation::new(&shared.budget);
+    let mut resp_budget = super::budget::Reservation::new(&shared.budget);
+    let mut refused_body = false;
+    let response = match read_body(&mut body, max, declared, &mut req_budget).await {
         Ok(body) => {
             let req = request_from_h2(&parts, body, &conn);
             let mut slot = None;
-            match conn::exchange(&shared, &conn, req, &pool, &mut slot, &offers).await {
+            match conn::exchange(
+                &shared,
+                &conn,
+                req,
+                &pool,
+                &mut slot,
+                &offers,
+                &mut resp_budget,
+            )
+            .await
+            {
                 conn::Exchanged::Done(resp) | conn::Exchanged::RawUpgrade(resp) => resp,
                 conn::Exchanged::Upgrade { resp, flow, .. } => {
                     // HTTP/2 has no 101; the upstream should never send one.
@@ -301,11 +376,23 @@ async fn stream<H: FlowHandler>(
             }
         }
         Err(BodyError::TooLarge) => {
+            refused_body = true;
             let req = request_from_h2(&parts, Vec::new(), &conn);
             shared.handler.transport_refusal(
                 &conn,
                 Some(&req),
                 &Refusal::RequestBodyTooLarge { limit: max },
+            )
+        }
+        Err(BodyError::Budget) => {
+            refused_body = true;
+            let req = request_from_h2(&parts, Vec::new(), &conn);
+            shared.handler.transport_refusal(
+                &conn,
+                Some(&req),
+                &Refusal::BodyBudgetExhausted {
+                    limit: shared.budget.limit(),
+                },
             )
         }
         Err(BodyError::Stream(_)) => return,
@@ -318,9 +405,26 @@ async fn stream<H: FlowHandler>(
         super::h1::response_has_body(&method, response.status) && !response.body.is_empty();
     match respond.send_response(head, !has_body) {
         Ok(mut stream) if has_body => {
-            let _ = stream.send_data(Bytes::from(response.body), true);
+            let _ = send_body(&mut stream, Bytes::from(response.body)).await;
         }
         _ => {}
+    }
+    // The body is in the codec's hands only now: the budget is released
+    // here, not when it was queued whole.
+    drop((req_budget, resp_budget));
+    if refused_body {
+        // The client is still uploading the body we refused. Dropping the
+        // request stream now would reset it with CANCEL, which discards
+        // the queued refusal: the client would see a framing error, not
+        // the 413/503. Discard what it sends for a moment so the refusal
+        // goes out, then tell it to stop with NO_ERROR (RFC 9113 8.1).
+        let drain = async {
+            while let Some(Ok(chunk)) = body.data().await {
+                let _ = body.flow_control().release_capacity(chunk.len());
+            }
+        };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), drain).await;
+        respond.send_reset(h2::Reason::NO_ERROR);
     }
 }
 
