@@ -593,15 +593,79 @@ ss -lnup 2>/dev/null | grep -q ':53 ' \
 _ensure_log /var/log/agentcage/audit.jsonl acproxy
 _ensure_log /var/log/agentcage/capture.jsonl acproxy
 _ensure_log /var/log/agentcage/proxy.log acproxy
-log "step D: starting mitmproxy (uid 200, CapBnd=0, prlimit --as=2G)"
-
 # The cage's private CA store: its own `<name>-certs` volume (on
-# apple-container, the per-cage certs dir), mounted here. mitmproxy
-# generates the CA into it on first start and reloads it afterwards;
-# `confdir` points it there instead of its default dot-directory under
-# $HOME, so the mount point carries a neutral name the next egress
-# engine keeps.
+# apple-container, the per-cage certs dir), mounted here. The egress
+# generates the CA into it on first start and reloads it afterwards
+# (mitmproxy via `--set confdir=`, the Rust binary via `--ca-dir`), so
+# the mount point carries a neutral name both engines share. Each engine
+# uses its own file names inside it, so switching a cage between them
+# is a fresh-CA event, never a reuse (EGRESS-PORT-PLAN.md D11).
 CA_DIR=/home/acproxy/ca
+
+# Which engine this image carries. The Rust image ships the binary and
+# no Python; the Python image ships no binary. Presence is the switch,
+# so neither image needs an env var it could be started without, and
+# the image the host chose is the one that runs. Transition-only: the
+# Python branch below goes at the cutover.
+EGRESS_BIN=/opt/agentcage/agentcage-egress
+
+if [ -x "$EGRESS_BIN" ]; then
+  # Rust engine. `--as=2G`: no interpreter mapping to pay for (the 2G
+  # below was sized for the Python bundle's ~700MB of mmaps), but the
+  # address-space limit counts *reservations*, not resident memory, and
+  # a Rust process reserves generously: every thread's stack (the tokio
+  # workers plus its blocking pool, 2 MiB each), and every fully
+  # buffered body up to the per-body cap (EGRESS-PORT-PLAN.md D6, 256
+  # MiB by default) with a decoded copy beside it while it is inspected.
+  # Two concurrent bodies at the cap fit with room for the rest; a third
+  # fails that flow's allocation instead of OOM-killing the cage's only
+  # path to the network. Same envelope as the Python engine, so flipping
+  # engines changes nothing about the egress's memory budget.
+  PROXY_NAME=agentcage-egress
+  # The Rust egress writes the public half of its CA here, inside the
+  # private store it owns: /home/acproxy/public-certs is root-owned (see
+  # egress.container.j2) and uid 200 cannot write it. Step E publishes
+  # this file to the cage exactly as it publishes the Python engine's.
+  CA_PATH="$CA_DIR/agentcage-ca.pem"
+  log "step D: starting $PROXY_NAME (uid 200, CapBnd=0, prlimit --as=2G)"
+
+  # Reverse listeners for inbound port forwards: `<cage_ip>:<port>` is
+  # the upstream, `0.0.0.0:<port>` the listen address. Same two env vars
+  # as the Python branch below.
+  REVERSE_FLAGS=""
+  if [ -n "${AGENTCAGE_INBOUND_PORTS:-}" ] && [ -n "${AGENTCAGE_CAGE_IP:-}" ]; then
+    for p in $AGENTCAGE_INBOUND_PORTS; do
+      REVERSE_FLAGS="$REVERSE_FLAGS --reverse $AGENTCAGE_CAGE_IP:$p@0.0.0.0:$p"
+    done
+    log "step D: inbound forwards: $AGENTCAGE_INBOUND_PORTS via cage=$AGENTCAGE_CAGE_IP"
+  fi
+
+  # AGENTCAGE_CONFIG only when a config is staged: without one the binary
+  # runs listeners + CA only, which is the smoke-test path below for the
+  # Python engine. Production always stages config.yaml.
+  _egress_config=""
+  if [ -f /etc/agentcage/config.yaml ]; then
+    _egress_config=/etc/agentcage/config.yaml
+  else
+    log "step D: no /etc/agentcage/config.yaml — running without config (smoke-test mode)"
+  fi
+
+  # shellcheck disable=SC2086  # REVERSE_FLAGS is intentionally word-split
+  prlimit --as=$((2 * 1024 * 1024 * 1024)) -- \
+    setpriv --reuid=acproxy --regid=acproxy --clear-groups \
+            --no-new-privs --bounding-set=-all --inh-caps=-all -- \
+    env HOME=/home/acproxy ${_egress_config:+AGENTCAGE_CONFIG="$_egress_config"} \
+    "$EGRESS_BIN" run \
+      --regular "${AGENTCAGE_REGULAR_BIND:-0.0.0.0:8080}" \
+      --transparent 0.0.0.0:8443 \
+      $REVERSE_FLAGS \
+      --ca-dir "$CA_DIR" \
+      --public-cert "$CA_PATH" \
+    &
+  PROXY_PID=$!
+else
+PROXY_NAME=mitmproxy
+log "step D: starting mitmproxy (uid 200, CapBnd=0, prlimit --as=2G)"
 
 # Build reverse-mode flags for inbound port forwards (legacy proxy's
 # `--mode reverse:http://<ip_cage>:<port>@0.0.0.0:<port>`). The backend
@@ -659,33 +723,34 @@ else
       --set keep_host_header=true \
     &
 fi
-MITMPROXY_PID=$!
+PROXY_PID=$!
+# The file name is mitmproxy's own, inside the private store.
+CA_PATH="$CA_DIR/mitmproxy-ca-cert.pem"
+fi
 
-#-- Step E. Wait for mitmproxy listening on :8443 + CA cert ----------------
+#-- Step E. Wait for the proxy listening on :8443 + CA cert ----------------
 # Both conditions must hold: if we only check the port the supervisor
-# can finish before mitmproxy has written its CA, and PR 2's trust-store
+# can finish before the proxy has written its CA, and PR 2's trust-store
 # install step would race. Conversely, the CA file appears slightly
 # before the listener accepts connections, so a CA-only check has a
 # false-positive window where the cage workload would get
 # "connection refused" from the REDIRECT target.
-log "step E: waiting for mitmproxy listener :8443 AND CA cert (max 30s)"
-# The file name is mitmproxy's own, inside the private store.
-CA_PATH="$CA_DIR/mitmproxy-ca-cert.pem"
+log "step E: waiting for $PROXY_NAME listener :8443 AND CA cert (max 30s)"
 i=0
 while [ "$i" -lt 30 ]; do
   if [ -s "$CA_PATH" ] && ss -lnt 2>/dev/null | grep -q ':8443 '; then
     break
   fi
-  if ! kill -0 "$MITMPROXY_PID" 2>/dev/null; then
-    die "mitmproxy exited before listener+CA ready" 50
+  if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+    die "$PROXY_NAME exited before listener+CA ready" 50
   fi
   sleep 1; i=$((i+1))
 done
 [ -s "$CA_PATH" ] \
-  || die "mitmproxy CA cert never appeared at $CA_PATH within 30s" 51
+  || die "$PROXY_NAME CA cert never appeared at $CA_PATH within 30s" 51
 ss -lnt 2>/dev/null | grep -q ':8443 ' \
-  || die "mitmproxy listener never came up on :8443 within 30s" 52
-log "step E: mitmproxy ready (CA at $CA_PATH, listening on :8443)"
+  || die "$PROXY_NAME listener never came up on :8443 within 30s" 52
+log "step E: $PROXY_NAME ready (CA at $CA_PATH, listening on :8443)"
 
 # Publish just the public cert to /home/acproxy/public-certs, which every
 # backend mounts read-only into the cage at /certs. The cage must NOT see
@@ -733,7 +798,7 @@ log "step F: ready marker written; entering monitor loop"
 # The flag is cleared BEFORE rendering, so a grant decided while a render is
 # in flight re-creates it and gets its own pass rather than being swallowed.
 # A failed render puts it back, so the next iteration retries.
-while kill -0 "$DNSMASQ_PID" 2>/dev/null && kill -0 "$MITMPROXY_PID" 2>/dev/null; do
+while kill -0 "$DNSMASQ_PID" 2>/dev/null && kill -0 "$PROXY_PID" 2>/dev/null; do
   if [ -f "$GRANTS_RELOAD" ]; then
     rm -f "$GRANTS_RELOAD"
     if _render_servers_file; then

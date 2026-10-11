@@ -3,7 +3,7 @@ Description=agentcage egress (mitmproxy + dnsmasq)
 
 [Container]
 ContainerName={{ name }}-egress
-Image=localhost/agentcage-egress:{{ agentcage_version }}
+Image=localhost/agentcage-egress:{{ egress_image_tag }}
 Network={{ name }}-net.network:ip={{ ip_egress }}
 Network=podman
 # mitmproxy resolves allowlisted upstream hostnames via this file (it

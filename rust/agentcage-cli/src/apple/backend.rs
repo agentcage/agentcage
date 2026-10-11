@@ -186,10 +186,16 @@ impl<'a> AppleBackend<'a> {
         let _ = cli.run(["system", "start", "--enable-kernel-install"], false);
     }
 
-    /// The shared egress image's tag, `<repo>:<version>-<hash>`.
+    /// The shared egress image's tag, `<repo>:<version>-<hash>` (or
+    /// `<version>-rust-<hash>` while the Rust engine is selected).
+    ///
+    /// An unselectable engine falls back to the default tag here; the
+    /// build refuses it with the reason before anything runs on it.
     #[must_use]
     pub fn egress_image(&self) -> String {
-        super::image::egress_image_name_embedded()
+        crate::egress_engine::EgressEngine::from_env()
+            .and_then(super::image::egress_image_name_for)
+            .unwrap_or_else(|_| super::image::egress_image_name_embedded())
     }
 
     /// `generate_units` — the cage's metadata JSON.
@@ -1576,7 +1582,8 @@ impl AppleBackend<'_> {
         pull: bool,
         quiet: bool,
     ) -> Result<(), BackendError> {
-        let image = self.egress_image();
+        let engine = crate::egress_engine::EgressEngine::from_env()?;
+        let image = super::image::egress_image_name_for(engine)?;
         let cli = self.cli();
         if !(no_cache || pull) && cli.image_inspect(&image).ok().flatten().is_some() {
             if !quiet {
@@ -1596,9 +1603,11 @@ impl AppleBackend<'_> {
         // that directory as the context so its
         // `COPY containers/supervisor-egress.sh` resolves.
         let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
-        let argv = super::image::egress_build_argv(
+        engine.stage(&context)?;
+        let argv = super::image::egress_build_argv_for(
             &image,
             &context,
+            engine,
             super::image::BuildFlags { no_cache, pull },
         );
         let outcome = output::pause_active_spinner(|| cli.run_streaming(argv, false));

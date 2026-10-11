@@ -118,3 +118,51 @@ jobs:
           echo "expected: $expected"
           echo "actual:   $actual"
           [ "$actual" = "$expected" ]
+
+  # The release path for the egress binary, on every PR: build it for
+  # linux-musl, embed it in the host, and check what was embedded. The
+  # job above builds the host without one (the default for a dev
+  # checkout), so without this a broken embed would first show up in
+  # publish.yml, during a release.
+  egress-embed:
+    name: musl egress, embedded
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain, the musl target and musl-gcc
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+
+      - name: Cache cargo registry and target/
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: >-
+            cargo-embed-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-embed-${{ runner.os }}-
+
+      - name: Build the egress for linux-musl
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p agentcage-egress
+
+      # `AGENTCAGE_REQUIRE_EGRESS_BIN=1` makes "not found" a build
+      # failure, so these tests cannot pass vacuously on the no-binary
+      # branch.
+      - name: Embed and stage it
+        env:
+          AGENTCAGE_REQUIRE_EGRESS_BIN: "1"
+        run: |
+          cargo test --locked -p agentcage-egress-embed
+          cargo test --locked -p agentcage-cli --lib egress_engine
+          cargo build --release --locked --bin agentcage

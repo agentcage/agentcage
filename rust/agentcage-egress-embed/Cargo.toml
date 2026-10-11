@@ -1,0 +1,21 @@
+[package]
+name = "agentcage-egress-embed"
+description = "Carries the linux-musl agentcage-egress binary inside the host binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Embeds a binary built for another target from the build machine's
+# target directory; meaningless as a published crate.
+publish = false
+
+# No dependencies, and deliberately its own crate rather than part of
+# agentcage-assets: agentcage-egress depends on agentcage-core, which
+# depends on agentcage-assets, so an assets crate that embedded the
+# egress would need the egress built before the egress could be built.
+# Only the CLI depends on this crate, which breaks the cycle.
+
+[lints]
+workspace = true

@@ -32,6 +32,13 @@ path = "src/lib.rs"
 agentcage-core = { path = "../agentcage-core" }
 agentcage-assets = { path = "../agentcage-assets" }
 
+# The linux-musl agentcage-egress binary for this host's architecture
+# (EGRESS-PORT-PLAN.md D9), staged into the Rust egress image's build
+# context. A crate of its own so the egress, which depends on
+# agentcage-assets through agentcage-core, never has to exist before
+# itself.
+agentcage-egress-embed = { path = "../agentcage-egress-embed" }
+
 # The subprocess seam (PR D1). PR D3's secret stores are nothing but
 # decisions about which command to build -- `systemd-creds encrypt`,
 # `podman secret create`, `security add-generic-password` -- so they are

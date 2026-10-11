@@ -270,6 +270,14 @@ pub struct GenerateOptions<'a> {
     /// own [`VERSION`](crate::VERSION) in the port, except in the golden
     /// corpus, which pins it so a release does not churn the fixtures.
     pub version: &'a str,
+    /// The egress image's tag, when it is not [`Self::version`].
+    ///
+    /// `None` renders `localhost/agentcage-egress:<version>`, the tag
+    /// every cage has always run. The host passes `Some` only while the
+    /// Rust egress engine is selected (`AGENTCAGE_EGRESS_ENGINE=rust`),
+    /// whose image carries a content hash in its tag so both engines'
+    /// images can sit in one store. Transition-only.
+    pub egress_tag: Option<&'a str>,
 }
 
 /// What a render produced.
@@ -347,6 +355,7 @@ struct EgressContext<'a> {
     #[serde(flatten)]
     addrs: &'a CageNetworkAddrs,
     agentcage_version: &'a str,
+    egress_image_tag: &'a str,
     patches_host_dir: &'a str,
     config_host_path: &'a str,
     dns_allowlist_enabled: bool,
@@ -986,6 +995,7 @@ pub fn generate_quadlets(
                 name,
                 addrs: &addrs,
                 agentcage_version: options.version,
+                egress_image_tag: options.egress_tag.unwrap_or(options.version),
                 patches_host_dir: options.patches_host_dir,
                 config_host_path: &proxy_config_path,
                 dns_allowlist_enabled: config.domains.mode == "allowlist",
@@ -1559,6 +1569,7 @@ secret_injection:
                 store_secrets: Some(&store),
                 state: &state,
                 version: "9.9.9",
+                egress_tag: None,
             },
             &TestHost,
         )
@@ -1594,6 +1605,38 @@ secret_injection:
             ]
         );
         assert!(units.warnings.is_empty());
+
+        // An egress tag override (the Rust engine's) changes the image
+        // reference and nothing else: the version stamped into both
+        // units stays the version.
+        let rust = generate_quadlets(
+            &config,
+            &GenerateOptions {
+                config_host_path: "/cfg/agentcage/cages/deployed/cage.yaml",
+                patches_host_dir: "/data/patches",
+                deploy_name: "deployed",
+                rootless: true,
+                used_octets: None,
+                network_octet: None,
+                store_secrets: Some(&store),
+                state: &state,
+                version: "9.9.9",
+                egress_tag: Some("9.9.9-rust-0123456789ab"),
+            },
+            &TestHost,
+        )
+        .expect("renders");
+        let rust_egress = &rust.files["c-egress.container"];
+        assert!(rust_egress.contains("Image=localhost/agentcage-egress:9.9.9-rust-0123456789ab\n"));
+        assert_eq!(
+            rust_egress.replace("9.9.9-rust-0123456789ab", "9.9.9"),
+            *egress,
+            "only the image line may differ"
+        );
+        assert_eq!(
+            rust.files["c-cage.container"],
+            units.files["c-cage.container"]
+        );
     }
 
     /// [`TestHost`], plus a `.cred` blob for each listed name.
@@ -1684,6 +1727,7 @@ agents:
                 store_secrets: store,
                 state: &state,
                 version: "9.9.9",
+                egress_tag: None,
             },
             host,
         )
@@ -1789,6 +1833,7 @@ dns_servers: [192.0.2.53]
                 store_secrets: None,
                 state: &state,
                 version: "9.9.9",
+                egress_tag: None,
             },
             &TestHost,
         )
@@ -1957,6 +2002,7 @@ dns_servers: [192.0.2.53]
                     store_secrets: None,
                     state: &state,
                     version: "9.9.9",
+                    egress_tag: None,
                 },
                 &TestHost,
             )

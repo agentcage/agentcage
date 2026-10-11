@@ -84,6 +84,82 @@ jobs:
       - name: Run E2E container tests
         run: bash tests/e2e/run.sh container
 
+  # Phases 1-6 against the Rust egress (AGENTCAGE_EGRESS_ENGINE=rust), the
+  # second axis of the egress-engine matrix (EGRESS-PORT-PLAN.md P5.3).
+  #
+  # GATED OFF until the proxy core lands: until then `agentcage-egress`
+  # is a placeholder that exits 2, every cage's egress fails to start, and
+  # this job would burn its timeout on a known failure. Turn it on with
+  # the repository variable AGENTCAGE_E2E_RUST_EGRESS=1. Even then it is
+  # `continue-on-error` -- informational until it has been green on its
+  # own for a while, when it should become required and the flag go.
+  e2e-container-rust:
+    name: E2E Container, Rust egress (Phases 1-6)
+    if: vars.AGENTCAGE_E2E_RUST_EGRESS == '1'
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      AGENTCAGE_EGRESS_ENGINE: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Rust toolchain, the musl target and musl-gcc
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+
+      - name: Cache cargo registry and target/
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: >-
+            cargo-e2e-rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-e2e-rust-${{ runner.os }}-
+
+      # The egress first: agentcage-egress-embed picks it up from
+      # target/x86_64-unknown-linux-musl/release/, and REQUIRE turns a
+      # miss into a build failure instead of a deploy-time one.
+      - name: Build the egress, then agentcage embedding it
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          AGENTCAGE_REQUIRE_EGRESS_BIN: "1"
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p agentcage-egress
+          cargo build --release --locked --bin agentcage
+          echo "AGENTCAGE=$PWD/target/release/agentcage" >> "$GITHUB_ENV"
+
+      - name: Setup rootless Podman
+        run: |
+          sudo apt-get install -y -qq podman uidmap slirp4netns
+          sudo loginctl enable-linger $(whoami)
+
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown $(whoami) "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+
+          podman info --format '{{.Host.Security.Rootless}}'
+
+      # The mock upstream runs in its own pinned python container
+      # (tests/e2e/mock-image.ref), so nothing in the harness needs
+      # python3 in the egress image -- which the Rust one does not have.
+      - name: Pull base images
+        run: |
+          podman pull docker.io/library/node:22-slim
+          podman pull "$(tr -d '[:space:]' < tests/e2e/mock-image.ref)"
+
+      - name: Run E2E container tests
+        run: bash tests/e2e/run.sh container
+
   e2e-openclaw:
     name: E2E OpenClaw (Phase 8)
     runs-on: ubuntu-24.04

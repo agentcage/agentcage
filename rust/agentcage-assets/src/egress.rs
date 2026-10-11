@@ -52,6 +52,28 @@ pub const TAG_HASH_LEN: usize = 12;
 /// Mirrors `egress_hash.CONTAINERFILE_REL`.
 pub const CONTAINERFILE_REL: &str = "containers/Containerfile.egress";
 
+/// The Containerfile of the Rust egress image, relative to the build
+/// context.
+///
+/// Transition-only: it sits beside [`CONTAINERFILE_REL`] while the host
+/// can still build either engine, and takes that name at the cutover
+/// (`EGRESS-PORT-PLAN.md` Phase 6). Its hash is computed by the same
+/// code as the frozen one -- only the Containerfile it starts from and
+/// the binary laid over the embed differ -- so the cutover moves no
+/// contract.
+pub const RUST_CONTAINERFILE_REL: &str = "containers/Containerfile.egress-rust";
+
+/// Where the host stages the `agentcage-egress` binary inside the build
+/// context, for [`RUST_CONTAINERFILE_REL`]'s `COPY`.
+///
+/// Not part of the embedded `data/` tree: the binary is built for a
+/// different target than the host and reaches the host binary through
+/// its own crate, so it is laid over the extracted tree at build time.
+/// Being named by a `COPY`, it joins the content hash through
+/// [`copy_sources`] like every other input, which is what makes a new
+/// egress binary a new image tag.
+pub const RUST_BINARY_REL: &str = "bin/agentcage-egress";
+
 /// What an empty or absent build context hashes to.
 ///
 /// Mirrors `egress_hash.UNKNOWN_HASH`. Callers embed this in the image
@@ -195,6 +217,40 @@ impl Context for Embedded {
     }
 }
 
+/// A context with extra files laid over it: the embed plus a binary
+/// that is not part of it.
+///
+/// An overlay file shadows a base file of the same path, which is what
+/// staging it into an extracted tree does too, so [`content_hash_with`]
+/// and [`content_hash_from_dir_with`] agree.
+struct Overlay<'a> {
+    /// What the files are laid over.
+    base: &'a dyn Context,
+    /// `(relative path, contents)` of each extra file.
+    extra: &'a [(&'a str, &'a [u8])],
+}
+
+impl Context for Overlay<'_> {
+    fn read(&self, rel: &str) -> Option<Vec<u8>> {
+        self.extra
+            .iter()
+            .find(|(path, _)| *path == rel)
+            .map(|(_, bytes)| bytes.to_vec())
+            .or_else(|| self.base.read(rel))
+    }
+
+    fn list_dir(&self, rel: &str) -> Option<Vec<String>> {
+        let prefix = format!("{rel}/");
+        let mut entries = self.base.list_dir(rel).unwrap_or_default();
+        for (path, _) in self.extra {
+            if path.starts_with(&prefix) && !entries.iter().any(|e| e == path) {
+                entries.push((*path).to_owned());
+            }
+        }
+        (!entries.is_empty()).then_some(entries)
+    }
+}
+
 /// A build context on disk — an extracted tree, or the source `data/`.
 struct Dir {
     /// Absolute path to the build-context root.
@@ -247,8 +303,8 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) {
 /// plus the transitive contents of each `COPY` source. Returns an empty
 /// vector when the Containerfile is missing — the build path reports
 /// that with its own error rather than hashing nothing silently.
-fn build_inputs_from(ctx: &dyn Context) -> Vec<(String, Vec<u8>)> {
-    let Some(containerfile) = ctx.read(CONTAINERFILE_REL) else {
+fn build_inputs_from(ctx: &dyn Context, containerfile_rel: &str) -> Vec<(String, Vec<u8>)> {
+    let Some(containerfile) = ctx.read(containerfile_rel) else {
         return Vec::new();
     };
 
@@ -256,7 +312,7 @@ fn build_inputs_from(ctx: &dyn Context) -> Vec<(String, Vec<u8>)> {
     // Added directly, not through `add`: Python does the same, so the
     // Containerfile is in the hash even if it somehow matched an
     // exclusion rule.
-    inputs.insert(CONTAINERFILE_REL.to_owned(), containerfile.clone());
+    inputs.insert(containerfile_rel.to_owned(), containerfile.clone());
 
     // `read_text(errors="replace")` — lossy decoding, same replacement
     // character, so a Containerfile with a stray byte hashes the same on
@@ -356,7 +412,7 @@ fn hash_inputs(inputs: &[(String, Vec<u8>)]) -> String {
 /// hands to podman.
 #[must_use]
 pub fn build_inputs() -> Vec<(String, Vec<u8>)> {
-    build_inputs_from(&Embedded)
+    build_inputs_from(&Embedded, CONTAINERFILE_REL)
 }
 
 /// Build inputs of the egress image, from a build context on disk.
@@ -364,9 +420,12 @@ pub fn build_inputs() -> Vec<(String, Vec<u8>)> {
 /// `root` is the build-context root, i.e. an extracted `data/`.
 #[must_use]
 pub fn build_inputs_from_dir(root: &Path) -> Vec<(String, Vec<u8>)> {
-    build_inputs_from(&Dir {
-        root: root.to_path_buf(),
-    })
+    build_inputs_from(
+        &Dir {
+            root: root.to_path_buf(),
+        },
+        CONTAINERFILE_REL,
+    )
 }
 
 /// The egress image tag's content-hash suffix, from the embedded trees.
@@ -387,13 +446,49 @@ pub fn content_hash_from_dir(root: &Path) -> String {
     hash_inputs(&build_inputs_from_dir(root))
 }
 
+/// The content hash of the image built from `containerfile_rel`, over
+/// the embedded trees with `extra` files laid over them.
+///
+/// The Rust egress image's tag suffix: [`RUST_CONTAINERFILE_REL`] plus
+/// the `agentcage-egress` binary at [`RUST_BINARY_REL`]. With
+/// [`CONTAINERFILE_REL`] and no extras it is exactly [`content_hash`].
+/// Same wire format, same `COPY` resolution: an extra file counts only
+/// if the Containerfile copies it.
+#[must_use]
+pub fn content_hash_with(containerfile_rel: &str, extra: &[(&str, &[u8])]) -> String {
+    hash_inputs(&build_inputs_from(
+        &Overlay {
+            base: &Embedded,
+            extra,
+        },
+        containerfile_rel,
+    ))
+}
+
+/// [`content_hash_with`], from a build context on disk into which the
+/// extra files have already been staged.
+///
+/// Equal to [`content_hash_with`] over the same files when `root` is an
+/// extraction of the embed -- the proof that staging put down the bytes
+/// the tag was computed from.
+#[must_use]
+pub fn content_hash_from_dir_with(root: &Path, containerfile_rel: &str) -> String {
+    hash_inputs(&build_inputs_from(
+        &Dir {
+            root: root.to_path_buf(),
+        },
+        containerfile_rel,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        CONTAINERFILE_REL, TAG_HASH_LEN, UNKNOWN_HASH, build_inputs, build_inputs_from_dir,
-        content_hash, content_hash_from_dir, copy_sources, logical_lines, suffix_of,
+        CONTAINERFILE_REL, RUST_BINARY_REL, RUST_CONTAINERFILE_REL, TAG_HASH_LEN, UNKNOWN_HASH,
+        build_inputs, build_inputs_from_dir, content_hash, content_hash_from_dir,
+        content_hash_from_dir_with, content_hash_with, copy_sources, logical_lines, suffix_of,
     };
 
     /// `tests/fixtures/egress_hash.json`, as PR A5 committed it.
@@ -676,6 +771,90 @@ mod tests {
         ] {
             assert!(sources.contains(&expected.to_owned()), "{sources:?}");
         }
+    }
+
+    /// The Rust image's Containerfile ships the binary, the supervisor
+    /// and the DNS wrapper, and nothing from the Python tree.
+    #[test]
+    fn the_rust_containerfile_copies_the_binary_and_no_python() {
+        let text = String::from_utf8(
+            crate::tree("data")
+                .find(|(rel, _)| *rel == RUST_CONTAINERFILE_REL)
+                .expect("the Rust Containerfile is embedded")
+                .1
+                .bytes
+                .to_vec(),
+        )
+        .expect("the Containerfile is UTF-8");
+        let sources = copy_sources(&text);
+        for expected in [
+            RUST_BINARY_REL,
+            "containers/supervisor-egress.sh",
+            "containers/dns-audit.sh",
+        ] {
+            assert!(sources.contains(&expected.to_owned()), "{sources:?}");
+        }
+        assert!(
+            sources.iter().all(|s| !s.starts_with("proxy")),
+            "the Rust image must not copy the Python egress: {sources:?}"
+        );
+    }
+
+    /// The binary is a hash input of the Rust image: a different binary
+    /// is a different tag, and without one the hash still resolves
+    /// (the build then fails on the missing `COPY` source with its own
+    /// error).
+    #[test]
+    fn the_rust_hash_covers_the_binary_bytes() {
+        let one = content_hash_with(RUST_CONTAINERFILE_REL, &[(RUST_BINARY_REL, b"one")]);
+        let two = content_hash_with(RUST_CONTAINERFILE_REL, &[(RUST_BINARY_REL, b"two")]);
+        let none = content_hash_with(RUST_CONTAINERFILE_REL, &[]);
+        assert_ne!(one, two);
+        assert_ne!(one, none);
+        assert_ne!(one, content_hash(), "the engines' tags must never collide");
+        for hash in [&one, &two, &none] {
+            assert_eq!(hash.len(), TAG_HASH_LEN);
+        }
+        // An extra the Containerfile does not copy is not an input.
+        assert_eq!(
+            content_hash_with(
+                RUST_CONTAINERFILE_REL,
+                &[(RUST_BINARY_REL, b"one"), ("x/y", b"z")]
+            ),
+            one
+        );
+    }
+
+    /// The overlay changes nothing for the frozen Python hash: same
+    /// Containerfile, no extras, same digest -- and a binary laid over
+    /// the embed is not one of its inputs.
+    #[test]
+    fn the_python_hash_ignores_the_overlay() {
+        assert_eq!(content_hash_with(CONTAINERFILE_REL, &[]), content_hash());
+        assert_eq!(
+            content_hash_with(CONTAINERFILE_REL, &[(RUST_BINARY_REL, b"bin")]),
+            content_hash()
+        );
+    }
+
+    /// Staging the binary into an extracted tree and hashing the tree
+    /// gives the tag computed in memory -- for both engines, so staging
+    /// never moves the Python tag either.
+    #[test]
+    fn a_staged_tree_hashes_like_the_overlay() {
+        let cache =
+            std::env::temp_dir().join(format!("agentcage-assets-overlay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let context = crate::extract::build_context_in(&cache).expect("extracts");
+        let binary = context.join(RUST_BINARY_REL);
+        std::fs::create_dir_all(binary.parent().expect("has a parent")).expect("mkdir");
+        std::fs::write(&binary, b"a binary").expect("stage");
+        assert_eq!(
+            content_hash_from_dir_with(&context, RUST_CONTAINERFILE_REL),
+            content_hash_with(RUST_CONTAINERFILE_REL, &[(RUST_BINARY_REL, b"a binary")])
+        );
+        assert_eq!(content_hash_from_dir(&context), content_hash());
+        std::fs::remove_dir_all(&cache).expect("cleanup");
     }
 
     /// `pathlib`'s suffix rules, which decide the `.pyc` exclusion.
