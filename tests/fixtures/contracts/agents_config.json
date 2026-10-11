@@ -3,7 +3,7 @@
   "summary": "The cage.yaml `agents` block: the host parses and validates it and writes it into proxy-config.yaml unchanged; the egress addon builds its decider and watcher from the same keys. One canonical sample both sides must accept.",
   "implementations": {
     "host": "rust/agentcage-core/src/config/{parse,agents}.rs",
-    "proxy": "src/agentcage/data/proxy/addon.py (_init_domain_requests / _init_watcher)"
+    "proxy": "rust/agentcage-egress/src/{policy,watcher}/ (the decider and the traffic watcher, built from agents_config)"
   },
   "fields": {
     "config": "a complete cage.yaml document carrying the agents block",

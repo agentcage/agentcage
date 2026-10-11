@@ -1208,3 +1208,7 @@ mod tests {
         assert!(!authorize_revoke(&snapshot, "b.example.com"));
     }
 }
+
+#[cfg(test)]
+#[path = "grants_never_grant_corpus.rs"]
+mod never_grant_corpus;

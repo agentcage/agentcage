@@ -2,8 +2,8 @@
   "contract": "shared_constants",
   "summary": "Values duplicated across the trust boundary because the addon cannot import the CLI package. Not behaviour \u2014 just numbers and sets that must be identical on both sides.",
   "implementations": {
-    "host": "src/agentcage/config.py (and the shared relays module)",
-    "proxy": "src/agentcage/data/proxy/{addon,capture}.py (and the shared relays module)"
+    "host": "rust/agentcage-core/src/config/ (and agentcage_core::relays)",
+    "proxy": "rust/agentcage-egress/src/{flow.rs,capture.rs} (and agentcage_core::relays)"
   },
   "fields": {
     "value": "the value both sides must produce",

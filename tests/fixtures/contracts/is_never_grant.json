@@ -2,8 +2,8 @@
   "contract": "is_never_grant",
   "summary": "Must this domain NEVER be granted, whatever the decider says? Two arms: a label-boundary suffix walk over the never-grant set, and the encoded-private-IP guard (the case suffix matching structurally cannot see).",
   "implementations": {
-    "host": "agentcage.cli._is_never_grant(domain, never) (src/agentcage/cli.py)",
-    "proxy": "policy_api.PolicyApi._is_never_grant(domain), reading self._never_grant (src/agentcage/data/proxy/policy_api.py)"
+    "host": "is_never_grant (rust/agentcage-cli/src/cli/cage/grants.rs)",
+    "proxy": "the decider's never-grant check (rust/agentcage-egress/src/policy/mod.rs)"
   },
   "fields": {
     "input": "the candidate domain",
