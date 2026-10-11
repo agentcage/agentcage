@@ -1,15 +1,15 @@
-//! The `agents.decider` block, read the way the replaced implementation
-//! read it on every (re)load.
+//! The `agents.decider` block, read on every (re)load with the coercions
+//! earlier releases applied.
 //!
 //! The block arrives from the raw proxy config, which unvalidated host
-//! write paths can produce, so every field is coerced exactly as the
-//! Python coerced it (`str(x or "")`, `float(x or 15.0)`, …) and a value
-//! that made the Python raise is a [`ConfigError`]: the whole block is
+//! write paths can produce, so every field is coerced exactly as earlier
+//! releases coerced it (`str(x or "")`, `float(x or 15.0)`, …) and a
+//! value they refused is a [`ConfigError`]: the whole block is
 //! refused and, on a reload, the running settings are kept.
 
-use agentcage_core::python::str_of as py_str;
+use agentcage_core::value_fmt::coerce_to_string;
 
-use super::pyfmt::{int_literal, strip, truncate_chars};
+use super::coerce::{int_literal, strip, truncate_chars};
 use crate::config::{Config, Mapping, Value, truthy};
 
 /// The default control host.
@@ -18,7 +18,7 @@ pub const DEFAULT_CONTROL_HOST: &str = "agentcage.local";
 /// The longest operator context carried into the prompt, in characters.
 pub const MAX_CONTEXT_CHARS: usize = 4096;
 
-/// A decider block the Python would have raised on.
+/// A decider block that cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigError(pub String);
 
@@ -67,8 +67,8 @@ pub(crate) struct Settings {
     pub(crate) agentcage_version: String,
 }
 
-/// `value or {}` where the Python went on to call `.get` on it: falsy is
-/// empty, a mapping is itself, anything else raised `AttributeError`.
+/// `value or {}` for a value read as a mapping: falsy is empty, a
+/// mapping is itself, anything else is refused.
 fn mapping_or_empty<'a>(
     value: Option<&'a Value>,
     what: &str,
@@ -88,14 +88,19 @@ fn get<'a>(m: Option<&'a Mapping>, key: &str) -> Option<&'a Value> {
 /// `str(value or "")`.
 fn str_or_empty(value: Option<&Value>) -> String {
     match value {
-        Some(v) if truthy(v) => py_str(v),
+        Some(v) if truthy(v) => coerce_to_string(v),
         _ => String::new(),
     }
 }
 
 /// `float(value)`.
 fn to_float(value: &Value, what: &str) -> Result<f64, ConfigError> {
-    let bad = || ConfigError(format!("{what} is not a number: {}", py_str(value)));
+    let bad = || {
+        ConfigError(format!(
+            "{what} is not a number: {}",
+            coerce_to_string(value)
+        ))
+    };
     match value {
         Value::Number(n) => n.as_f64().ok_or_else(bad),
         Value::Bool(b) => Ok(f64::from(u8::from(*b))),
@@ -106,7 +111,12 @@ fn to_float(value: &Value, what: &str) -> Result<f64, ConfigError> {
 
 /// `int(value)`, as an `i64`.
 fn to_int(value: &Value, what: &str) -> Result<i64, ConfigError> {
-    let bad = || ConfigError(format!("{what} is not an integer: {}", py_str(value)));
+    let bad = || {
+        ConfigError(format!(
+            "{what} is not an integer: {}",
+            coerce_to_string(value)
+        ))
+    };
     match value {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -169,7 +179,7 @@ impl Settings {
         let passthrough = passthrough(config)?;
 
         let host = match get(cfg, "host") {
-            Some(v) if truthy(v) => py_str(v),
+            Some(v) if truthy(v) => coerce_to_string(v),
             _ => DEFAULT_CONTROL_HOST.to_owned(),
         }
         .to_lowercase()
@@ -198,7 +208,7 @@ impl Settings {
                 eprintln!(
                     "agentcage: agents.decider.context is not a string in the proxy config \
                      (got {}) — ignoring it",
-                    agentcage_core::python::type_name(other)
+                    agentcage_core::value_fmt::kind_name(other)
                 );
                 String::new()
             }
@@ -212,8 +222,8 @@ impl Settings {
             Some(v) if truthy(v) => to_int(v, "max_tokens")?,
             _ => 8192,
         };
-        // The wire field is unsigned; a value the Python would have sent
-        // only for the provider to reject it is refused here instead.
+        // The wire field is unsigned; a value the provider would only
+        // reject is refused here instead.
         let max_tokens = u32::try_from(max_tokens)
             .map_err(|_| ConfigError(format!("max_tokens out of range: {max_tokens}")))?;
 

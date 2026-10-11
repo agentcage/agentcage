@@ -1,32 +1,17 @@
-//! argv assertions for the podman wrapper, against
-//! `tests/test_podman.py`'s expectations.
+//! argv assertions for the podman wrapper.
 //!
 //! # What this file is
 //!
-//! `tests/test_podman.py` is the closest thing agentcage has to a
-//! specification for the podman wrapper, and it is written in the style
-//! this port is replacing: patch `subprocess.run`, then assert on
-//! fragments of the recorded call -- `assert "-t" in cmd`,
-//! `assert cmd[-3:] == [...]`, `assert "--no-cache" in cmd`.
-//!
-//! Membership assertions are weaker than they look. `assert "-f" in cmd`
-//! passes whether `-f` precedes the Containerfile or trails it, and
-//! `assert "FOO=bar" in cmd` passes if `--build-arg` ends up somewhere
-//! else entirely. So each test below pins the **whole argv**, and says
-//! in a comment which Python test it answers. Where the Python asserts
-//! something weaker, the stronger assertion here is still compatible
-//! with it -- it just also fails on the reorderings the Python would
-//! accept.
+//! Membership assertions are weaker than they look. "`-f` is in argv"
+//! holds whether `-f` precedes the Containerfile or trails it, and
+//! "`FOO=bar` is in argv" holds if `--build-arg` ends up somewhere else
+//! entirely. So each test below pins the **whole argv**, and fails on
+//! reorderings a membership check would accept.
 //!
 //! # Coverage
 //!
-//! `podman.py` has **19 invocation sites**. All 19 are pinned here, plus
-//! the three `_podman_cmd` cases and the two secret-parsing helpers.
-//! `test_podman.py` covers 14 of the 19 methods across 36 test
-//! functions; the five it never invokes -- `container_exec`,
-//! `volume_export`, `volume_import`, `pull`, `image_inspect` -- are
-//! pinned here for the first time. `volume_create`, which came after the
-//! port (`cage restore --no-start`), is pinned here too.
+//! Every invocation site of the wrapper is pinned here, plus the three
+//! elevation cases and the two secret-parsing helpers.
 
 use agentcage_exec::tools::podman::{BuildOptions, Podman, secret_env_names};
 use agentcage_exec::{Command, Elevation, FakeRunner, Reply, Sink, Stdin};
@@ -47,7 +32,7 @@ fn podman_as_alice(fake: &FakeRunner) -> Podman<'_> {
 
 /// `TestPodmanCmd::test_normal_user`, `test_root_without_sudo_user`.
 ///
-/// Both Python cases assert `["podman"]`; they differ only in how the
+/// Both cases expect `["podman"]`; they differ only in how the
 /// environment gets there, which is [`Elevation::detect`]'s job and is
 /// tested in `tools::tests`.
 #[test]
@@ -106,8 +91,7 @@ fn image_exists_reads_the_exit_status() {
         &["podman", "image", "exists", "myimg:latest"],
         &["podman", "image", "exists", "myimg:latest"],
     ]);
-    // Not captured: the Python passes no `capture_output`, and the
-    // answer is the status.
+    // Not captured: the answer is the status.
     assert_eq!(fake.call(0).command.stdout_spec(), &Sink::Inherit);
     fake.assert_drained();
 }
@@ -165,9 +149,7 @@ fn build_no_cache_without_a_containerfile() {
     assert!(!fake.argv(0).iter().any(|a| a == "-f"));
 }
 
-/// Not in `test_podman.py`, and the reason it should be: `no_cache` and
-/// `pull` are independent, and the Python's docstring spends a paragraph
-/// saying so. Each alone, and both together.
+/// `no_cache` and `pull` are independent. Each alone, and both together.
 #[test]
 fn build_no_cache_and_pull_are_independent() {
     let fake = FakeRunner::new();
@@ -232,10 +214,10 @@ fn build_cap_add() {
     );
 }
 
-/// `TestBuildImage::test_build_args`, strengthened: the Python asserts
-/// `"--build-arg" in cmd` and `"FOO=bar" in cmd` separately, which would
-/// pass even if they were not adjacent. Declaration order is pinned too,
-/// because the Python iterates a `dict` and `cage update`'s diff of the
+/// `TestBuildImage::test_build_args`, strengthened: a check for
+/// `--build-arg` and `FOO=bar` separately would pass even if they were
+/// not adjacent. Declaration order is pinned too, because `cage update`'s
+/// diff of the
 /// rendered build args is order-sensitive.
 #[test]
 fn build_args_keep_their_order_and_stay_adjacent() {
@@ -270,10 +252,10 @@ fn build_args_keep_their_order_and_stay_adjacent() {
     );
 }
 
-/// Every flag at once, in the Python's order: `-f`, `--no-cache`,
+/// Every flag at once, in the fixed order: `-f`, `--no-cache`,
 /// `--pull=always`, caps, build args, context.
 #[test]
-fn build_flag_order_matches_podman_py() {
+fn build_flag_order_is_fixed() {
     let fake = FakeRunner::new();
     fake.push(Reply::status(0));
     podman(&fake)
@@ -312,7 +294,7 @@ fn build_flag_order_matches_podman_py() {
 
 /// `TestBuildImage::test_raises_on_failure`.
 ///
-/// And the thing the Python cannot see, because it patches the function:
+/// And the thing a patched-function test cannot see:
 /// `quiet` decides whether the build streams or is captured, and the
 /// captured failure carries the output. Same argv, different stdio.
 #[test]
@@ -544,8 +526,7 @@ fn image_inspect_takes_the_first_array_element() {
     fake.assert_call(0, &["podman", "image", "inspect", "myimg:latest"]);
 }
 
-/// An empty array is a parse failure, not a panic -- the Python's `[0]`
-/// would raise `IndexError`.
+/// An empty array is a parse failure, not a panic.
 #[test]
 fn an_empty_inspect_array_is_an_error() {
     let fake = FakeRunner::new();
@@ -570,10 +551,9 @@ fn secret_exists_reads_the_exit_status() {
     fake.assert_call(0, &["podman", "secret", "inspect", "mysecret"]);
 }
 
-/// `TestSecretCreate::test_creates_with_stdin`, which is the most
-/// important assertion in the Python file: it checks
-/// `kwargs["input"] == "supersecretvalue"`. Here that is the *whole*
-/// claim -- the value is on stdin and the argv ends in `-`.
+/// `TestSecretCreate::test_creates_with_stdin`, the most important
+/// assertion in this file: the value is the stdin payload. Here that is
+/// the *whole* claim -- the value is on stdin and the argv ends in `-`.
 #[test]
 fn secret_create_puts_the_value_on_stdin_and_never_in_argv() {
     let fake = FakeRunner::new();

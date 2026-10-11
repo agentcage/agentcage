@@ -1,31 +1,33 @@
-//! The handful of Python value semantics the watcher's record handling
-//! leans on.
+//! The handful of value coercions the watcher's record handling leans
+//! on.
 //!
 //! The watcher reads records it did not write — capture lines, ring
-//! entries, a model's tool arguments — and the implementation it replaces
-//! coerced every field with `str(x)`, `x or default`, `int(x)` and
+//! entries, a model's tool arguments — and coerces every field the way
+//! earlier releases did, with `str(x)`, `x or default`, `int(x)` and
 //! `s[:n]`. Those coercions decide what reaches the digest, so they are
 //! reproduced here rather than approximated at each call site.
 
-use agentcage_core::python::repr_str;
+use agentcage_core::value_fmt::quote_text;
 
 use crate::json::{Json, format_float};
 
-/// Python `str(value)` for a value `json.loads` produced.
-pub(crate) fn py_str(value: &Json) -> String {
+/// A parsed JSON value's text: strings as-is, anything else as its
+/// [`display_value`].
+pub(crate) fn coerce_to_string(value: &Json) -> String {
     match value {
         Json::Str(s) => s.clone(),
-        other => py_repr(other),
+        other => display_value(other),
     }
 }
 
-/// Python `repr(value)` for a value `json.loads` produced.
+/// A parsed JSON value written as a literal, in the
+/// [`agentcage_core::value_fmt`] notation.
 ///
-/// Containers repr their items, so `str(["a"])` is `['a']`. Strings go
-/// through the host's `repr_str` (CPython quoting; C0/C1 controls
+/// Containers display their items, so `str(["a"])` is `['a']`. Strings go
+/// through the host's `quote_text` (quote chosen by content; C0/C1 controls
 /// escaped), which only matters for a malformed record whose field was a
 /// container instead of a string.
-pub(crate) fn py_repr(value: &Json) -> String {
+pub(crate) fn display_value(value: &Json) -> String {
     match value {
         Json::Null => "None".to_owned(),
         Json::Bool(true) => "True".to_owned(),
@@ -33,15 +35,15 @@ pub(crate) fn py_repr(value: &Json) -> String {
         Json::Int(i) => i.to_string(),
         Json::BigInt(digits) => digits.clone(),
         Json::Float(f) => float_str(*f),
-        Json::Str(s) => repr_str(s),
+        Json::Str(s) => quote_text(s),
         Json::Array(items) => {
-            let inner: Vec<String> = items.iter().map(py_repr).collect();
+            let inner: Vec<String> = items.iter().map(display_value).collect();
             format!("[{}]", inner.join(", "))
         }
         Json::Object(pairs) => {
             let inner: Vec<String> = pairs
                 .iter()
-                .map(|(k, v)| format!("{}: {}", repr_str(k), py_repr(v)))
+                .map(|(k, v)| format!("{}: {}", quote_text(k), display_value(v)))
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
@@ -66,13 +68,14 @@ pub(crate) fn truthy(value: Option<&Json>) -> Option<&Json> {
 
 /// `str(x or default)`.
 pub(crate) fn str_or(value: Option<&Json>, default: &str) -> String {
-    truthy(value).map_or_else(|| default.to_owned(), py_str)
+    truthy(value).map_or_else(|| default.to_owned(), coerce_to_string)
 }
 
 /// `str(d.get(key, default))`: absent → `default`, present (even null or
 /// falsy) → `str()` of it.
 pub(crate) fn str_get(obj: &Json, key: &str, default: &str) -> String {
-    obj.get(key).map_or_else(|| default.to_owned(), py_str)
+    obj.get(key)
+        .map_or_else(|| default.to_owned(), coerce_to_string)
 }
 
 /// `d.get(key) or {}` when the result is used as a mapping: a falsy or
@@ -99,11 +102,11 @@ pub(crate) fn prefix(s: &str, n: usize) -> String {
     }
 }
 
-/// `int(x)` for a value `json.loads` produced; `None` where Python raises.
+/// `int(x)` for a parsed JSON value; `None` where it is not an integer.
 ///
-/// The replaced implementation let the `ValueError` escape and fail the
-/// scan; the callers here substitute the field's default instead.
-pub(crate) fn py_int(value: &Json) -> Option<i64> {
+/// Earlier releases let that error escape and fail the scan; the callers here
+/// substitute the field's default instead.
+pub(crate) fn coerce_int(value: &Json) -> Option<i64> {
     match value {
         Json::Int(i) => Some(*i),
         Json::Bool(b) => Some(i64::from(*b)),
@@ -121,7 +124,7 @@ pub(crate) fn py_int(value: &Json) -> Option<i64> {
     }
 }
 
-/// `items[-n:]`, including Python's `x[-0:] == x` quirk and a negative `n`
+/// `items[-n:]`, including the `x[-0:] == x` quirk and a negative `n`
 /// meaning "drop the first `|n|`".
 pub(crate) fn tail<T>(items: &[T], n: i64) -> &[T] {
     let len = items.len();
@@ -135,8 +138,8 @@ pub(crate) fn tail<T>(items: &[T], n: i64) -> &[T] {
     &items[skip..]
 }
 
-/// A key that is equal for exactly the values Python's `==` (and so a
-/// dict key) treats as equal: `200`, `200.0` and `True`/`1` collapse.
+/// A key that is equal for exactly the values earlier releases grouped
+/// together: `200`, `200.0` and `True`/`1` collapse.
 pub(crate) fn eq_key(value: Option<&Json>) -> String {
     match value {
         None | Some(Json::Null) => "n".to_owned(),
@@ -165,12 +168,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn str_and_repr_follow_python() {
-        assert_eq!(py_str(&Json::Null), "None");
-        assert_eq!(py_str(&Json::Float(1.0)), "1.0");
-        assert_eq!(py_str(&Json::Float(f64::NAN)), "nan");
+    fn text_and_display_spelling() {
+        assert_eq!(coerce_to_string(&Json::Null), "None");
+        assert_eq!(coerce_to_string(&Json::Float(1.0)), "1.0");
+        assert_eq!(coerce_to_string(&Json::Float(f64::NAN)), "nan");
         let v = crate::json::parse(r#"{"a": [1, "it's", "q\"", null, true]}"#).unwrap();
-        assert_eq!(py_str(&v), r#"{'a': [1, "it's", 'q"', None, True]}"#);
+        assert_eq!(
+            coerce_to_string(&v),
+            r#"{'a': [1, "it's", 'q"', None, True]}"#
+        );
     }
 
     #[test]
@@ -184,10 +190,10 @@ mod tests {
     }
 
     #[test]
-    fn int_coerces_like_python() {
-        assert_eq!(py_int(&Json::string(" 1_000 ")), Some(1000));
-        assert_eq!(py_int(&Json::string("1.5")), None);
-        assert_eq!(py_int(&Json::Float(-2.9)), Some(-2));
-        assert_eq!(py_int(&Json::Bool(true)), Some(1));
+    fn int_coercion() {
+        assert_eq!(coerce_int(&Json::string(" 1_000 ")), Some(1000));
+        assert_eq!(coerce_int(&Json::string("1.5")), None);
+        assert_eq!(coerce_int(&Json::Float(-2.9)), Some(-2));
+        assert_eq!(coerce_int(&Json::Bool(true)), Some(1));
     }
 }

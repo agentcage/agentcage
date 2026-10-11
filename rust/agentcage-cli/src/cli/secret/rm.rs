@@ -137,7 +137,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 /// enumerate by service, which is why that index exists at all. The
 /// message it guards names the cage — `does not exist for '<cage>'` —
 /// where the container path's names the qualified secret. Both
-/// spellings are the Python's.
+/// spellings are pinned from earlier releases.
 fn remove_apple(ctx: &Ctx, config: &Config, name: &str, key: &str) -> Result<(), ExitCode> {
     if !apple::secret_names(ctx, config, name)
         .iter()
@@ -147,9 +147,8 @@ fn remove_apple(ctx: &Ctx, config: &Config, name: &str, key: &str) -> Result<(),
         return Err(ExitCode::from(EXIT_FAILURE));
     }
     if let Err(error) = apple::delete(ctx, config, name, key) {
-        // `resolve_store(cfg).delete(...)` is unguarded in the Python
-        // and would raise here; a refusal carrying the store's own
-        // complaint is this port's standing answer to a traceback.
+        // A refusal carrying the store's own complaint (earlier releases
+        // printed a traceback here).
         eprintln!(
             "error: failed to remove secret '{key}': {}",
             error.message()

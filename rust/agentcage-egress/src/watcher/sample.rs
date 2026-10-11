@@ -12,7 +12,7 @@ use rand::Rng as _;
 use crate::json::{self, Json};
 
 use super::ScanRng;
-use super::pyval::{self, obj, py_str, str_or};
+use super::coerce::{self, coerce_to_string, obj, str_or};
 
 /// Longest body excerpt, in code points.
 pub const BODY_EXCERPT_CHARS: usize = 512;
@@ -46,11 +46,11 @@ pub fn redact_headers(headers: Option<&Json>) -> Vec<Json> {
         .iter()
         .filter_map(|h| match h {
             Json::Array(pair) if pair.len() >= 2 => {
-                let name = py_str(&pair[0]);
+                let name = coerce_to_string(&pair[0]);
                 let value = if SENSITIVE_HEADERS.contains(&name.to_lowercase().as_str()) {
                     "[redacted]".to_owned()
                 } else {
-                    py_str(&pair[1])
+                    coerce_to_string(&pair[1])
                 };
                 Some(Json::Array(vec![Json::Str(name), Json::Str(value)]))
             }
@@ -73,14 +73,14 @@ pub fn excerpt_body(
     encoding: Option<&Json>,
     rng: Option<&mut ScanRng>,
 ) -> String {
-    let Some(body) = pyval::truthy(body) else {
+    let Some(body) = coerce::truthy(body) else {
         return String::new();
     };
     if encoding.and_then(Json::as_str) == Some("base64") {
-        let n = py_str(body).chars().count();
+        let n = coerce_to_string(body).chars().count();
         return format!("[binary body, {n} b64 chars, not excerpted]");
     }
-    let text = py_str(body);
+    let text = coerce_to_string(body);
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     if n <= BODY_EXCERPT_CHARS {
@@ -126,10 +126,10 @@ fn safe_path(entry: &Json, in_req: &Json) -> String {
         } else {
             format!("?{query}")
         };
-        return pyval::prefix(&format!("{path}{q}"), 256);
+        return coerce::prefix(&format!("{path}{q}"), 256);
     }
     let path = str_or(entry.get("path"), "");
-    pyval::prefix(path.split('?').next().unwrap_or(""), 256)
+    coerce::prefix(path.split('?').next().unwrap_or(""), 256)
 }
 
 /// `urllib.parse.urlsplit(url)`'s path and query, or `None` where it
@@ -215,13 +215,14 @@ pub fn sample_capture(entry: &Json, host_hint: &str, mut rng: Option<&mut ScanRn
     let in_req = obj(inbound.get("request"));
     let in_resp = obj(inbound.get("response"));
     let out_req = obj(obj(entry.get("outbound")).get("request"));
-    let method =
-        match pyval::truthy(entry.get("method")).or_else(|| pyval::truthy(in_req.get("method"))) {
-            Some(v) => py_str(v),
-            None => String::new(),
-        };
-    let host = match pyval::truthy(entry.get("host")) {
-        Some(v) => py_str(v),
+    let method = match coerce::truthy(entry.get("method"))
+        .or_else(|| coerce::truthy(in_req.get("method")))
+    {
+        Some(v) => coerce_to_string(v),
+        None => String::new(),
+    };
+    let host = match coerce::truthy(entry.get("host")) {
+        Some(v) => coerce_to_string(v),
         None => host_hint.to_owned(),
     };
     let inspectors: Vec<Json> = match entry.get("inspectors") {
@@ -242,7 +243,7 @@ pub fn sample_capture(entry: &Json, host_hint: &str, mut rng: Option<&mut ScanRn
                     ),
                     (
                         "reason",
-                        Json::Str(pyval::prefix(&pyval::str_get(i, "reason", ""), 200)),
+                        Json::Str(coerce::prefix(&coerce::str_get(i, "reason", ""), 200)),
                     ),
                 ])
             })

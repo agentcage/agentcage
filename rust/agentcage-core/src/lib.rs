@@ -2,19 +2,18 @@
 //!
 //! # Why this crate exists
 //!
-//! The Python host CLI mixes decision-making with doing: [`config.py`]
-//! validates *and* raises click errors, [`services.py`] renders quadlets
-//! *and* shells out to podman. Testing that required 30k lines of
-//! `monkeypatch`-heavy pytest (see docs/history/rust-port-plan.md section 4). The port
-//! splits the two so the decision-making half can be tested by feeding it
-//! values and comparing the answers against fixtures the Python
-//! implementation generated — a diff, not a judgement call.
+//! Deciding and doing are kept apart: validating a config, computing a
+//! fingerprint or rendering a quadlet is decision-making, while running
+//! podman or writing a file is doing. This crate holds the
+//! decision-making half, so it can be tested by feeding it values and
+//! comparing the answers against recorded fixtures — a diff, not a
+//! judgement call.
 //!
-//! `agentcage-core` is that half. The rules it holds itself to:
+//! The rules it holds itself to:
 //!
 //! - **no subprocess** — nothing in here runs `podman`, `systemctl`,
 //!   `limactl` or `container(1)`. That is the `CommandRunner` seam in
-//!   `agentcage-cli` (Track D, PR D1).
+//!   `agentcage-cli`.
 //! - **no I/O**, beyond what [`agentcage_assets`] hands it. Callers read
 //!   files; this crate is given their contents.
 //! - **no CLI** — no argument parsing, no `stdout`, no exit codes, no
@@ -22,44 +21,36 @@
 //!
 //! Anything that cannot honour those three belongs in `agentcage-cli`.
 //!
-//! # What will live here
+//! # What lives here
 //!
-//! Per docs/history/rust-port-plan.md Track C, in the order those PRs land:
+//! | | module |
+//! | :-- | :-- |
+//! | config types, parsing and validation | [`config`], [`relays`], [`value_fmt`] |
+//! | `fingerprint` + `stable_json` | [`fingerprint`] |
+//! | audit parse / filter / summary | [`audit`] |
+//! | HAR builder | [`har`] |
+//! | volume-mount parsing | [`volume_mounts`] |
+//! | quadlet rendering (minijinja over the shipped `.j2`) | [`quadlets`] |
+//! | Apple `container` unit metadata, launchd plist, argv builders | [`apple`] |
 //!
-//! | | Python source | PR |
-//! | :-- | :-- | :-- |
-//! | config types + parsing | `config.py` | C1 |
-//! | validation: domains, ports, secrets, placeholders | `config.py` | C2 |
-//! | validation: relays, agents, capture, inspectors | `config.py`, `data/proxy/relays/_validate.py` | C3 |
-//! | `fingerprint` + `stable_json` | `fingerprint.py` | C4 |
-//! | audit parse / filter / summary | `audit.py` | C5 |
-//! | HAR builder | `har.py` | C6 |
-//! | volume-mount parsing | `volume_mounts.py` | C7 |
-//! | quadlet rendering (minijinja over the existing `.j2`) | `quadlets.py` | C8 |
+//! [`apple`] obeys the same three rules as the rest — the resolved
+//! `container` binary, the expanded volume list and the current
+//! placeholders all arrive as arguments.
 //!
-//! Track E adds one more, for the backend that has no quadlets at
-//! all: [`apple`] holds `apple_container.py`'s unit metadata, its
-//! launchd plist and its three argv builders (PR E3). It obeys the
-//! same three rules — the resolved `container` binary, the expanded
-//! volume list and the current placeholders all arrive as arguments.
-//!
-//! Three of those are cross-language contracts rather than ordinary
-//! ports — the relay validator, `encoded_private_ip` and `_is_never_grant`
-//! exist on both sides of the trust boundary and must agree exactly
-//! (docs/history/rust-port-plan.md section 2.2). Their tests assert against the shared
-//! fixtures from PR A4, not against hand-written expectations.
+//! Three pieces are contracts across the trust boundary rather than
+//! ordinary logic — the relay validator, `encoded_private_ip` and
+//! `_is_never_grant` are applied both on the host and inside the egress
+//! and must agree exactly (docs/history/rust-port-plan.md section 2.2).
+//! Their tests assert against the shared contract fixtures, not against
+//! hand-written expectations.
 //!
 //! # Dependencies
 //!
-//! Each one arrives in the PR that needs it, with the reasoning in
-//! `Cargo.toml` next to the entry, rather than being pre-imported here
-//! on a guess. C8 is the one that breaks the "pure logic, no crates"
-//! reading hardest: it depends on [`agentcage_assets`] for the `.j2`
-//! sources it renders, because the alternative was a second copy of
-//! those bytes in the binary.
-//!
-//! [`config.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/config.py
-//! [`services.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/services.py
+//! Each dependency carries its reasoning in `Cargo.toml` next to the
+//! entry. [`quadlets`] is the one that breaks the "pure logic, no
+//! crates" reading hardest: it depends on [`agentcage_assets`] for the
+//! `.j2` sources it renders, because the alternative was a second copy
+//! of those bytes in the binary.
 
 pub mod apple;
 pub mod audit;
@@ -68,23 +59,20 @@ pub mod config;
 pub mod fingerprint;
 pub mod har;
 pub mod lima;
-pub mod python;
 pub mod quadlets;
 pub mod relays;
+pub mod value_fmt;
 pub mod volume_mounts;
 pub mod yaml;
 
 /// The agentcage version, baked in at compile time.
 ///
-/// This is the number the Python CLI reads at runtime with
-/// `importlib.metadata.version("agentcage")` at ~10 call sites. It sets
-/// the egress image tag, the `Image=` pin in `egress.container.j2`,
-/// `agentcage_version` in `cage.container.j2`, the `metadata.json` stamp
-/// and `proxy_cfg["agentcage_version"]`, and the in-egress Python reads
-/// it back out of `AGENTCAGE_VERSION` or the `proxy-config.yaml` stamp
-/// rather than from its own package metadata. So once the CLI is Rust
-/// this constant owns the version outright and there are no two package
-/// versions to keep in lockstep (docs/history/rust-port-plan.md section 2.3).
+/// It sets the egress image tag, the `Image=` pin in
+/// `egress.container.j2`, `agentcage_version` in `cage.container.j2`, the
+/// `metadata.json` stamp and `proxy_cfg["agentcage_version"]`; the egress
+/// reads it back out of `AGENTCAGE_VERSION` or the `proxy-config.yaml`
+/// stamp. One constant owns the version, so there are no two package
+/// versions to keep in lockstep.
 ///
 /// It comes from `[workspace.package] version` in the root `Cargo.toml`,
 /// which `scripts/check-version.sh` holds equal to the root `VERSION`
@@ -99,10 +87,9 @@ mod tests {
     /// The version reaches the binary and looks like a version.
     ///
     /// Weak on its own — `scripts/check-version.sh` is what proves this
-    /// equals the `VERSION` file, and `tests/test_version.py` covers the
-    /// script. This catches the narrower failure where the workspace
-    /// inheritance breaks and a crate ends up on Cargo's `0.0.0`
-    /// default, which would otherwise surface as every image tag being
+    /// equals the `VERSION` file. This catches the narrower failure where
+    /// the workspace inheritance breaks and a crate ends up on Cargo's
+    /// `0.0.0` default, which would otherwise surface as every image tag being
     /// silently wrong rather than as an error.
     #[test]
     fn version_is_a_release_number() {

@@ -1,7 +1,7 @@
-//! The IMAP relay against `tests/fixtures/egress/imap.json`, recorded from
-//! the Python relay it replaces (see `tests/fixtures/egress/gen/imap.py`),
-//! plus the behaviour this port adds (long lines refused with `BAD`,
-//! sessions told goodbye on stop) and the upstream TLS cases.
+//! The IMAP relay against `tests/fixtures/egress/imap.json`, recorded from an
+//! earlier release's relay, plus the behaviour added since (long lines
+//! refused with `BAD`, sessions told goodbye on stop) and the upstream TLS
+//! cases.
 //!
 //! `AGENTCAGE_BLESS=1 cargo test -p agentcage-egress imap_corpus`
 //! rewrites the corpus with what this relay does.
@@ -431,7 +431,7 @@ impl Client {
         }
     }
 
-    /// The compliant client of the Python tests' `_send_command`.
+    /// A compliant client: sends a command, reads to its tagged reply.
     async fn command(&mut self, pieces: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, Eof> {
         let tag = split_ws(&pieces[0], Some(1))[0].to_vec();
         let mut tagged = tag.clone();
@@ -672,7 +672,7 @@ async fn plain_session(
 }
 
 /// A command line over 1 MiB is answered `BAD` and dropped, and the
-/// session goes on (the Python relay ended the session at 64 KiB).
+/// session goes on (earlier releases ended the session at 64 KiB).
 #[tokio::test]
 async fn an_overlong_command_line_is_refused_not_fatal() {
     let (relay, sink, mut c, task, rec) = plain_session(r#"{"write_mode": "full"}"#).await;

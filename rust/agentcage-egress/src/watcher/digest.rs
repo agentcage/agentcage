@@ -14,7 +14,7 @@ use rand::Rng as _;
 use crate::json::{self, Json};
 
 use super::ScanRng;
-use super::pyval::{self, obj, py_str};
+use super::coerce::{self, coerce_to_string, obj};
 
 /// Aggregate maps (`top_hosts`, …) keep this many entries.
 pub const MAX_HOSTS_IN_DIGEST: usize = 25;
@@ -40,7 +40,7 @@ const CONTROL_RECORD_KINDS: [&str; 2] = ["policy_", "watcher_"];
 /// True for a control-plane audit record (not a traffic flow).
 #[must_use]
 pub fn is_control_record(entry: &Json) -> bool {
-    let kind = pyval::str_or(entry.get("kind"), "");
+    let kind = coerce::str_or(entry.get("kind"), "");
     CONTROL_RECORD_KINDS.iter().any(|p| kind.starts_with(p))
 }
 
@@ -100,7 +100,7 @@ fn sub_hex(path: &[char]) -> Vec<char> {
 /// `<n>`, cut to 256 code points.
 #[must_use]
 pub fn template_path(path: Option<&Json>) -> String {
-    let path: Vec<char> = pyval::str_or(path, "").chars().collect();
+    let path: Vec<char> = coerce::str_or(path, "").chars().collect();
     let hexed = sub_hex(&path);
     let mut out = String::with_capacity(hexed.len());
     let mut in_digits = false;
@@ -115,7 +115,7 @@ pub fn template_path(path: Option<&Json>) -> String {
             out.push(c);
         }
     }
-    pyval::prefix(&out, 256)
+    coerce::prefix(&out, 256)
 }
 
 // ── Dedup ────────────────────────────────────────────────────
@@ -141,11 +141,11 @@ pub fn dedup_samples(
             continue;
         }
         let key = [
-            pyval::str_get(s, "host", ""),
-            pyval::str_get(s, "method", ""),
+            coerce::str_get(s, "host", ""),
+            coerce::str_get(s, "method", ""),
             template_path(s.get("path")),
-            pyval::str_get(s, "decision", ""),
-            pyval::eq_key(Some(s.get("response_status").unwrap_or(&Json::Int(0)))),
+            coerce::str_get(s, "decision", ""),
+            coerce::eq_key(Some(s.get("response_status").unwrap_or(&Json::Int(0)))),
         ]
         .join("\u{0}");
         let at = *index.entry(key).or_insert_with(|| {
@@ -166,12 +166,12 @@ pub fn dedup_samples(
             );
             sample.set("first_ts", ts(grp[0]));
             sample.set("last_ts", ts(grp[grp.len() - 1]));
-            pyval::remove(&mut sample, "ts");
+            coerce::remove(&mut sample, "ts");
             let total: i64 = grp
                 .iter()
                 .map(|x| {
-                    pyval::truthy(x.get("request_body_size"))
-                        .and_then(pyval::py_int)
+                    coerce::truthy(x.get("request_body_size"))
+                        .and_then(coerce::coerce_int)
                         .unwrap_or(0)
                 })
                 .sum();
@@ -181,10 +181,10 @@ pub fn dedup_samples(
             let mut bodies: Vec<(&Json, usize, usize)> = Vec::new();
             let mut seen: HashMap<String, usize> = HashMap::new();
             for (i, x) in grp.iter().enumerate() {
-                let Some(b) = pyval::truthy(x.get("request_body_excerpt")) else {
+                let Some(b) = coerce::truthy(x.get("request_body_excerpt")) else {
                     continue;
                 };
-                let k = pyval::eq_key(Some(b));
+                let k = coerce::eq_key(Some(b));
                 if let Some(&at) = seen.get(&k) {
                     bodies[at].1 += 1;
                     bodies[at].2 = i;
@@ -203,7 +203,7 @@ pub fn dedup_samples(
                     "distinct_request_bodies",
                     Json::Int(i64::try_from(bodies.len()).unwrap_or(i64::MAX)),
                 );
-                pyval::remove(&mut sample, "request_body_excerpt");
+                coerce::remove(&mut sample, "request_body_excerpt");
             }
         }
         out.push(sample);
@@ -424,7 +424,7 @@ impl Counter {
 /// `for n in value or []` over a JSON value: a list's items, a string's
 /// characters, an object's keys.
 fn py_iter(value: Option<&Json>) -> Vec<Json> {
-    match pyval::truthy(value) {
+    match coerce::truthy(value) {
         Some(Json::Array(items)) => items.clone(),
         Some(Json::Str(s)) => s.chars().map(|c| Json::Str(c.to_string())).collect(),
         Some(Json::Object(pairs)) => pairs.iter().map(|(k, _)| Json::Str(k.clone())).collect(),
@@ -449,32 +449,32 @@ fn aggregates(entries: &[Json]) -> Vec<(&'static str, Json)> {
     let flows: Vec<&Json> = entries.iter().filter(|e| !is_control_record(e)).collect();
     let blocked = Json::string("blocked");
     for e in &flows {
-        let dec = pyval::str_or(e.get("decision"), "");
+        let dec = coerce::str_or(e.get("decision"), "");
         if !dec.is_empty() {
             decisions.add(dec);
         }
-        if let Some(h) = pyval::truthy(e.get("host")) {
-            hosts.add(py_str(h));
+        if let Some(h) = coerce::truthy(e.get("host")) {
+            hosts.add(coerce_to_string(h));
         }
-        let meth = pyval::str_or(e.get("method"), "");
+        let meth = coerce::str_or(e.get("method"), "");
         if !meth.is_empty() {
             methods.add(meth);
         }
         if e.get("decision") == Some(&blocked) {
-            blocked_hosts.add(pyval::str_get(e, "host", ""));
+            blocked_hosts.add(coerce::str_get(e, "host", ""));
         }
-        if let Some(Json::Array(items)) = pyval::truthy(e.get("inspectors")) {
+        if let Some(Json::Array(items)) = coerce::truthy(e.get("inspectors")) {
             for i in items {
-                if let Some(name) = pyval::truthy(i.get("name")) {
-                    inspectors.add(py_str(name));
+                if let Some(name) = coerce::truthy(i.get("name")) {
+                    inspectors.add(coerce_to_string(name));
                 }
             }
         }
         for n in py_iter(e.get("secrets_injected")) {
-            injected.add(py_str(&n));
+            injected.add(coerce_to_string(&n));
         }
         for n in py_iter(e.get("secrets_redacted")) {
-            redacted.add(py_str(&n));
+            redacted.add(coerce_to_string(&n));
         }
     }
 
@@ -521,8 +521,8 @@ fn evasion_indicators(
     let max_distinct = samples
         .iter()
         .map(|x| {
-            pyval::truthy(x.get("distinct_request_bodies"))
-                .and_then(pyval::py_int)
+            coerce::truthy(x.get("distinct_request_bodies"))
+                .and_then(coerce::coerce_int)
                 .unwrap_or(1)
         })
         .max()
@@ -531,7 +531,7 @@ fn evasion_indicators(
         .iter()
         .filter(|x| {
             x.get("request_body_binary").is_some_and(Json::is_truthy)
-                && is_granted(&pyval::str_get(x, "host", ""))
+                && is_granted(&coerce::str_get(x, "host", ""))
         })
         .count();
     let longer = samples
@@ -566,19 +566,22 @@ fn evasion_indicators(
 /// the sample is on the record even though most of it is then cut.
 #[must_use]
 pub fn build_digest(input: &DigestInput<'_>, mut rng: Option<&mut ScanRng>) -> Json {
-    let policy_events: Vec<Json> = pyval::tail(input.policy_events, MAX_POLICY_EVENTS)
+    let policy_events: Vec<Json> = coerce::tail(input.policy_events, MAX_POLICY_EVENTS)
         .iter()
         .map(|p| {
             let p = obj(Some(p));
             json::object([
-                ("kind", Json::Str(pyval::str_get(p, "kind", ""))),
-                ("domain", Json::Str(pyval::str_get(p, "domain", ""))),
-                ("decision", Json::Str(pyval::str_get(p, "decision", ""))),
+                ("kind", Json::Str(coerce::str_get(p, "kind", ""))),
+                ("domain", Json::Str(coerce::str_get(p, "domain", ""))),
+                ("decision", Json::Str(coerce::str_get(p, "decision", ""))),
                 (
                     "reason",
-                    Json::Str(pyval::prefix(&pyval::str_get(p, "reason", ""), 300)),
+                    Json::Str(coerce::prefix(&coerce::str_get(p, "reason", ""), 300)),
                 ),
-                ("decided_by", Json::Str(pyval::str_get(p, "decided_by", ""))),
+                (
+                    "decided_by",
+                    Json::Str(coerce::str_get(p, "decided_by", "")),
+                ),
             ])
         })
         .collect();
@@ -596,7 +599,7 @@ pub fn build_digest(input: &DigestInput<'_>, mut rng: Option<&mut ScanRng>) -> J
     } else {
         input.capture_samples.to_vec()
     };
-    let samples = pyval::tail(&collapsed, input.max_flows).to_vec();
+    let samples = coerce::tail(&collapsed, input.max_flows).to_vec();
 
     let n_samples = samples.len();
     let mut digest = json::object([("note", Json::string(DIGEST_NOTE))]);

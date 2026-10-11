@@ -15,7 +15,7 @@ Every cage consists of two services on a dedicated private network:
    - `dnsmasq` (UID 201): the cage's DNS server. It forwards allowlisted names and sinkholes everything else.
    - `agentcage-egress` (UID 200): the egress proxy, a single static Rust binary. It terminates and inspects TLS, runs the inspector chain, injects and redacts secrets, writes the audit log and the capture file, and hosts the Policy API, the traffic watcher and the protocol relays.
 
-The egress image is `debian:trixie-slim` with `dnsmasq`, `iptables`, `tini` and a few utilities, plus the `agentcage-egress` binary. It contains no Python and no other interpreter. The host binary carries the egress binary for its own architecture (a macOS arm64 host carries the linux-aarch64 build its VM runs), so the image is built locally from what the host binary embeds; its tag (`localhost/agentcage-egress:<version>-<hash>`) changes whenever the binary or any other input changes.
+The egress image is `debian:trixie-slim` with `dnsmasq`, `iptables`, `tini` and a few utilities, plus the `agentcage-egress` binary. It contains no interpreter. The host binary carries the egress binary for its own architecture (a macOS arm64 host carries the linux-aarch64 build its VM runs), so the image is built locally from what the host binary embeds; its tag (`localhost/agentcage-egress:<version>-<hash>`) changes whenever the binary or any other input changes.
 
 ```
 ┌─────────────────────────── HOST MACHINE ───────────────────────────────────────────┐

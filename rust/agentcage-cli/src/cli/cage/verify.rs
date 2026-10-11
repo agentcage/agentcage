@@ -1,24 +1,17 @@
-//! `cage verify` — the health probe.
+//! `cage verify` — the health probe, with a branch per backend.
 //!
-//! `cli.py:1494` and all three of its backend branches. PR D6 landed
-//! the `_verify_container` half, because e2e phase 1 needed it; D12
-//! finishes the command with `_verify_apple_container` and
-//! `_verify_vm`.
-//!
-//! # Why the two new branches do not wait for Track E
+//! # Why the vm and apple-container branches use the tool wrappers
 //!
 //! They probe, they do not deploy. Every question they ask is one
-//! `container exec` or one `limactl shell` away — the wrappers for both
-//! already exist (PR D1) — so the branches are written against those
-//! directly rather than against the vm / apple-container *backends*,
-//! which really are Track E's and really do need a Mac and a Lima host
-//! to write. The `-- Services --` block dispatches the same way, for
-//! the same reason: asking podman whether a Lima VM's units are up
-//! answers "no" on a perfectly healthy cage.
+//! `container exec` or one `limactl shell` away, so the branches are
+//! written against those wrappers directly rather than against the vm /
+//! apple-container *backends*. The `-- Services --` block dispatches
+//! the same way, for the same reason: asking podman whether a Lima VM's units
+//! are up answers "no" on a perfectly healthy cage.
 //!
-//! Neither branch can be exercised on this PR's hardware. What they are
-//! held to is the Python, line by line, and the argv assertions at the
-//! bottom of this file under a recording fake.
+//! Neither branch can be exercised on a Linux CI host. What they are
+//! held to is the argv assertions at the bottom of this file under a
+//! recording fake.
 
 use std::process::ExitCode;
 
@@ -202,7 +195,7 @@ fn verify_container(
 
 /// The HTTP status the cage gets for a domain it must not reach.
 ///
-/// Three clients, in the Python's order, because a cage image is the
+/// Three clients, in a fixed order, because a cage image is the
 /// operator's business and may have none of them: `curl` if it is on
 /// `PATH`, then node's `fetch`, then python3's `urllib`. `None` means
 /// no client answered at all, which is a warning rather than a failure.
@@ -292,8 +285,8 @@ fn service_status(
                 .map(|service| {
                     // `cage` is the workload microVM, named after the
                     // cage itself; `egress` is its sibling. An unknown
-                    // service reads as `cage`, which is the Python's
-                    // parity rule for the legacy single-VM model.
+                    // service reads as `cage`, the rule for the legacy
+                    // single-VM model.
                     let target = if *service == "egress" {
                         format!("{name}-egress")
                     } else {
@@ -385,7 +378,7 @@ fn verify_apple_container(ctx: &Ctx, name: &str, results: &mut Results) {
     } else {
         results.fail(&format!(
             "/etc/resolv.conf does NOT route to local dnsmasq (got: {})",
-            python_repr(&resolv)
+            single_quoted(&resolv)
         ));
     }
 
@@ -422,9 +415,9 @@ fn verify_apple_container(ctx: &Ctx, name: &str, results: &mut Results) {
     }
 }
 
-/// `_verify_vm` — the Lima instance, then its units from inside.
+/// The vm branch: the Lima instance, then its units from inside.
 ///
-/// The early return is the Python's: with the VM down, `systemctl`
+/// The early return is deliberate: with the VM down, `systemctl`
 /// inside it cannot be reached at all, and reporting two more failures
 /// would say the services are broken when the truth is that nothing was
 /// asked.
@@ -464,21 +457,18 @@ fn verify_vm(ctx: &Ctx, name: &str, results: &mut Results) {
     }
 }
 
-/// `repr(s)` for a `str` — Python's own quoting, because the string
-/// lands in an operator-facing message that the Python formats with
-/// `{out!r}`.
+/// `text` in single quotes, for the operator-facing resolv.conf message.
 ///
-/// Only the two escapes `repr` uses for the content this can carry: a
-/// backslash and the quote character. A resolv.conf is ASCII, so the
-/// non-printable branch of `repr` is not reachable here.
-fn python_repr(text: &str) -> String {
+/// Escapes only a backslash and the quote character. A resolv.conf is
+/// ASCII, so control characters are not expected here.
+fn single_quoted(text: &str) -> String {
     let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
     format!("'{escaped}'")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Results, python_repr, verify_apple_container, verify_vm};
+    use super::{Results, single_quoted, verify_apple_container, verify_vm};
     use crate::cli::context::Ctx;
     use agentcage_exec::{FakeRunner, Reply};
     use agentcage_state::{Paths, TestDir};
@@ -604,7 +594,7 @@ mod tests {
     }
 
     /// A cage image with no `curl` cannot answer the egress question,
-    /// and the Python says so rather than guessing.
+    /// and `cage verify` says so rather than guessing.
     #[test]
     fn no_curl_in_the_image_is_a_warning_not_a_failure() {
         let dir = TestDir::new("verify-apple-nocurl");
@@ -657,11 +647,11 @@ mod tests {
         assert_eq!((results.passed, results.failed), (2, 1));
     }
 
-    /// The message quotes what it read, the way `{out!r}` does.
+    /// The message quotes what it read.
     #[test]
-    fn the_resolv_conf_failure_quotes_python_style() {
-        assert_eq!(python_repr("nameserver 1.1.1.1"), "'nameserver 1.1.1.1'");
-        assert_eq!(python_repr("it's"), r"'it\'s'");
-        assert_eq!(python_repr(""), "''");
+    fn the_resolv_conf_failure_quotes_what_it_read() {
+        assert_eq!(single_quoted("nameserver 1.1.1.1"), "'nameserver 1.1.1.1'");
+        assert_eq!(single_quoted("it's"), r"'it\'s'");
+        assert_eq!(single_quoted(""), "''");
     }
 }

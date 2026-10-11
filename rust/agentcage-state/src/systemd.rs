@@ -39,9 +39,8 @@
 //! covered at all.
 //!
 //! [`Units::install`] therefore still *writes the files* when there is
-//! no systemd, and only skips the daemon-reload. That matches the
-//! Python: `install_units` writes unconditionally and calls
-//! `systemd.daemon_reload()`, which is the function that no-ops.
+//! no systemd, and only skips the daemon-reload. The write is
+//! unconditional; the daemon-reload is what no-ops.
 
 use std::fs;
 
@@ -54,8 +53,7 @@ use crate::paths::Paths;
 /// The quadlet filenames a cage owns, as suffixes of its name.
 ///
 /// `backends/container.py::_QUADLET_FILES`, including the two legacy
-/// entries, and the Python's reason for keeping them is worth
-/// repeating: `cage destroy` must still be able to clean up a stuck
+/// entries, kept for a reason worth repeating: `cage destroy` must still be able to clean up a stuck
 /// pre-v0.22 three-service cage even though every other command
 /// refuses to operate on one.
 pub const QUADLET_SUFFIXES: [&str; 8] = [
@@ -132,7 +130,7 @@ impl<'a> Units<'a> {
     /// the directory its extension calls for, then `daemon-reload`.
     ///
     /// Both directories are created whether or not a unit of that kind
-    /// is in this batch, as the Python does: a later `cage create`
+    /// is in this batch: a later `cage create`
     /// with a watcher `.service` would otherwise find no directory.
     ///
     /// Returns the paths written, in the order given, and whether the

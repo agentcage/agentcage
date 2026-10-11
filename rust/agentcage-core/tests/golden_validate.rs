@@ -1,7 +1,7 @@
 //! The golden corpus, against the Rust validator.
 //!
-//! `tests/golden_config.rs` covers PR C1 — parsing, and the structural
-//! refusals `load_config` makes on its way through a document. This is
+//! `tests/golden_config.rs` covers parsing, and the structural refusals
+//! loading makes on its way through a document. This is
 //! the other half: `load` followed by [`validate`], which is what
 //! `agentcage cage create` actually runs, compared against the corpus's
 //! `error.txt` and `warnings.txt`.
@@ -10,13 +10,13 @@
 //!
 //! [`the_invalid_cases_match_verbatim`] sorts every `invalid/` case into
 //! *matched*, *deferred* and *differed*, and the third one is the point.
-//! A case this pipeline refuses with **different wording** than
-//! `config.py` is a failure, because that is a message a user reads. A
+//! A case this pipeline refuses with **different wording** than the
+//! corpus records is a failure, because that is a message a user reads. A
 //! case it *accepts* is merely not implemented yet, and is recorded as
 //! deferred with a named owner.
 //!
-//! Both lists are asserted exactly, so C3 landing changes the lists and
-//! nothing else, and losing a case is a regression rather than a silent
+//! Both lists are asserted exactly, so a newly reproduced case changes
+//! the lists and nothing else, and losing a case is a regression rather than a silent
 //! reclassification.
 
 mod common;
@@ -30,11 +30,10 @@ use agentcage_core::config::{
 
 use common::repo_root;
 
-/// The harness pins `config._host_dns_servers()` to these.
+/// The recording harness pinned the host resolver probe to these.
 const FROZEN_DNS_SERVERS: [&str; 2] = ["192.0.2.53", "192.0.2.54"];
 
-/// The environment `scripts/gen-golden-corpus.py` pins before importing
-/// `agentcage`.
+/// The environment the recording harness pinned.
 ///
 /// `GOLDEN_UNSET_VAR` is deliberately *absent* — it is what makes the
 /// "env var reference is unset" warning reachable. Every other name a
@@ -153,14 +152,14 @@ fn the_invalid_cases_match_verbatim() {
         match pipeline("cage.yaml", &read(&input_path), &hosts) {
             Ok(_) => deferred.push(case),
             Err(error) => {
-                let produced = format!("{}\n", error.as_python_traceback_line());
+                let produced = format!("{}\n", error.as_error_line());
                 if produced == expected {
                     matched.push(case);
                 } else if KNOWN_DIVERGENT.contains(&case.as_str()) {
                     deferred.push(case);
                 } else {
                     differed.push(format!(
-                        "  {case}\n      python: {}\n      rust:   {}",
+                        "  {case}\n      expected: {}\n      actual:   {}",
                         expected.trim_end(),
                         produced.trim_end()
                     ));
@@ -171,8 +170,8 @@ fn the_invalid_cases_match_verbatim() {
 
     assert!(
         differed.is_empty(),
-        "{} invalid cases produced a DIFFERENT message than config.py. Either the port \
-         is wrong, or the divergence is deliberate and belongs in KNOWN_DIVERGENT with a \
+        "{} invalid cases produced a DIFFERENT message than the corpus records. Either \
+         the validator is wrong, or the divergence is deliberate and belongs in KNOWN_DIVERGENT with a \
          reason:\n{}",
         differed.len(),
         differed.join("\n")
@@ -231,14 +230,14 @@ fn the_valid_cases_reproduce_their_warnings() {
             deferred.push(case);
         } else {
             wrong.push(format!(
-                "  {case}\n      python: {expected:#?}\n      rust:   {produced:#?}"
+                "  {case}\n      expected: {expected:#?}\n      actual:   {produced:#?}"
             ));
         }
     }
 
     assert!(
         wrong.is_empty(),
-        "{} valid cases produced different warnings than config.py:\n{}",
+        "{} valid cases produced different warnings than the corpus records:\n{}",
         wrong.len(),
         wrong.join("\n")
     );
@@ -288,7 +287,7 @@ fn the_shared_domain_table_matches() {
         for (key, produced) in expectations {
             if row[key] != produced {
                 wrong.push(format!(
-                    "  {domain:?} [{key}]\n      python: {}\n      rust:   {produced}",
+                    "  {domain:?} [{key}]\n      expected: {}\n      actual:   {produced}",
                     row[key]
                 ));
             }
@@ -304,12 +303,11 @@ fn the_shared_domain_table_matches() {
     println!("{} shared domain rows matched", rows.len());
 }
 
-/// Everything the port refuses with `config.py`'s exact words, in
-/// manifest order.
+/// Everything refused with the corpus's exact words, in manifest order.
 ///
-/// PR C1's structural refusals, PR C2's value checks, and — since the
-/// two `── C3 ──` seams in `config::validate` were filled — the whole
-/// decider and watcher blocks, which is what took this list from 85
+/// The structural refusals, the value checks, and — since the agents
+/// step in `config::validate` was wired in — the whole decider and
+/// watcher blocks, which is what took this list from 85
 /// entries to 118. The list is asserted rather than counted so that a
 /// case moving between buckets shows up as a named diff.
 const REPRODUCED: &[&str] = &[
@@ -440,18 +438,17 @@ const REPRODUCED: &[&str] = &[
 
 /// The cases this pipeline still accepts, each with its owner.
 ///
-/// The `err-decider-*` and `err-watcher-*` rows are gone: C3's seam in
-/// `config::validate` is filled, so those thirty-one cases are in
+/// The `err-decider-*` and `err-watcher-*` rows are gone: the agents
+/// step in `config::validate` is wired in, so those thirty-one cases are in
 /// [`REPRODUCED`] now, and so is `err-relay-auth-source-scheme` — the
 /// relay `source_validator` hook is wired to
 /// `config::secret::validate_source`. **What is left does not run in
-/// `load_config`/`validate_config` at all**, which is why none of it
-/// has a Track C owner any more.
+/// loading or validation at all.**
 ///
 /// | Cases | Why |
 /// | :-- | :-- |
-/// | `err-relay-ca-file-missing`, `err-relay-ca-file-not-pem` | raised by `state.py`'s deploy path, which reads the relay's CA off disk to inline it as `ca_pem`; validation never touches the filesystem |
-/// | `err-volume-outside-home` | raised by `quadlets.py` — a rendering check, not a config one |
+/// | `err-relay-ca-file-missing`, `err-relay-ca-file-not-pem` | raised by the state store's deploy path, which reads the relay's CA off disk to inline it as `ca_pem`; validation never touches the filesystem |
+/// | `err-volume-outside-home` | raised by quadlet rendering — a rendering check, not a config one |
 /// | `err-yaml-syntax`, `err-yaml-tab` | in [`KNOWN_DIVERGENT`]: the line and column match, the scanner's own wording cannot |
 const DEFERRED: &[&str] = &[
     "err-relay-ca-file-missing",
@@ -472,10 +469,11 @@ const KNOWN_DIVERGENT: &[&str] = &["err-yaml-syntax", "err-yaml-tab"];
 /// Valid cases whose `warnings.txt` needs a check the port does not make.
 ///
 /// **Empty**, and kept as a tripwire rather than deleted: a case
-/// appearing here again means a warning `config.py` emits has stopped
+/// appearing here again means a recorded warning has stopped
 /// being emitted, which no other assertion in this file would catch.
 ///
-/// It held three entries until C3's two seams were filled — the two
+/// It held three entries until the agents and inspector steps were
+/// wired in — the two
 /// `agents-watcher-*` cases wanted the watcher's spend warnings, and
 /// `backend-apple-container-inspectors` wanted the per-entry
 /// inspector-chain warnings.
@@ -483,27 +481,26 @@ const WARNINGS_DEFERRED: &[&str] = &[];
 
 // ── error precedence ─────────────────────────────────────
 
-/// Which of two faults gets reported, compared against `config.py`.
+/// Which of two faults gets reported, compared against recorded answers.
 ///
 /// The corpus is one fault per case, so it says nothing about this. It
 /// matters anyway: an operator fixes errors one at a time, and a
 /// validator that reports the *second* problem sends them to the wrong
 /// line.
 ///
-/// Every `python` string below was produced by running the same document
-/// through `config.load_config` + `config.validate_config` on CPython
-/// 3.13.0, not written from reading the source.
+/// Every `recorded` string below was produced by running the same
+/// document through an earlier release's loader and validator, not
+/// written from reading the source.
 ///
 /// # The one divergence
 ///
-/// PR C1 typed `ports.{tcp,udp}.{allow,passthrough}` as `Vec<i64>` so
-/// that `entries must be integers (got: '443')` could be reproduced
-/// verbatim at all. That moves the check from `validate_config` into the
-/// parser, and the parser runs first — so a **string or boolean port
-/// entry now preempts every check `validate_config` makes**, `name`
-/// included.
+/// `ports.{tcp,udp}.{allow,passthrough}` are typed `Vec<i64>` so that
+/// `entries must be integers (got: '443')` could be reproduced verbatim
+/// at all. That moved the check from validation into the parser, and
+/// the parser runs first — so a **string or boolean port entry now
+/// preempts every validation check**, `name` included.
 ///
-/// Its position relative to the rest of `load_config` is unchanged:
+/// Its position relative to the rest of loading is unchanged:
 /// `validate_agents_raw`, the `secrets:` section and `protocol_relays`
 /// still win, because the parser reaches them before the `ports:`
 /// section. So the divergence is exactly one boundary wide, and the
@@ -512,99 +509,99 @@ const WARNINGS_DEFERRED: &[&str] = &[];
 // it would put the cases somewhere other than the explanation of them.
 #[allow(clippy::too_many_lines)]
 #[test]
-fn error_precedence_matches_python() {
+fn error_precedence_matches_the_corpus() {
     struct Precedence {
         id: &'static str,
         yaml: &'static str,
-        /// What `config.py` reports, verbatim.
-        python: &'static str,
-        /// What this port reports, when that differs.
-        rust: Option<&'static str>,
+        /// What the earlier release reported, verbatim.
+        recorded: &'static str,
+        /// What the current code reports, when that differs.
+        current: Option<&'static str>,
     }
 
     let cases = [
-        // ── Agreements. Both faults are in `validate_config`, or the
-        // first one is a `load_config` check that already ran first in
-        // Python too.
+        // ── Agreements. Both faults are validation checks, or the first
+        // one is a loading check that already ran first in the earlier
+        // release too.
         Precedence {
             id: "name-before-port-range",
             yaml: "name: BAD_NAME\ncontainer:\n  image: alpine\nports:\n  tcp:\n    allow: [70000]\n",
-            python: "ValueError: 'name' must be 1-63 lowercase alphanumeric characters or \
+            recorded: "ValueError: 'name' must be 1-63 lowercase alphanumeric characters or \
                      hyphens, starting with a letter or digit (got: 'BAD_NAME')",
-            rust: None,
+            current: None,
         },
         Precedence {
             id: "secrets-scope-before-name",
             yaml: "name: BAD_NAME\ncontainer:\n  image: alpine\nsecrets:\n  scope: global\n",
-            python: "ValueError: invalid secrets.scope: 'global'. Valid: auto, user, system",
-            rust: None,
+            recorded: "ValueError: invalid secrets.scope: 'global'. Valid: auto, user, system",
+            current: None,
         },
         Precedence {
             id: "relay-required-keys-before-name",
             yaml: "name: BAD_NAME\ncontainer:\n  image: alpine\nprotocol_relays:\n- name: mail\n  \
                    type: imap\n  listen: ''\n",
-            python: "ValueError: protocol_relays entry requires name/type/listen \
+            recorded: "ValueError: protocol_relays entry requires name/type/listen \
                      (got name='mail', type='imap', listen='')",
-            rust: None,
+            current: None,
         },
         Precedence {
             id: "env-name-before-name",
             yaml: "name: BAD_NAME\ncontainer:\n  image: alpine\nsecret_injection:\n- env: \
                    'not-valid'\n  source: 'env:X'\n",
-            python: "ValueError: invalid env name: 'not-valid'. Must match [A-Za-z_][A-Za-z0-9_]*",
-            rust: None,
+            recorded: "ValueError: invalid env name: 'not-valid'. Must match [A-Za-z_][A-Za-z0-9_]*",
+            current: None,
         },
         Precedence {
             id: "source-scheme-before-transform",
             yaml: "name: cage\ncontainer:\n  image: alpine\nsecret_injection:\n- env: TOK\n  \
                    source: 'vault:X'\n  transform: nope\n",
-            python: "ValueError: unknown secret source scheme: 'vault'. \
+            recorded: "ValueError: unknown secret source scheme: 'vault'. \
                      Valid schemes: cmd, env, podman, systemd-creds",
-            rust: None,
+            current: None,
         },
         Precedence {
             id: "volume-np-before-image-reference",
             yaml: "name: cage\ncontainer:\n  image: '!!bad!!'\n  volumes: ['/h:/c:np,z']\n",
-            python: "ValueError: volume '/h:/c:np,z': the np option cannot be combined with z; \
+            recorded: "ValueError: volume '/h:/c:np,z': the np option cannot be combined with z; \
                      only rw,np is supported",
-            rust: None,
+            current: None,
         },
         Precedence {
             id: "image-before-domain-syntax",
             yaml: "name: cage\ncontainer:\n  image: '!!bad!!'\ndomains:\n  mode: allowlist\n  \
                    allow: ['BAD.example.com']\n",
-            python: "ValueError: invalid container image reference: '!!bad!!'",
-            rust: None,
+            recorded: "ValueError: invalid container image reference: '!!bad!!'",
+            current: None,
         },
         Precedence {
             id: "lifecycle-before-logging-level",
             yaml: "name: cage\nlifecycle: daemon\ncontainer:\n  image: alpine\nlogging:\n  \
                    level: verbose\n",
-            python: "ValueError: lifecycle must be one of ('service', 'interactive', \
+            recorded: "ValueError: lifecycle must be one of ('service', 'interactive', \
                      'ephemeral') (got: 'daemon')",
-            rust: None,
+            current: None,
         },
         Precedence {
             id: "container-port-spec-before-tcp-range",
             yaml: "name: cage\ncontainer:\n  image: alpine\n  ports: ['3000']\nports:\n  tcp:\n    \
                    allow: [70000]\n",
-            python: "ValueError: invalid port spec '3000': expected HOST_PORT:CONTAINER_PORT or \
+            recorded: "ValueError: invalid port spec '3000': expected HOST_PORT:CONTAINER_PORT or \
                      BIND:HOST_PORT:CONTAINER_PORT",
-            rust: None,
+            current: None,
         },
         Precedence {
             id: "domains-exclusivity-before-domain-syntax",
             yaml: "name: cage\ndomains:\n  allow: ['BAD.example.com']\n  block: ['also.bad']\n\
                    container:\n  image: alpine\n",
-            python: "ValueError: domains: cannot specify both 'allow' and 'block' lists",
-            rust: None,
+            recorded: "ValueError: domains: cannot specify both 'allow' and 'block' lists",
+            current: None,
         },
         Precedence {
             id: "duplicate-port-before-out-of-range",
             yaml: "name: cage\ncontainer:\n  image: alpine\nports:\n  tcp:\n    \
                    allow: [443, 443, 70000]\n",
-            python: "ValueError: ports.tcp.allow entry 443 appears more than once",
-            rust: None,
+            recorded: "ValueError: ports.tcp.allow entry 443 appears more than once",
+            current: None,
         },
         Precedence {
             id: "reserved-port-before-relay-collision",
@@ -612,11 +609,11 @@ fn error_precedence_matches_python() {
                    allow: [8080, 1143]\nprotocol_relays:\n- name: mail\n  type: imap\n  \
                    listen: '0.0.0.0:1143'\n  upstream: {host: imap.example.com, port: 993}\n  \
                    auth: {type: plain, user_source: 'env:U', password_source: 'env:P'}\n",
-            python: "ValueError: ports.tcp.allow entry 8080 is reserved by the egress proxy (8080 = \
+            recorded: "ValueError: ports.tcp.allow entry 8080 is reserved by the egress proxy (8080 = \
                      HTTP-proxy listener, 8443 = transparent listener); redirecting it would \
                      loop or break the L7 proxy path. Move it to ports.tcp.passthrough if the \
                      cage needs to reach an upstream service on this port without inspection",
-            rust: None,
+            current: None,
         },
         // Still behind `validate_agents_raw` and the `secrets:` section,
         // which the parser reaches before `ports:`.
@@ -624,23 +621,23 @@ fn error_precedence_matches_python() {
             id: "agents-schema-still-preempts-port-type",
             yaml: "name: cage\ncontainer:\n  image: alpine\nports:\n  tcp:\n    allow: ['443']\n\
                    agents:\n  auditor: {}\n",
-            python: "ValueError: unknown agents: auditor",
-            rust: None,
+            recorded: "ValueError: unknown agents: auditor",
+            current: None,
         },
         Precedence {
             id: "secrets-scope-still-preempts-port-type",
             yaml: "name: cage\ncontainer:\n  image: alpine\nports:\n  tcp:\n    allow: ['443']\n\
                    secrets:\n  scope: global\n",
-            python: "ValueError: invalid secrets.scope: 'global'. Valid: auto, user, system",
-            rust: None,
+            recorded: "ValueError: invalid secrets.scope: 'global'. Valid: auto, user, system",
+            current: None,
         },
         Precedence {
             id: "relay-required-keys-still-preempt-port-type",
             yaml: "name: cage\ncontainer:\n  image: alpine\nports:\n  tcp:\n    allow: ['443']\n\
                    protocol_relays:\n- name: mail\n  type: imap\n  listen: ''\n",
-            python: "ValueError: protocol_relays entry requires name/type/listen \
+            recorded: "ValueError: protocol_relays entry requires name/type/listen \
                      (got name='mail', type='imap', listen='')",
-            rust: None,
+            current: None,
         },
         // ── The divergence, mapped. A non-integer port entry preempts
         // every `validate_config` check, and nothing else moves.
@@ -648,47 +645,49 @@ fn error_precedence_matches_python() {
             id: "preempts-name",
             yaml: "name: BAD_NAME\ncontainer:\n  image: alpine\nports:\n  tcp:\n    \
                    allow: ['443']\n",
-            python: "ValueError: 'name' must be 1-63 lowercase alphanumeric characters or \
+            recorded: "ValueError: 'name' must be 1-63 lowercase alphanumeric characters or \
                      hyphens, starting with a letter or digit (got: 'BAD_NAME')",
-            rust: Some("ValueError: ports.tcp.allow entries must be integers (got: '443')"),
+            current: Some("ValueError: ports.tcp.allow entries must be integers (got: '443')"),
         },
         Precedence {
             id: "preempts-name-via-a-boolean-entry",
             yaml: "name: BAD_NAME\ncontainer:\n  image: alpine\nports:\n  udp:\n    allow: [true]\n",
-            python: "ValueError: 'name' must be 1-63 lowercase alphanumeric characters or \
+            recorded: "ValueError: 'name' must be 1-63 lowercase alphanumeric characters or \
                      hyphens, starting with a letter or digit (got: 'BAD_NAME')",
-            rust: Some("ValueError: ports.udp.allow entries must be integers (got: True)"),
+            current: Some("ValueError: ports.udp.allow entries must be integers (got: True)"),
         },
         Precedence {
             id: "preempts-name-via-passthrough",
             yaml: "name: BAD_NAME\ncontainer:\n  image: alpine\nports:\n  tcp:\n    \
                    passthrough: ['443']\n",
-            python: "ValueError: 'name' must be 1-63 lowercase alphanumeric characters or \
+            recorded: "ValueError: 'name' must be 1-63 lowercase alphanumeric characters or \
                      hyphens, starting with a letter or digit (got: 'BAD_NAME')",
-            rust: Some("ValueError: ports.tcp.passthrough entries must be integers (got: '443')"),
+            current: Some(
+                "ValueError: ports.tcp.passthrough entries must be integers (got: '443')",
+            ),
         },
         Precedence {
             id: "preempts-missing-image",
             yaml: "name: cage\ncontainer: {}\nports:\n  tcp:\n    allow: ['443']\n",
-            python: "ValueError: container.image is required in config",
-            rust: Some("ValueError: ports.tcp.allow entries must be integers (got: '443')"),
+            recorded: "ValueError: container.image is required in config",
+            current: Some("ValueError: ports.tcp.allow entries must be integers (got: '443')"),
         },
         Precedence {
             id: "preempts-isolation",
             yaml: "name: cage\nisolation: jail\ncontainer:\n  image: alpine\nports:\n  tcp:\n    \
                    allow: ['443']\n",
-            python: "ValueError: isolation must be 'container', 'vm', or 'apple-container' \
+            recorded: "ValueError: isolation must be 'container', 'vm', or 'apple-container' \
                      (got: 'jail')",
-            rust: Some("ValueError: ports.tcp.allow entries must be integers (got: '443')"),
+            current: Some("ValueError: ports.tcp.allow entries must be integers (got: '443')"),
         },
     ];
 
     let hosts = hosts_for(&[]);
     let mut wrong: Vec<String> = Vec::new();
     for case in &cases {
-        let expected = case.rust.unwrap_or(case.python);
+        let expected = case.current.unwrap_or(case.recorded);
         let produced = match pipeline("cage.yaml", case.yaml, &hosts) {
-            Err(error) => error.as_python_traceback_line(),
+            Err(error) => error.as_error_line(),
             Ok(_) => "accepted the config".to_owned(),
         };
         if produced != expected {
@@ -705,7 +704,7 @@ fn error_precedence_matches_python() {
         wrong.join("\n")
     );
 
-    let divergent = cases.iter().filter(|case| case.rust.is_some()).count();
+    let divergent = cases.iter().filter(|case| case.current.is_some()).count();
     assert_eq!(
         divergent, 5,
         "the number of KNOWN precedence divergences changed. Every one of them is a \

@@ -12,11 +12,11 @@
 //! budgets against its own. `tests/fixtures/contracts/agents_defaults.json`
 //! pins the pair.
 
-use agentcage_core::python;
+use agentcage_core::value_fmt;
 
 use crate::config::{Config, Mapping, Value};
 
-use super::pyval;
+use super::coerce;
 
 /// The capture writer's default `max_body_size`.
 const DEFAULT_CAPTURE_MAX_BODY: i64 = 10_485_760;
@@ -36,7 +36,7 @@ pub struct WatcherConfig {
     /// The raw block, kept so a reload can tell "unchanged" (keep the
     /// running watcher and its scan state) from "changed" (rebuild).
     pub block: Value,
-    /// `enable`, by Python truthiness.
+    /// `enable`, by truthiness.
     pub enable: bool,
     /// Mean seconds between scans, floored at 60.
     pub interval_seconds: f64,
@@ -99,19 +99,19 @@ impl WatcherConfig {
         let max_digest_tokens = int_num(m, "max_digest_tokens", 8000.0, "8000.0", warn);
         let context = match m.get("context") {
             None => String::new(),
-            Some(Value::String(s)) => pyval::prefix(py_strip(s), 4096),
+            Some(Value::String(s)) => coerce::prefix(strip_space(s), 4096),
             Some(other) => {
                 warn(&format!(
                     "agentcage: agents.watcher.context is not a string in the proxy \
                      config (got {}) — ignoring it",
-                    python::type_name(other)
+                    value_fmt::kind_name(other)
                 ));
                 String::new()
             }
         };
         // `str(cfg.get(key, "") or "")`.
         let text = |key: &str| match m.get(key) {
-            Some(v) if crate::config::truthy(v) => python::str_of(v),
+            Some(v) if crate::config::truthy(v) => value_fmt::coerce_to_string(v),
             _ => String::new(),
         };
         let timeout = num(m, "timeout_seconds", 30.0, "30.0", warn);
@@ -175,12 +175,12 @@ fn num(m: &Mapping, key: &str, default: f64, shown: &str, warn: &mut dyn FnMut(&
         Value::String(s) if s.is_empty() => return default,
         _ => {}
     }
-    if let Some(f) = py_float(raw) {
+    if let Some(f) = coerce_float(raw) {
         return f;
     }
     warn(&format!(
         "agentcage: agents.watcher.{key} is not a number ({}) — using {shown}",
-        python::repr(raw)
+        value_fmt::display_value(raw)
     ));
     default
 }
@@ -196,7 +196,7 @@ fn int_num(m: &Mapping, key: &str, default: f64, shown: &str, warn: &mut dyn FnM
     } else {
         warn(&format!(
             "agentcage: agents.watcher.{key} is not a number ({}) — using {shown}",
-            pyval::float_str(f)
+            coerce::float_str(f)
         ));
         default as i64
     }
@@ -212,20 +212,22 @@ fn flag(m: &Mapping, key: &str, warn: &mut dyn FnMut(&str)) -> bool {
         Some(other) => {
             warn(&format!(
                 "agentcage: agents.watcher.{key} is not a boolean ({}) — using the default (true)",
-                python::repr(other)
+                value_fmt::display_value(other)
             ));
             true
         }
     }
 }
 
-/// Python `float(x)` on a loaded YAML value.
-fn py_float(v: &Value) -> Option<f64> {
+/// `float(x)` on a loaded YAML value: numbers, bools as 0/1, and
+/// numeric strings (surrounding whitespace and single `_` separators
+/// allowed).
+fn coerce_float(v: &Value) -> Option<f64> {
     match v {
         Value::Bool(b) => Some(f64::from(u8::from(*b))),
         Value::Number(n) => n.as_f64(),
         Value::String(s) => {
-            let t = py_strip(s);
+            let t = strip_space(s);
             if t.starts_with('_') || t.ends_with('_') || t.contains("__") {
                 return None;
             }
@@ -236,8 +238,7 @@ fn py_float(v: &Value) -> Option<f64> {
     }
 }
 
-/// `str.strip()`: Python's whitespace, which adds the four C0 separators
-/// to Unicode's.
-fn py_strip(s: &str) -> &str {
+/// `str.strip()`: Unicode whitespace plus the four C0 separators.
+fn strip_space(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
 }

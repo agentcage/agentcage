@@ -6,10 +6,6 @@
 //! `[[bin]]`, and the three modules here are exactly the kind that has
 //! to be tested against something external: the styling fixtures under
 //! `tests/fixtures/output/`, and a pty.
-//!
-//! Per docs/history/rust-port-plan.md Track D, PR D4 — `output.py`, `terminal.py` and
-//! `_timing.py`. The command tree (D5) and the `CommandRunner` seam (D1)
-//! land beside these.
 
 /// The apple-container backend's generation half (Track E).
 pub mod apple;
@@ -18,8 +14,7 @@ pub mod apple;
 pub mod archive;
 /// The container backend: podman, quadlets, systemd (PR D6).
 pub mod backend;
-/// `get_backend(config)` — which backend a cage's `isolation:` names
-/// (PR E4).
+/// Which backend a cage's `isolation:` names (PR E4).
 pub mod backends;
 /// Which podman answers for a cage — host, or inside a `vm` cage's
 /// Lima guest.
@@ -46,11 +41,11 @@ pub mod preflight;
 pub mod registry;
 /// The ephemeral `agentcage run` flow (PR D14).
 pub mod run;
-/// `init.py` — the scaffold search path and renderer (PR D14).
+/// The scaffold search path and renderer (PR D14).
 pub mod scaffold;
 /// Secret resolution and the at-rest stores (PR D3).
 pub mod secrets;
-/// `services.py` — build, render, install, start (PR D6).
+/// Build, render, install, start (PR D6).
 pub mod services;
 /// Staging a Containerfile's build context into a cage (PR D6).
 pub mod staging;
@@ -59,5 +54,5 @@ pub mod terminal;
 /// Per-phase wall times, behind the hidden `--timings` flags.
 pub mod timing;
 
-/// `backends/vm.py`, generation half.
+/// The `vm` backend: a Lima guest with podman and quadlets inside it.
 pub mod vm;

@@ -316,7 +316,7 @@ pub fn rewrite_basic_auth(value: &[u8], find: &[u8], replace: &[u8]) -> Option<V
         return None;
     }
     let rest = std::str::from_utf8(rest).ok()?;
-    let decoded = b64_decode_std(rest.trim_matches(crate::text::py_is_space))?;
+    let decoded = b64_decode_std(rest.trim_matches(crate::text::is_strip_space))?;
     std::str::from_utf8(&decoded).ok()?;
     if !contains(&decoded, find) {
         return None;
@@ -1832,7 +1832,7 @@ fn redact_headers(headers: &mut Headers, forms: &SecretForms) -> bool {
 }
 
 /// `str(value)` for a config scalar.
-fn py_str(value: &Value) -> Option<String> {
+fn coerce_to_string(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
@@ -1897,8 +1897,8 @@ fn build_rule(
     let inject_headers: Vec<String> = match entry.get("inject_headers") {
         Some(Value::Sequence(items)) => items
             .iter()
-            .filter_map(py_str)
-            .map(|h| h.trim_matches(crate::text::py_is_space).to_owned())
+            .filter_map(coerce_to_string)
+            .map(|h| h.trim_matches(crate::text::is_strip_space).to_owned())
             .collect(),
         _ => Vec::new(),
     };

@@ -1,26 +1,26 @@
-//! The Python value semantics the Policy API's responses are made of.
+//! The value coercions and spellings the Policy API's responses are made
+//! of.
 //!
-//! The control host answers a caged agent with text the replaced
-//! implementation built from Python builtins applied to agent- and
-//! model-supplied JSON: `str(payload.get("domain"))`, `{domain!r}`,
-//! `int(args.get("ttl_seconds"))` and the exception messages `int()`
-//! raises. Those strings are part of the recorded responses, so they are
-//! reproduced here over [`Json`] rather than approximated with Rust's
-//! formatting.
+//! The control host answers a caged agent with text built from agent- and
+//! model-supplied JSON the way earlier releases built it:
+//! `str(payload.get("domain"))`, `{domain!r}`, `int(args.get("ttl_seconds"))`
+//! and the exception messages `int()` raises. Those strings are part of the
+//! recorded responses, so they are reproduced here over [`Json`] rather than
+//! approximated with Rust's formatting.
 
 use std::fmt::Write as _;
 
-use agentcage_core::config::domain::is_python_space;
+use agentcage_core::config::domain::is_strip_space;
 use agentcage_core::yaml::Value;
 
 use crate::json::{self, Json, format_float};
 
 /// `str.strip()`.
 pub(crate) fn strip(text: &str) -> &str {
-    text.trim_matches(is_python_space)
+    text.trim_matches(is_strip_space)
 }
 
-/// `text[:n]`, counted in code points as Python counts.
+/// The first `n` code points of `text`.
 pub(crate) fn truncate_chars(text: &str, n: usize) -> String {
     match text.char_indices().nth(n) {
         Some((at, _)) => text[..at].to_owned(),
@@ -34,8 +34,8 @@ pub(crate) fn normalise_domain(text: &str) -> String {
     text.to_lowercase().trim_end_matches('.').to_owned()
 }
 
-/// `repr(float)`: [`format_float`] except for the three values the JSON
-/// writer spells differently.
+/// `display_value(float)`: [`format_float`] except for the three values the
+/// JSON writer spells differently.
 fn float_repr(value: f64) -> String {
     if value.is_nan() {
         "nan".to_owned()
@@ -46,8 +46,8 @@ fn float_repr(value: f64) -> String {
     }
 }
 
-/// `repr(value)` for a value that came out of `json.loads`.
-pub(crate) fn repr(value: &Json) -> String {
+/// `display_value(value)` for a value that came out of `json.loads`.
+pub(crate) fn display_value(value: &Json) -> String {
     match value {
         Json::Null => "None".to_owned(),
         Json::Bool(true) => "True".to_owned(),
@@ -55,15 +55,15 @@ pub(crate) fn repr(value: &Json) -> String {
         Json::Int(i) => i.to_string(),
         Json::BigInt(digits) => digits.clone(),
         Json::Float(f) => float_repr(*f),
-        Json::Str(s) => repr_str(s),
+        Json::Str(s) => quote_text(s),
         Json::Array(items) => {
-            let inner: Vec<String> = items.iter().map(repr).collect();
+            let inner: Vec<String> = items.iter().map(display_value).collect();
             format!("[{}]", inner.join(", "))
         }
         Json::Object(pairs) => {
             let inner: Vec<String> = pairs
                 .iter()
-                .map(|(k, v)| format!("{}: {}", repr_str(k), repr(v)))
+                .map(|(k, v)| format!("{}: {}", quote_text(k), display_value(v)))
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
@@ -71,30 +71,31 @@ pub(crate) fn repr(value: &Json) -> String {
 }
 
 /// `str(value)`: a string unquoted, everything else as its `repr`.
-pub(crate) fn str_of(value: &Json) -> String {
+pub(crate) fn coerce_to_string(value: &Json) -> String {
     match value {
         Json::Str(s) => s.clone(),
-        other => repr(other),
+        other => display_value(other),
     }
 }
 
 /// `str(value or "")`, the coercion every field read applies.
 pub(crate) fn str_or_empty(value: Option<&Json>) -> String {
     match value {
-        Some(v) if v.is_truthy() => str_of(v),
+        Some(v) if v.is_truthy() => coerce_to_string(v),
         _ => String::new(),
     }
 }
 
-/// `repr(str)`, CPython's `unicode_repr`.
+/// A string written as a quoted literal, with CPython's `unicode_repr`
+/// escaping (the reference spelling).
 ///
-/// `agentcage_core::python::repr_str` covers the control characters a
+/// `agentcage_core::value_fmt::quote_text` covers the control characters a
 /// config value can hold; this one faces the caged agent, which can send
 /// any code point, so it also escapes the non-printable ones CPython
 /// escapes beyond C0/C1: the non-space separators, the format characters
 /// and private use. (Unassigned code points, which CPython also escapes,
 /// would need a Unicode table; they pass through literally.)
-pub(crate) fn repr_str(text: &str) -> String {
+pub(crate) fn quote_text(text: &str) -> String {
     let quote = if text.contains('\'') && !text.contains('"') {
         '"'
     } else {
@@ -151,8 +152,8 @@ fn is_printable(c: char) -> bool {
 }
 
 /// `int(value or 0)`, saturated to `i64` (the callers only compare the
-/// result against 0 and 86400), with `int()`'s own error text when
-/// Python would raise.
+/// result against 0 and 86400), with `int()`'s pinned error text when
+/// the value is not an integer.
 pub(crate) fn int_or_zero(value: Option<&Json>) -> Result<i64, String> {
     let Some(value) = value.filter(|v| v.is_truthy()) else {
         return Ok(0);
@@ -178,15 +179,15 @@ pub(crate) fn int_or_zero(value: Option<&Json>) -> Result<i64, String> {
             }
         }
         Json::Str(s) => int_literal(s)
-            .ok_or_else(|| format!("invalid literal for int() with base 10: {}", repr_str(s))),
+            .ok_or_else(|| format!("invalid literal for int() with base 10: {}", quote_text(s))),
         Json::Array(_) => Err(not_a_number("list")),
         Json::Object(_) => Err(not_a_number("dict")),
     }
 }
 
-fn not_a_number(type_name: &str) -> String {
+fn not_a_number(kind_name: &str) -> String {
     format!(
-        "int() argument must be a string, a bytes-like object or a real number, not '{type_name}'"
+        "int() argument must be a string, a bytes-like object or a real number, not '{kind_name}'"
     )
 }
 
@@ -224,7 +225,7 @@ pub(crate) fn int_literal(text: &str) -> Option<i64> {
 
 /// `json.loads(body)` on request bytes: the encoding detection
 /// `json.detect_encoding` does (UTF-8, UTF-16 and UTF-32, with or without
-/// a BOM), then the parse. `None` wherever Python raised.
+/// a BOM), then the parse. `None` wherever either fails.
 pub(crate) fn loads_bytes(body: &[u8]) -> Option<Json> {
     let text = decode_json_bytes(body)?;
     json::parse(&text).ok()
@@ -305,9 +306,8 @@ fn utf32(b: &[u8], big_endian: bool) -> Option<String> {
         .collect()
 }
 
-/// A YAML value from the grants overlay as `json.dumps` would render the
-/// Python object `yaml.safe_load` made of it. Non-string mapping keys
-/// become strings the way `json.dumps` coerces them.
+/// A YAML value from the grants overlay as the JSON value it loads as.
+/// Non-string mapping keys become strings the way `json.dumps` coerces them.
 pub(crate) fn yaml_to_json(value: &Value) -> Json {
     match value {
         Value::Null => Json::Null,
@@ -338,7 +338,7 @@ fn json_key(key: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Bool(true) => "true".to_owned(),
         Value::Bool(false) => "false".to_owned(),
-        other => agentcage_core::python::str_of(other),
+        other => agentcage_core::value_fmt::coerce_to_string(other),
     }
 }
 
@@ -347,21 +347,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repr_matches_cpython() {
-        // Right-hand sides measured with CPython 3.12.
-        assert_eq!(repr_str("x.com\n"), "'x.com\\n'");
-        assert_eq!(repr_str("it's"), "\"it's\"");
-        assert_eq!(repr_str("a'b\"c"), "'a\\'b\"c'");
-        assert_eq!(repr_str("a\u{a0}b"), "'a\\xa0b'");
-        assert_eq!(repr_str("\u{200b}\u{2028}é☃"), "'\\u200b\\u2028é☃'");
-        assert_eq!(repr_str("\u{e0001}"), "'\\U000e0001'");
-        assert_eq!(repr_str("\x00\x7f"), "'\\x00\\x7f'");
+    fn quoting_and_display_spelling() {
+        // Right-hand sides are CPython 3.12's, the reference spelling.
+        assert_eq!(quote_text("x.com\n"), "'x.com\\n'");
+        assert_eq!(quote_text("it's"), "\"it's\"");
+        assert_eq!(quote_text("a'b\"c"), "'a\\'b\"c'");
+        assert_eq!(quote_text("a\u{a0}b"), "'a\\xa0b'");
+        assert_eq!(quote_text("\u{200b}\u{2028}é☃"), "'\\u200b\\u2028é☃'");
+        assert_eq!(quote_text("\u{e0001}"), "'\\U000e0001'");
+        assert_eq!(quote_text("\x00\x7f"), "'\\x00\\x7f'");
         let v = json::parse(r#"{"why": [1, 2.5, null, true, "s", 1e300, -0.0]}"#).unwrap();
-        assert_eq!(repr(&v), "{'why': [1, 2.5, None, True, 's', 1e+300, -0.0]}");
+        assert_eq!(
+            display_value(&v),
+            "{'why': [1, 2.5, None, True, 's', 1e+300, -0.0]}"
+        );
     }
 
     #[test]
-    fn int_matches_cpython() {
+    fn int_literals_and_their_errors() {
         let j = |t: &str| json::parse(t).unwrap();
         assert_eq!(int_or_zero(None), Ok(0));
         assert_eq!(int_or_zero(Some(&j("null"))), Ok(0));

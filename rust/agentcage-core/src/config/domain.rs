@@ -1,22 +1,19 @@
 //! `valid_domain` and `encoded_private_ip` — the two domain predicates
 //! that exist on *both* sides of agentcage's trust boundary.
 //!
-//! Host: `config.valid_domain` / `config.DOMAIN_RE` and
-//! `config.encoded_private_ip`. Proxy: `policy_api.PolicyApi._valid_domain`
-//! / `_DOMAIN_RE` and `policy_api._encoded_private_ip`. The addon cannot
-//! import the CLI package — the egress image ships without it — so the
-//! two copies are duplicated deliberately, and docs/history/rust-port-plan.md §2.2
-//! lists both as cross-language contracts.
+//! The host validates `cage.yaml`'s domain lists with them, and the
+//! egress's Policy API and watcher apply the same functions to
+//! agent- and model-supplied domains (docs/history/rust-port-plan.md
+//! §2.2 lists both as cross-boundary contracts). Both sides now link
+//! this module, so there is one implementation.
 //!
-//! # The oracle is the fixture, not either implementation
+//! # The oracle is the fixture, not the implementation
 //!
-//! Until now the copies were held equal by a pytest that imported both.
-//! Rust cannot import a Python module and pytest cannot import this, so
-//! PR A4 recorded the answers as language-neutral JSON:
+//! The expected answers are recorded as language-neutral JSON:
 //! `tests/fixtures/contracts/valid_domain.json` (96 cases) and
 //! `encoded_private_ip.json` (77). `tests/contract_domain.rs` reads those
-//! files off disk — it does not restate the cases — so this module and
-//! `config.py` cannot drift apart without one of them failing.
+//! files off disk — it does not restate the cases — so this module
+//! cannot drift from the recorded behaviour without failing.
 //!
 //! # Why `is_global` is spelled out here
 //!
@@ -29,10 +26,11 @@
 //! service denylist covers every present and future clone, because the
 //! encoding is the trick itself.
 //!
-//! Python asks `ipaddress.IPv4Address.is_global`. That is **not** the same
+//! The reference predicate is Python's `ipaddress.IPv4Address.is_global`,
+//! which the fixtures were recorded against. That is **not** the same
 //! predicate as any crate's `is_private()`, and the difference is not
 //! academic: carrier-grade NAT, `100.64.0.0/10`, has `is_global == False`
-//! and `is_private == False`, so a port that reached for `is_private()`
+//! and `is_private == False`, so an implementation that reached for `is_private()`
 //! would wave CGNAT straight through the guard. So the IANA
 //! special-purpose ranges are written out in `PRIVATE_NETWORKS` and
 //! `is_global` is derived from them exactly as CPython derives it. The
@@ -82,14 +80,14 @@ pub enum LabelPolicy {
 /// containing `\n` would emit extra `server=` lines — per-cage dnsmasq
 /// config corruption that fails `dnsmasq --test`.
 ///
-/// Three checks beyond the shape, each mirroring `config.py`:
+/// Three checks beyond the shape:
 ///
 /// 1. **No whitespace anywhere.** Defence in depth — the label charset
 ///    already excludes it mid-string — but explicit, so a future tweak
-///    to the shape rules cannot silently re-open the injection. Python
-///    anchors its regex on `\Z` rather than `$` for the same reason:
-///    `$` matches immediately before one trailing newline, so
-///    `"evil.com\n"` would otherwise pass.
+///    to the shape rules cannot silently re-open the injection. The
+///    original pattern was anchored on `\Z` rather than `$` for the same
+///    reason: a regex `$` matches immediately before one trailing
+///    newline, so `"evil.com\n"` would otherwise pass.
 /// 2. **No IP literals.** The label charset is all-digits-friendly, so
 ///    `1.2.3.4` matches the dotted-label shape. An IP literal in
 ///    `domains.allow` is nonsensical — dnsmasq `server=/` keys are DNS
@@ -101,7 +99,7 @@ pub enum LabelPolicy {
 pub fn valid_domain(domain: &str, policy: LabelPolicy) -> bool {
     // `if not isinstance(domain, str) or any(c.isspace() for c in domain)`.
     // The isinstance half is the type system's job here.
-    if domain.chars().any(is_python_space) {
+    if domain.chars().any(is_strip_space) {
         return false;
     }
 
@@ -117,8 +115,8 @@ pub fn valid_domain(domain: &str, policy: LabelPolicy) -> bool {
 
     // Reject IP literals. IPv6 literals cannot reach here (`:` is not in
     // either shape's charset), which is why only the v4 form is
-    // implemented; `ipaddress.ip_address` covers both in Python and the
-    // v6 half is unreachable.
+    // implemented; the reference `ipaddress.ip_address` covers both, but
+    // the v6 half is unreachable.
     if is_ipv4_literal(domain) {
         return false;
     }
@@ -236,16 +234,18 @@ fn is_label(label: &str) -> bool {
     }
 }
 
-/// `str.isspace()`, which is wider than Rust's `char::is_whitespace`.
+/// Whitespace as a strip counts it — wider than Rust's
+/// `char::is_whitespace`.
 ///
-/// CPython counts a character as space when its Unicode category is
+/// The set is Python's `str.isspace()`, the reference earlier releases
+/// used: a character is space when its Unicode category is
 /// `Zs`/`Zl`/`Zp` *or* its bidirectional class is `WS`, `B` or `S`. The
 /// concrete set is short enough to write down, and writing it down is
 /// the point: `char::is_whitespace` follows the `White_Space` property,
 /// which omits the C0 separators `U+001C`–`U+001F`. Those are exactly
 /// the kind of character a domain-injection attempt would carry.
 #[must_use]
-pub fn is_python_space(character: char) -> bool {
+pub fn is_strip_space(character: char) -> bool {
     matches!(
         character as u32,
         0x09..=0x0d
@@ -298,9 +298,10 @@ fn parse_octet(part: &str) -> Option<u8> {
 /// match fails. A run of four or more digits therefore cannot match at
 /// all — which is what keeps `2130706433.nip.io` out.
 ///
-/// `\d` in Python matches every Unicode decimal digit, not just ASCII.
-/// This matches ASCII only, and the answer is the same either way:
-/// Python's `_parse_octet` refuses a non-ASCII octet
+/// A Unicode-aware `\d`, as in the reference regex, matches every
+/// Unicode decimal digit, not just ASCII. This matches ASCII only, and
+/// the answer is the same either way: CPython's `_parse_octet` refuses
+/// a non-ASCII octet
 /// (`not octet_str.isascii()`), so `١٦٩-٢٥٤-١٦٩-٢٥٤.nip.io` returns
 /// `None` there by raising and `None` here by not matching. The fixture
 /// pins that case.
@@ -522,7 +523,7 @@ mod tests {
             "evil.com\nserver=/x/1.2.3.4",
             LabelPolicy::StrictDotted
         ));
-        // U+001F is whitespace to Python and not to Rust's
+        // U+001F is whitespace to `is_strip_space` and not to Rust's
         // `char::is_whitespace`. It has to be refused anyway.
         assert!(!valid_domain("evil.com\u{1f}", LabelPolicy::StrictDotted));
     }

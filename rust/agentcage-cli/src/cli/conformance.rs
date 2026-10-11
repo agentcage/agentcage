@@ -1,11 +1,10 @@
-//! The oracle: every node of the clap tree, checked against the click
-//! tree it replaces.
+//! The oracle: every node of the clap tree, checked against the
+//! recorded CLI surface of earlier releases.
 //!
 //! # What is asserted, and what is deliberately not
 //!
-//! `tests/fixtures/cli-surface/` is generated from the live click tree
-//! by `scripts/gen-cli-surface.py` (run it with `--check` in CI). It
-//! holds two things: `surface.json`, the structured declaration of every
+//! `tests/fixtures/cli-surface/` was recorded from the click-based CLI
+//! of earlier releases and is now frozen. It holds two things: `surface.json`, the structured declaration of every
 //! command, and `parse-cases.json`, the outcome of parsing 58 real
 //! command lines. This module asserts the Rust tree against both.
 //!
@@ -41,8 +40,8 @@ use super::{TOP_LEVEL_ALIASES, command, version_line};
 ///
 /// This list is the deliverable half of the golden diff. If a reviewer
 /// reads nothing else in this file, they should read this: it is the
-/// complete set of places where the port does not reproduce the Python,
-/// and the reason each one is acceptable.
+/// complete set of places where this CLI does not reproduce the
+/// recorded surface, and the reason each one is acceptable.
 const ALLOWED_DIFFERENCES: &[(&str, &str)] = &[
     (
         "Usage line capitalisation and layout",
@@ -173,7 +172,7 @@ fn find<'a>(root: &'a Command, path: &[String]) -> Option<&'a Command> {
     Some(cursor)
 }
 
-/// The click parameters of a node, keyed by their Python destination —
+/// The recorded parameters of a node, keyed by their destination name —
 /// which is the id every clap `Arg` in this tree is built with.
 fn click_params(node: &Value) -> BTreeMap<String, &Value> {
     node["params"]
@@ -244,7 +243,7 @@ fn every_command_and_subcommand_is_present() {
 /// click's `\x08` markers are dropped — and each node's one-line summary
 /// is the first line of it, which is what the parent listing shows.
 #[test]
-fn every_help_text_matches_the_python() {
+fn every_help_text_matches_the_recorded_surface() {
     let surface = load("surface.json");
     let root = built();
 
@@ -277,7 +276,7 @@ fn every_help_text_matches_the_python() {
 /// Every option and argument: spelling, arity, default, hidden bit,
 /// choices, and help text.
 #[test]
-fn every_flag_and_argument_matches_the_python() {
+fn every_flag_and_argument_matches_the_recorded_surface() {
     let surface = load("surface.json");
     let root = built();
 

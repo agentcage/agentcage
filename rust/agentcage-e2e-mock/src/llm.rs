@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::http::{self, Head};
 use crate::log::LogDir;
-use crate::pyjson;
+use crate::spaced_json;
 
 /// Default listen address (loopback in the egress's namespace).
 pub const ADDR: &str = "127.0.0.1:18089";
@@ -144,13 +144,13 @@ pub fn answer(path: &str, api_key: &str, body: &[u8]) -> (String, String) {
     let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let tool = tool_name(&request);
     let domain = requested_domain(&request);
-    let log_line = pyjson::dumps(&Call {
+    let log_line = spaced_json::to_string(&Call {
         path,
         tool,
         x_api_key: api_key,
         domain: &domain,
     });
-    let response = pyjson::dumps(&Message {
+    let response = spaced_json::to_string(&Message {
         id: "msg_e2e",
         kind: "message",
         role: "assistant",

@@ -15,9 +15,8 @@ use std::time::Duration;
 
 /// Where one of a child's output streams goes.
 ///
-/// The variants line up with `subprocess`'s, because the Python being
-/// ported uses all four and translating between two different vocabularies
-/// at the seam would be one more thing to get wrong.
+/// Four variants, because the CLI uses all four: inherit, capture,
+/// discard, and write to a file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Sink {
     /// The child writes to agentcage's own stream.
@@ -281,7 +280,7 @@ impl Command {
     /// Kill the child and fail with [`crate::ExecError::Timeout`] after
     /// `limit`.
     ///
-    /// The Python sets this in three places, all of them calls that can
+    /// The CLI sets this in three places, all of them calls that can
     /// block on something outside the host: `skopeo list-tags` (30s, a
     /// network round trip), `systemd-creds encrypt` (30s, a TPM that can
     /// be slow or contended) and the systemd-creds capability probe (5s).
@@ -294,11 +293,11 @@ impl Command {
     /// Put the child in its own process group.
     ///
     /// `limactl start` forks a hostagent daemon and only then exits;
-    /// `instance.py` passes `start_new_session=True` so the daemon is not
-    /// tied to agentcage's process group.
+    /// it runs in a new process group so the daemon is not tied to
+    /// agentcage's.
     ///
-    /// The difference worth writing down: Python's `start_new_session`
-    /// is `setsid()`, which also detaches the controlling terminal. This
+    /// The difference worth writing down: this is not a full `setsid()`,
+    /// which would also detach the controlling terminal. It
     /// is `setpgid(0, 0)` via `std`'s safe `process_group`, which is as
     /// far as the workspace's `unsafe_code = "forbid"` allows without a
     /// `pre_exec` closure. It achieves the stated purpose -- the child is

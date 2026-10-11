@@ -17,7 +17,7 @@
 //! assembled from a shared anchor would quietly become an empty
 //! allowlist; a relay's `upstream` merged from a template would lose
 //! its `tls: true`. Neither raises. So [`apply`] runs on every
-//! document [`super::load`] reads, and the port keeps PyYAML's
+//! document [`super::load`] reads, keeping PyYAML's
 //! semantics rather than the crate's default.
 //!
 //! `apply_merge()` is not used even as the engine, for two reasons
@@ -160,7 +160,8 @@ fn walk(
 
             // `Mapping` is an `IndexMap`: re-inserting an existing key
             // replaces the value and keeps the key where it first
-            // landed. That is Python's `dict` rule, which is what makes
+            // landed. That is the insertion-ordered mapping rule PyYAML
+            // builds on too, which is what makes
             // the merged-first ordering above come out like PyYAML's —
             // an explicit override wins on value, and the merged entry
             // wins on position.

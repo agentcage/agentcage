@@ -1,11 +1,12 @@
-//! Just enough of Python's `shlex.split(s)` to parse a `COPY` line.
+//! A POSIX shell-words lexer, just enough to parse a `COPY` line.
 //!
-//! `egress_hash.egress_copy_sources` runs `shlex.split` over the tail of
-//! every `COPY` instruction, and on `ValueError` skips the line. Which
-//! sources a Containerfile contributes therefore depends on Python's
-//! lexer, so this reproduces it rather than approximating it — the
-//! egress content hash is a cross-language contract and "close enough"
-//! is a divergent image tag.
+//! [`crate::egress`] splits the tail of every `COPY` instruction with
+//! [`split`] and skips a line that fails to lex. Which sources a
+//! Containerfile contributes, and so the egress content hash and the
+//! image tag, therefore depends on this lexer's exact rules. They are
+//! those of Python's `shlex.split(s)`, the reference earlier releases
+//! hashed with, and are reproduced exactly rather than approximated:
+//! "close enough" is a divergent image tag.
 //!
 //! Scope: POSIX mode with `whitespace_split=True` and `comments=False`,
 //! which is exactly what `shlex.split(s)` is. In particular `#` is an
@@ -13,14 +14,14 @@
 //! errors, and inside double quotes a backslash escapes only `"` and
 //! `\` — `"a\b"` lexes to `a\b`, not `ab`.
 
-/// Characters Python's `shlex` treats as whitespace.
+/// Characters the lexer treats as whitespace.
 const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
 
 /// Split `input` the way `shlex.split(input)` does.
 ///
 /// # Errors
 ///
-/// Returns `Err` where Python raises `ValueError`: an unterminated quote
+/// Returns `Err` where `shlex.split` raises `ValueError`: an unterminated quote
 /// (`No closing quotation`) or a trailing backslash (`No escaped
 /// character`). The caller's only use for the distinction is to skip the
 /// line, so the error carries no payload.
@@ -76,7 +77,8 @@ pub fn split(input: &str) -> Result<Vec<String>, ShlexError> {
     Ok(tokens)
 }
 
-/// Python's `ValueError` from `shlex.split`, with the message dropped.
+/// A line that does not lex: an unterminated quote or a trailing
+/// backslash. The message is dropped; callers only skip the line.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ShlexError;
 
@@ -88,13 +90,13 @@ mod tests {
         split(input).expect("lexes")
     }
 
-    /// The cases measured against `CPython` 3.13's `shlex.split`.
+    /// The reference cases, measured against `shlex.split` (3.13).
     ///
-    /// Each expectation here was produced by running the Python, not by
+    /// Each expectation here was produced by running the reference, not by
     /// reading the docs — `"a\b"` in particular does not do what a shell
     /// programmer expects.
     #[test]
-    fn matches_cpython() {
+    fn matches_the_reference_lexer() {
         assert_eq!(ok("a b"), ["a", "b"]);
         assert_eq!(
             ok("COPY --chown=1:1 a b"),
@@ -114,9 +116,9 @@ mod tests {
         assert_eq!(ok("a'b'c"), ["abc"]);
     }
 
-    /// Where Python raises, so does this — and the caller skips the line.
+    /// Where the reference raises, so does this — and the caller skips the line.
     #[test]
-    fn raises_where_python_raises() {
+    fn fails_where_the_reference_fails() {
         assert_eq!(split(r"a \"), Err(ShlexError));
         assert_eq!(split(r#"a "b"#), Err(ShlexError));
         assert_eq!(split("a 'b"), Err(ShlexError));

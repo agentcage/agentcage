@@ -1,20 +1,16 @@
-//! The `╭─╮` banner that `_BannerGroup` prints above the root help.
+//! The `╭─╮` banner printed above the root help.
 //!
 //! # Why this is not in `output`
 //!
-//! It belongs there, and `output.banner_text` is exactly where the
-//! Python keeps it. PR D4 is porting `output`/`terminal`/`_timing` in a
-//! branch beside this one, and both branches need the banner: D5 to put
-//! it above `agentcage --help`, D4 to golden-test it. Writing it twice
-//! in one file each is a smaller mess than two branches editing the same
-//! new module, and the duplication is *checked* — `cli_surface.rs`
-//! asserts this output against the click fixture, so when D4's
-//! `output::banner_text` lands, deleting this module and calling that
-//! one cannot silently change the help screen.
+//! It belongs there, and [`agentcage_cli::output::banner_text`] is a
+//! second copy of it, kept separate only because the two were written
+//! in parallel. The duplication is *checked* — `cli_surface.rs` asserts
+//! this output against the recorded fixture, so deleting this module
+//! and calling that one cannot silently change the help screen.
 //!
 //! # The width is not arbitrary
 //!
-//! `output.py:22` is `width = max(len(title) + 2, 44)`, and the title is
+//! The width is `max(title_columns + 2, 44)`, and the title is
 //! `" ✻ agentcage v{ver} "`. For every version string shorter than 20
 //! characters the 44 wins, which is why the box does not grow when the
 //! patch number does. Reproduce the formula rather than the 44, or the
@@ -29,14 +25,13 @@ const RESET: &str = "\u{1b}[0m";
 
 /// The banner, with a trailing blank line, as `banner_text` returns it.
 ///
-/// `styled` is `false` whenever the destination is not a terminal.
-/// `click.echo` strips styles from a non-tty stream, so the Python
-/// prints a plain box into a pipe; matching that is what lets the
-/// generated fixture be compared against this at all.
+/// `styled` is `false` whenever the destination is not a terminal, so a
+/// pipe gets a plain box, as it always has; that is also what lets the
+/// recorded fixture be compared against this at all.
 pub(crate) fn banner_text(version: &str, styled: bool) -> String {
     let title = format!(" \u{273b} agentcage v{version} ");
     // `str::chars().count()`, not `len()`: `✻` is three bytes and one
-    // column, and Python measured columns.
+    // column, and the width is measured in columns.
     let title_width = title.chars().count();
     let width = std::cmp::max(title_width + 2, 44);
     let padding = " ".repeat(width - title_width);

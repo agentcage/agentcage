@@ -1,6 +1,5 @@
 //! The SMTP relay against `tests/fixtures/egress/smtp.json`, recorded from
-//! the Python relay it replaces (see `tests/fixtures/egress/gen/smtp.py`),
-//! plus the goodbye on stop this port adds.
+//! an earlier release's relay, plus the goodbye on stop added since.
 //!
 //! `AGENTCAGE_BLESS=1 cargo test -p agentcage-egress smtp_corpus`
 //! rewrites the corpus with what this relay does.
@@ -485,7 +484,7 @@ async fn smtp_corpus_sessions() {
     );
 }
 
-/// Stopping the relay ends an idle session with `421` (the Python relay
+/// Stopping the relay ends an idle session with `421` (earlier releases
 /// cut the connection).
 #[tokio::test]
 async fn stop_sends_421_to_open_sessions() {

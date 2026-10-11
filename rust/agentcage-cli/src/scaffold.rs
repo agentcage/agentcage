@@ -1,10 +1,9 @@
-//! `init.py` — the scaffold search path, the config renderer, and
+//! The scaffold search path, the config renderer, and
 //! `run_scaffold_setup`.
 //!
 //! # Where the built-in scaffolds live
 //!
-//! In Python they are package data: `Path(__file__).parent /
-//! "scaffolds"`. Here they are embedded in the binary by
+//! They are embedded in the binary by
 //! `agentcage-assets` and extracted, byte- and mode-identical, into a
 //! digest-keyed cache directory. [`Scaffolds::system`] resolves that
 //! once and then everything below is ordinary path work — which matters,
@@ -13,18 +12,18 @@
 //! Containerfile that `COPY`s `entrypoint.sh` needs the file to exist on
 //! disk with its executable bit intact.
 //!
-//! The other three search roots are the Python's, unchanged: a
+//! The other three search roots are unchanged from earlier releases: a
 //! project-local `.agentcage/scaffolds` under the git root, a user
 //! `~/.config/agentcage/scaffolds`, and the legacy
 //! `templates/presets/<name>.yaml.j2` single-file form.
 //!
-//! # `python3` in a scaffold Containerfile
+//! # Interpreters in a scaffold Containerfile
 //!
-//! Several scaffolds `apt-get install python3`. That is the *workload's*
-//! runtime, not agentcage's, and it is explicitly outside the port's
-//! no-Python invariant: the invariant is about what the host binary
-//! needs in order to run, and a caged agent's image may contain whatever
-//! the agent needs.
+//! Several scaffolds install a language runtime with `apt-get`. That is
+//! the *workload's* runtime, not agentcage's, and the repository's
+//! invariants say nothing about it: they are about what the host binary
+//! and agentcage's own images need, and a caged agent's image may
+//! contain whatever the agent needs.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -77,11 +76,10 @@ impl Source {
     }
 }
 
-/// The four roots `init.py` searches, resolved once.
+/// The four scaffold roots, resolved once.
 ///
-/// The Python recomputes `_project_scaffolds_dir()` on every call, which
-/// means a `git rev-parse` per lookup — `list_scaffolds()` alone does
-/// one, and `scaffold_aliases()` does one more per scaffold. The working
+/// The project root costs a `git rev-parse`, and listing scaffolds and
+/// their aliases would otherwise run one per lookup. The working
 /// directory does not move inside a single command, so this resolves it
 /// once and hands the same answer out.
 #[derive(Clone, Debug)]
@@ -140,7 +138,7 @@ impl Scaffolds {
 
     /// `init.resolve_scaffold` — the first root that holds the name.
     ///
-    /// The legacy preset case is the Python's oddity and is reproduced
+    /// The legacy preset case is an oddity kept
     /// as-is: a `templates/presets/<name>.yaml.j2` resolves to the
     /// *presets directory*, not to a per-scaffold one, and every caller
     /// then has to cope with `<dir>/cage.yaml.j2` not existing.
@@ -183,8 +181,8 @@ impl Scaffolds {
     ///
     /// Note what it does *not* do: it never checks that the scaffold
     /// exists at all. A name with no directory anywhere reads as
-    /// `built-in`, exactly as the Python's final `return "built-in"`
-    /// does, and every caller has already resolved the scaffold first.
+    /// `built-in`, and every caller has already resolved the scaffold
+    /// first.
     #[must_use]
     pub fn source(&self, name: &str) -> Source {
         if let Some(project) = &self.project {
@@ -316,7 +314,7 @@ fn user_scaffolds_dir() -> PathBuf {
 /// `init._project_scaffolds_dir` — `<git-root>/.agentcage/scaffolds`.
 ///
 /// `None` outside a git repository, and `None` when `git` is not
-/// installed. The Python's five-second timeout is kept: a `git rev-parse`
+/// installed. The five-second timeout matters: a `git rev-parse`
 /// against a hung network filesystem must not wedge `agentcage run`.
 fn project_scaffolds_dir(runner: &dyn CommandRunner) -> Option<PathBuf> {
     let command = Command::new("git")
@@ -339,8 +337,7 @@ fn project_scaffolds_dir(runner: &dyn CommandRunner) -> Option<PathBuf> {
 
 /// A scaffold's `scaffold.yaml`.
 ///
-/// Every field is optional because every field is optional in the
-/// Python, which reaches for them with `meta.get(...)`. Unknown keys are
+/// Every field is optional, as it always has been. Unknown keys are
 /// ignored rather than rejected: a scaffold written against a newer
 /// agentcage should still render on an older one.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
@@ -432,7 +429,7 @@ pub struct RenderRequest<'a> {
 /// Two shapes, and they take different context: the blank starter gets
 /// `name`, `image`, `isolation` and `port`; a scaffold gets `name`,
 /// `isolation`, `port` and the cage's three derived network addresses,
-/// and never sees `image`. That asymmetry is the Python's and is
+/// and never sees `image`. That asymmetry is long-standing and
 /// load-bearing — a scaffold pins its own image.
 ///
 /// # Errors
@@ -450,8 +447,8 @@ pub fn render_config(
 ///
 /// The generator is a parameter for the same reason `agentcage-core`
 /// takes one: minting a token is a read from the OS entropy pool, and
-/// the render-diff test against the Python's own fixtures needs the
-/// counter the fixture generator pins.
+/// the render-diff test against the recorded fixtures needs the
+/// counter the fixture generator pinned.
 ///
 /// # Errors
 ///
@@ -561,8 +558,7 @@ fn read_embedded(path: &str) -> Result<String, RenderError> {
 ///
 /// In production the generator is `agentcage_state::mint_placeholder`,
 /// so a rendered config carries a concrete 128-bit token and the
-/// operator never has to fill one in — the same reason `init.py`
-/// installs `config.generate_placeholder` here.
+/// operator never has to fill one in.
 fn render_template<S: serde::Serialize>(
     name: &str,
     source: &str,
@@ -578,7 +574,7 @@ fn render_template<S: serde::Serialize>(
 /// Everything `run_scaffold_setup` needs beyond the scaffold itself.
 #[derive(Clone, Copy, Debug)]
 pub struct SetupOptions<'a> {
-    /// `None` preserves the Python's legacy behaviour (run the host
+    /// `None` keeps the legacy behaviour (run the host
     /// build loop); `Some("container")` does the same explicitly, and
     /// `vm` / `apple-container` skip it because those backends build
     /// their own images.
@@ -596,10 +592,8 @@ pub struct SetupOptions<'a> {
 ///
 /// # Errors
 ///
-/// A message ready for `output.step_fail`, when a build or a clone
-/// fails. A provisioning copy that fails is reported and does not abort,
-/// matching the Python only in that the Python would raise — see the
-/// inline note.
+/// A message ready for `output.step_fail`, when a build, a clone or a
+/// provisioning copy fails.
 pub fn run_scaffold_setup(
     scaffolds: &Scaffolds,
     runner: &dyn CommandRunner,
@@ -743,8 +737,7 @@ fn build_one(
         echo(&format!("Building {image}..."));
         build(None, clone.path())
     } else {
-        // Neither `containerfile:` nor `git:` — nothing to build, which
-        // is what the Python's `if/elif` with no `else` does.
+        // Neither `containerfile:` nor `git:` — nothing to build.
         let _ = scaffolds;
         Ok(())
     }
@@ -870,8 +863,8 @@ mod tests {
         assert!(valid_scaffold_name(&"a".repeat(63)));
     }
 
-    /// The scaffolds this binary ships, against the manifest the Python
-    /// generator writes. One more or one fewer is a real change; a name
+    /// The scaffolds this binary ships, against the recorded manifest.
+    /// One more or one fewer is a real change; a name
     /// going missing is a packaging bug.
     #[test]
     fn every_shipped_scaffold_is_listed() {
@@ -930,18 +923,18 @@ mod tests {
     }
 
     /// **The render diff.** Every scaffold, rendered by this code, is
-    /// byte-identical to what the Python renderer produced into
+    /// byte-identical to the recorded
     /// `tests/fixtures/scaffold-configs/<name>/cage.yaml`.
     ///
-    /// The fixtures were generated by `scripts/gen-scaffold-configs.py`
-    /// (removed with the Python CLI; a template change now updates them
-    /// by hand from this test's diff), which pinned `secrets.token_hex` to a per-scaffold counter so the
+    /// The fixtures' generator is gone (a template change now updates
+    /// them by hand from this test's diff); it pinned the placeholder
+    /// minter to a per-scaffold counter so the
     /// entropic placeholders were reproducible; the same counter is used
     /// here. Everything else — whitespace, key order, the
     /// `default(18789, true)` fallback, the derived network addresses —
     /// is the renderer's own output.
     #[test]
-    fn every_scaffold_renders_byte_identically_to_the_python() {
+    fn every_scaffold_renders_byte_identically_to_its_fixture() {
         let scaffolds = builtin_only();
         let names = scaffolds.list();
         assert!(!names.is_empty(), "no scaffolds found");
@@ -953,7 +946,7 @@ mod tests {
             let rendered = render_config_with(
                 &scaffolds,
                 &RenderRequest {
-                    // `gen-scaffold-configs.py`'s CAGE_NAME.
+                    // The cage name the fixtures were rendered with.
                     name: "demo",
                     image: "node:22-slim",
                     isolation: "container",
@@ -967,7 +960,7 @@ mod tests {
         }
     }
 
-    /// `gen-scaffold-configs.py`'s pinned `secrets.token_hex`: a counter
+    /// The fixtures' pinned placeholder minter: a counter
     /// zero-padded to 32 hex characters, restarted per render.
     fn counting_placeholder() -> impl Fn(&str) -> String + Send + Sync + 'static {
         let counter = std::sync::atomic::AtomicU32::new(0);

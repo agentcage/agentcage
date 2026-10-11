@@ -1,4 +1,4 @@
-//! `AppleContainerBackend.generate_units` — the per-cage metadata blob.
+//! The apple-container per-cage metadata blob.
 //!
 //! The container and vm backends hand systemd a set of quadlet files.
 //! Apple's `container` CLI has no such thing, so this backend persists
@@ -9,27 +9,27 @@
 //!   has to be resolved here, at create/update time, and written down.
 //!   That is why the port policy, the expanded volume list and the
 //!   secret placeholder map are all in this document rather than being
-//!   recomputed later — see the Python's comments, which say so at
-//!   length and name the bug each one fixed.
-//! * **The bytes are load-bearing.** `cli.py::_update_fingerprint`
-//!   feeds `backend.generate_units`'s return value to
-//!   `compute_fingerprint` on *every* backend, so this text is hashed
+//!   recomputed later: each was once recomputed at start time, and
+//!   each of those was a bug.
+//! * **The bytes are load-bearing.** The fingerprint hashes every
+//!   backend's generated units, so this text is hashed
 //!   into the digest `cage update` compares against the last deploy's
 //!   `fingerprint.json`. A reordered key or a dropped space is a
 //!   spurious "configuration changed".
 //!
 //! # `sort_keys=True`
 //!
-//! `json.dumps(…, indent=2, sort_keys=True)`, with `ensure_ascii` left
-//! at its default of `True`. The insertion order below is the Python's,
-//! for readability only; the emitter sorts.
+//! Two-space indent, sorted keys, non-ASCII escaped — the layout cages
+//! deployed by earlier releases were fingerprinted with. The insertion
+//! order below is for readability only; the emitter sorts.
 //!
 //! # Why `volumes` is a parameter
 //!
-//! `_user_volume_argv` is the one input here that touches the host: it
+//! The user volume list is the one input here that touches the host:
+//! resolving it
 //! expands `~` and `$VAR`, calls `realpath`, refuses a source outside
-//! the home directory and *warns on stderr* for each one it skips. It
-//! belongs to PR E2, and it does not belong in a crate whose first rule
+//! the home directory and *warns on stderr* for each one it skips. That
+//! belongs to the execution half, not to a crate whose first rule
 //! is that it performs no I/O. So the resolved list arrives as an
 //! argument and this function stays pure.
 
@@ -41,14 +41,13 @@ use crate::quadlets::{QuadletHost, effective_port_policy, expandvars};
 
 /// `generate_units` — `{"<deploy_name>.json": <document>}`.
 ///
-/// `volumes` is `_user_volume_argv(config.container.volumes)`, resolved
+/// `volumes` is the user volume argv for `config.container.volumes`, resolved
 /// by the caller (see the module docs). `host` answers the `$VAR`
 /// lookups `container.env` values go through, and nothing else.
 ///
-/// The Python's signature also takes `config_host_path`,
-/// `patches_host_dir`, `used_octets` and `network_octet`; all four are
-/// `# noqa: ARG002` there — accepted to satisfy the `Backend` protocol
-/// and ignored — so they are not parameters here.
+/// The other backends' unit generators also take `config_host_path`,
+/// `patches_host_dir`, `used_octets` and `network_octet`; this one
+/// would ignore all four, so they are not parameters here.
 #[must_use]
 pub fn generate_units(
     config: &Config,
@@ -88,9 +87,9 @@ pub fn unit_json(
 
 /// The [`Json`] tree behind [`unit_json`].
 ///
-/// One `match`-free block per key, in the Python's own order. It is
-/// long because the document is: `#[allow]`ing the line count keeps
-/// the two readable side by side, which is the point.
+/// One `match`-free block per key. It is long because the document is:
+/// `#[allow]`ing the line count keeps the whole document readable in
+/// one place, which is the point.
 #[allow(clippy::too_many_lines)]
 fn unit_value(
     config: &Config,
@@ -227,8 +226,8 @@ fn unit_value(
 /// and Apple's own default.
 fn cpus(config: &Config) -> String {
     if config.container.cpus.is_empty() {
-        // `if getattr(config.vm, "vcpus", 0)` — Python truthiness, so
-        // zero falls through and anything else (including a negative,
+        // `vm.vcpus` when it is non-zero: zero falls through and
+        // anything else (including a negative,
         // which validation rejects earlier) does not.
         if config.vm.vcpus == 0 {
             String::new()
@@ -264,8 +263,8 @@ struct SecretEnvs {
     placeholders: BTreeMap<String, String>,
     /// Env names that must reach the *egress*, never the cage workload:
     /// protocol-relay credentials first, then the decider's `api_key`,
-    /// then the watcher's. Order-preserving and deduplicated, because
-    /// the Python builds it with `if var not in relay_secret_envs`.
+    /// then the watcher's. Order-preserving and deduplicated: a name
+    /// already present is not added again.
     relay_envs: Vec<String>,
     /// The decider `api_key`'s full source (`env:NAME` /
     /// `systemd-creds:NAME`), so `_stage_secrets` can stage it

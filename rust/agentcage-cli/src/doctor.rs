@@ -1,4 +1,4 @@
-//! `agentcage doctor` — the port of `src/agentcage/doctor.py`.
+//! `agentcage doctor`.
 //!
 //! # What this is
 //!
@@ -24,42 +24,35 @@
 //! prerequisites — goes through [`DoctorHost`]. A faked pair of those
 //! reproduces any host exactly, which is what
 //! `tests/golden_doctor.rs` does for 38 of them against output
-//! recorded from the real Python.
+//! recorded from an earlier release.
 //!
-//! # `check_python_version` is deleted, not ported
+//! # The recorded output has one line this does not print
 //!
-//! `doctor.py` checks the host for Python ≥ 3.12. The entire point of
-//! this port is that the host no longer has to have Python at all —
-//! docs/history/rust-port-plan.md §2.4 makes "Python exists only inside the egress
-//! image" an invariant, and `install.sh` sheds its Python detection with
-//! it (§2.5). A port of that check would assert a dependency the port
-//! removes, and would fail on exactly the hosts the port exists to
-//! support.
-//!
-//! Nothing depended on its result: `cli.py` maps the whole run to an
-//! exit code by counting `error`s, and the check contributes one `pass`
-//! line on any host that could have run the Python CLI in the first
-//! place. The fixture proves that rather than asserting it — the
-//! generator refuses to record a case where dropping the line would move
-//! the summary counts.
+//! Earlier releases needed a Python interpreter on the host and checked
+//! for one, so every recorded case carries a passing interpreter-version
+//! line under "Prerequisites". The host has no such dependency any more,
+//! so that check is gone and the golden test drops the line before
+//! comparing. Nothing depended on its result: the exit code counts
+//! `error`s, and the line was always a `pass`. The fixture proves that
+//! rather than asserting it — no recorded case has summary counts that
+//! dropping the line would move.
 //!
 //! # Faithfulness, and the two places it stops
 //!
-//! Everything else is reproduced as-is, including behaviour that is
-//! arguably wrong (see `tests/fixtures/doctor/README.md`). The two
-//! exceptions are structural:
+//! Everything else matches the recorded output as-is, including
+//! behaviour that is arguably wrong (see
+//! `tests/fixtures/doctor/README.md`). The two exceptions are
+//! structural:
 //!
-//! * `_safe_check` wraps every check in a bare `except Exception`. The
-//!   functions here are total — every path returns a [`CheckResult`] —
-//!   so there is nothing to catch and no counterpart to write. Two
-//!   fixture cases record what the Python does when a check raises; both
-//!   are marked unported, and the golden test asserts that the unported
-//!   set is exactly those two.
-//! * `subprocess`'s `FileNotFoundError` and `TimeoutExpired` are the
-//!   only two failures the Python catches. [`ExecError`]'s other
-//!   variants (spawn failures, I/O errors) take the same branch here,
-//!   because the alternative is a diagnostic tool that crashes while
-//!   diagnosing.
+//! * Earlier releases caught any exception a check raised and reported
+//!   it as a warning. The functions here are total — every path returns
+//!   a [`CheckResult`] — so there is nothing to catch. Two fixture cases
+//!   record a check raising; both are marked unported, and the golden
+//!   test asserts that the unported set is exactly those two.
+//! * A probe that is not installed or times out reads as a failed
+//!   probe, as it always has. [`ExecError`]'s other variants (spawn
+//!   failures, I/O errors) take the same branch here, because the
+//!   alternative is a diagnostic tool that crashes while diagnosing.
 
 use std::fmt;
 use std::time::Duration;
@@ -74,7 +67,7 @@ use crate::secrets::resolver::{Backend, SecretHost, SystemEnv};
 
 /// What the doctor reads that is not a subprocess.
 ///
-/// One method per thing `doctor.py` reaches for directly. They are
+/// One method per thing the doctor reads directly. They are
 /// gathered into a trait rather than called inline for the reason in the
 /// module docs: the host is the input, so it has to be substitutable.
 pub trait DoctorHost: fmt::Debug {
@@ -121,13 +114,10 @@ pub trait DoctorHost: fmt::Debug {
     /// `apple_container.prerequisites.check_prerequisites()`.
     ///
     /// Empty means every prerequisite is met. Asked at most once per
-    /// run, because Apple's `container system status` is slow and the
-    /// Python went out of its way to call it once (`run_doctor` passes
-    /// the result into both consumers).
+    /// run, because Apple's `container system status` is slow: the
+    /// result is passed into both consumers.
     ///
-    /// Owed to PR E2, which ports `apple_container/` properly. Until
-    /// then this is where the answer comes from, and on Linux the answer
-    /// is the "requires macOS" issue the Python produces.
+    /// On Linux the answer is the "requires macOS" issue.
     fn apple_container_issues(&self) -> Vec<String>;
 }
 
@@ -163,7 +153,7 @@ pub enum Level {
 }
 
 impl Level {
-    /// The string `CheckResult.level` holds in the Python.
+    /// The level's name, as the report spells it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -234,7 +224,7 @@ impl Report {
         self.sections.iter().flat_map(|s| s.results.iter())
     }
 
-    /// `1` if any check errored, else `0` — `cli.py:632`.
+    /// `1` if any check errored, else `0`.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         u8::from(self.results().any(|r| r.level == Level::Error))
@@ -265,7 +255,7 @@ pub enum Distro {
 
 /// `_detect_distro`, over the text of `/etc/os-release`.
 ///
-/// The parser is the Python's: split on the first `=`, strip whitespace,
+/// Split on the first `=`, strip whitespace,
 /// then strip one layer of double quotes. Lines without an `=` are
 /// ignored; a repeated key keeps the last value.
 #[must_use]
@@ -372,9 +362,8 @@ const PODMAN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run a captured probe, flattening every failure into `None`.
 ///
-/// The Python catches `FileNotFoundError` and `TimeoutExpired` and
-/// treats a non-zero exit as a failure in the same way; this is that,
-/// plus the `ExecError` variants Python has no equivalent for.
+/// A binary that is not installed, a timeout, a non-zero exit and every
+/// other [`ExecError`] all read as a failed probe.
 fn probe(runner: &dyn CommandRunner, cmd: &Command) -> Option<String> {
     let out = runner.run(cmd).ok()?;
     out.success().then(|| out.stdout_text())
@@ -699,9 +688,9 @@ pub fn check_subnet_conflicts(runner: &dyn CommandRunner) -> CheckResult {
     let networks: Vec<serde_json::Value> = if stdout.trim().is_empty() {
         Vec::new()
     } else {
-        // The Python lets a `JSONDecodeError` escape into `_safe_check`,
-        // which turns it into a `warn`. There is no exception to catch
-        // here, so unparseable output is read as "no networks" — the
+        // Earlier releases reported unparseable output as a `warn`.
+        // There is no exception to catch here, so unparseable output is
+        // read as "no networks" — the
         // same answer the non-zero-exit branch already gives, and the
         // one fixture case that covers it is marked unported.
         serde_json::from_str(&stdout).unwrap_or_default()
@@ -850,9 +839,8 @@ pub fn run(runner: &dyn CommandRunner, host: &dyn DoctorHost) -> Report {
 
 /// `click.style(text, bold=True)`.
 ///
-/// Local rather than in `output.rs` because `doctor.py` reaches for
-/// `click.style` directly too — the styling module never learned about
-/// bold headings or the yellow mark.
+/// Local rather than in `output.rs` because the styling module never
+/// learned about bold headings or the yellow mark.
 fn bold(text: &str) -> String {
     format!("\u{1b}[1m{text}\u{1b}[0m")
 }
@@ -956,7 +944,7 @@ mod tests {
 
     /// A Rocky box whose `ID_LIKE` mentions fedora resolves to
     /// **fedora**, not rhel, because the fedora test comes first in the
-    /// Python's chain -- and the two differ in the QEMU package they
+    /// chain -- and the two differ in the QEMU package they
     /// name. The fixture pins it as its own environment.
     #[test]
     fn the_order_of_the_family_tests_is_load_bearing() {
@@ -1058,9 +1046,8 @@ mod tests {
 
 /// [`DoctorHost`] answered by the machine this is running on.
 ///
-/// Every method here is one line of `doctor.py` with a Rust equivalent
-/// behind it, and the two places the equivalent is not exact are called
-/// out on the method.
+/// The two places the answer is coarser than the recorded behaviour are
+/// called out on the method.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemDoctorHost;
 
@@ -1071,7 +1058,7 @@ impl SystemDoctorHost {
         Self
     }
 
-    /// `platform.system()`, spelled the way Python spells it.
+    /// The OS name as the report spells it (`Linux`, `Darwin`).
     fn platform_system() -> &'static str {
         match std::env::consts::OS {
             "macos" => "Darwin",
@@ -1140,16 +1127,15 @@ impl DoctorHost for SystemDoctorHost {
 
     /// `socket.getaddrinfo("example.com", 80)`.
     ///
-    /// The one place the outcome is coarser than the Python's: the
+    /// The one place the outcome is coarser than the recorded one: the
     /// resolver reports a lookup failure as an uncategorized `io::Error`
     /// rather than as a distinct class, so anything that is not an
     /// explicit timeout is read as the `gaierror` branch. Both print an
     /// error with the same hint, and the message differs only in wording.
     ///
-    /// Note there is no timeout here, and no way to ask for one. Neither
-    /// is there in the Python: `check_dns` sets
-    /// `socket.setdefaulttimeout(5)`, which applies to socket objects and
-    /// not to `getaddrinfo`, so its `except socket.timeout` is
+    /// Note there is no timeout here, and no way to ask for one. Earlier
+    /// releases had none either in practice: their socket timeout did
+    /// not apply to name resolution, so their timeout branch was
     /// unreachable on a real host. See the fixture README.
     fn resolve_dns(&self) -> DnsOutcome {
         use std::net::ToSocketAddrs;
@@ -1164,7 +1150,7 @@ impl DoctorHost for SystemDoctorHost {
     /// the spot.
     ///
     /// Deliberately **not** `std::net::TcpListener::bind`, which sets
-    /// `SO_REUSEADDR` on Unix. The Python's socket does not, so a port
+    /// `SO_REUSEADDR` on Unix. A plain socket does not, so a port
     /// left in `TIME_WAIT` by a cage that just stopped reads as busy
     /// there and as free through `TcpListener` — a diagnostic that
     /// disagrees with itself depending on which of the two you asked.
@@ -1178,8 +1164,8 @@ impl DoctorHost for SystemDoctorHost {
             SockFlag::empty(),
             None,
         ) else {
-            // The Python's `except OSError` covers the socket() failure
-            // as well as the bind(), and reports the port as in use.
+            // A socket() failure reads the same as a failed bind(): the
+            // port is reported as in use.
             return false;
         };
         bind(fd.as_raw_fd(), &SockaddrIn::new(127, 0, 0, 1, port)).is_ok()
@@ -1195,13 +1181,10 @@ impl DoctorHost for SystemDoctorHost {
 
     /// `apple_container.prerequisites.check_prerequisites()`.
     ///
-    /// **Provisional, and owed to PR E2**, which ports
-    /// `apple_container/` in full. The non-Darwin branch — the only one a
-    /// Linux host or CI runner ever reaches — is exact. The Darwin
-    /// branch reproduces the arch and binary tests but reads the macOS
-    /// major version from `sw_vers`, where the Python reads
-    /// `platform.mac_ver()`; no Rust equivalent of that call exists in
-    /// the tree yet, and nothing in CI can check it.
+    /// The non-Darwin branch — the only one a
+    /// Linux host or CI runner ever reaches — is pinned by the fixture.
+    /// The Darwin branch runs the arch and binary tests and reads the
+    /// macOS major version from `sw_vers`; nothing in CI can check it.
     fn apple_container_issues(&self) -> Vec<String> {
         const MIN_MACOS_MAJOR: u32 = 26;
 
@@ -1254,8 +1237,8 @@ impl DoctorHost for SystemDoctorHost {
 
 /// `platform.mac_ver()[0].split(".")[0]`, by way of `sw_vers`.
 ///
-/// See [`SystemDoctorHost::apple_container_issues`] for why this is a
-/// subprocess and the Python's is not.
+/// A subprocess because the standard library has no call for the macOS
+/// version.
 pub(crate) fn macos_major(runner: &dyn CommandRunner) -> Option<u32> {
     let cmd = Command::new("sw_vers")
         .arg("-productVersion")
@@ -1273,7 +1256,7 @@ pub(crate) fn macos_major(runner: &dyn CommandRunner) -> Option<u32> {
 /// `agentcage doctor`: run every check, print the report, pick the exit
 /// code.
 ///
-/// `cli.py:632` is `sys.exit(1 if any(r.level == "error" ...) else 0)`.
+/// The exit code is `1` if any check errored, else `0`.
 #[must_use]
 pub fn main() -> u8 {
     use std::io::IsTerminal;

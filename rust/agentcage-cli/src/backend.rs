@@ -1,21 +1,17 @@
-//! `backends/container.py` — rootless podman plus quadlet units.
+//! The `container` backend — rootless podman plus quadlet units.
 //!
-//! The one backend this PR ports (docs/history/rust-port-plan.md Track D, D6). The
-//! `vm` and `apple-container` backends are Track E; everything here that
-//! they would share — unit installation, quadlet removal — already lives
+//! The `vm` and `apple-container` backends live elsewhere; everything
+//! here that they would share — unit installation, quadlet removal — lives
 //! in `agentcage-state`, so this file is the podman-and-systemd half
 //! only.
 //!
-//! # What it does *not* do
+//! # Where the build context comes from
 //!
-//! `backends/container.py:70` gets its podman build context for free:
-//! the installed package's own `data/` directory is on disk, so
-//! `build_artifacts` just points `podman build` at it. A single binary
-//! has no such directory, so the context comes from
+//! A single binary has no package `data/` directory on disk to point
+//! `podman build` at, so the context comes from
 //! [`agentcage_assets::extract::build_context`], which materializes the
 //! embedded tree into a cache dir keyed on the binary's version and
-//! content hash. That is §2.1 of the plan, and it is the only structural
-//! difference between this file and the Python it ports.
+//! content hash (§2.1 of docs/history/rust-port-plan.md).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -35,7 +31,7 @@ use crate::hostenv::RealQuadletHost;
 ///
 /// `setfcap` for dnsmasq's `NET_BIND_SERVICE` file capability; the rest
 /// mirror the legacy proxy build's user creation and `apt-get install`
-/// steps. Order is the Python's, because it is the order that reaches
+/// steps. The order is fixed, because it is the order that reaches
 /// argv and the order the argv test pins.
 pub const EGRESS_BUILD_CAPS: [&str; 6] = [
     "CAP_CHOWN",
@@ -69,7 +65,7 @@ pub fn ca_volumes(name: &str) -> [String; 2] {
 #[derive(Debug)]
 pub enum BackendError {
     /// podman or systemctl could not be run, or exited non-zero where
-    /// the Python would have raised.
+    /// that is fatal.
     Exec(ExecError),
     /// The renderer refused the config.
     Config(ConfigError),
@@ -140,8 +136,8 @@ pub struct ContainerBackend<'a> {
 impl<'a> ContainerBackend<'a> {
     /// A backend bound to these paths, this runner and this version.
     ///
-    /// `version` is `importlib.metadata.version("agentcage")` in the
-    /// Python: it tags the egress image, it is stamped into the cage
+    /// `version` is the agentcage release: it tags the egress image, it
+    /// is stamped into the cage
     /// quadlet, and it is written into `metadata.json`. One value, so
     /// the three cannot drift.
     #[must_use]
@@ -198,7 +194,7 @@ impl<'a> ContainerBackend<'a> {
     ///
     /// Rootless podman's systemd socket activation brings the service
     /// up on demand when the quadlets start. Kept as a method so the
-    /// create/update path reads the same as the Python's.
+    /// create/update path reads the same on every backend.
     pub const fn ensure_ready(&self) {}
 
     /// The egress image, `agentcage-egress:<version>-<hash>`.
@@ -251,7 +247,7 @@ impl<'a> ContainerBackend<'a> {
 
     /// `generate_units` — render this cage's quadlets.
     ///
-    /// Two probes happen before the render and both are the Python's:
+    /// Two probes happen before the render:
     /// `podman info` decides `rootless=`, and the secret store's env
     /// names make `Secret=` emission store-aware (issue #262). A failed
     /// store query falls back to `None`, which is the legacy
@@ -259,8 +255,8 @@ impl<'a> ContainerBackend<'a> {
     ///
     /// # Errors
     ///
-    /// [`BackendError::Exec`] if `podman info` fails — the Python lets
-    /// that propagate too, since a host without podman cannot deploy a
+    /// [`BackendError::Exec`] if `podman info` fails, since a host
+    /// without podman cannot deploy a
     /// container cage. [`BackendError::Config`] on a refusal from the
     /// renderer.
     pub fn generate_units(
@@ -275,7 +271,7 @@ impl<'a> ContainerBackend<'a> {
         let info = self.podman.info()?;
         // `.get("host", {}).get("security", {}).get("rootless", True)`
         // — the default is True, which matters: a podman whose info
-        // omits the key is assumed rootless, as the Python assumes.
+        // omits the key is assumed rootless.
         let rootless = info
             .get("host")
             .and_then(|h| h.get("security"))
@@ -333,7 +329,7 @@ impl<'a> ContainerBackend<'a> {
     /// cage.
     ///
     /// The restarts come first and their failures are *warnings*, which
-    /// is the Python's deliberate shape: systemd may still consider a
+    /// is deliberate: systemd may still consider a
     /// network or volume unit active from a previous run whose podman
     /// resources `cage destroy` already removed, and restarting is how
     /// they get recreated. A genuine failure surfaces on the cage unit
@@ -361,7 +357,7 @@ impl<'a> ContainerBackend<'a> {
             }
         }
         if self.units.has_podman_storage_volume(name) {
-            // The Python swallows this one without a warning.
+            // Swallowed without a warning, as it always has been.
             let _ = self
                 .units
                 .restart(&format!("{name}-podman-storage-volume.service"));
@@ -393,9 +389,7 @@ impl<'a> ContainerBackend<'a> {
 
     /// `is_running` — whether `<name>-<service>` is a running container.
     ///
-    /// A podman that cannot be reached answers `false`, as the Python's
-    /// `container_running` does by returning the subprocess's non-zero
-    /// exit.
+    /// A podman that cannot be reached answers `false`.
     #[must_use]
     pub fn is_running(&self, name: &str, service: &str) -> bool {
         self.podman
@@ -427,8 +421,8 @@ impl<'a> ContainerBackend<'a> {
     /// `destroy_resources` — quadlets, podman network, volumes, and
     /// (unless kept) the cage's scoped secrets.
     ///
-    /// Returns the removal descriptions `cage destroy` prints, in the
-    /// Python's order: quadlet filenames, then `network:`, then the
+    /// Returns the removal descriptions `cage destroy` prints, in this
+    /// order: quadlet filenames, then `network:`, then the
     /// three `volume:`s, then each `secret:`.
     ///
     /// # Errors

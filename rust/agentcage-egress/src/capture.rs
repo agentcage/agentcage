@@ -127,9 +127,9 @@ impl std::error::Error for CaptureError {}
 /// coercions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureSettings {
-    /// Per-body cut in bytes; 0 = unlimited. Negative values behave as a
-    /// Python slice end would (cut that many bytes off the end), which is
-    /// what the replaced implementation did with them.
+    /// Per-body cut in bytes; 0 = unlimited. A negative value cuts that
+    /// many bytes off the end instead, which is what earlier releases did
+    /// with one.
     pub max_body_size: i64,
     /// `min_action`.
     pub min_action: MinAction,
@@ -202,8 +202,9 @@ fn domain_matches(pattern: &str, host: &str) -> bool {
             .is_some_and(|rest| rest.ends_with('.'))
 }
 
-/// `content[:n]` with Python slice semantics for a negative `n`.
-fn py_prefix(content: &[u8], n: i64) -> &[u8] {
+/// The first `n` bytes of `content`; a negative `n` drops `|n|` bytes
+/// from the end instead (slice-end semantics, as earlier releases cut).
+fn slice_prefix(content: &[u8], n: i64) -> &[u8] {
     let len = content.len();
     let end = if n >= 0 {
         usize::try_from(n).unwrap_or(usize::MAX).min(len)
@@ -359,7 +360,7 @@ impl CaptureWriter {
         let original = content.len();
         let max = self.settings.max_body_size;
         if max != 0 && len_i64(original) > max {
-            Self::encode_kept(py_prefix(content, max), true, original)
+            Self::encode_kept(slice_prefix(content, max), true, original)
         } else {
             Self::encode_kept(content, false, original)
         }
@@ -628,7 +629,7 @@ impl CaptureWriter {
         } else {
             max_body.min(room)
         };
-        let kept = py_prefix(content, limit);
+        let kept = slice_prefix(content, limit);
         let mut msg = object([
             (
                 "type",
@@ -873,7 +874,7 @@ impl Capture {
             Some(other) if config::truthy(other) => {
                 eprintln!(
                     "agentcage: capture config is not a mapping (got {}) — capture disabled",
-                    python_type_name(other)
+                    kind_name(other)
                 );
                 Mapping::new()
             }
@@ -1204,7 +1205,9 @@ impl Capture {
     }
 }
 
-fn python_type_name(value: &Value) -> &'static str {
+/// The value's kind, in the vocabulary of
+/// [`agentcage_core::value_fmt::kind_name`].
+fn kind_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "NoneType",
         Value::Bool(_) => "bool",

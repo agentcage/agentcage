@@ -3,7 +3,7 @@
 //!
 //! # Why this is a module and not four lines at a call site
 //!
-//! `cage backup` and `cage restore` (`cli.py:3349`, `cli.py:3467`) are
+//! `cage backup` and `cage restore` are
 //! the only two commands whose payload is an *archive*, and an archive
 //! is the one artifact in this program that arrives from outside it.
 //! Everything else the Rust binary reads was written by agentcage on
@@ -15,10 +15,9 @@
 //!   half of a `.tar.gz` is deterministic by default — the gzip header
 //!   carries an mtime and the original filename, and every tar member
 //!   carries an mtime, a uid, a gid, a uname, a gname and whatever mode
-//!   the producing host's umask happened to make it. PR A7 hit exactly
-//!   this while building the committed fixture and had to normalize all
-//!   of it afterwards (`scripts/gen-state-fixtures.py:867`, which notes
-//!   that running the generator under `umask 077` changed every byte of
+//!   the producing host's umask happened to make it. The committed
+//!   state fixture hit exactly this and had to be normalized afterwards
+//!   (running its generator under `umask 077` changed every byte of
 //!   the archive). Rather than write a per-run archive and normalize it,
 //!   this writes the normalized form in the first place.
 //!
@@ -34,23 +33,18 @@
 //!   Symlinks are *carried*, not banned outright, because a cage's
 //!   staged build context is an operator's directory and really does
 //!   contain them. What is banned is a link that leaves the tree
-//!   ([`link_stays_inside`]), which is the same line `tarfile`'s `data`
-//!   filter draws. Links are re-created, never followed, so a dangling
+//!   ([`link_stays_inside`]), which is the same line PEP 706's `data`
+//!   extraction filter draws. Links are re-created, never followed, so a dangling
 //!   one is harmless.
 //!
-//! # What the Python does about traversal, and whether it is safe
+//! # The traversal guarantees
 //!
-//! `cli.py:3543` calls `tar.extractall(tmpdir, filter="data")`. The
-//! `data` filter is PEP 706's, and it is the strict one: it rejects
+//! Earlier releases extracted with PEP 706's `data` filter, the strict
+//! one: it rejects
 //! absolute paths and `..` components, rejects links whose target
 //! escapes the destination, rejects device and FIFO members, and strips
-//! setuid/setgid/sticky bits. `pyproject.toml` declares
-//! `requires-python = ">=3.12"`, where the parameter exists and the
-//! filter is implemented, so **the Python is safe** — not by accident
-//! but by an explicit opt-in, since 3.12's default for `extractall` is
-//! still the permissive `fully_trusted` behavior with a
-//! `DeprecationWarning`. This module reproduces the same guarantees
-//! rather than inheriting them, because Rust's `tar` crate has no
+//! setuid/setgid/sticky bits. This module provides the same guarantees
+//! itself, because Rust's `tar` crate has no
 //! equivalent knob: its `Archive::unpack` silently *skips* an escaping
 //! member, which restores a backup that is quietly missing a file.
 //! Here that is an error with the member's name in it.
@@ -59,9 +53,9 @@
 //!
 //! Two [`write_targz`] calls with equal member lists produce equal
 //! bytes, on any machine, under any umask, at any time. What this does
-//! *not* claim is byte-equality with the Python's `tarfile` output:
-//! `tarfile` writes its own header spellings and zlib's deflate differs
-//! from `miniz_oxide`'s. The contract PR D2 pinned is the member list
+//! *not* claim is byte-equality with archives earlier releases wrote:
+//! their tar writer used its own header spellings and zlib's deflate
+//! differs from `miniz_oxide`'s. The pinned contract is the member list
 //! and the member contents (`state_compat.rs:1418`), and that is what
 //! is reproduced.
 
@@ -73,8 +67,8 @@ use std::path::{Component, Path, PathBuf};
 /// One archive member.
 ///
 /// Directories are explicit rather than implied by their children's
-/// names, because the Python's `tar.add(dir, recursive=True)` emits
-/// them and the pinned member list contains all four of them —
+/// names, because earlier releases emitted them
+/// and the pinned member list contains all four of them —
 /// `capture/`, `config/`, `secrets/` and an *empty* `volumes/`. An
 /// empty directory that carried no member would vanish from the
 /// archive, and `volumes/` is empty in the committed fixture.

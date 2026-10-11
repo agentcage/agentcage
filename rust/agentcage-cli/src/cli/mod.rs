@@ -110,11 +110,8 @@ pub(crate) const TOP_LEVEL_ALIASES: [(&str, &str); 19] = [
     ("update", "cage update"),
 ];
 
-/// The version line, byte-identical to what the Python CLI prints.
-///
-/// `cli.py` declares `@click.version_option(prog_name="agentcage")` and
-/// click's default template is `%(prog)s, version %(version)s`. That
-/// exact string is read by `install.sh` and by the e2e harness, so clap's
+/// The version line, byte-identical to what earlier releases printed:
+/// `agentcage, version <version>`. That exact string is read by `install.sh` and by the e2e harness, so clap's
 /// own `--version` is disabled and this is printed instead — clap would
 /// say `agentcage 0.40.1`, which parses as a different thing.
 pub(crate) fn version_line() -> String {
@@ -124,9 +121,8 @@ pub(crate) fn version_line() -> String {
 /// Build the whole command tree.
 ///
 /// `styled_banner` is `false` whenever the help is not going to a
-/// terminal; `click.echo` strips styles from a non-tty stream and the
-/// banner has to do the same, or every piped `agentcage --help` grows
-/// escape bytes the Python does not emit.
+/// terminal, or every piped `agentcage --help` would grow escape bytes
+/// that earlier releases did not emit and the fixture does not have.
 pub(crate) fn command(styled_banner: bool) -> Command {
     let mut root = Command::new(PROG)
         .about("Defense-in-depth proxy sandbox for AI agents.")

@@ -31,7 +31,7 @@ use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use agentcage_core::audit::Timestamp;
 use agentcage_core::har::datetime::DateTime;
-use agentcage_core::python::str_of;
+use agentcage_core::value_fmt::coerce_to_string;
 use indexmap::IndexMap;
 
 use super::{Action, Context, Inspector, Severity, Verdict};
@@ -85,7 +85,7 @@ impl DomainConfig {
             other => {
                 return Err(format!(
                     "domain inspector config must be a mapping (got {})",
-                    agentcage_core::python::type_name(other)
+                    agentcage_core::value_fmt::kind_name(other)
                 ));
             }
         };
@@ -100,7 +100,7 @@ impl DomainConfig {
                 Some(other) => {
                     return Err(format!(
                         "domains.mode must be a string (got {})",
-                        agentcage_core::python::type_name(other)
+                        agentcage_core::value_fmt::kind_name(other)
                     ));
                 }
             };
@@ -117,7 +117,7 @@ impl DomainConfig {
             Some(Value::Mapping(raw)) => {
                 for (k, v) in raw {
                     if truthy(k) && truthy(v) {
-                        expires.insert(normalise(&str_of(k)), str_of(v));
+                        expires.insert(normalise(&coerce_to_string(k)), coerce_to_string(v));
                     }
                 }
             }
@@ -128,7 +128,7 @@ impl DomainConfig {
                         continue;
                     };
                     if truthy(d) && truthy(x) {
-                        expires.insert(normalise(&str_of(d)), str_of(x));
+                        expires.insert(normalise(&coerce_to_string(d)), coerce_to_string(x));
                     }
                 }
             }
@@ -170,17 +170,17 @@ fn suffixes(host: &str) -> impl Iterator<Item = &str> {
 }
 
 /// A grant entry's `expires_at`: `entry.get("expires_at") or ""`. A
-/// non-string value reads as its Python `str()`.
+/// non-string value reads as its [`coerce_to_string`] text.
 fn entry_expiry(entry: &Mapping) -> String {
     match entry.get("expires_at") {
-        Some(v) if truthy(v) => str_of(v),
+        Some(v) if truthy(v) => coerce_to_string(v),
         _ => String::new(),
     }
 }
 
 /// Whether `exp` is still in the future at `now`, or `None` when it
-/// cannot be compared: unparseable, or naive (Python's `TypeError`
-/// comparing it with an aware "now"). Callers treat `None` as "no
+/// cannot be compared: unparseable, or naive (no offset, so it cannot
+/// be ordered against an aware "now"). Callers treat `None` as "no
 /// expiry" — fail open on a malformed timestamp, never closed.
 fn expiry_in_future(exp: &str, now: Timestamp) -> Option<bool> {
     match Timestamp::parse_iso_aware(exp) {
@@ -616,7 +616,7 @@ impl DomainInspector {
             let Some(d) = e.get("domain").filter(|d| truthy(d)) else {
                 continue;
             };
-            new.insert(normalise(&str_of(d)), e);
+            new.insert(normalise(&coerce_to_string(d)), e);
         }
         let mut state = self.write();
         state.granted.retain(|d, _| new.contains_key(d));
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn suffix_walk_matches_python_split() {
+    fn suffix_walk_matches_a_dot_split() {
         let got: Vec<_> = suffixes("a..b.").collect();
         assert_eq!(got, ["a..b.", ".b.", "b.", ""]);
         assert_eq!(suffixes("").collect::<Vec<_>>(), [""]);

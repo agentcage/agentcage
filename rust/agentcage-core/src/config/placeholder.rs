@@ -7,8 +7,9 @@
 //!
 //! # The cross-boundary contract
 //!
-//! docs/history/rust-port-plan.md §2.2 lists this as a format contract between
-//! `config.PLACEHOLDER_PREFIX` and the proxy's `secret_injector`. Reading
+//! docs/history/rust-port-plan.md §2.2 lists this as a format contract
+//! between [`PLACEHOLDER_PREFIX`] and
+//! the egress's secret injector. Reading
 //! the proxy side settles what that contract actually requires, and it is
 //! less than the name suggests: `secret_injector.SecretInjector.load`
 //! takes `entry["placeholder"]` and does nothing but **literal substring
@@ -19,9 +20,8 @@
 //!
 //! So the contract is *byte identity*, not syntax: whatever the host
 //! writes into `placeholders.env` and `proxy-config.yaml` is what the
-//! proxy looks for. `config.py` says so in as many words — "the proxy
-//! matches placeholders as literal strings, so the token can be any
-//! stable string — no delimiters required".
+//! proxy looks for: it matches placeholders as literal strings, so the
+//! token can be any stable string — no delimiters required.
 //!
 //! The grammar exists for two host-side reasons instead:
 //!
@@ -48,15 +48,15 @@
 
 use std::collections::HashMap;
 
-use crate::python::str_of;
+use crate::value_fmt::coerce_to_string;
 use crate::yaml::Value;
 
 use super::types::PLACEHOLDER_PREFIX;
 
 /// `generate_placeholder(env)`, with the entropy supplied.
 ///
-/// Format: `agentcage:secret:<ENV>:<token>`, where `config.py` passes
-/// `secrets.token_hex(16)` — 32 hex characters, 128 bits.
+/// Format: `agentcage:secret:<ENV>:<token>`, where the token is 16
+/// random bytes as hex — 32 hex characters, 128 bits.
 #[must_use]
 pub fn placeholder_for(env: &str, token: &str) -> String {
     format!("{PLACEHOLDER_PREFIX}{env}:{token}")
@@ -98,7 +98,7 @@ pub fn fill_raw_placeholders(
 ) -> bool {
     // `prev = {e.get("env"): e.get("placeholder", "") for e in _rules(prev_raw)}`.
     // Keyed on the raw value rather than on a string: `env:` is whatever
-    // the document said, and Python's dict lookup compares the same way.
+    // the document said, and earlier releases compared keys the same way.
     let mut carried: HashMap<Value, Value> = HashMap::new();
     if let Some(previous) = previous {
         for rule in injection_rules(previous) {
@@ -124,24 +124,21 @@ pub fn fill_raw_placeholders(
         let Some(env) = rule.get("env").cloned() else {
             continue;
         };
-        if !crate::yaml::python_bool(&env) {
+        if !crate::yaml::is_truthy(&env) {
             continue;
         }
         // `or entry.get("placeholder")` — an existing truthy placeholder
         // is left alone.
-        if rule
-            .get("placeholder")
-            .is_some_and(crate::yaml::python_bool)
-        {
+        if rule.get("placeholder").is_some_and(crate::yaml::is_truthy) {
             continue;
         }
         // `prev.get(env) or generate_placeholder(env)`: a carried-over
         // token only wins when it is truthy.
         let filled = match carried.get(&env) {
-            Some(token) if crate::yaml::python_bool(token) => token.clone(),
+            Some(token) if crate::yaml::is_truthy(token) => token.clone(),
             // `"%s%s:%s" % (...)` stringifies a non-string env the way
             // `str()` would, so a numeric `env: 1` behaves identically.
-            _ => Value::String(mint(&str_of(&env))),
+            _ => Value::String(mint(&coerce_to_string(&env))),
         };
         rule.insert(Value::String("placeholder".to_owned()), filled);
         changed = true;
@@ -158,8 +155,8 @@ pub fn fill_raw_placeholders(
 ///
 /// Public because three raw readers want it and had grown three copies:
 /// this one, `state::derived`'s `placeholders.env` writer, and
-/// `cli.py::_injection_rules` (the `secret rotate-placeholders` /
-/// `secret set --declare` pair, PR D9).
+/// the CLI's `secret rotate-placeholders` / `secret set --declare`
+/// pair.
 #[must_use]
 pub fn injection_rules(document: &Value) -> &[Value] {
     const NONE: &[Value] = &[];

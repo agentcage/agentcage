@@ -142,8 +142,7 @@ impl Output {
 
     /// Captured stdout as text, replacing invalid UTF-8.
     ///
-    /// Lossy on purpose. The Python passes `text=True`, which decodes
-    /// with the locale encoding and raises on failure; raising here would
+    /// Lossy on purpose. Failing on a decode error here would
     /// turn a podman version that emits one stray byte into a crash in
     /// `cage list`. Every caller of this either parses JSON (which will
     /// fail on its own terms) or matches a known token.
@@ -164,10 +163,9 @@ impl Output {
         self.stdout_text().trim().to_string()
     }
 
-    /// `stdout.strip().splitlines()`, empty when stdout is blank.
+    /// Stdout trimmed, then split into lines; empty when stdout is blank.
     ///
-    /// Python's `"".strip().splitlines()` is `[]`, and Rust's
-    /// `"".lines()` is also empty, but `"\n".trim()` is `""` whose
+    /// Rust's `"".lines()` is empty, and `"\n".trim()` is `""` whose
     /// `lines()` is empty too -- so the two agree without special casing.
     #[must_use]
     pub fn stdout_lines(&self) -> Vec<String> {
@@ -205,10 +203,10 @@ impl Output {
 pub enum ExecError {
     /// The binary is not installed, or not on `PATH`.
     ///
-    /// The distinction the Python leans on in three separate places:
-    /// `registry.py` prints "skopeo is not installed" and degrades to no
-    /// version pinning; `apple_container/cli.py` raises with a download
-    /// URL; `systemd.py` turns every unit operation into a no-op because
+    /// The distinction three callers lean on: the registry lookup prints
+    /// "skopeo is not installed" and degrades to no version pinning; the
+    /// apple-container backend fails with a download URL; the `systemctl`
+    /// wrapper turns every unit operation into a no-op because
     /// a macOS host has no `systemctl`. All three want "missing", not
     /// "failed".
     NotFound {
@@ -246,8 +244,8 @@ pub enum ExecError {
     ///
     /// `podman info --format json`, `podman inspect`, `container
     /// inspect`, `limactl list --json` and `skopeo list-tags` all answer
-    /// in JSON, and the Python lets `json.JSONDecodeError` -- or an
-    /// `IndexError` from `[0]` on an empty array -- escape. Giving that
+    /// in JSON, and an answer that is not JSON -- or an empty array where
+    /// one element was expected -- has to surface somewhere. Giving that
     /// a variant here keeps the crate to one error type, which matters
     /// because every wrapper returns it.
     Parse {
@@ -303,8 +301,8 @@ impl ExecError {
 
     /// Classify a spawn failure.
     ///
-    /// `ErrorKind::NotFound` from an exec is what Python surfaces as
-    /// `FileNotFoundError`, so the two map onto each other exactly.
+    /// `ErrorKind::NotFound` from an exec is "not installed"; anything
+    /// else is a spawn failure.
     pub(crate) fn from_spawn(program: &str, source: io::Error) -> Self {
         match source.kind() {
             io::ErrorKind::NotFound => Self::not_found(program),
@@ -424,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn stdout_lines_matches_pythons_strip_splitlines() {
+    fn stdout_lines_strips_then_splits() {
         assert_eq!(Output::ok("").stdout_lines(), Vec::<String>::new());
         assert_eq!(Output::ok("\n").stdout_lines(), Vec::<String>::new());
         assert_eq!(Output::ok("   ").stdout_lines(), Vec::<String>::new());

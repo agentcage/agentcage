@@ -1,93 +1,73 @@
 //! Structural validation for `protocol_relays` entries.
 //!
-//! The Rust half of the port's sharpest cross-language contract.
+//! The validator on both sides of the trust boundary.
 //!
 //! # Why this module is not in [`crate::config`]
 //!
-//! Its Python original is not in `config.py` either. It lives at
-//! `src/agentcage/data/proxy/relays/_validate.py`, and its docstring
-//! says why:
+//! Both the host (`cage create`, through the config parser) and the
+//! egress (at start and on every reload, `agentcage-egress`'s
+//! `relays::validate`) validate relay entries, and they have to refuse
+//! the same configs with the same words. Two validators that refuse the
+//! same config with different wording — or report a *different one* of
+//! two problems first — send an operator round in circles. So there is
+//! one implementation, here, and it stays free of the rest of the
+//! config parser so the egress can take it alone.
 //!
-//! > Lives under `data/proxy/relays/` so both sides of the trust
-//! > boundary import the same code: the CLI imports it as
-//! > `agentcage.data.proxy.relays._validate`; the proxy container
-//! > imports it as `relays._validate` (the proxy ships in its own image
-//! > without the CLI package on the path).
+//! # The oracle is the contract fixture
 //!
-//! That arrangement does not survive the port. Rust cannot import a
-//! Python module, and `data/proxy/**` stays Python forever
-//! (docs/history/rust-port-plan.md, scope decision), so the proxy keeps importing
-//! `_validate.py` and the host reads this file instead. **One
-//! implementation became two, and they have to agree forever.**
+//! `tests/fixtures/contracts/validate_relay_entry.json` holds 130
+//! `(entry, ok, error)` cases covering every refusal branch, plus nine
+//! `order-*` cases pinning which of two problems is reported first.
+//! `tests/contract_relay_entry.rs` asserts this module against it; the
+//! egress takes this module unchanged, so that covers both sides. The
+//! fixture was recorded when the host and the egress were separate
+//! implementations, so it pins the messages deployed configs have
+//! always seen.
 //!
-//! They disagree cheaply: these error strings are what
-//! `agentcage cage create` prints. Two validators that refuse the same
-//! config with different wording — or report a *different one* of two
-//! problems first — send an operator round in circles.
+//! # Lenient coercions
 //!
-//! # The oracle is neither implementation
-//!
-//! `tests/fixtures/contracts/validate_relay_entry.json` (PR A4) holds
-//! 130 `(entry, ok, error)` cases covering every `raise ValueError`
-//! branch in `_validate.py`, plus nine `order-*` cases pinning which of
-//! two problems is reported first. pytest asserts the Python against
-//! it; `tests/contract_relay_entry.rs` asserts this module against it.
-//!
-//! `host == proxy` cannot be written across a language boundary, and it
-//! also passes when both sides drift *together*. `host == fixture` and
-//! `proxy == fixture` survives the split and catches the joint drift.
-//! So if this module and `_validate.py` ever disagree, the fixture says
-//! which one moved — and neither is automatically right.
-//!
-//! # Faithfulness
-//!
-//! Everything here is Python semantics, not Rust's, and the awkward
+//! The coercions are the ones earlier releases applied, and the awkward
 //! parts are the point:
 //!
-//! - `entry.get("name", "")` followed by `if not (name and ...)` is
-//!   *Python truthiness* over the raw YAML value, so `name: 0` is
-//!   missing and `name: 123` is present. [`crate::yaml::python_bool`].
-//! - `int(port)` truncates a float and swallows its own exception into
+//! - A missing key reads as `""`, and presence is decided by
+//!   *truthiness* over the raw YAML value, so `name: 0` is missing and
+//!   `name: 123` is present. [`crate::yaml::is_truthy`].
+//! - The port truncates a float and turns any conversion failure into
 //!   `port = 0`, so `993.7` is a valid port and `0.5` is not.
-//! - `bool(tls)` makes the *string* `"false"` truthy, so
-//!   `tls: "false"` leaves TLS on. That is a bug, and it is reproduced
-//!   rather than fixed: it fails safe, and a port is not the place to
-//!   change what an existing config means.
-//! - `x or ""` runs *before* the `isinstance` check, so `ca_file: 0`
-//!   is an empty path and `ca_file: 1` is a type error.
+//! - `tls` is truthiness too, which makes the *string* `"false"`
+//!   truthy, so `tls: "false"` leaves TLS on. That is a bug, and it is
+//!   kept rather than fixed: it fails safe, and changing what an
+//!   existing config means needs its own decision.
+//! - The falsy-to-`""` default runs *before* the type check, so
+//!   `ca_file: 0` is an empty path and `ca_file: 1` is a type error.
 //!
-//! The comments on each refusal are ported with it. They explain *why*
-//! a config is refused rather than accepted with a precedence rule, and
-//! those reasons outlive the language.
+//! The comments on each refusal explain *why* a config is refused
+//! rather than accepted with a precedence rule.
 //!
-//! # Dependency-free, like its original
+//! # Dependency-light
 //!
-//! `_validate.py` is "intentionally dependency-free apart from stdlib
-//! so it loads cleanly in the proxy environment". The same restraint
-//! applies here: this module reaches for [`crate::yaml`] and
-//! [`crate::python`] and nothing in [`crate::config`] but its error
-//! type. In particular [`coerce_port`] spells out CPython's `int()`
-//! itself rather than borrowing the config parser's, which keeps the
-//! boundary module readable next to the Python without a detour
-//! through a parser the proxy side has no counterpart for.
+//! This module reaches for [`crate::yaml`] and [`crate::value_fmt`] and
+//! nothing in [`crate::config`] but its error type. In particular
+//! [`coerce_port`] spells out its integer parsing itself rather than
+//! borrowing the config parser's.
 
 use std::borrow::Cow;
 
 use crate::config::ConfigError;
-use crate::python::{repr, str_of, type_name};
-use crate::yaml::{Mapping, Value, python_bool};
+use crate::value_fmt::{coerce_to_string, display_value, kind_name};
+use crate::yaml::{Mapping, Value, is_truthy};
 
-/// `KNOWN_RELAY_TYPES` — the protocols a relay can speak.
+/// The protocols a relay can speak.
 ///
-/// Sorted, because [`validate_relay_type`]'s message renders
-/// `", ".join(sorted(KNOWN_RELAY_TYPES))` and the set is user-visible
-/// there. Pinned by `shared_constants.json`.
+/// Sorted, because [`validate_relay_type`]'s message lists them,
+/// comma-separated, and the set is user-visible there. Pinned by
+/// `shared_constants.json`.
 pub const KNOWN_RELAY_TYPES: [&str; 2] = ["imap", "smtp"];
 
-/// `_WRITE_MODES` — the IMAP write policy.
+/// The IMAP write policies.
 ///
 /// "organise" permits filing and flagging but refuses anything that
-/// destroys mail — see `relays/imap.py`. Sorted for the same reason as
+/// destroys mail — see the egress's IMAP relay. Sorted for the same reason as
 /// [`KNOWN_RELAY_TYPES`], and pinned by `shared_constants.json`.
 pub const WRITE_MODES: [&str; 3] = ["full", "none", "organise"];
 
@@ -96,16 +76,14 @@ const RATE_KEYS: [&str; 2] = ["conn_rate_limit", "send_rate_limit"];
 
 /// The units a rate may name, in their lowercase spelling.
 ///
-/// `RATE_UNIT_SECS` in `_validate.py`. Matched ASCII-case-insensitively.
+/// Matched ASCII-case-insensitively.
 pub const RATE_UNITS: [&str; 6] = ["sec", "s", "min", "m", "hour", "h"];
 
 /// What a `source_validator` hook is.
 ///
-/// `_validate.py` takes source-scheme validation as an optional
-/// callable because the canonical validator
-/// (`agentcage.secret_resolver.validate_source`) is not importable
-/// inside the proxy container. The host passes it; the proxy passes
-/// `None`.
+/// Source-scheme validation is an optional callable because only the
+/// host knows which schemes it can resolve. The host passes it; the
+/// egress passes `None`.
 ///
 /// It is `FnMut` so a test can record the arguments it receives —
 /// which the fixture pins, in order, as `source_validator_calls`.
@@ -137,8 +115,8 @@ pub fn validate_relay_type(name: &str) -> Result<(), ConfigError> {
 /// # Errors
 ///
 /// [`ConfigError::Value`] on any structural problem, with the message
-/// `_validate.py` would have raised, byte for byte.
-// The checks are in one function, in `_validate.py`'s order, for the
+/// the contract fixture pins, byte for byte.
+// The checks are in one function, in their pinned order, for the
 // same reason `config::parse::load` is one function: the order is
 // observable. An entry with two problems reports whichever check comes
 // first, and nine `order-*` fixture cases exist only to pin that.
@@ -150,12 +128,12 @@ pub fn validate_relay_entry(
     let Value::Mapping(entry) = entry else {
         return Err(ConfigError::value(format!(
             "protocol_relays entry must be a mapping (got {})",
-            type_name(entry)
+            kind_name(entry)
         )));
     };
 
-    // `entry.get(key, "")`: an absent key is the empty string, an
-    // explicit null is None, and both are falsy. The repr in the
+    // An absent key is the empty string, an explicit null is None, and
+    // both are falsy. The literal in the
     // message is of whatever was actually there, so a missing `listen`
     // reads `listen=''` and an explicit `listen: null` reads
     // `listen=None` — the operator can tell which mistake they made.
@@ -163,28 +141,28 @@ pub fn validate_relay_entry(
     let name = entry.get("name").unwrap_or(&empty);
     let rtype = entry.get("type").unwrap_or(&empty);
     let listen = entry.get("listen").unwrap_or(&empty);
-    if !(python_bool(name) && python_bool(rtype) && python_bool(listen)) {
+    if !(is_truthy(name) && is_truthy(rtype) && is_truthy(listen)) {
         return Err(ConfigError::value(format!(
             "protocol_relays entry requires name/type/listen (got name={}, type={}, listen={})",
-            repr(name),
-            repr(rtype),
-            repr(listen)
+            display_value(name),
+            display_value(rtype),
+            display_value(listen)
         )));
     }
 
-    // `validate_relay_type(rtype)` is handed the raw value, and its
-    // message interpolates it with `str()` inside literal quotes
-    // rather than with `repr()`. So a `type: 123` reads `'123'`.
-    validate_relay_type(&str_of(rtype))?;
+    // `validate_relay_type` is handed the raw value coerced to text, and
+    // its message puts it inside literal quotes rather than going
+    // through `display_value()`. So a `type: 123` reads `'123'`.
+    validate_relay_type(&coerce_to_string(rtype))?;
 
     // Every path from here names the relay — `protocol_relays[mail]` —
-    // because a config with three relays has to say which one. `str()`
-    // again, not `repr()`: no quotes around the name.
-    let at = format!("protocol_relays[{}]", str_of(name));
+    // because a config with three relays has to say which one. Coerced
+    // text again, not `display_value()`: no quotes around the name.
+    let at = format!("protocol_relays[{}]", coerce_to_string(name));
 
     // ── upstream ────────────────────────────────────────
     let upstream = falsy_to_empty_mapping(entry.get("upstream"), &format!("{at}.upstream"))?;
-    // `str()` on whatever is there would turn `host: [1]` into the
+    // Coercing whatever is there to text would turn `host: [1]` into the
     // string "[1]", which is non-empty and therefore "present" — a
     // config that validates and then fails DNS resolution with a name
     // nobody wrote. A string or nothing; anything else is named.
@@ -192,12 +170,12 @@ pub fn validate_relay_entry(
         // A falsy host is the empty string, type unexamined: `host: 0`
         // and `host: []` both mean "absent" and get the
         // requires-host-and-port message, not a type complaint.
-        Some(value) if python_bool(value) => match value {
+        Some(value) if is_truthy(value) => match value {
             Value::String(text) => text.clone(),
             other => {
                 return Err(ConfigError::value(format!(
                     "{at}.upstream.host must be a string (got {})",
-                    type_name(other)
+                    kind_name(other)
                 )));
             }
         },
@@ -205,8 +183,8 @@ pub fn validate_relay_entry(
     };
     // `port: "993"` and `port: 993.7` coerce on purpose — YAML makes
     // both easy to write and both mean a port. `port: true` does not:
-    // `bool` is an `int` subclass in Python, so it coerced to **1** and
-    // named a port the operator never wrote.
+    // earlier releases coerced it to **1**, naming a port the operator
+    // never wrote.
     //
     // Unlike `host` above, this refuses a *falsy* bool too. There is no
     // reading of `port: false` — or of `port: no`, which YAML 1.1 makes
@@ -228,8 +206,8 @@ pub fn validate_relay_entry(
     // `bool(upstream.get("tls", True))`, not `is True`: the string
     // `"false"` is truthy, so `tls: "false"` leaves TLS ON. Wrong, and
     // wrong in the safe direction, so it is reproduced. See
-    // `crate::yaml::python_bool`.
-    let tls = upstream.get("tls").is_none_or(python_bool);
+    // `crate::yaml::is_truthy`.
+    let tls = upstream.get("tls").is_none_or(is_truthy);
     let ca_file = falsy_to_empty_string(
         upstream.get("ca_file"),
         &format!("{at}.upstream.ca_file must be a path string"),
@@ -290,10 +268,10 @@ pub fn validate_relay_entry(
     // to `{}` through `or {}` before the type is ever examined, so
     // only a *truthy* non-mapping is an error.
     match entry.get("policy") {
-        Some(value) if python_bool(value) && !matches!(value, Value::Mapping(_)) => {
+        Some(value) if is_truthy(value) && !matches!(value, Value::Mapping(_)) => {
             return Err(ConfigError::value(format!(
                 "{at}.policy must be a mapping (got {})",
-                type_name(value)
+                kind_name(value)
             )));
         }
         _ => {}
@@ -315,24 +293,20 @@ pub fn validate_relay_entry(
                 return Err(ConfigError::value(format!(
                     "{at}.policy.write_mode must be one of {} (got {})",
                     WRITE_MODES.join(", "),
-                    repr(mode)
+                    display_value(mode)
                 )));
             };
             // readonly is the older spelling of the same thing. Both set and
             // disagreeing is ambiguous, and guessing which the operator meant
             // is exactly the wrong call for a policy that gates writes.
             if let Some(readonly) = policy.get("readonly") {
-                let implied = if python_bool(readonly) {
-                    "none"
-                } else {
-                    "full"
-                };
+                let implied = if is_truthy(readonly) { "none" } else { "full" };
                 if implied != lowered {
                     return Err(ConfigError::value(format!(
                         "{at}.policy sets readonly={} and write_mode={}, which contradict. \
                          Use write_mode alone.",
-                        repr(readonly),
-                        repr(mode)
+                        display_value(readonly),
+                        display_value(mode)
                     )));
                 }
             }
@@ -343,7 +317,7 @@ pub fn validate_relay_entry(
                 Some(other) => {
                     return Err(ConfigError::value(format!(
                         "{at}.policy.{key} must be a list (got {})",
-                        type_name(other)
+                        kind_name(other)
                     )));
                 }
             }
@@ -355,13 +329,13 @@ pub fn validate_relay_entry(
         // reported success.
         for key in RATE_KEYS {
             match policy.get(key) {
-                Some(value) if python_bool(value) => {
+                Some(value) if is_truthy(value) => {
                     let valid = matches!(value, Value::String(text) if is_rate_limit(text));
                     if !valid {
                         return Err(ConfigError::value(format!(
                             "{at}.policy.{key} must be a rate like '30/min': a count, '/', \
                              then a unit of sec, s, min, m, hour or h (got {})",
-                            repr(value)
+                            display_value(value)
                         )));
                     }
                 }
@@ -375,7 +349,7 @@ pub fn validate_relay_entry(
     if let Some(validate_source) = source_validator.as_mut() {
         for key in ["user_source", "password_source"] {
             match auth.get(key) {
-                Some(value) if python_bool(value) => validate_source(&str_of(value))?,
+                Some(value) if is_truthy(value) => validate_source(&coerce_to_string(value))?,
                 _ => {}
             }
         }
@@ -386,12 +360,11 @@ pub fn validate_relay_entry(
 
 /// Whether `text` is a rate both relays can parse.
 ///
-/// `RATE_LIMIT_RE` in `_validate.py`, which the relays share:
-/// `^\s*(\d+)\s*/\s*(sec|s|min|m|hour|h)\s*$` under `re.ASCII |
-/// re.IGNORECASE`. Spelled out rather than pulled in from a regex crate,
-/// and ASCII on purpose on both sides: `\s` is Python's ASCII set, which
-/// has the vertical tab that `char::is_ascii_whitespace` leaves out, and
-/// a Unicode `\d` or case fold would accept text (`١٠`, `ſ`) a reader
+/// The regex `^\s*(\d+)\s*/\s*(sec|s|min|m|hour|h)\s*$`, ASCII-only and
+/// case-insensitive. Spelled out rather than pulled in from a regex
+/// crate, and ASCII on purpose: whitespace is the ASCII set *including*
+/// the vertical tab that `char::is_ascii_whitespace` leaves out, and a
+/// Unicode `\d` or case fold would accept text (`١٠`, `ſ`) a reader
 /// would not call a count or a unit.
 #[must_use]
 pub fn is_rate_limit(text: &str) -> bool {
@@ -410,7 +383,7 @@ pub fn is_rate_limit(text: &str) -> bool {
 /// set `validate_relay_entry`'s `source_validator` hook checks at
 /// parse time. The relay resolves `auth.*_source` by the NAME after the
 /// colon, from the staged secret files and env vars the egress unit
-/// provides (`secret_lookup.py`), and only two schemes put a value
+/// provides, and only two schemes put a value
 /// there under that NAME:
 ///
 /// - `env:NAME` — the secret store's entry NAME on podman and
@@ -453,7 +426,7 @@ pub fn validate_relay_credential_source(source: &str, path: &str) -> Result<(), 
         return Err(ConfigError::value(format!(
             "{path} must use the 'source:NAME' scheme (e.g. 'env:NAME' or \
              'systemd-creds:NAME') — got {}",
-            crate::python::repr_str(source)
+            crate::value_fmt::quote_text(source)
         )));
     }
     if scheme == "cmd" {
@@ -485,7 +458,7 @@ fn falsy_to_empty_mapping<'a>(
     at: &str,
 ) -> Result<Cow<'a, Mapping>, ConfigError> {
     match value {
-        Some(value) if python_bool(value) => match value {
+        Some(value) if is_truthy(value) => match value {
             Value::Mapping(mapping) => Ok(Cow::Borrowed(mapping)),
             _ => Err(ConfigError::value(format!("{at} must be a mapping"))),
         },
@@ -501,11 +474,11 @@ fn falsy_to_empty_mapping<'a>(
 /// testing truthiness *before* the type.
 fn falsy_to_empty_string(value: Option<&Value>, sentence: &str) -> Result<String, ConfigError> {
     match value {
-        Some(value) if python_bool(value) => match value {
+        Some(value) if is_truthy(value) => match value {
             Value::String(text) => Ok(text.clone()),
             other => Err(ConfigError::value(format!(
                 "{sentence} (got {})",
-                type_name(other)
+                kind_name(other)
             ))),
         },
         _ => Ok(String::new()),
@@ -523,28 +496,28 @@ fn mapping_or_skip(value: Option<&Value>) -> Option<&Mapping> {
     }
 }
 
-/// `int(upstream.get("port", 0) or 0)`, with the `except` arm folded in.
+/// `upstream.port` as an integer, `0` when absent, falsy or
+/// unconvertible.
 ///
-/// `_validate.py` catches `TypeError` and `ValueError` and sets
-/// `port = 0`, which then fails the range check — so every conversion
-/// failure produces the same "requires host and port" message rather
-/// than a type complaint. Anything this returns outside `[1, 65535]`
-/// means the same thing.
+/// A conversion failure is `0`, which then fails the range check — so
+/// every conversion failure produces the same "requires host and port"
+/// message rather than a type complaint. Anything this returns outside
+/// `[1, 65535]` means the same thing.
 ///
-/// The truncation is CPython's: `int(993.7)` is 993 and `int(0.5)` is
+/// A float truncates toward zero: `993.7` is 993 and `0.5` is
 /// 0, so a fractional port is silently floored toward zero and only
 /// the sub-one case is refused. Both are fixture cases
 /// (`ok-port-float-truncates`, `err-port-float-sub-one`).
 fn coerce_port(value: Option<&Value>) -> i64 {
-    // `or 0` first: a falsy port is 0 and never reaches `int()`.
-    let Some(value) = value.filter(|value| python_bool(value)) else {
+    // A falsy port is 0 and is never converted.
+    let Some(value) = value.filter(|value| is_truthy(value)) else {
         return 0;
     };
     match value {
         // Unreachable: the caller refuses `port: true` by type before
-        // coercion, because `int(True)` is 1 and a relay pointed at
-        // port 1 is never what the operator wrote. Kept so this
-        // function still totals `int()` on its own.
+        // coercion, because `true` would coerce to 1 and a relay pointed
+        // at port 1 is never what the operator wrote. Kept so this
+        // function stays total on its own.
         Value::Bool(_) => 1,
         Value::Number(number) => number
             .as_i64()
@@ -560,30 +533,29 @@ fn coerce_port(value: Option<&Value>) -> i64 {
                     let truncated = float.trunc() as i64;
                     truncated
                 } else {
-                    // `int(float('inf'))` is an OverflowError, which is
-                    // neither TypeError nor ValueError — so Python would
-                    // propagate it rather than fall back to 0. No YAML
-                    // scalar reaches here (`.inf` is a float and PyYAML
-                    // resolves it, but a relay port written `.inf` is not
-                    // a config anyone has); 0 keeps the refusal loud.
+                    // Infinity or NaN: earlier releases crashed on it
+                    // rather than falling back to 0. A relay port
+                    // written `.inf` is not a config anyone has; 0 keeps
+                    // the refusal loud.
                     0
                 }
             }),
-        // CPython's `int(str)`: surrounding whitespace, an optional
-        // sign, decimal digits with underscores *between* digits.
-        // Anything else is the ValueError that becomes 0.
-        Value::String(text) => parse_python_int(text).unwrap_or(0),
-        // `int(list)` / `int(dict)` is a TypeError -> 0.
+        // Surrounding whitespace, an optional sign, decimal digits with
+        // underscores *between* digits. Anything else becomes 0.
+        Value::String(text) => parse_int_literal(text).unwrap_or(0),
+        // A sequence or mapping -> 0.
         _ => 0,
     }
 }
 
-/// CPython's `int(str)` in base 10.
+/// A base-10 integer literal: surrounding whitespace, an optional sign,
+/// and single underscores between digits (Python's `int(str)` rules,
+/// which configs have been held to).
 ///
 /// Shares its rules with `config::parse`'s copy and is written out
-/// again here rather than shared, so this module stays as
-/// self-contained as the Python one it mirrors.
-fn parse_python_int(text: &str) -> Option<i64> {
+/// again here rather than shared, so this module stays
+/// self-contained.
+fn parse_int_literal(text: &str) -> Option<i64> {
     let trimmed = text.trim();
     if trimmed.is_empty()
         || trimmed.contains("__")
@@ -660,10 +632,10 @@ mod tests {
     /// The fixture reaches every `raise`, but coverage of the branches
     /// is not coverage of the coercions ahead of them, and three of
     /// those coercions used to accept input no operator meant. Each
-    /// expectation below is measured against `_validate.py` on CPython
-    /// 3.13 rather than reasoned about — the two sides of this trust
-    /// boundary have to agree exactly, and the fixture is regenerated
-    /// from the same run.
+    /// expectation below was measured against the earlier, separate
+    /// egress-side implementation rather than reasoned about — the two
+    /// sides of this trust boundary have to agree exactly, and the
+    /// fixture was generated from the same run.
     ///
     /// | Input | Now |
     /// | :-- | :-- |
@@ -712,8 +684,8 @@ mod tests {
         assert!(check(&relay("  ca_file: {}\n")).is_ok());
     }
 
-    /// A non-string `type:` reaches the message as `str()`, not
-    /// `repr()` — the quotes in `'{name}'` are literal.
+    /// A non-string `type:` reaches the message as coerced text, not
+    /// `display_value()` — the quotes in `'{name}'` are literal.
     ///
     /// No fixture case covers this: the fixture's `type` values are all
     /// strings.

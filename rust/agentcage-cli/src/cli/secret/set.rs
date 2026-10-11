@@ -45,8 +45,7 @@ use agentcage_cli::secrets::{
 pub(crate) struct SecretWriter<'a> {
     host: SecretHost<'a>,
     /// [`None`] on `isolation: apple-container`, which has no podman
-    /// secret store at all — `_store_secret(None, cfg, …)` is how both
-    /// of the Python's apple call sites spell it.
+    /// secret store at all.
     ///
     /// For the other two it is the store *that cage's* containers read,
     /// which on `vm` is inside the Lima guest. Writing a vm cage's
@@ -61,12 +60,9 @@ pub(crate) struct SecretWriter<'a> {
 impl<'a> SecretWriter<'a> {
     /// A writer for one cage.
     ///
-    /// The cage's `isolation:` decides the two arguments the Python
-    /// varies between its call sites, so neither is a parameter here:
-    /// an apple cage gets no podman handle and no `source:` scheme
-    /// (`cli.py:1251` and `cli.py:4152` both call
-    /// `_store_secret(None, cfg, …)` with the scheme defaulted),
-    /// everything else gets both. Deriving it rather than passing it
+    /// The cage's `isolation:` decides the podman handle and the
+    /// `source:` scheme, so neither is a parameter here: an apple cage
+    /// gets no podman handle and no scheme, everything else gets both. Deriving it rather than passing it
     /// is what keeps `secret set` and `cage create -s` from disagreeing
     /// about which store an apple cage's value goes to.
     pub(crate) fn new(
@@ -256,13 +252,11 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         //
         // No orphan note either, which is the one asymmetry worth
         // naming: the "stored but never injected" hint below is
-        // unreachable on this backend, because the Python's branch
-        // returns before reaching it. Reproduced rather than evened
-        // out. The hint would be just as true here — an undeclared key
-        // is staged and never injected on this backend too — but
-        // printing it is a behaviour change dressed as a port, and the
-        // place to argue for it is the Python, which is still what the
-        // golden output is compared against.
+        // unreachable on this backend, because this branch returns
+        // before reaching it, as it did in earlier releases. The hint
+        // would be just as true here — an undeclared key is staged and
+        // never injected on this backend too — but printing it would
+        // change pinned output, so it is a separate decision.
         apple::restart_if_running(ctx, &config);
         return Ok(());
     }
@@ -284,11 +278,10 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 
 /// The value, from a terminal read with echo off or from stdin.
 ///
-/// `sys.stdin.read().rstrip("\n")` for the piped case — *all* trailing
-/// newlines, not one, so `printf 'v\n\n' | …` and `echo v | …` store
-/// the same thing. Trailing `\r` is not stripped, because the Python
-/// does not strip it either and a value that genuinely ends in one must
-/// survive.
+/// For the piped case, all of stdin with *all* trailing newlines
+/// stripped, not one, so `printf 'v\n\n' | …` and `echo v | …` store
+/// the same thing. Trailing `\r` is not stripped: a value that
+/// genuinely ends in one must survive.
 ///
 /// # Errors
 ///

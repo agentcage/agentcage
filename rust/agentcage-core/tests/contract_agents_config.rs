@@ -1,9 +1,9 @@
 //! The `agents` block contract, against `tests/fixtures/contracts/agents_config.json`.
 //!
 //! The host parses and validates a cage's `agents` block, then copies it
-//! into `proxy-config.yaml` unchanged; the egress addon builds its decider
-//! and watcher from the same keys. The proxy half asserts the addon
-//! accepts the fixture's sample (`tests/test_agents_config_proxy.py`);
+//! into `proxy-config.yaml` unchanged; the egress builds its decider
+//! and watcher from the same keys. The egress half asserts it accepts
+//! the fixture's sample (`agentcage-egress/tests/contract_fixtures.rs`);
 //! this is the host half, so a key renamed or reshaped on either side
 //! fails on the side that moved.
 

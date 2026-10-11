@@ -3,8 +3,8 @@
 //! `dns-allowlist.conf`.
 //!
 //! All three are regenerated rather than migrated, which is what makes
-//! them safe to rewrite from a Rust binary over a Python-deployed
-//! cage. And two of them are written **in place**, without the atomic
+//! them safe to rewrite over a cage an earlier release
+//! deployed. And two of them are written **in place**, without the atomic
 //! temp-and-rename, on purpose:
 //!
 //! * `placeholders.env` — "Written in place (no rename) so bind mounts
@@ -35,14 +35,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use agentcage_core::config::{HostProbe, injection_rules};
-use agentcage_core::python::{repr_str, str_of};
 use agentcage_core::quadlets::effective_dns_allowlist;
+use agentcage_core::value_fmt::{coerce_to_string, quote_text};
 use agentcage_core::yaml::{self, Mapping, Value};
 
 use crate::deployment::AgentSchema;
 use crate::error::{Result, StateError};
+use crate::path_expand::{expanduser, expandvars};
 use crate::paths::Paths;
-use crate::pyfs::{expanduser, expandvars};
 
 /// `state._PROXY_KEYS` — the keys the egress reads.
 ///
@@ -56,8 +56,8 @@ use crate::pyfs::{expanduser, expandvars};
 /// fallback instead; it rides along now so both sides resolve the
 /// same value (`tests/fixtures/contracts/logging_defaults.json`).
 ///
-/// `egress` (the body cap and budget, read on every reload) came after
-/// the Python port and is the fourteenth.
+/// `egress` (the body cap and budget, read on every reload) came later
+/// and is the fourteenth.
 ///
 /// The order is `state.py`'s, but it is a `frozenset` there and the
 /// filter preserves the *document's* order, not this one.
@@ -107,7 +107,7 @@ impl Paths {
                 }
             }
         }
-        // The Python deepcopies before the ca_file -> ca_pem rewrite so
+        // The config is copied before the ca_file -> ca_pem rewrite so
         // the PEM cannot leak back into the in-memory raw config and
         // from there into a cage.yaml rewrite, replacing the operator's
         // path with a wall of certificate. Here the values were cloned
@@ -158,26 +158,28 @@ impl Paths {
         let Some(Value::Sequence(relays)) = proxy_cfg.get_mut("protocol_relays") else {
             // `proxy_cfg.get("protocol_relays") or []` — absent, null
             // and an empty list all mean nothing to do. A non-sequence
-            // would raise in Python on iteration; validation has
-            // already rejected it long before here.
+            // is skipped too; validation has already rejected it long
+            // before here.
             return Ok(());
         };
         for relay in relays.iter_mut() {
             let Value::Mapping(relay) = relay else {
                 continue;
             };
-            let label = relay.get("name").map_or_else(|| "?".to_owned(), str_of);
+            let label = relay
+                .get("name")
+                .map_or_else(|| "?".to_owned(), coerce_to_string);
             let Some(Value::Mapping(upstream)) = relay.get_mut("upstream") else {
                 continue;
             };
             // `upstream.pop("ca_file", "")` — removed whether or not it
             // held anything, so the host path never reaches the proxy.
             let ca_file = upstream.shift_remove("ca_file").unwrap_or(Value::Null);
-            if !yaml::python_bool(&ca_file) {
+            if !yaml::is_truthy(&ca_file) {
                 continue;
             }
-            let path = expanduser(&expandvars(&str_of(&ca_file)), self.home());
-            let display = repr_str(&path.to_string_lossy());
+            let path = expanduser(&expandvars(&coerce_to_string(&ca_file)), self.home());
+            let display = quote_text(&path.to_string_lossy());
             let pem = fs::read_to_string(&path).map_err(|error| {
                 StateError::value(format!(
                     "protocol_relays[{label}].upstream.ca_file: \
@@ -224,12 +226,12 @@ impl Paths {
                 continue;
             };
             // `if env and placeholder` — both have to be truthy.
-            if !yaml::python_bool(env) || !yaml::python_bool(placeholder) {
+            if !yaml::is_truthy(env) || !yaml::is_truthy(placeholder) {
                 continue;
             }
-            text.push_str(&str_of(env));
+            text.push_str(&coerce_to_string(env));
             text.push('=');
-            text.push_str(&str_of(placeholder));
+            text.push_str(&coerce_to_string(placeholder));
             text.push('\n');
         }
         let path = self.placeholders_env_path(name);
@@ -323,7 +325,7 @@ fn write_in_place(path: &std::path::Path, text: &str) -> Result<()> {
     fs::write(path, text).map_err(|e| StateError::io(path, "write", e))
 }
 
-/// `e.strerror or e` — the bare OS message, as Python formats it.
+/// The bare OS message (`strerror`), without std's " (os error N)".
 fn strerror(error: &std::io::Error) -> String {
     match error.raw_os_error() {
         // `std`'s Display appends " (os error N)"; `strerror` does not.

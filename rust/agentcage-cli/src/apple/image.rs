@@ -53,9 +53,8 @@ pub fn egress_image_name(version: &str, content_hash: &str) -> String {
 
 /// [`egress_image_name`] over a build context on disk.
 ///
-/// The seam `_egress_data_dir` is in the Python: its tests monkeypatch
-/// it to point the whole rebuild decision at a throwaway context, and
-/// `tests/fixtures/apple-container/image.json` records one.
+/// The seam that points the whole rebuild decision at a throwaway
+/// context; `tests/fixtures/apple-container/image.json` records one.
 #[must_use]
 pub fn egress_image_name_from_context(version: &str, context: &Path) -> String {
     egress_image_name(version, &egress::content_hash_from_dir(context))
@@ -98,7 +97,7 @@ impl BuildFlags {
 
 /// `_build_egress_image_if_missing`'s argv, minus the `container` binary.
 ///
-/// Order is the Python's and the fixture pins it: the flags land
+/// The fixture pins the order: the flags land
 /// *between* `-f <containerfile>` and the context, not at the end.
 #[must_use]
 pub fn egress_build_argv(image: &str, context: &Path, flags: BuildFlags) -> Vec<String> {

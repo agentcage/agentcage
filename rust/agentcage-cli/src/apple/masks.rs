@@ -11,7 +11,7 @@
 //!
 //! The quadlet backend solves this with an `ExecStartPre` /
 //! `ExecStopPost` pair in the unit. Apple's runtime has no such hook,
-//! so the Python does the same bookkeeping itself, host-side, around
+//! so agentcage does the same bookkeeping itself, host-side, around
 //! `container run`. This is that bookkeeping.
 //!
 //! # What makes removal safe
@@ -43,7 +43,7 @@ use agentcage_core::volume_mounts::{MountTarget, mask_mountpoint_dirs};
 /// nothing to record: teardown must never act on an earlier start's
 /// answer.
 ///
-/// Best-effort, like the Python: a state directory that cannot be
+/// Best-effort: a state directory that cannot be
 /// created or written is not a reason to fail a start that would
 /// otherwise work, and the consequence is a mask mount point left
 /// behind rather than anything lost.
@@ -94,8 +94,7 @@ pub fn cleanup(state_path: &Path) {
         let _ = std::fs::remove_file(state_path);
         return;
     };
-    // The Python iterates `sorted(recorded.items())`; a `BTreeMap` is
-    // already in that order.
+    // Sorted by root; a `BTreeMap` is already in that order.
     for (root, dirs) in &recorded {
         // `realpath` on a non-existent path resolves lexically, which
         // is what the quadlet hook's `realpath -m` does.

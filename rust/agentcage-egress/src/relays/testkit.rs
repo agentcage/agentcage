@@ -153,7 +153,7 @@ pub(crate) fn merged(base: Json, extra: &Json) -> Json {
     out
 }
 
-/// Lower-case hex, as Python's `hexdigest()`.
+/// Lower-case hex.
 pub(crate) fn hex(data: &[u8]) -> String {
     use std::fmt::Write as _;
     data.iter().fold(String::new(), |mut out, b| {

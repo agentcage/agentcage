@@ -1,12 +1,11 @@
-//! `state.py::_atomic_write_text`, ported branch for branch.
+//! The atomic writer for the state files.
 //!
-//! This is a 30-line function with a 25-line docstring, and the
-//! docstring is load-bearing. It is reproduced below because every
-//! sentence in it corresponds to a branch here, and because the one
+//! The contract below is load-bearing: it is what earlier releases
+//! wrote under, and every sentence in it corresponds to a branch here, and because the one
 //! thing a reader will want to "clean up" — the refusal to unlink a
 //! colliding temp file — is the whole point.
 //!
-//! ## The Python, verbatim
+//! ## The contract
 //!
 //! > Atomically write *text* to *p* via a PID-suffixed temp + rename.
 //! >
@@ -40,7 +39,7 @@
 //! > contents, never a truncated prefix that would raise YAMLError /
 //! > JSONDecodeError and abort the reconcile.
 //!
-//! ## What that means for the port
+//! ## What that means for the code
 //!
 //! Four invariants, each of which a plausible Rust rewrite breaks:
 //!
@@ -56,7 +55,7 @@
 //!    file alone.
 //! 4. **The mode of an existing file is preserved** across the
 //!    replace, under whatever umask the process happens to have. The
-//!    Python opens with `mode` *and then* `fchmod`s, because the open
+//!    temp is opened with `mode` *and then* `fchmod`ed, because the open
 //!    mode is masked by the umask and `fchmod` is not. Both steps are
 //!    here.
 //!
@@ -93,7 +92,7 @@ const DEFAULT_MODE: u32 = 0o644;
 /// # Errors
 ///
 /// * [`StateError::TempCollision`] when both candidate names exist —
-///   the Python's final `raise FileExistsError`, and a *successful*
+///   the final refusal, and a *successful*
 ///   refusal rather than a failure to be retried blindly.
 /// * [`StateError::Io`] for anything else: the parent directory could
 ///   not be created, the temp could not be written, the rename failed.
@@ -137,8 +136,7 @@ pub fn atomic_write_text_as(path: &Path, text: &str, pid: u32) -> Result<()> {
     let candidates = temp_candidates(path, pid);
 
     // The loop is over exactly two names, and only `AlreadyExists`
-    // advances it. Anything else is a real error and propagates, as the
-    // Python's bare `except FileExistsError` lets it.
+    // advances it. Anything else is a real error and propagates.
     let mut opened: Option<(PathBuf, File)> = None;
     for candidate in &candidates {
         match OpenOptions::new()
@@ -160,8 +158,8 @@ pub fn atomic_write_text_as(path: &Path, text: &str, pid: u32) -> Result<()> {
 
     let Some((tmp, mut file)) = opened else {
         // Both names exist. Abort rather than unlink a possible
-        // concurrent writer's in-flight temp. The Python raises
-        // FileExistsError with this exact sentence.
+        // concurrent writer's in-flight temp. Earlier releases
+        // refused with this exact sentence.
         return Err(StateError::TempCollision {
             target: path.to_path_buf(),
             first: file_name(&candidates[0]),
@@ -186,8 +184,8 @@ pub fn atomic_write_text_as(path: &Path, text: &str, pid: u32) -> Result<()> {
     }
     file.write_all(text.as_bytes())
         .map_err(|source| StateError::io(&tmp, "write", source))?;
-    // `os.fdopen(...)` closing is where Python would surface a write
-    // error; close explicitly so the same is true here.
+    // Close explicitly, so a write error that only surfaces at close
+    // is not lost.
     drop(file);
 
     // The atomic publish. `Path.replace` is `os.replace`, which is
@@ -261,7 +259,7 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn the_temp_names_are_the_pythons() {
+    fn the_temp_names_are_pinned() {
         let names = temp_candidates(Path::new("/x/cage.yaml"), 4242);
         assert_eq!(names[0], Path::new("/x/cage.yaml.4242.tmp"));
         assert_eq!(names[1], Path::new("/x/cage.yaml.4242.1.tmp"));
@@ -310,7 +308,7 @@ mod tests {
         };
         assert_eq!(first, "cage.yaml.777.tmp");
         assert_eq!(second, "cage.yaml.777.1.tmp");
-        // The Python's sentence, which a user may well see.
+        // The pinned sentence, which a user may well see.
         assert!(
             error.to_string().contains("cannot create atomic temp for"),
             "{error}"

@@ -40,10 +40,10 @@
 //! # What it deliberately does not reproduce
 //!
 //! PyYAML's formatting. PyYAML wraps at 80 columns and has its own
-//! quoting heuristics; docs/history/rust-port-plan.md section 2.8 accepts that the
-//! port changes YAML formatting (comments are already dropped today,
-//! `state.py:195`) and requires the golden corpus to compare YAML
-//! by parsed value rather than by bytes. Sequence indentation *does*
+//! quoting heuristics; docs/history/rust-port-plan.md section 2.8
+//! accepted a change in YAML formatting (comments were always dropped)
+//! and requires the golden corpus to compare YAML by parsed value
+//! rather than by bytes. Sequence indentation *does*
 //! match PyYAML's `default_flow_style=False` output — items sit at their
 //! parent key's indentation — because that is what every config in the
 //! repo already looks like and `cage edit` shows it to the user.

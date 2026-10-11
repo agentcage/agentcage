@@ -32,7 +32,7 @@
 //! Threads share a PID, so every thread in
 //! [`writers_sharing_one_pid_never_unlink_each_others_temps`] picks the
 //! *same* `<p>.<pid>.tmp` base name. That is precisely the collision
-//! the Python's comment is about — "because PID namespaces share a
+//! the writer's contract is about — "because PID namespaces share a
 //! numeric space, a *different* writer's in-flight temp at the same
 //! numeric PID" — and it is unreachable by forking, since fork gives
 //! distinct PIDs. A thread race reproduces it for free.
@@ -269,7 +269,7 @@ fn the_target_never_disappears() {
 fn writers_sharing_one_pid_never_unlink_each_others_temps() {
     // Threads share a PID, so all the writers here pick the *same*
     // `<p>.<pid>.tmp` base name. That is the cross-PID-namespace
-    // collision the Python's comment is about, and it is unreachable
+    // collision the writer's contract is about, and it is unreachable
     // by forking, which hands out distinct PIDs.
     //
     // The base name is *also* pre-planted, standing in for the
@@ -351,7 +351,7 @@ fn racing_processes_never_tear_a_read() {
     // Threads share an address space and a PID; separate processes
     // share neither, which is the shape the host CLI and the egress
     // addon actually have. Each child gets a real distinct PID from
-    // the kernel, so the temp names differ for the reason the Python
+    // the kernel, so the temp names differ for the reason the writer
     // relies on rather than because a test passed a number in.
     //
     // The children rendezvous on a `go` file before writing and stop

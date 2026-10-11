@@ -1,18 +1,17 @@
-//! The A4 cross-language contract fixtures, against the Rust side.
+//! The cross-boundary contract fixtures, against the host side.
 //!
 //! `tests/fixtures/contracts/` is the oracle for every piece of logic
-//! agentcage implements on *both* sides of its trust boundary
-//! (docs/history/rust-port-plan.md §2.2). Before the port the contract was
-//! `host == proxy`; after it, `host == fixture` **and**
-//! `proxy == fixture`, because the first form cannot be written across
-//! a language boundary and also passes when both sides drift together.
+//! agentcage applies on *both* sides of its trust boundary
+//! (docs/history/rust-port-plan.md §2.2): the contract is
+//! `host == fixture` **and** `egress == fixture`, because `host ==
+//! egress` also passes when both sides drift together.
 //!
-//! pytest (`tests/test_contract_fixtures.py`) holds the Python to these
-//! files. This binary holds the Rust to them. Neither implementation is
-//! the oracle: if the two ever disagree, the fixture says which one
-//! moved.
+//! This binary holds the host side to these files; the egress has its
+//! own (`agentcage-egress/tests/contract_fixtures.rs`). The
+//! implementation is not the oracle: if it disagrees with the fixture,
+//! the fixture says what moved.
 //!
-//! Three of the six fixtures land in PR C3's scope:
+//! Three of the six fixtures are asserted here:
 //!
 //! | File | Rust side |
 //! | :-- | :-- |
@@ -21,12 +20,11 @@
 //! | `scaffold_inspectors.json` | the host half of the inspector handshake |
 //!
 //! The other three (`valid_domain`, `encoded_private_ip`,
-//! `is_never_grant`) are PR C2's.
+//! `is_never_grant`) have their own test binaries.
 //!
 //! Every expectation is read off disk rather than transcribed, so this
-//! file and the fixture cannot drift: a case added by
-//! `scripts/gen-contract-fixtures.py` is asserted here the moment it
-//! lands.
+//! file and the fixture cannot drift: a case added to the fixture is
+//! asserted here the moment it lands.
 
 mod common;
 
@@ -52,13 +50,13 @@ fn contract(name: &str) -> serde_json::Value {
 /// A fixture `entry` as the value tree the validator takes.
 ///
 /// The fixture is JSON and the validator reads YAML, which is not the
-/// mismatch it looks like: `yaml.safe_load` and `json.loads` produce
-/// the same seven Python types, and the fixture README pins the
-/// JSON→Python mapping the error messages depend on (`null` is
-/// `NoneType`, a fractional number is `float`, and so on). `serde_json`
+/// mismatch it looks like: both load into the same seven value kinds,
+/// and the fixture README pins the kind names the error messages depend
+/// on (`null` is `NoneType`, a fractional number is `float`, and so
+/// on). `serde_json`
 /// deserializing straight into `serde_norway::Value` reproduces that
 /// mapping — an integer stays an integer and `993.7` stays a float, so
-/// `int()` truncation and the `(got float)` wording both land where
+/// integer truncation and the `(got float)` wording both land where
 /// the fixture says.
 fn as_yaml(entry: &serde_json::Value) -> Value {
     serde_json::from_value(entry.clone()).expect("JSON value into the YAML value tree")
@@ -66,8 +64,8 @@ fn as_yaml(entry: &serde_json::Value) -> Value {
 
 /// Every `validate_relay_entry` case, byte for byte.
 ///
-/// This is PR C3's headline acceptance check. 139 cases reach every
-/// `raise ValueError` branch in `_validate.py`; nine `order-*` cases
+/// The headline acceptance check for relays. 139 cases reach every
+/// refusal branch of the relay validator; nine `order-*` cases
 /// pin *which* of two problems an entry with both is told about, which
 /// is the part a second implementation gets wrong silently.
 #[test]
@@ -112,7 +110,7 @@ fn every_validate_relay_entry_case_matches() {
         match validate_relay_entry(&entry, Some(&mut record)) {
             Ok(()) if expected_ok => {}
             Ok(()) => wrong.push(format!(
-                "  {id}: accepted it; python raised\n      python: {}",
+                "  {id}: accepted it; the fixture refuses it\n      expected: {}",
                 expected_error.unwrap_or("<missing>")
             )),
             Err(error) if expected_ok => {
@@ -122,7 +120,7 @@ fn every_validate_relay_entry_case_matches() {
                 let produced = error.message();
                 if Some(produced) != expected_error {
                     wrong.push(format!(
-                        "  {id}\n      python: {}\n      rust:   {produced}",
+                        "  {id}\n      expected: {}\n      actual:   {produced}",
                         expected_error.unwrap_or("<missing>")
                     ));
                 }
@@ -139,8 +137,8 @@ fn every_validate_relay_entry_case_matches() {
     assert!(
         wrong.is_empty(),
         "{} of {} validate_relay_entry cases disagree with the fixture. The fixture is \
-         the oracle: a disagreement means either this port or `_validate.py` moved, and \
-         the diff says which:\n{}",
+         the oracle: a disagreement means the validator moved, and \
+         the diff says how:\n{}",
         wrong.len(),
         cases.len(),
         wrong.join("\n")

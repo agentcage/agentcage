@@ -1,4 +1,4 @@
-//! Reproduce every fingerprint the Python has committed to this repo.
+//! Reproduce every fingerprint earlier releases committed to this repo.
 //!
 //! Two independent sources, because the thing being checked is the one
 //! value in the port that has to survive a change of language on a
@@ -47,9 +47,9 @@ const GOLDEN_CASES: usize = 130;
 
 /// How many cases carry a post-fill `resolved-config-filled.json`.
 ///
-/// `scripts/gen-golden-corpus.py` writes `resolved-config.json` from the
-/// config as FIRST loaded, then calls `state.fill_placeholders`, reloads
-/// the config, and feeds *that* to `compute_fingerprint`. For a cage
+/// The recording harness wrote `resolved-config.json` from the config
+/// as FIRST loaded, then filled placeholders, reloaded
+/// the config, and fed *that* to `compute_fingerprint`. For a cage
 /// with a generated `agentcage:secret:NAME:<hex>` placeholder the two
 /// objects differ, and the recipe used to name the pre-fill file — so
 /// one of five components could not be rebuilt and this test carried a
@@ -107,7 +107,7 @@ fn string_map(value: Option<&Json>) -> BTreeMap<String, String> {
 }
 
 /// Every file in a directory, by filename, or an empty map when the
-/// directory is absent — which is `units or {}` in the Python.
+/// directory is absent.
 fn files_in(directory: &Path) -> BTreeMap<String, String> {
     let Ok(entries) = fs::read_dir(directory) else {
         return BTreeMap::new();
@@ -122,7 +122,7 @@ fn files_in(directory: &Path) -> BTreeMap<String, String> {
             .expect("a UTF-8 filename")
             .to_string();
         // Every file here is a unit, including an apple-container
-        // cage's `<cage>.json`: `cli.py::_update_fingerprint` feeds
+        // cage's `<cage>.json`: the CLI's fingerprint update feeds
         // `backend.generate_units` to `compute_fingerprint` whatever
         // the backend is. Before PR E3 the corpus wrote a
         // `NOT-APPLICABLE.txt` marker here instead and this function
@@ -208,7 +208,7 @@ fn every_golden_corpus_fingerprint_is_reproduced() {
 
 /// The deployed-cage fingerprint, from a different generator.
 ///
-/// `scripts/gen-state-fixtures.py` feeds `compute_fingerprint` the
+/// The state-fixture generator fed the fingerprint the
 /// scrubbed `cage.yaml`, the scrubbed `proxy-config.yaml` as the
 /// resolved config, the scrubbed units, two hard-coded image digests and
 /// a hard-coded scaffold version. All five are committed, so this
@@ -246,7 +246,7 @@ fn the_deployed_cage_fingerprint_is_reproduced() {
     assert_eq!(
         corpus_text(&produced.to_json()),
         read(&cage.join("fingerprint.json")),
-        "the fingerprint a Python-deployed cage carries is not reproduced; \
+        "the fingerprint a cage deployed by an earlier release carries is not reproduced; \
          at cutover every `cage update` would rebuild",
     );
 }

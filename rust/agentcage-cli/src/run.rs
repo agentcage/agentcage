@@ -1,4 +1,4 @@
-//! `run.py` — the ephemeral cage.
+//! `agentcage run` — the ephemeral cage.
 //!
 //! ```text
 //! agentcage run <scaffold> [--project DIR] [--name NAME]
@@ -77,7 +77,7 @@ const NOUNS: [&str; 50] = [
 ///
 /// # Errors
 ///
-/// The Python's `RuntimeError` message, as a string.
+/// The "could not generate a unique cage name" message, as a string.
 pub fn generate_name(
     paths: &Paths,
     scaffolds: &Scaffolds,
@@ -233,9 +233,9 @@ pub fn stage_scaffold_build_context(
         eprintln!("warning: could not stage the build context: {error}");
         return;
     }
-    // Files only, and no `.yaml` / `.yml` / `.j2`: the Python's
-    // `_stage_scaffold_build_context` copies siblings rather than
-    // recursing, unlike `cli._stage_build_context`.
+    // Files only, and no `.yaml` / `.yml` / `.j2`: a scaffold's build
+    // context copies siblings rather than recursing, unlike
+    // `crate::staging::stage_build_context`.
     if let Ok(entries) = fs::read_dir(dir) {
         let mut entries: Vec<_> = entries.flatten().collect();
         entries.sort_by_key(std::fs::DirEntry::file_name);
@@ -278,8 +278,7 @@ impl ProxyMonitor {
     ///
     /// Writes to `/dev/tty` rather than to stdout, because the
     /// interactive session owns the process's stdout for as long as it
-    /// runs. No tty (CI, a pipe) means no monitor, which is the
-    /// Python's `except OSError: return`.
+    /// runs. No tty (CI, a pipe) means no monitor.
     ///
     /// stdin is `/dev/null`. On the vm backend the command is wrapped in
     /// `limactl shell` → ssh, and ssh reads its stdin to forward it to
@@ -337,10 +336,9 @@ impl ProxyMonitor {
         if let Some(handle) = self.handle.take() {
             // Detached rather than joined: the thread is parked in a
             // blocking read on the child's stdout, and it only notices
-            // the flag when the next line arrives. The Python joins with
-            // a three-second timeout and moves on for the same reason;
-            // Rust has no timed join, and leaving it is what the timeout
-            // amounts to.
+            // the flag when the next line arrives. Rust has no timed
+            // join, and a join with a timeout would amount to leaving
+            // it anyway.
             drop(handle);
         }
     }
@@ -399,8 +397,7 @@ fn blocked_notice(line: &str) -> Option<String> {
 /// The rendered config, written where `load_config` can read it.
 ///
 /// A directory rather than a file, because `load_config` resolves
-/// `containerfile:` relative to the config's own directory and the
-/// Python hands it a `tempfile.mkdtemp()` for exactly that reason.
+/// `containerfile:` relative to the config's own directory.
 #[derive(Debug)]
 pub struct StagedConfig {
     dir: TempDir,
@@ -514,8 +511,8 @@ pub fn stage_pending_secrets(
 
 /// Delete a deployment, ignoring the failure.
 ///
-/// The cleanup path on a failed build: the Python's
-/// `if state.deployment_exists(...): state.remove_deployment(...)`.
+/// The cleanup path on a failed build: remove the deployment if it
+/// exists.
 pub fn discard_deployment(paths: &Paths, name: &str) {
     if paths.deployment_exists(name) {
         let _ = paths.remove_deployment(name);
@@ -530,15 +527,15 @@ mod tests {
     use agentcage_core::config::Config;
 
     #[test]
-    fn the_word_lists_are_the_pythons() {
+    fn the_word_lists_are_unchanged() {
         assert_eq!(ADJECTIVES.len(), 50);
         assert_eq!(NOUNS.len(), 50);
         assert_eq!(ADJECTIVES[0], "bold");
         assert_eq!(NOUNS[NOUNS.len() - 1], "hawk");
     }
 
-    /// Extras replace the alias entirely — the regression the Python's
-    /// docstring is mostly about.
+    /// Extras replace the alias entirely — the regression this guards
+    /// against.
     #[test]
     fn extras_are_a_complete_command_and_never_prefixed() {
         let mut config = Config::default();
@@ -622,8 +619,7 @@ mod tests {
         assert!(dir.path().join(".bashrc-dir").is_dir());
         assert!(!std::path::Path::new("/etc/agentcage-should-not-exist").exists());
         // A named volume has no `/`, so it is not a host path at all and
-        // nothing is created for it — the Python relies on the same
-        // containment check to ignore it.
+        // nothing is created for it — the containment check ignores it.
         assert!(!dir.path().join("named-volume").exists());
     }
 

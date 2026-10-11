@@ -1,4 +1,4 @@
-//! `_launchd_plist_path` / the plist `_install_launchd_plist` writes.
+//! The launchd plist an apple-container cage is started by, and its name.
 //!
 //! # Byte-for-byte, and why that is not a judgement call here
 //!
@@ -7,20 +7,20 @@
 //! columns and has quoting heuristics nothing downstream depends on,
 //! and **everything else is compared byte-for-byte**. A launchd plist
 //! is XML, and XML has formatting, so the obvious worry is that this is
-//! a second PyYAML — that the port would be pinned to some library's
-//! indentation rather than to agentcage's behaviour.
+//! pinned to some library's indentation rather than to agentcage's
+//! behaviour.
 //!
-//! It is not, and the reason is worth stating once: **`plistlib` is
-//! never called.** `_install_launchd_plist` builds the document with an
-//! f-string, so the indentation, the key order, the `<true/>` /
-//! `<false/>` spelling and the trailing newline are all agentcage's own
-//! source text, not a serializer's opinion. There is no emitter to
-//! reimplement and no cross-version drift to absorb — reproducing these
-//! bytes is reproducing a format string. So the plist sits on the
-//! byte-exact side of the corpus rule, with the rest of the units.
+//! It is not, and the reason is worth stating once: **no plist library
+//! is involved.** The document has always been a format string, so the
+//! indentation, the key order, the `<true/>` / `<false/>` spelling and
+//! the trailing newline are all agentcage's own source text, not a
+//! serializer's opinion. There is no emitter to reimplement and no
+//! cross-version drift to absorb — reproducing these bytes is
+//! reproducing a format string. So the plist sits on the byte-exact
+//! side of the corpus rule, with the rest of the units.
 //!
-//! The port keeps the f-string rather than reaching for a plist crate
-//! for exactly that reason: a crate would produce *valid* output that
+//! It stays a format string rather than a plist crate's output for
+//! exactly that reason: a crate would produce *valid* output that
 //! differs byte for byte, which would turn a settled comparison into a
 //! semantic one for no gain.
 //!
@@ -28,20 +28,19 @@
 //!
 //! Writing the file and the `launchctl bootout` / `bootstrap` /
 //! `load -w` sequence around it are execution, gated on real hardware
-//! (docs/history/rust-port-plan.md §4.1, Track E's PR E5). This module renders the
-//! text and names the file; nothing here touches the disk.
+//! (`agentcage-cli`). This module renders the text and names the file;
+//! nothing here touches the disk.
 //!
 //! # Escaping
 //!
-//! There is none, in the Python or here. `name` is safe — `cli.py`
+//! There is none, and there never was. `name` is safe — the CLI
 //! validates a cage name against `^[a-z0-9][a-z0-9-]{0,62}$` before it
 //! can reach this path — but `binary` and `state_dir` are host paths,
 //! and a home directory containing `&`, `<` or `>` yields a malformed
-//! plist that `launchctl` refuses with a parse error. The port
-//! reproduces the behaviour rather than quietly fixing it, because a
-//! fix that changed the bytes would make every committed plist stale
-//! for a hazard no fixture has hit; it is called out in E3's PR
-//! description instead.
+//! plist that `launchctl` refuses with a parse error. That is kept
+//! rather than quietly fixed, because a fix that changed the bytes
+//! would make every committed plist stale for a hazard no fixture has
+//! hit.
 
 /// `io.agentcage.<name>` — the plist's `Label`, its filename stem, and
 /// the service name `launchctl bootout gui/<uid>/<label>` addresses.
@@ -53,17 +52,14 @@ pub fn plist_label(name: &str) -> String {
     format!("io.agentcage.{name}")
 }
 
-/// The plist `_install_launchd_plist` writes, including its trailing
-/// newline.
+/// The plist text, including its trailing newline.
 ///
-/// * `binary` — `apple_container.cli.container_binary()`, the resolved
-///   `container` path. The Python returns early with a warning when it
-///   is `None`, so this function is only reached with a real path.
-/// * `state_dir` — `_state_dir(name)`, i.e.
-///   `~/.config/agentcage/apple-container/<name>`
+/// * `binary` — the resolved `container` path. The caller returns early
+///   with a warning when there is none, so this function is only
+///   reached with a real path.
+/// * `state_dir` — `~/.config/agentcage/apple-container/<name>`
 ///   ([`Paths::apple_state_dir`](../../../agentcage_state/struct.Paths.html)).
-///   It is interpolated twice, for the two log paths, and the Python
-///   interpolates a `pathlib.Path`, whose `str()` has no trailing
+///   It is interpolated twice, for the two log paths, with no trailing
 ///   separator.
 #[must_use]
 pub fn plist_text(name: &str, binary: &str, state_dir: &str) -> String {
@@ -104,10 +100,9 @@ mod tests {
     }
 
     /// The shape, so a reader can see it without a fixture. The bytes
-    /// are pinned against the Python's own output in
-    /// `tests/golden_apple.rs`.
+    /// are pinned against recorded output in `tests/golden_apple.rs`.
     #[test]
-    fn the_document_is_the_pythons_f_string() {
+    fn the_document_is_the_pinned_format_string() {
         let text = plist_text("demo", "/usr/local/bin/container", "/home/u/state/demo");
         assert!(text.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"));
         assert!(text.contains("<string>io.agentcage.demo</string>"));

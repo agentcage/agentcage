@@ -1,8 +1,7 @@
-//! `limactl` -- the port of `src/agentcage/lima/instance.py`.
+//! `limactl`.
 //!
 //! Four of the six commands carry a flag that exists because of a bug
-//! somebody hit, and the comments in the Python say which. They are
-//! repeated at each method, because a flag whose reason is not written
+//! somebody hit. The reasons are written at each method, because a flag whose reason is not written
 //! down is a flag somebody removes.
 
 use serde_json::Value;
@@ -60,9 +59,9 @@ impl<'a> LimaInstance<'a> {
     ///
     /// `limactl start` daemonizes internally: it forks the hostagent,
     /// waits for SSH, the guest agent and the boot scripts, then exits,
-    /// leaving the hostagent running. The Python uses
-    /// `start_new_session=True` so the daemon does not inherit pipe
-    /// descriptors from Python's subprocess machinery, which would
+    /// leaving the hostagent running. It runs in its own process group
+    /// so the daemon does not inherit pipe descriptors from agentcage,
+    /// which would
     /// otherwise keep `limactl start` from completing. See
     /// [`Command::new_process_group`] for the one difference between
     /// that and what this does.
@@ -126,8 +125,8 @@ impl<'a> LimaInstance<'a> {
 
     /// Run `command` in the guest and capture its output.
     ///
-    /// `check` mirrors `subprocess.run(check=...)`: the Python's
-    /// `LimaInstance.exec` defaults to `check=True`, and the VM podman
+    /// `check` fails the call on a non-zero exit. Most callers want
+    /// that, and the VM podman
     /// wrapper passes `check=False` for the calls whose failure is an
     /// answer.
     ///
@@ -217,8 +216,8 @@ impl<'a> LimaInstance<'a> {
 /// The `vm` backend has no host podman to talk to: the store, the
 /// images and the containers all live inside the Lima guest, so every
 /// operation the CLI would run against `podman` is the same argv
-/// wrapped in a `limactl shell`. The Python spells that by holding a
-/// `LimaInstance` and calling `exec`, and this does the same, so the
+/// wrapped in a `limactl shell`. This holds a [`LimaInstance`] and
+/// calls `exec`, so the
 /// two flags [`LimaInstance::shell_command`] documents — `--workdir /`
 /// and `--tty=false` — cover these calls as well. The second one is not
 /// optional here: [`VmPodman::secret_create`] pipes a credential
@@ -261,8 +260,7 @@ impl<'a> VmPodman<'a> {
     ///
     /// [`ExecError::Failed`] when the image is unknown,
     /// [`ExecError::Parse`] when the answer is not a non-empty JSON
-    /// array — the Python's `json.loads(...)[0]`, whose `IndexError`
-    /// this variant stands in for.
+    /// array (the first element is the answer).
     pub fn image_inspect(&self, image: &str) -> Result<Value, ExecError> {
         let out = self.exec(&["podman", "image", "inspect", image], true)?;
         let value: Value =
@@ -301,8 +299,8 @@ impl<'a> VmPodman<'a> {
     ///
     /// # Errors
     ///
-    /// [`ExecError::Failed`] on a non-zero exit. The Python raises a
-    /// `RuntimeError` reading `podman secret ls failed in VM: <stderr
+    /// [`ExecError::Failed`] on a non-zero exit. Earlier releases raised
+    /// an error reading `podman secret ls failed in VM: <stderr
     /// or stdout>`; the text is carried in the error's `stderr` field
     /// rather than the message, because every caller in the port
     /// swallows this error rather than printing it.
@@ -394,7 +392,7 @@ impl<'a> VmPodman<'a> {
     ///
     /// [`ExecError::Failed`] when there is no such container,
     /// [`ExecError::Parse`] when the answer is not a non-empty JSON
-    /// array -- the Python's `json.loads(...)[0]`.
+    /// array (the first element is the answer).
     pub fn container_inspect(&self, name: &str) -> Result<Value, ExecError> {
         let out = self.exec(&["podman", "container", "inspect", name], true)?;
         let value: Value =

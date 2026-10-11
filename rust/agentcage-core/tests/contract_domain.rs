@@ -1,24 +1,18 @@
-//! The two domain contracts, against PR A4's language-neutral fixtures.
+//! The two domain contracts, against the language-neutral fixtures.
 //!
-//! `valid_domain` and `encoded_private_ip` exist on both sides of
-//! agentcage's trust boundary (docs/history/rust-port-plan.md §2.2), and until this
-//! port they were held equal by a pytest that imported both copies. That
-//! mechanism does not survive the language split, so
-//! `tests/fixtures/contracts/` records the answers instead:
-//!
-//! > Before: `host == proxy`. After: `host == fixture` **and**
-//! > `proxy == fixture`.
+//! `valid_domain` and `encoded_private_ip` are applied on both sides of
+//! agentcage's trust boundary (docs/history/rust-port-plan.md §2.2), and
+//! `tests/fixtures/contracts/` records the answers they must give.
 //!
 //! Two things follow, and both shape this file:
 //!
-//! 1. **Neither implementation is the oracle.** If a change makes this
+//! 1. **The implementation is not the oracle.** If a change makes this
 //!    file fail, the question is whether the *contract* changed — not
 //!    which side to bend. Regenerating the fixture on autopilot defeats
 //!    the point of having it.
 //! 2. **The cases are read off disk, never restated here.** A copy in
-//!    Rust source would be a third implementation of the corpus, free to
-//!    drift from the file `tests/test_contract_fixtures.py` asserts the
-//!    Python side against. Every case, every id and every `why` comes
+//!    Rust source would be a second copy of the corpus, free to drift
+//!    from the file. Every case, every id and every `why` comes
 //!    from the JSON.
 
 mod common;
@@ -97,8 +91,8 @@ fn valid_domain_matches_the_contract_fixture() {
             let produced = valid_domain(&case.input, policy);
             if produced != expected {
                 wrong.push(format!(
-                    "  {} [{column}] input={:?}\n      python: {expected}\n      rust:   \
-                     {produced}\n      why:    {}",
+                    "  {} [{column}] input={:?}\n      expected: {expected}\n      actual:   \
+                     {produced}\n      why:      {}",
                     case.id, case.input, case.why
                 ));
             }
@@ -132,7 +126,7 @@ fn encoded_private_ip_matches_the_contract_fixture() {
         let produced = encoded_private_ip(&case.input);
         if produced.as_deref() != case.expected.as_deref() {
             wrong.push(format!(
-                "  {} input={:?}\n      python: {:?}\n      rust:   {produced:?}\n      why:    {}",
+                "  {} input={:?}\n      expected: {:?}\n      actual:   {produced:?}\n      why:      {}",
                 case.id, case.input, case.expected, case.why
             ));
         }

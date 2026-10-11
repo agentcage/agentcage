@@ -1,33 +1,31 @@
-//! `validate_config`'s inspector-chain warnings.
+//! Inspector-chain warnings and custom-inspector checks.
 //!
-//! PR C3 of docs/history/rust-port-plan.md's Track C, and the last of the four
-//! areas it owns. Small, but it is a cross-language contract — PR A6's
-//! audit of the trust boundary found it, and §2.2's original list of
-//! four did not have it.
+//! Small, but it is a contract across the trust boundary: the host and
+//! the egress must agree on which inspector names exist.
 //!
 //! # The handshake
 //!
 //! `config.inspectors` is kept as **raw mappings**, not a typed struct:
-//! the proxy addon's dispatch is the single source of truth for which
+//! the egress's inspector dispatch is the single source of truth for which
 //! keys an inspector entry may carry, so the host copies the operator's
 //! mapping through `proxy-config.yaml` untouched rather than modelling
-//! it twice. What the host *does* know is the set of names the addon
+//! it twice. What the host *does* know is the set of names the egress
 //! can dispatch, and that set is duplicated —
-//! [`BUILTIN_INSPECTOR_NAMES`] here mirrors `addon._BUILTIN_INSPECTORS`
-//! there, because the addon cannot import `agentcage`.
+//! [`BUILTIN_INSPECTOR_NAMES`] here mirrors the egress's built-in
+//! dispatch there, because the two sides share no config types.
 //!
 //! A name present on one side and not the other is the quiet failure
 //! this warning exists to make loud: a config that validates and then
 //! does nothing. `shared_constants.json` pins the set, and
 //! `scaffold_inspectors.json` pins the other end of the same
-//! handshake — `init.render_config` must emit a config the addon can
+//! handshake — `init` must emit a config the egress can
 //! load, for all nine scaffolds.
 //!
 //! # Why these are warnings and not errors
 //!
 //! They fire only on the apple-container backend, where the in-cage
-//! addon dispatches built-ins through the same
-//! `data/proxy/inspectors` registry the container backend uses.
+//! egress dispatches built-ins through the same registry the container
+//! backend uses.
 //! Built-in names run end to end; an unknown name is a typo that will
 //! silently no-op. That does not block the deploy — several stock
 //! scaffolds set fields unconditionally for the container backend — so
@@ -46,8 +44,8 @@
 //! the migration pointer), a missing or built-in name, and two entries
 //! sharing a name or a file name.
 
-use crate::python::repr_str;
-use crate::yaml::{Value, python_bool};
+use crate::value_fmt::quote_text;
+use crate::yaml::{Value, is_truthy};
 
 use super::ConfigError;
 use super::types::{BUILTIN_INSPECTOR_NAMES, Config};
@@ -92,12 +90,12 @@ pub fn plugin_refs(config: &Config) -> Vec<PluginRef> {
         .iter()
         .enumerate()
         .filter_map(|(index, entry)| {
-            let path = entry.get("path").filter(|p| python_bool(p))?.as_str()?;
+            let path = entry.get("path").filter(|p| is_truthy(p))?.as_str()?;
             Some(PluginRef {
                 index,
                 name: entry
                     .get("name")
-                    .map(crate::python::str_of)
+                    .map(crate::value_fmt::coerce_to_string)
                     .unwrap_or_default(),
                 path: path.to_owned(),
             })
@@ -113,14 +111,14 @@ pub fn plugin_refs(config: &Config) -> Vec<PluginRef> {
 pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
     let mut seen: Vec<(usize, String, String)> = Vec::new();
     for (index, entry) in config.inspectors.iter().enumerate() {
-        let Some(path) = entry.get("path").filter(|p| python_bool(p)) else {
+        let Some(path) = entry.get("path").filter(|p| is_truthy(p)) else {
             continue;
         };
         let name = entry
             .get("name")
-            .map(crate::python::str_of)
+            .map(crate::value_fmt::coerce_to_string)
             .unwrap_or_default();
-        let label = format!("inspectors[{index}] {}", repr_str(&name));
+        let label = format!("inspectors[{index}] {}", quote_text(&name));
         let Value::String(path) = path else {
             return Err(ConfigError::value(format!(
                 "{label}: path must be a string"
@@ -131,7 +129,7 @@ pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
                 "{label}: custom Python inspectors (path: {}) are no longer supported. \
                  Build the inspector as a WebAssembly component (.wasm) with the \
                  agentcage-inspector-sdk crate; see {CUSTOM_INSPECTORS_GUIDE}.",
-                repr_str(path)
+                quote_text(path)
             )));
         }
         let file = plugin_file_name(path);
@@ -144,13 +142,13 @@ pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
             return Err(ConfigError::value(format!(
                 "{label}: path must name a WebAssembly component file ending in .wasm \
                  (got: {})",
-                repr_str(path)
+                quote_text(path)
             )));
         }
         if name.is_empty() {
             return Err(ConfigError::value(format!(
                 "inspectors[{index}]: a custom inspector (path: {}) needs a name",
-                repr_str(path)
+                quote_text(path)
             )));
         }
         if BUILTIN_INSPECTOR_NAMES.contains(&name.as_str()) {
@@ -169,7 +167,7 @@ pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
                 return Err(ConfigError::value(format!(
                     "{label}: the file name {} is already used by inspectors[{other}] \
                      (plugins are staged into the egress by file name)",
-                    repr_str(file)
+                    quote_text(file)
                 )));
             }
         }
@@ -178,7 +176,7 @@ pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// The apple-container inspector warnings, in `config.py`'s order.
+/// The apple-container inspector warnings, in their recorded order.
 ///
 /// Empty on every other backend: the container and vm backends stage
 /// custom inspectors and dispatch built-ins alike, so there is nothing
@@ -190,22 +188,20 @@ pub fn inspector_warnings(config: &Config) -> Vec<String> {
     }
 
     let mut warnings = Vec::new();
-    // `enumerate(config.inspectors or [])` — the index is the
-    // operator's line number in all but name, so it leads the message.
-    // `config.py` skips an entry that is not a mapping; `load_config`
-    // already dropped those, so the guard is structural here.
+    // The index is the operator's line number in all but name, so it
+    // leads the message. An entry that is not a mapping is skipped;
+    // loading already dropped those, so the guard is structural here.
     for (index, entry) in config.inspectors.iter().enumerate() {
-        // `entry.get("name", "")` and `entry.get("path")`, with
-        // Python's truthiness on the second: a `path: ""` or
-        // `path: null` is not a custom inspector.
+        // `name` defaults to empty, and `path` is read with truthiness:
+        // a `path: ""` or `path: null` is not a custom inspector.
         let name = entry
             .get("name")
-            .map(crate::python::str_of)
+            .map(crate::value_fmt::coerce_to_string)
             .unwrap_or_default();
         // A `path:` entry is a custom inspector: staged and mounted on
         // this backend like on the others, and refused by
         // `validate_plugins` if it cannot be.
-        let has_path = entry.get("path").is_some_and(python_bool);
+        let has_path = entry.get("path").is_some_and(is_truthy);
 
         if !has_path && !name.is_empty() && !BUILTIN_INSPECTOR_NAMES.contains(&name.as_str()) {
             let mut valid: Vec<&str> = BUILTIN_INSPECTOR_NAMES.to_vec();
@@ -213,7 +209,7 @@ pub fn inspector_warnings(config: &Config) -> Vec<String> {
             warnings.push(format!(
                 "inspectors[{index}] {}: not a known built-in inspector — the in-cage \
                  addon will skip this entry. Valid names: {}.",
-                repr_str(&name),
+                quote_text(&name),
                 valid.join(", ")
             ));
         }

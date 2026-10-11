@@ -1,43 +1,41 @@
-//! The `cage.yaml` type tree — one Rust type per `config.py` dataclass.
+//! The `cage.yaml` type tree — one Rust type per config section.
 //!
-//! Every struct here mirrors a `@dataclass` in `src/agentcage/config.py`,
-//! field for field and name for name, and every [`Default`] impl is that
-//! dataclass's field defaults. The comments are ported with the code:
-//! where one explains a Python-specific mechanism it is rewritten rather
-//! than dropped, because the *reason* usually outlives the language.
+//! Field names match the `cage.yaml` keys and the `resolved-config.json`
+//! layout earlier releases established, and every [`Default`] impl is
+//! that section's field defaults.
 //!
 //! # Where a default is not what [`Default`] says
 //!
 //! Four of these defaults are never the value a real config gets,
-//! because `load_config` computes something else before the struct is
-//! built. They are listed on the fields, and collected here because a
-//! reader who trusts `Default` alone will be wrong about all four:
+//! because the loader ([`super::load`]) computes something else before
+//! the struct is built. They are listed on the fields, and collected
+//! here because a reader who trusts `Default` alone will be wrong about all four:
 //!
-//! | Field | `Default` | what `load_config` actually does |
+//! | Field | `Default` | what the loader actually does |
 //! | :-- | :-- | :-- |
 //! | [`Config::isolation`] | `"container"` | the host probe — Linux `container`, macOS `vm` or `apple-container` |
 //! | [`Config::dns_servers`] | empty | the host's non-loopback resolvers, read from `resolv.conf` |
-//! | [`ContainerConfig::timeout_start_sec`] | `600` | **`120`** — the dataclass default is dead code |
+//! | [`ContainerConfig::timeout_start_sec`] | `600` | **`120`** — the type default is dead code |
 //! | [`SecretsConfig::scope`] | `"auto"` | stays `"auto"` here; `secret_resolver` resolves it at deploy time |
 //!
-//! The third is not a subtlety, it is a discrepancy in `config.py`:
-//! `ContainerConfig.timeout_start_sec = 600` and `load_config` writes
-//! `c.get("timeout_start_sec", 120)`. Since `load_config` is the only
-//! way a `Config` is ever built from a file, 120 is the number users
-//! get, and the golden corpus records 120. Both are reproduced —
-//! `Default` keeps 600 so the type is a faithful mirror, and the parser
-//! keeps 120 so behaviour is faithful. Do not "fix" one to match the
-//! other without changing `config.py` first.
+//! The third is not a subtlety, it is a long-standing discrepancy: the
+//! type's default is `timeout_start_sec = 600`, but the loader fills a
+//! missing key with `120`. Since the loader is the only way a
+//! `Config` is ever built from a file, 120 is the number users get,
+//! and the golden corpus records 120. Both are kept — `Default` keeps
+//! 600 and the parser keeps 120, which is what deployed cages have
+//! always got. Do not "fix" one to match the other without
+//! deciding to change what existing configs deploy.
 
 use indexmap::IndexMap;
 
 use crate::yaml::Mapping;
 
-/// An ordered string map, standing in for a Python `dict`.
+/// An insertion-ordered string map.
 ///
-/// Insertion order is load-bearing: `save_raw_config` dumps with
-/// `sort_keys=False`, `cage edit` shows the user their own key order,
-/// and `quadlets.py` emits one `Environment=` line per entry in `dict`
+/// Insertion order is load-bearing: the raw config is saved unsorted,
+/// `cage edit` shows the user their own key order, and the quadlet
+/// renderer emits one `Environment=` line per entry in insertion
 /// order. A `BTreeMap` would silently re-sort all three.
 pub type OrderedMap<V> = IndexMap<String, V>;
 
@@ -111,9 +109,9 @@ pub struct BuildConfig {
 
 /// `ContainerConfig` — the workload container itself.
 ///
-/// The six booleans are `config.py`'s six, with its names; grouping
-/// them into an enum would make this type stop being a mirror of the
-/// dataclass and start being an interpretation of it.
+/// The six booleans are the six `cage.yaml` keys, with their names;
+/// grouping them into an enum would make this type stop being a mirror
+/// of the config and start being an interpretation of it.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContainerConfig {
@@ -236,8 +234,8 @@ impl Default for LoggingConfig {
 impl LoggingConfig {
     /// The effective minimum level for one service.
     ///
-    /// `config.py` does this with `getattr(self, service, "")`, so an
-    /// unknown service name silently inherits the global level. The
+    /// An unknown service name silently inherits the global level, as
+    /// it always has. The
     /// three real names are spelled out here instead; an unknown one
     /// still inherits, which is the same answer without the reflection.
     #[must_use]
@@ -509,8 +507,8 @@ pub struct RelayUpstream {
 
 impl Default for RelayUpstream {
     fn default() -> Self {
-        // `config.py` builds this one as `RelayUpstream("", 0)`, so the
-        // positional defaults are an empty host and port 0.
+        // The defaults are an empty host and port 0; the loader always
+        // fills both from the relay entry.
         Self {
             host: String::new(),
             port: 0,
@@ -595,11 +593,11 @@ pub struct RelayPolicy {
     pub bypass_inspectors_for_allowlisted: Vec<String>,
 }
 
-/// `relays/imap.py`'s `idle_timeout_seconds` default: 30 minutes, so the
+/// The IMAP relay's `idle_timeout_seconds` default: 30 minutes, so the
 /// RFC 2177 IDLE heartbeat (every ~29 minutes) never trips it.
 pub const IMAP_IDLE_TIMEOUT_SECONDS: i64 = 1800;
 
-/// `relays/smtp.py`'s `idle_timeout_seconds` default: 5 minutes, the
+/// The SMTP relay's `idle_timeout_seconds` default: 5 minutes, the
 /// RFC 5321 §4.5.3.2 floor for command replies.
 pub const SMTP_IDLE_TIMEOUT_SECONDS: i64 = 300;
 
@@ -690,10 +688,9 @@ pub const AUTO_REQUIRE_ALLOWLIST_MODE: bool = true;
 /// it for the verdict alone starves reasoning models before they can
 /// emit a forced tool call.
 ///
-/// In `config.py` this is a base dataclass the two roster entries
-/// inherit from; here it is a field on each of them, and
-/// [`super::json`] flattens it back out so `resolved-config.json` keeps
-/// the shape Python's `dataclasses.fields` produces.
+/// A field on each of the two roster entries, which [`super::json`]
+/// flattens back out so `resolved-config.json` keeps the flat shape
+/// earlier releases wrote.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LlmAgentConfig {
     /// `anthropic` | `openai` | `openrouter`.
@@ -900,10 +897,10 @@ pub const PLACEHOLDER_PREFIX: &str = "agentcage:secret:";
 /// Transform names `secret_injection` accepts.
 pub const KNOWN_TRANSFORMS: [&str; 1] = ["google-jwt-bearer"];
 
-/// Built-in inspector names recognized by both proxy backends.
+/// Built-in inspector names recognized by the egress.
 ///
-/// Source of truth on the container side: `data/proxy/addon.py`
-/// `_BUILTIN_INSPECTORS`. Mirrored here so the apple-container
+/// Source of truth on the egress side: the dispatch in
+/// `agentcage-egress`'s `inspect::chain`. Mirrored here so the apple-container
 /// validator can flag typos at parse time instead of letting them
 /// silently no-op at runtime. Keep in sync when adding a new built-in
 /// inspector.
@@ -929,13 +926,13 @@ pub struct Config {
     pub secrets: SecretsConfig,
     /// Placeholder-to-credential rules.
     pub secret_injection: Vec<SecretInjectionRule>,
-    /// Inspector chain — the same shape the proxy addon reads from
+    /// Inspector chain — the same shape the egress reads from
     /// cage.yaml's top-level `inspectors:` list. Each entry is
-    /// `{"name": str, "config": dict, "path": str?}`. Kept as raw
-    /// mappings (not a typed struct) because the container backend's
-    /// addon already reads YAML directly and the config flow has to be
-    /// byte-identical across backends. See `data/proxy/addon.py`
-    /// `_plan_inspectors` for the dispatch.
+    /// `{name: string, config: mapping, path: string?}`. Kept as raw
+    /// mappings (not a typed struct) because the egress reads each
+    /// entry's `config` itself and the config flow has to be
+    /// byte-identical across backends. See `agentcage-egress`'s
+    /// `inspect::chain` for the dispatch.
     pub inspectors: Vec<Mapping>,
     /// Non-HTTP relays (IMAP, SMTP).
     pub protocol_relays: Vec<ProtocolRelay>,

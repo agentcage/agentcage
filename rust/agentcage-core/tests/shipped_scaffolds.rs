@@ -7,7 +7,7 @@
 //! The rendered checks read `tests/fixtures/scaffold-configs/<name>/cage.yaml`
 //! instead of rendering `cage.yaml.j2` here. Those fixtures are what the
 //! shipped templates render to for a cage named `demo`, and
-//! `agentcage-cli`'s `every_scaffold_renders_byte_identically_to_the_python`
+//! `agentcage-cli`'s `every_scaffold_renders_byte_identically_to_its_fixture`
 //! pins the renderer to them byte for byte, so asserting on a fixture is
 //! asserting on the template's output. These semantic checks are what keep
 //! a hand-edited fixture honest.

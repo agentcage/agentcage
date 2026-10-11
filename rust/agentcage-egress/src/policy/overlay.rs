@@ -85,8 +85,8 @@ impl PolicyPaths {
     }
 }
 
-/// The overlay's mtime, `None` when it cannot be stat'ed (the Python's
-/// `0.0`). Compared for equality only: any change means "reconcile".
+/// The overlay's mtime, `None` when it cannot be stat'ed. Compared for
+/// equality only: any change means "reconcile".
 pub(crate) fn mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -98,7 +98,7 @@ pub(crate) fn load(path: &Path) -> Vec<Mapping> {
     let Ok(bytes) = fs::read(path) else {
         return Vec::new();
     };
-    // Strict UTF-8, as Python's text-mode `open` decodes it: a file with
+    // Strict UTF-8: a file with
     // one bad byte is garbage, not a document with a replacement char.
     let Ok(text) = String::from_utf8(bytes) else {
         return Vec::new();
@@ -187,7 +187,9 @@ pub(crate) fn publishable(granted: &[(String, Mapping)], now_iso: &str) -> Vec<S
                 return false;
             }
             let exp = match entry.get("expires_at") {
-                Some(v) if crate::config::truthy(v) => agentcage_core::python::str_of(v),
+                Some(v) if crate::config::truthy(v) => {
+                    agentcage_core::value_fmt::coerce_to_string(v)
+                }
                 _ => String::new(),
             };
             exp.is_empty() || exp.as_str() > now_iso

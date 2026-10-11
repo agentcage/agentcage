@@ -30,20 +30,18 @@
 //! `tests/secrets_state_fixtures.rs`.
 //!
 //! Both are written through [`agentcage_core::har::json::dumps`] rather
-//! than a serializer of this crate's choosing, because `json.dumps`'s
-//! default item separator is `", "` -- with the space -- and the
-//! fixture is byte-compared.
+//! than a serializer of this crate's choosing, because the files
+//! earlier releases wrote use `", "` as the item separator -- with the
+//! space -- and the fixture is byte-compared.
 //!
 //! # `names()` is not implemented by every store
 //!
-//! Python's base `SecretStore.names` raises `NotImplementedError`, and
-//! neither `SystemdCredsStore` nor `PlaintextStore` overrides it. That
-//! is not an oversight to fix in the port: both of those keep their
-//! names somewhere the caller can already see (a directory listing,
-//! `podman secret ls`), and `cage secret list` reads them from there.
-//! Here it is [`SecretError::Store`] with a message naming the backend,
-//! because Rust has no `NotImplementedError` and a `panic!` would turn
-//! a Python exception a caller can catch into an abort.
+//! `SystemdCredsStore` and `PlaintextStore` do not list names. That is
+//! not an oversight: both keep their names somewhere the caller can
+//! already see (a directory listing, `podman secret ls`), and
+//! `cage secret list` reads them from there. Asking them is
+//! [`SecretError::Store`] with a message naming the backend, an error
+//! a caller can handle rather than a `panic!`.
 
 use std::cell::OnceCell;
 use std::fmt;
@@ -51,7 +49,7 @@ use std::path::{Path, PathBuf};
 
 use agentcage_core::config::types::Config;
 use agentcage_core::har::json::{DumpOptions, Json, dumps, parse};
-use agentcage_core::python::repr_str;
+use agentcage_core::value_fmt::quote_text;
 use agentcage_exec::tools::podman::Podman;
 use agentcage_exec::tools::security::{
     KeychainTarget, PasswordChannel, SHIPPED_PASSWORD_CHANNEL, Security,
@@ -202,7 +200,7 @@ pub trait SecretStore: fmt::Debug {
         let _ = (cage, state_dir);
         Err(SecretError::store(format!(
             "backend {} does not support name listing",
-            repr_str(self.name())
+            quote_text(self.name())
         )))
     }
 
@@ -216,7 +214,7 @@ pub trait SecretStore: fmt::Debug {
         let _ = (cage, key, state_dir);
         Err(SecretError::store(format!(
             "backend {} does not support value retrieval",
-            repr_str(self.name())
+            quote_text(self.name())
         )))
     }
 }
@@ -325,18 +323,17 @@ pub struct PlaintextStore<'a> {
 impl<'a> PlaintextStore<'a> {
     /// A store over this podman, or over none at all.
     ///
-    /// `None` is the Python's `PlaintextStore(None)`, which
-    /// `resolve_store` can and does construct: `available()` answers
+    /// `None` is a store `resolve_store` can and does construct: `available()` answers
     /// False for it, and the `auto` path checks that -- but the
     /// `backend: plaintext` and `podman:` paths do not, so a cage
     /// configured that way on a host with no podman fails at `set`
-    /// rather than at resolution. Reproduced, not fixed.
+    /// rather than at resolution, as in earlier releases.
     #[must_use]
     pub fn new(podman: Option<&'a dyn PodmanSecrets>) -> Self {
         Self { podman }
     }
 
-    /// The podman, or the error the Python gets from `None.secret_*`.
+    /// The podman, or an error when there is none.
     fn podman(&self) -> Result<&dyn PodmanSecrets, SecretError> {
         self.podman
             .ok_or_else(|| SecretError::store("no podman available for the plaintext store"))
@@ -481,11 +478,10 @@ impl<'a> KeychainStore<'a> {
         Security::new(self.runner).with_password_channel(self.channel)
     }
 
-    /// `_target()` -- which keychain, and whether it needs `sudo -n`.
+    /// Which keychain, and whether it needs `sudo -n`.
     ///
-    /// Only a *success* is cached, which is Python's behaviour: the
-    /// failure path raises without assigning `_target_cache`, so a
-    /// keychain unlocked between two calls is picked up.
+    /// Only a *success* is cached, so a keychain unlocked between two
+    /// calls is picked up.
     ///
     /// # Errors
     ///
@@ -530,8 +526,8 @@ impl<'a> KeychainStore<'a> {
     /// Read the name index, or an empty list.
     ///
     /// Every failure is an empty list -- a missing file, a truncated
-    /// write, a JSON document that is not an array of strings. Python's
-    /// `except Exception: return []` is deliberate: the index is a
+    /// write, a JSON document that is not an array of strings. That is
+    /// deliberate: the index is a
     /// convenience for `secret list`, and a corrupt one must not make
     /// the cage unusable.
     fn read_index(state_dir: &Path) -> Vec<String> {
@@ -611,7 +607,7 @@ impl SecretStore for KeychainStore<'_> {
 
     fn delete(&self, cage: &str, key: &str, state_dir: &Path) -> Result<(), SecretError> {
         let target = self.target()?;
-        // The Python ignores the result entirely: deleting a key that
+        // The result is ignored entirely: deleting a key that
         // is not in the keychain still has to clear the index.
         let _ = self
             .security()
@@ -620,9 +616,8 @@ impl SecretStore for KeychainStore<'_> {
     }
 
     fn names(&self, _cage: &str, state_dir: &Path) -> Result<Vec<String>, SecretError> {
-        // `cage` is unused, exactly as in the Python: the index is
-        // per-deployment-directory, and the directory already is the
-        // cage. `_index_add` even calls `self.names("")`.
+        // `cage` is unused: the index is per-deployment-directory, and
+        // the directory already is the cage.
         Ok(Self::read_index(state_dir))
     }
 
@@ -652,15 +647,15 @@ impl ApplePlaintextStore {
 
     /// Read the pairs, in file order.
     ///
-    /// A `Vec` of pairs rather than a map because Python's
-    /// `{k: v for k, v in json.loads(...)}` keeps *insertion* order and
-    /// the writer dumps that order straight back out. A `BTreeMap`
+    /// A `Vec` of pairs rather than a map because the file keeps
+    /// *insertion* order and the writer writes that order straight back
+    /// out. A `BTreeMap`
     /// would silently re-sort the file on the next write, and an
     /// `IndexMap` would be a new dependency for a two-line invariant.
     ///
     /// Every failure -- missing file, unreadable file, a document that
     /// is not an array of two-element string arrays -- is an empty
-    /// list, which is Python's `except Exception: return {}`.
+    /// list.
     #[must_use]
     pub fn load(state_dir: &Path) -> Vec<(String, String)> {
         let path = Self::path(state_dir);
@@ -695,9 +690,9 @@ impl ApplePlaintextStore {
     ///
     /// The mode is the point: this file holds cleartext credentials, so
     /// it must not be world-readable even for the moment between
-    /// creation and a `chmod`. Note the Python's flags -- no `O_EXCL`,
-    /// and the mode applies only when the file is created, so an
-    /// existing file keeps whatever mode it had. Reproduced exactly.
+    /// creation and a `chmod`. Note the flags -- no `O_EXCL`, and the
+    /// mode applies only when the file is created, so an existing file
+    /// keeps whatever mode it had, as it did in earlier releases.
     ///
     /// # Errors
     ///
@@ -725,7 +720,7 @@ impl ApplePlaintextStore {
     }
 }
 
-/// Python's `d[k] = v`: replace in place if the key is there, append
+/// Map-style assignment: replace in place if the key is there, append
 /// otherwise. The position of a key's first appearance is kept.
 fn set_pair(pairs: &mut Vec<(String, String)>, key: &str, value: &str) {
     if let Some(slot) = pairs.iter_mut().find(|(k, _)| k == key) {
@@ -880,8 +875,8 @@ pub fn at_rest_names(store: &dyn SecretStore, cage: &str, state_dir: &Path) -> V
 /// opting into plaintext. The keychain is the host's encrypting store
 /// and the vm backend bridges the value into the guest at deploy time.
 ///
-/// Note the asymmetry this creates, which is the Python's and is
-/// reproduced: that host-keychain rule applies to `auto` only. An
+/// Note the asymmetry this creates, kept from earlier releases: that
+/// host-keychain rule applies to `auto` only. An
 /// explicit `backend: systemd-creds` on a macOS vm cage still builds a
 /// [`SystemdCredsStore`], finds it unavailable, and refuses.
 ///
@@ -949,8 +944,8 @@ pub fn resolve_store<'a>(
             Ok(Box::new(store))
         }
         // `auto`, and anything else -- the parser has already rejected
-        // every other spelling, and the Python's `if` chain falls
-        // through to this branch for them too.
+        // every other spelling, and they fall through to this branch
+        // too.
         _ => {
             if host_keychain {
                 let store = KeychainStore::new(host.runner(), platform);

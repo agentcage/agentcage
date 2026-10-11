@@ -16,15 +16,15 @@ const SKIP_SUFFIXES: [&str; 3] = ["yaml", "yml", "j2"];
 
 /// Build noise that must never reach a cage's staged context.
 ///
-/// `shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "node_modules",
-/// "*.deleted.*")`, as five predicates rather than five globs.
+/// The five globs `__pycache__`, `*.pyc`, `.git`, `node_modules` and
+/// `*.deleted.*`, unchanged from earlier releases, as five predicates.
 fn is_ignored(name: &str) -> bool {
     name == "__pycache__"
         || name == ".git"
         || name == "node_modules"
-        // `*.pyc`, case-sensitively: `shutil.ignore_patterns` uses
-        // `fnmatch.filter`, which on POSIX does not fold case, and a
-        // file literally named `X.PYC` is not a Python bytecode cache.
+        // `*.pyc`, case-sensitively: the glob never folded case on
+        // POSIX, and a file literally named `X.PYC` is not a Python
+        // bytecode cache.
         // Spelled as a suffix on the whole name rather than through
         // `Path::extension`, because the pattern is a glob over the
         // *name* -- `.pyc` with no stem matches it and has no extension.
@@ -43,10 +43,10 @@ fn is_deleted_marker(name: &str) -> bool {
         .any(|(index, _)| index > 0 && index + ".deleted.".len() < name.len())
 }
 
-/// The directory `path` is in, as Python's `Path.parent` gives it.
+/// The directory `path` is in, `.` for a bare file name.
 ///
 /// Rust's [`Path::parent`] returns an *empty* path for a bare file name
-/// (`cage.yaml`), where `pathlib` returns `.`; an empty path then fails
+/// (`cage.yaml`); an empty path then fails
 /// every filesystem call with `ENOENT`. So `cage create -c cage.yaml`,
 /// run from the config's own directory, could not stage or build its
 /// Containerfile's context (#489), while `-c ./cage.yaml` could.
@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ignore_patterns_are_the_pythons_five() {
+    fn the_five_ignore_patterns() {
         assert!(is_ignored("__pycache__"));
         assert!(is_ignored(".git"));
         assert!(is_ignored("node_modules"));

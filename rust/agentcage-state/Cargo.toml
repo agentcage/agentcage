@@ -31,12 +31,12 @@ agentcage-exec = { path = "../agentcage-exec" }
 # No `serde_json`, and no `serde`.
 #
 # Every JSON file in the state tree goes through
-# `agentcage_core::har::json`, core's Python-shaped JSON value:
+# `agentcage_core::har::json`, core's order-preserving JSON value:
 # insertion-ordered objects, `json.dumps`'s separators, and
 # `ensure_ascii` / `sort_keys` / `indent` as options. That is not a
 # preference, it is the only type that reads `metadata.json` back
 # without re-ordering it -- `serde_json::Value`'s object is a
-# `BTreeMap`, and `cli.py` does a read-modify-write on that file in
+# `BTreeMap`, and the CLI does a read-modify-write on that file in
 # five places. serde_json's `preserve_order` feature would fix the
 # ordering and break something worse: Cargo unifies features across a
 # workspace, so it would also re-order `agentcage-core`'s
@@ -52,7 +52,7 @@ agentcage-exec = { path = "../agentcage-exec" }
 
 rustix = { version = "1", features = ["process"] }
 
-# The state-compat fixture test reads the quadlets the Python installed
+# The state-compat fixture test reads the quadlets an earlier release installed
 # and checks they are routed to the directory `Units` would put them
 # in, and it drives that router with the recording fake -- so the
 # fixture suite proves the systemd half against the same tree as the

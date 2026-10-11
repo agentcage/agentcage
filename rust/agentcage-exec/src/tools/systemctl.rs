@@ -1,13 +1,12 @@
-//! `systemctl --user` -- the port of `src/agentcage/systemd.py`.
+//! `systemctl --user`.
 //!
-//! Two things carry over from the Python and neither is obvious.
+//! Two behaviours here are deliberate and neither is obvious.
 //!
 //! **Every operation is a no-op when `systemctl` is absent.** macOS has
 //! no systemd, and a container-backed cage created on Linux can still be
 //! cleaned up from a Mac; without the guard those paths die with
 //! `FileNotFoundError`. The check is [`CommandRunner::which`] rather
-//! than "try it and catch not-found", because that is what the Python
-//! does (`shutil.which`) and because it keeps the no-op decision
+//! than "try it and catch not-found", because it keeps the no-op decision
 //! inspectable -- [`crate::FakeRunner::stub_missing`] reaches the macOS
 //! branch from a Linux test runner, which is the only way it gets
 //! covered at all.
@@ -114,8 +113,8 @@ impl<'a> Systemctl<'a> {
     /// Only native `.service` units need this. A quadlet-generated unit
     /// is activated by the systemd generator; a hand-written one's
     /// `[Install] WantedBy=` names a symlink that nothing creates unless
-    /// `enable` is called. The Python notes it has no live caller and is
-    /// kept for parity and legacy cleanup; same here.
+    /// `enable` is called. It has no live caller and is kept for legacy
+    /// cleanup.
     ///
     /// # Errors
     ///

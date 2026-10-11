@@ -1,8 +1,8 @@
 //! The golden corpus, against the three derived files the deploy path
 //! writes.
 //!
-//! `tests/fixtures/golden/valid/<case>/` records what the Python
-//! produced for each config, and PR C8's `golden_quadlets.rs` already
+//! `tests/fixtures/golden/valid/<case>/` records what an earlier
+//! release produced for each config, and PR C8's `golden_quadlets.rs` already
 //! reproduces the unit files and `dns-allowlist.conf` from
 //! `agentcage-core`'s side. What it cannot reach is the *writers*:
 //! `save_proxy_config` and `save_placeholders_env` are I/O, so they live
@@ -37,7 +37,7 @@ const FROZEN_DNS_SERVERS: [&str; 2] = ["192.0.2.53", "192.0.2.54"];
 ///
 /// `relay-imap-ca-file` declares `ca_file: ${HOME}/certs/fake-ca.pem`,
 /// and `resolve_relay_ca_files` expands `$HOME` from the **process**
-/// environment — deliberately, because that is what the Python does and
+/// environment — deliberately, because that is what earlier releases did and
 /// an operator's `~` is the only meaning that path can have. The corpus
 /// harness ran with `HOME` pointed at a sandbox holding that file; a
 /// test cannot reproduce that without either setting `HOME` (unsound:
@@ -189,7 +189,7 @@ fn plant(paths: &Paths, directory: &Path) -> String {
 
 /// Every valid case's three derived files.
 #[test]
-fn the_derived_files_match_the_python() {
+fn the_derived_files_match_the_corpus() {
     let dir = TestDir::new("golden-derived");
     let cases = manifest();
     assert!(

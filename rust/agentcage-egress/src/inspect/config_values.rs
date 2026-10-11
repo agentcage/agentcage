@@ -1,15 +1,15 @@
-//! Reading an inspector's config section with the replaced
-//! implementation's semantics.
+//! Reading an inspector's config section leniently, as earlier releases
+//! read it.
 //!
-//! Each built-in took a plain dict and read it with `config.get(key,
-//! default)`, using the value as whatever Python type it came in as. The
-//! helpers here reproduce that where the result is well defined (an `int`
-//! or a `float` threshold, truthiness for flags) and refuse the config
-//! where Python would have raised later, on every request, or iterated a
-//! string's characters as if they were list items. Refusing at configure
+//! Each built-in read its section with `config.get(key, default)`, using
+//! the value as whatever kind it came in as. The helpers here keep that
+//! where the result is well defined (an `int` or a `float` threshold,
+//! truthiness for flags) and refuse the config where earlier releases
+//! failed later, on every request, or iterated a string's characters as
+//! if they were list items. Refusing at configure
 //! time keeps a bad reload fail-closed (D1): the last good chain stays.
 
-use agentcage_core::python::{str_of, type_name};
+use agentcage_core::value_fmt::{coerce_to_string, kind_name};
 
 use crate::config::{Mapping, Value, truthy};
 use crate::json::Json;
@@ -26,18 +26,18 @@ pub(crate) fn section<'a>(value: &'a Value, inspector: &str) -> Result<&'a Mappi
         Value::Mapping(m) => Ok(m),
         other => Err(format!(
             "{inspector} inspector config must be a mapping (got {})",
-            type_name(other)
+            kind_name(other)
         )),
     }
 }
 
-/// A number from the config, kept with its Python spelling: reasons
+/// A number from the config, kept with its literal spelling: reasons
 /// interpolate it (`threshold 7.0` for a float, `threshold 7` for an int).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Num {
     /// The value, for comparisons.
     pub value: f64,
-    /// `str(value)` in Python.
+    /// The value's text (`7`, `7.0`, `True`).
     pub text: String,
     /// The value as `json.dumps` would write it (inspector metadata).
     pub json: Json,
@@ -56,23 +56,23 @@ impl Num {
     pub(crate) fn float(f: f64) -> Self {
         Self {
             value: f,
-            text: py_float_str(f),
+            text: float_text(f),
             json: Json::Float(f),
         }
     }
 
-    /// Whether Python would call it truthy (`if not limit`).
+    /// Whether it is falsy, i.e. zero (`if not limit`).
     pub(crate) fn is_zero(&self) -> bool {
         self.value == 0.0
     }
 
     fn from_value(value: &Value) -> Option<Self> {
         match value {
-            // `bool` is an `int` subclass in Python: compares as 0/1,
-            // prints as `True`/`False`.
+            // A bool counts as an int: compares as 0/1, prints as
+            // `True`/`False`.
             Value::Bool(b) => Some(Self {
                 value: f64::from(u8::from(*b)),
-                text: str_of(value),
+                text: coerce_to_string(value),
                 json: Json::Bool(*b),
             }),
             Value::Number(n) => Some(match n.as_i64() {
@@ -93,9 +93,10 @@ impl Num {
     }
 }
 
-/// `str(f)` for a Python float: `repr`, with Python's spellings for the
-/// non-finite values (`json.dumps` spells those differently).
-pub(crate) fn py_float_str(f: f64) -> String {
+/// A float's text: [`crate::json::format_float`]'s shortest round
+/// trip, with `inf`, `-inf` and `nan` for the non-finite values (JSON
+/// spells those differently).
+pub(crate) fn float_text(f: f64) -> String {
     if f.is_nan() {
         "nan".to_owned()
     } else if f.is_infinite() {
@@ -110,7 +111,7 @@ pub(crate) fn num(map: &Mapping, key: &str, default: Num, inspector: &str) -> Re
     match map.get(key) {
         None => Ok(default),
         Some(v) => Num::from_value(v)
-            .ok_or_else(|| format!("{inspector}.{key} must be a number (got {})", type_name(v))),
+            .ok_or_else(|| format!("{inspector}.{key} must be a number (got {})", kind_name(v))),
     }
 }
 
@@ -136,7 +137,7 @@ pub(crate) fn string(
         Some(Value::String(s)) => Ok(s.clone()),
         Some(v) => Err(format!(
             "{inspector}.{key} must be a string (got {})",
-            type_name(v)
+            kind_name(v)
         )),
     }
 }
@@ -151,7 +152,7 @@ pub(crate) fn str_items(value: &Value, what: &str) -> Result<Vec<String>, String
     let Value::Sequence(items) = value else {
         return Err(format!(
             "{what} must be a list of strings (got {})",
-            type_name(value)
+            kind_name(value)
         ));
     };
     items
@@ -160,7 +161,7 @@ pub(crate) fn str_items(value: &Value, what: &str) -> Result<Vec<String>, String
             Value::String(s) => Ok(s.clone()),
             other => Err(format!(
                 "{what} entries must be strings (got {})",
-                type_name(other)
+                kind_name(other)
             )),
         })
         .collect()
@@ -192,7 +193,7 @@ pub(crate) fn host_lists(
         Some(v) => {
             return Err(format!(
                 "{inspector}.{key} must be a mapping (got {})",
-                type_name(v)
+                kind_name(v)
             ));
         }
     };
@@ -214,16 +215,16 @@ pub(crate) fn host_matches(host: &str, h: &str) -> bool {
     host == h || host.strip_suffix(h).is_some_and(|rest| rest.ends_with('.'))
 }
 
-/// Python's `str.isspace()` for one character, which is also what `\s`
-/// matches in a `str` pattern. Unicode `White_Space` plus the four
-/// C0 information separators (U+001C–U+001F) Python counts too.
-pub(crate) fn py_isspace(c: char) -> bool {
+/// Whitespace for one character, as `str.isspace()` counts it, which is
+/// also what `\s` matched in the patterns earlier releases used: Unicode
+/// `White_Space` plus the four C0 information separators (U+001C–U+001F).
+pub(crate) fn is_strip_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
 /// `s.strip()`.
-pub(crate) fn py_strip(s: &str) -> &str {
-    s.trim_matches(py_isspace)
+pub(crate) fn strip_space(s: &str) -> &str {
+    s.trim_matches(is_strip_space)
 }
 
 #[cfg(test)]
@@ -231,7 +232,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn numbers_keep_their_python_spelling() {
+    fn numbers_keep_their_literal_spelling() {
         let m = agentcage_core::yaml::load("a: 7\nb: 7.0\nc: true\nd: .inf\ne: x\n").unwrap();
         let Value::Mapping(m) = m else { unreachable!() };
         let get = |k| num(&m, k, Num::int(0), "t").map(|n| n.text);

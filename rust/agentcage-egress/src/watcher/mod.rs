@@ -28,10 +28,10 @@
 //! do not carry over. The oracle corpus therefore pins the deterministic
 //! (no-RNG) mode only.
 
+pub(crate) mod coerce;
 pub mod config;
 pub mod digest;
 pub mod prompt;
-pub(crate) mod pyval;
 pub mod runner;
 pub mod sample;
 pub mod scan;

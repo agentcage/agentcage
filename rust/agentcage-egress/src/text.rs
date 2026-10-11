@@ -1,35 +1,36 @@
 //! Body decoding: Content-Encoding removal and `get_text` (the charset
 //! rules inspectors see the body through).
 //!
-//! Two layers, each the replaced implementation's to the byte (pinned by
-//! `tests/fixtures/egress/get_text.json`):
+//! Two layers, each byte-identical to what earlier releases did (pinned by
+//! `tests/fixtures/egress/get_text.json`, since inspector verdicts
+//! depend on the text they see):
 //!
 //! * [`decoded_body`] removes the `Content-Encoding`: `gzip` (which also
 //!   accepts a zlib stream, and tolerates a truncated one), `deflate`
 //!   (zlib, else raw), `deflateraw`, `br`, `zstd`, `identity` and `none`.
 //!   Anything else, including stacked encodings (`gzip, br`) and
-//!   `x-gzip`, is an error: the Python egress raised too, and the pipeline
-//!   fails closed on it (plan D1).
+//!   `x-gzip`, is an error, as it always was, and the
+//!   pipeline fails closed on it (plan D1).
 //! * [`get_text`] turns the decoded body into text the way
 //!   `get_text(strict=False)` did: a byte-order mark wins, then the
 //!   `charset` parameter, then `utf-8` for JSON, HTML (unless a `<meta>`
 //!   names a charset), XML (unless the declaration does), JavaScript and
 //!   CSS (unless `@charset` does), else `latin-1`; `gb2312` / `gbk` read as
 //!   GB 18030. A charset that is unknown, or that the body is not valid
-//!   in, falls back to UTF-8 with every undecodable byte as U+FFFD (the
-//!   Python fallback surrogate-escaped them, which a Rust `String` cannot
-//!   hold; one replacement per byte keeps lengths and positions the
-//!   same).
+//!   in, falls back to UTF-8 with every undecodable byte as U+FFFD (earlier
+//!   releases surrogate-escaped them, which a Rust `String` cannot hold;
+//!   one replacement per byte keeps lengths and positions the same).
 //!
-//! Charset names resolve the way CPython's codec registry resolves them
+//! Charset names resolve the way CPython's codec registry (the reference
+//! earlier releases used) resolves them
 //! (lower-cased, punctuation runs folded to `_`, then its alias table),
 //! restricted to the codecs listed in [`SUPPORTED_CODECS`]: the Unicode
 //! encodings, ASCII, Latin-1, the Windows code pages 1250-1258, ISO 8859
 //! parts 2-10 and 13-16, KOI8-R/U and GB 18030. A name CPython knows but
 //! that is not on that list (`Shift_JIS`, `Big5`, `EUC-*`, …) falls back like an
 //! unknown one. A charset naming a byte-to-byte codec (`identity`, `gzip`,
-//! `base64`, …), which made the Python method return bytes instead of
-//! text, is treated as unknown too.
+//! `base64`, …), which yields bytes rather than text, is treated as
+//! unknown too.
 
 use std::borrow::Cow;
 
@@ -417,9 +418,9 @@ pub fn decode_text(content_type: &str, content: &[u8]) -> String {
     decode_charset(content, &charset).unwrap_or_else(|| utf8_replacing_each_byte(content))
 }
 
-/// Python `str.isspace` for one character: the Unicode `White_Space`
+/// `str.isspace` for one character: the Unicode `White_Space`
 /// characters plus the four ASCII separators U+001C-U+001F.
-pub(crate) fn py_is_space(c: char) -> bool {
+pub(crate) fn is_strip_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
@@ -438,7 +439,10 @@ fn parse_content_type(value: &str) -> Option<ContentType> {
     let mut out: Vec<(String, String)> = Vec::new();
     for clause in params.into_iter().flat_map(|p| p.split(';')) {
         if let Some((k, v)) = clause.split_once('=') {
-            let (k, v) = (k.trim_matches(py_is_space), v.trim_matches(py_is_space));
+            let (k, v) = (
+                k.trim_matches(is_strip_space),
+                v.trim_matches(is_strip_space),
+            );
             match out.iter_mut().find(|(name, _)| name == k) {
                 Some(slot) => v.clone_into(&mut slot.1),
                 None => out.push((k.to_owned(), v.to_owned())),
@@ -1040,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn corpus_cases_decode_like_python() {
+    fn corpus_cases_decode_as_recorded() {
         let c = corpus();
         let mut failures = Vec::new();
         for case in items(&c, "cases") {
@@ -1069,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn codec_labels_resolve_like_python() {
+    fn codec_labels_resolve_as_recorded() {
         let c = corpus();
         let mut failures = Vec::new();
         for case in items(&c, "labels") {
@@ -1090,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn single_byte_tables_match_python() {
+    fn single_byte_tables_match_the_recording() {
         let c = corpus();
         for case in items(&c, "tables") {
             let codec = case.get("codec").and_then(Json::as_str).unwrap();
@@ -1107,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn multibyte_samples_match_python() {
+    fn multibyte_samples_match_the_recording() {
         let c = corpus();
         for case in items(&c, "multibyte") {
             let codec = case.get("codec").and_then(Json::as_str).unwrap();

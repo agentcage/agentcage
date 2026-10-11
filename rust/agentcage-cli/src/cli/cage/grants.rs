@@ -4,17 +4,13 @@
 //! # The shape to be careful about
 //!
 //! This is the only group in the tree that takes a positional argument
-//! of its own *before* its subcommand. `cli.py:4724` declares
-//! `@cage.group("grants")` with `@click.argument("name")`, and the
-//! subcommands reach it through `click.get_current_context().parent`
-//! rather than redeclaring it — so `agentcage cage grants myapp list`
+//! of its own *before* its subcommand: `agentcage cage grants myapp list`
 //! parses `myapp` at the group and `list` below it, and neither
 //! `grants list myapp` nor `grants myapp list extra` is accepted.
 //!
 //! clap handles this natively (a positional is matched before a
-//! subcommand token), so the tree says what the Python says. What it
-//! does *not* reproduce is the error for `cage grants myapp` with no
-//! subcommand: click's `no_args_is_help` fires and prints the help,
+//! subcommand token). The one difference from earlier releases is
+//! `cage grants myapp` with no subcommand: those printed the help,
 //! clap raises `MissingSubcommand`. Both exit 2. See the allowed
 //! differences in `tests/fixtures/cli-surface/README.md`.
 
@@ -22,11 +18,11 @@ use clap::Command;
 
 use crate::cli::args::{aliases_section, cage_name, group, leaf, positional};
 
-/// `cage grants sync`'s docstring, verbatim from `cli.py:4800`.
+/// `cage grants sync`'s long help.
 ///
 /// Forty-two lines of it, because the command is the one place where the
 /// host CLI and the in-egress addon divide a single responsibility and
-/// the docstring is the only record of the split. It is reproduced whole
+/// the help text is the only record of the split. It is kept whole
 /// rather than summarised: `--help` is where an operator reads it.
 const SYNC_LONG: &str = "\
 Reconcile decided grants into the operator's cage.yaml baseline.
@@ -133,7 +129,7 @@ pub(crate) fn command() -> Command {
 // was. `agentcage-state`'s atomic writer (PR D2) is what makes the
 // re-read see a whole file rather than a prefix.
 //
-// One refinement on top of that, which the Python calls Fix 3: the
+// One refinement on top of that: the
 // removal set is keyed by domain and carries the SNAPSHOT entry's
 // `granted_at`. If the addon re-decided the same domain during the
 // window, the on-disk entry is a different grant with a strictly newer
@@ -224,9 +220,8 @@ fn is_never_grant(domain: &str, never: &BTreeSet<String>) -> bool {
 
 /// `entry.get("expires_at")` has passed.
 ///
-/// A **string** comparison against `datetime.now(timezone.utc)
-/// .isoformat()`, which is what the Python does — both ends are
-/// produced by the same `isoformat`, so lexical order is chronological
+/// A **string** comparison against the current UTC time in ISO-8601 —
+/// both ends are produced by the same formatter, so lexical order is chronological
 /// order, and an empty `expires_at` means *no* expiry rather than
 /// *expired*.
 fn is_expired(entry: &Mapping, now: &str) -> bool {
@@ -353,8 +348,8 @@ fn list_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     }
 
     // Fixed-width columns keep the output greppable. The widths are
-    // minimums, not truncations — Python's `f"{s:32}"` pads and never
-    // cuts, so an over-long domain pushes the row out rather than
+    // minimums, not truncations — a cell is padded and never
+    // cut, so an over-long domain pushes the row out rather than
     // losing characters.
     println!(
         "{:32} {:26} {:26} {:24} SOURCE",
@@ -424,7 +419,7 @@ fn promote_inner(ctx: &Ctx, name: &str, domain: &str) -> Result<(), ExitCode> {
     if !valid_domain(&canonical_name, LabelPolicy::StrictDotted) {
         eprintln!(
             "error: invalid domain: {}",
-            agentcage_core::python::repr_str(domain)
+            agentcage_core::value_fmt::quote_text(domain)
         );
         return Err(ExitCode::from(EXIT_FAILURE));
     }
@@ -620,11 +615,9 @@ pub(crate) fn reconcile(ctx: &Ctx, name: &str, quiet: bool) -> ExitCode {
         eprintln!("error: cage '{name}' does not exist");
         return ExitCode::from(EXIT_FAILURE);
     }
-    // The v0.22 gate, once and up front. In the Python it sits inside
-    // step 0, and `_ensure_v022_cage` raises `SystemExit(2)` — a
-    // `BaseException`, so `_safe_tick`'s `except Exception` does not
-    // catch it and the whole command exits 2. Hoisting it says the same
-    // thing without printing the refusal once per step.
+    // The v0.22 gate, once and up front: a refusal exits the whole
+    // command with 2, and checking it here avoids printing the
+    // refusal once per step.
     if let Err(code) = ensure_v022_cage(&ctx.paths, name) {
         return code;
     }
@@ -823,8 +816,7 @@ fn tick(ctx: &Ctx, name: &str, isolation: &str) {
                     continue;
                 }
                 if !allow_lower.contains(&domain) {
-                    // `list_key = "allow"` in the Python, not the
-                    // computed key: the blocklist case is excluded
+                    // Always `allow`, not the computed key: the blocklist case is excluded
                     // above, so this is the only list a grant can
                     // widen.
                     list_mut(&mut raw, "allow").push(Value::from(domain.clone()));

@@ -5,10 +5,7 @@
 //! loader, the validator and the quadlet renderer have to ask the
 //! machine arrives as a trait method. The golden corpus answers them
 //! from a hermetic tree; this answers them from the real host, and it
-//! is the only place in the port where those answers come from.
-//!
-//! Each function is named after the `config.py` / `quadlets.py` call it
-//! replaces so the two can be read side by side.
+//! is the only place where those answers come from.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -41,8 +38,7 @@ fn read_nameservers(path: &str) -> Vec<String> {
 }
 
 /// `config._is_loopback` — 127.0.0.0/8 or `::1`. A string that is not
-/// an IP address at all is not loopback, matching the Python's
-/// `except ValueError: return False`.
+/// an IP address at all is not loopback.
 fn is_loopback(addr: &str) -> bool {
     addr.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
@@ -51,7 +47,7 @@ fn is_loopback(addr: &str) -> bool {
 ///
 /// # Errors
 ///
-/// [`ConfigError::Runtime`] with the Python's Linux message when every
+/// [`ConfigError::Runtime`] with the long-standing Linux message when every
 /// nameserver on offer is a loopback address. The macOS `scutil` branch
 /// is not reachable here — the container backend is Linux-only, and the
 /// vm / apple-container backends are Track E.
@@ -81,7 +77,7 @@ fn host_dns_servers() -> Result<Vec<String>, ConfigError> {
 /// Variables this process publishes to the config layer without
 /// putting them in its own environment.
 ///
-/// `run.py` does `os.environ["PROJECT_DIR"] = project_dir` so that a
+/// `agentcage run` sets `PROJECT_DIR` so that a
 /// scaffold's `${PROJECT_DIR}:/workspace:rw` expands when the quadlets
 /// are rendered. `std::env::set_var` is `unsafe` in Rust 2024 — it races
 /// every other thread's `getenv`, and this crate forbids `unsafe` — and
@@ -152,15 +148,14 @@ pub fn uid() -> u32 {
 /// `pwd.getpwuid(os.getuid()).pw_name` — the invoking user's login name.
 ///
 /// Lima names the guest user after the host user, deriving it from the
-/// invoking uid's passwd entry, and `lima/provisioning.py` resolves it
+/// invoking uid's passwd entry, and this resolves it
 /// the same way so the provisioning script targets the right account.
-/// The comment there is explicit about why it is not
-/// `getpass.getuser()`: that one trusts `$USER` / `$LOGNAME` and can
+/// It is deliberately not `$USER` / `$LOGNAME`: those can
 /// disagree with the uid under `sudo` or an overridden environment,
 /// which would produce a script that chowns and lingers the wrong user.
 ///
 /// The environment is only the *fallback*, for a uid with no passwd
-/// entry. Python raises `KeyError` there; a container-ish host with no
+/// entry. A container-ish host with no
 /// passwd database is not something to crash a cage create over, and
 /// the resulting script is wrong in the same way either way.
 #[must_use]
@@ -175,7 +170,7 @@ pub fn login_name() -> String {
 #[must_use]
 pub fn machine() -> &'static str {
     match std::env::consts::ARCH {
-        // Python reports `arm64` on Apple Silicon and `aarch64` on
+        // The OS reports `arm64` on Apple Silicon and `aarch64` on
         // Linux for the same instruction set, and `default_isolation`
         // compares against `arm64`.
         "aarch64" if cfg!(target_os = "macos") => "arm64",
@@ -196,21 +191,20 @@ const MIN_MACOS_MAJOR: u32 = 26;
 /// `config.default_isolation()` — the best isolation backend for this
 /// host.
 ///
-/// Resolution order, the Python's own:
+/// Resolution order, unchanged from earlier releases:
 ///
 /// * Linux (and anything else) → `container`;
 /// * macOS on Apple Silicon, 26+, with the `container` CLI installed →
 ///   `apple-container`;
 /// * every other Mac → `vm`.
 ///
-/// The macOS major version comes from `sw_vers -productVersion` where
-/// the Python reads `platform.mac_ver()` — the same stand-in, and for
-/// the same reason, as [`crate::doctor`]'s. The binary probe is
+/// The macOS major version comes from `sw_vers -productVersion`, as in
+/// [`crate::doctor`]. The binary probe is
 /// `shutil.which`-shaped and goes through the runner, which is what
 /// makes this testable from Linux CI.
 ///
 /// Note what it does **not** do: probe whether the apiserver is
-/// running. The Python does not either — validation catches "installed
+/// running. Validation catches "installed
 /// but stopped" with a clear hint, and a probe here would run a
 /// subprocess on every config load.
 #[must_use]
@@ -235,9 +229,8 @@ pub fn default_isolation(runner: &dyn agentcage_exec::CommandRunner) -> &'static
 
 impl HostProbe for RealHost {
     fn default_isolation(&self) -> String {
-        // The trait has no runner — it is `config.default_isolation()`,
-        // which the Python calls with no arguments and which reaches
-        // the host directly. This is the real host, so the real runner
+        // The trait has no runner — the question takes no arguments and
+        // reaches the host directly. This is the real host, so the real runner
         // is the honest answer; every test that wants a different one
         // uses `FixedHost` or calls the free function above.
         default_isolation(&agentcage_exec::SystemRunner).to_owned()
@@ -265,10 +258,8 @@ impl agentcage_core::config::ValidationHost for RealHost {
 /// The real [`QuadletHost`].
 ///
 /// Holds the data root so `stage_vm_file_volume` can compose the seed
-/// directory without re-reading the environment — the Python composes
-/// it from a literal `~/.local/share`, which is a wart the vm backend
-/// (Track E) inherits; here it comes from the same [`Paths`] every
-/// other writer uses.
+/// directory without re-reading the environment; it comes from the
+/// same [`Paths`] every other writer uses.
 ///
 /// [`Paths`]: agentcage_state::Paths
 #[derive(Clone, Debug)]
@@ -374,13 +365,12 @@ mod tests {
     use super::{is_loopback, read_nameservers, realpath};
 
     #[test]
-    fn loopback_matches_pythons_ip_address_is_loopback() {
+    fn loopback_covers_127_slash_8_and_ipv6_loopback() {
         assert!(is_loopback("127.0.0.53"));
         assert!(is_loopback("127.0.0.1"));
         assert!(is_loopback("::1"));
         assert!(!is_loopback("8.8.8.8"));
-        // `ipaddress.ip_address("nonsense")` raises; the Python catches
-        // it and answers False.
+        // Not an address at all: not loopback.
         assert!(!is_loopback("nonsense"));
         assert!(!is_loopback(""));
     }

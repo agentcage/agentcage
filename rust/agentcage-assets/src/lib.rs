@@ -43,8 +43,8 @@
 
 pub mod egress;
 pub mod extract;
-/// Just enough of Python's `shlex.split` for a `COPY` line and for
-/// `$EDITOR` (PR D14).
+/// A POSIX shell-words lexer (`shlex.split` rules) for a `COPY` line
+/// and for `$EDITOR`.
 pub mod shlex;
 
 use std::fmt;
@@ -226,7 +226,7 @@ mod tests {
     ///
     /// Trivial until B3 wired up the embedding, and now load-bearing:
     /// the build script points at these paths, so a rename or a move of
-    /// the Python package fails the *build* with a panic from a build
+    /// an embedded tree fails the *build* with a panic from a build
     /// script, which is a long way from the source. This fails a test
     /// instead, and names the path.
     #[test]

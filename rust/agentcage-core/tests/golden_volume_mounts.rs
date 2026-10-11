@@ -1,8 +1,8 @@
 //! Reproduce the golden corpus's `volume-mounts.json` byte-for-byte.
 //!
-//! `tests/fixtures/golden/` (PR A3) records, for every case in the config
-//! matrix, everything `src/agentcage/volume_mounts.py` derives from that
-//! config's mounts — plus a standalone spec table in `shared/` that covers
+//! `tests/fixtures/golden/` records, for every case in the config
+//! matrix, everything volume-mount parsing derives from that config's
+//! mounts — plus a standalone spec table in `shared/` that covers
 //! the shapes no `cage.yaml` in the matrix happens to use. The fixture is the
 //! specification: this test rebuilds each document from the same inputs and
 //! compares the bytes, so a divergence shows up as a diff rather than as a
@@ -10,11 +10,10 @@
 //!
 //! The comparison is byte-exact, not by parsed value. The corpus README puts
 //! JSON on the byte-exact side of its line, and it costs nothing here:
-//! `CPython`'s `json.dumps(..., indent=2, sort_keys=True, ensure_ascii=False)`
-//! and `serde_json::to_string_pretty` agree on two-space indentation, on
+//! the recorded layout and `serde_json::to_string_pretty` agree on two-space indentation, on
 //! `": "` between key and value, on sorted keys (`serde_json`'s `Map` is a
-//! `BTreeMap`, which for the ASCII keys here is the same order `CPython`'s
-//! `sort_keys` produces) and on leaving non-ASCII unescaped.
+//! `BTreeMap`, which for the ASCII keys here is the same order the recorded files
+//! use) and on leaving non-ASCII unescaped.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -114,7 +113,7 @@ fn tmpfs_row(spec: &str, mounts: &[MountTarget]) -> Value {
 
 /// Serialize `mask_mountpoint_dirs` as ordered `[source, [dirs]]` pairs.
 ///
-/// The harness used to iterate the returned Python `dict` directly, which
+/// The harness used to iterate the returned mapping directly, which
 /// yields only its keys, so the corpus recorded the bind sources and dropped
 /// the host paths under each one. Those paths are the half #320's
 /// `ExecStopPost` rmdir chain consumes, and their order is load-bearing —
@@ -149,7 +148,7 @@ fn mask_copyup_json(tmpfs: &[String], mounts: &[MountTarget]) -> Value {
 
 /// `shared/volume-mounts.json`: the standalone spec table.
 ///
-/// Its inputs are hard-coded in `scripts/gen-golden-corpus.py` rather than
+/// Its inputs were hard-coded in the recording harness rather than
 /// derived from a config, and the fixture carries every one of them — each
 /// row's `spec`, plus the `mount_targets` table, which for this artifact is a
 /// pure input. So the test reads its inputs back out of the fixture and
@@ -195,7 +194,7 @@ fn shared_volume_spec_table_matches() {
 ///
 /// Inputs come from the case's own `resolved-config.json` —
 /// `container.volumes`, `container.tmpfs` and `container.named_volumes` — so
-/// this exercises the parse from the same starting point the Python harness
+/// this exercises the parse from the same starting point the recording harness
 /// used. One input cannot be taken from there: see [`named_volume_targets`].
 #[test]
 fn every_case_volume_report_matches() {
@@ -287,8 +286,8 @@ fn every_case_volume_report_matches() {
 /// and the assertion below is what keeps that from being a free pass: the
 /// tail must be exactly the container paths `container.named_volumes` names,
 /// as a multiset, each with an empty host source. Only the *ordering* of that
-/// tail is taken on trust, and ordering here is not `volume_mounts.py`'s
-/// behaviour — it is the mapping order C1 will be responsible for preserving.
+/// tail is taken on trust, and ordering here is not volume-mount parsing's
+/// behaviour — it is the mapping order the config parser preserves.
 fn named_volume_targets(
     container: &Value,
     expected: &str,

@@ -1,7 +1,7 @@
-//! `services.py` — the orchestration between the CLI and the backend.
+//! The orchestration between the CLI and the backend.
 //!
-//! The Python module exists so `cli.py` can be reduced to argument
-//! handling, and the split survives here: nothing in this file prints
+//! It exists so the command bodies can be reduced to argument
+//! handling: nothing in this file prints
 //! anything a command did not ask it to, and nothing in it decides
 //! whether to exit.
 //!
@@ -38,8 +38,8 @@ pub const BUILD_CAPS: [&str; 6] = [
 /// Four sources, in this order: injection rules, `container.podman_secrets`,
 /// each protocol relay's two credential sources, and the two in-egress LLM
 /// agents' API keys. The last two groups are deduplicated against what is
-/// already in the list; the first two are not, because the Python does not
-/// deduplicate them either and `check_secrets` is indifferent to a repeat.
+/// already in the list; the first two are not, because they never were
+/// and `check_secrets` is indifferent to a repeat.
 #[must_use]
 pub fn expected_secrets(config: &Config) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
@@ -177,12 +177,10 @@ pub fn check_secrets(
 ///
 /// Every failure is "no pairs": a missing config, a malformed one, a
 /// `secret_injection` that is a bare list rather than a mapping with
-/// `rules:`. The Python catches only `FileNotFoundError` and then
-/// duck-types its way through the rest, which comes to the same thing
-/// for every shape a validated cage can have on disk.
+/// `rules:`.
 ///
-/// Rules whose placeholder was never filled in are skipped — the
-/// Python's `and` chain treats an empty string as absent, so the
+/// Rules whose placeholder was never filled in are skipped — an empty
+/// string has always counted as absent here, so the
 /// emptiness check is part of the contract rather than defensiveness.
 #[must_use]
 pub fn current_placeholders(paths: &Paths, name: &str) -> Vec<(String, String)> {
@@ -215,8 +213,8 @@ pub fn current_placeholders(paths: &Paths, name: &str) -> Vec<(String, String)> 
 /// `services.suggest_alt_port` — the port the error message suggests.
 #[must_use]
 pub const fn suggest_alt_port(port: u16) -> u16 {
-    // The Python clamps at 65535 by stepping *down* instead; `u16`
-    // makes the overflow unrepresentable, so the clamp is the same
+    // Earlier releases clamped at 65535 by stepping *down* instead;
+    // `u16` makes the overflow unrepresentable, so the clamp is the same
     // decision spelled without the arithmetic.
     if port == u16::MAX { port - 1 } else { port + 1 }
 }
@@ -234,8 +232,8 @@ pub struct PortConflict {
 
 /// `services.check_port_availability`.
 ///
-/// Binds each published host port with `SO_REUSEADDR`, exactly as the
-/// Python's socket does — a port in `TIME_WAIT` must read as free, or
+/// Binds each published host port with `SO_REUSEADDR` — a port in
+/// `TIME_WAIT` must read as free, or
 /// every `cage update` inside two minutes of a stop would refuse.
 ///
 /// A two-part spec (`3000:3000`) binds `0.0.0.0`; a one- or
@@ -273,7 +271,7 @@ pub fn check_port_availability(config: &Config) -> Vec<PortConflict> {
 
 /// One `SO_REUSEADDR` bind, immediately dropped. `true` means free.
 ///
-/// `SO_REUSEADDR` because the Python sets it, and it is not cosmetic:
+/// `SO_REUSEADDR` is not cosmetic:
 /// without it a port the cage's own container released seconds ago is
 /// still in `TIME_WAIT`, and `cage update` would refuse to redeploy the
 /// cage it just stopped.
@@ -289,8 +287,7 @@ fn bind_probe(address: Ipv4Addr, port: u16) -> bool {
         SockFlag::empty(),
         None,
     ) else {
-        // The Python's `except OSError` wraps the whole block, and a
-        // socket it could not create is a port it reports as in use.
+        // A socket that could not be created reads as a port in use.
         return false;
     };
     if setsockopt(&fd, sockopt::ReuseAddr, &true).is_err() {
@@ -442,8 +439,8 @@ pub struct Deployed {
 /// Everything [`build_and_deploy`] needs besides the backend and the
 /// state roots.
 ///
-/// A struct because the tail is four `bool`s and two `Option`s; the
-/// Python spells them as keyword-only arguments for the same reason.
+/// A struct because the tail is four `bool`s and two `Option`s, which
+/// positional arguments would make easy to transpose.
 #[derive(Debug)]
 pub struct DeployPlan<'a> {
     /// The cage's configuration.
@@ -466,9 +463,9 @@ pub struct DeployPlan<'a> {
     pub pull: bool,
 }
 
-/// `services.build_and_deploy` — build, render, install, record, start.
+/// Build, render, install, record, start.
 ///
-/// The order matters and is the Python's:
+/// The order matters:
 ///
 /// 1. Refresh the shared patches directory.
 /// 2. Allocate (or reuse) the cage's `/24` and write the two
@@ -490,7 +487,7 @@ pub struct DeployPlan<'a> {
 /// # Errors
 ///
 /// [`BackendError`] from any step. Nothing is rolled back — the caller
-/// prints the Python's "state preserved for debugging" hint.
+/// prints the "state preserved for debugging" hint.
 pub fn build_and_deploy(
     backend: &AnyBackend<'_>,
     paths: &Paths,
@@ -519,11 +516,9 @@ pub fn build_and_deploy(
 
     backend.build_artifacts(Some(config), deploy_name, no_cache, pull, quiet)?;
 
-    // `state.capture_dir()` CREATES the directory as a side effect of
-    // computing its path, and `quadlets.py` calls it while rendering the
-    // egress unit. The port made the renderer pure — `StatePaths` in
-    // `agentcage-core` touches no filesystem, by design — so the mkdir
-    // has to happen here, on the deploy path, or not at all.
+    // The renderer is pure — `StatePaths` in `agentcage-core` touches no
+    // filesystem, by design — so the capture directory's mkdir has to
+    // happen here, on the deploy path, or not at all.
     //
     // Not at all is not survivable. With `capture.enable_har`, the
     // egress unit gets
@@ -538,7 +533,7 @@ pub fn build_and_deploy(
     // cage name already had the directory.
     //
     // Guarded on the same flag as the render, so a cage without capture
-    // gets no directory — matching what Python leaves on disk.
+    // gets no directory.
     if config.capture.enable_har {
         paths.ensure_capture_dir(deploy_name)?;
     }
@@ -551,8 +546,7 @@ pub fn build_and_deploy(
     paths.check_inspector_plugins_staged(deploy_name, config)?;
 
     // The grants overlay directory, for the same reason and with the same
-    // failure: `state.grants_dir()` created it while `quadlets.py`
-    // rendered the egress unit, the pure renderer does not, and the unit
+    // failure: the pure renderer does not create it, and the unit
     // bind-mounts it (`Volume=<dir>:/var/lib/agentcage`) behind an
     // `ExecStartPre=` chgrp/chmod that both fail on a missing directory.
     // So a new container cage with the decider or the watcher on (or an
@@ -599,8 +593,7 @@ pub fn build_and_deploy(
 /// Reads each deployment's persisted `network_octet` and falls back to
 /// the hash-derived value only for a legacy deployment whose metadata
 /// predates the field. A deployment that cannot be read at all is
-/// skipped, as the Python's bare `except` skips it: a broken cage must
-/// not block a new one.
+/// skipped: a broken cage must not block a new one.
 #[must_use]
 pub fn collect_used_octets(paths: &Paths, exclude: &str) -> BTreeSet<u32> {
     let mut used = BTreeSet::new();
@@ -653,17 +646,14 @@ const STAGED_SECRETS_MOUNT: &str = "/home/acproxy/secrets";
 /// and reads as "no live channel", which is the safe answer — it costs
 /// a restart, not a wrong value.
 ///
-/// # The vm arm was unreachable in the Python
+/// # The vm arm was unreachable in earlier releases
 ///
-/// `services.cage_has_live_secret_channel` builds a `VmPodman` and
-/// calls `container_inspect` on it, and `VmPodman` did not define that
-/// method — so every vm call raised `AttributeError` into the
-/// function's own `except Exception` and answered "no". Nobody saw an
-/// error; what they got was `secret set` on a running vm cage always
-/// restarting it, and `stage_secret_value`'s carefully written vm arm
-/// never running. PR E6 added the missing method on both sides. If the
-/// restart-every-time behaviour was wanted, this is the line to look
-/// at.
+/// In earlier releases the vm branch of this check always failed
+/// internally
+/// and answered "no", so `secret set` on a running vm cage always
+/// restarted it and the vm arm of `stage_secret_value` never ran. It
+/// works now. If the restart-every-time behaviour was wanted, this is
+/// the line to look at.
 #[must_use]
 pub fn cage_has_live_secret_channel(
     podman: &crate::cage_podman::CagePodman<'_>,
@@ -766,8 +756,8 @@ pub fn stage_secret_value(
 /// is not just a transport swap: the target path is under the *guest's*
 /// `XDG_RUNTIME_DIR`, which belongs to the Lima user and is not the
 /// host's. [`Paths::runtime_secrets_dir`] would compose a host path and
-/// the write would land somewhere nothing reads. The Python asks the
-/// guest the same way, with the same `${XDG_RUNTIME_DIR:-/run/user/$(id
+/// the write would land somewhere nothing reads. So the guest is asked,
+/// with a `${XDG_RUNTIME_DIR:-/run/user/$(id
 /// -u)}` fallback for a guest whose login shell never set it.
 fn stage_secret_value_in_guest(
     instance: &agentcage_exec::tools::limactl::LimaInstance<'_>,
@@ -840,7 +830,7 @@ mod tests {
     use agentcage_core::config::types::{ProtocolRelay, SecretInjectionRule};
 
     #[test]
-    fn build_caps_keep_the_pythons_order() {
+    fn build_caps_keep_their_order() {
         assert_eq!(BUILD_CAPS[0], "CAP_SETFCAP");
         assert_eq!(BUILD_CAPS[5], "CAP_FOWNER");
     }

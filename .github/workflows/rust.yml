@@ -1,9 +1,9 @@
 # The workspace's CI gate: the host CLI, the egress, and the repository
 # invariants.
 #
-# The committed fixtures under tests/fixtures/ were recorded from the
-# Python CLI before it was removed; the Rust tests assert against them
-# as golden files. See docs/history/rust-port-plan.md for their history.
+# The committed fixtures under tests/fixtures/ were recorded from earlier
+# releases of the CLI; the Rust tests assert against them as golden
+# files. See docs/history/rust-port-plan.md for their history.
 
 name: Rust
 

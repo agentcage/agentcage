@@ -7,8 +7,8 @@
 //! `cage create` instead of as an empty credential at runtime — and
 //! because two of them are reached from more than one place:
 //! `validate_source` gates `secret_injection[].source` *and* a protocol
-//! relay's `auth.user_source` / `auth.password_source` (PR C3 calls the
-//! same function; the corpus case `err-relay-auth-source-scheme` is that
+//! relay's `auth.user_source` / `auth.password_source` (the relay
+//! validator calls the same function; the corpus case `err-relay-auth-source-scheme` is that
 //! path), and `validate_env_name` guards a string that is later
 //! interpolated into a generated quadlet `ExecStartPre` shell command.
 //!
@@ -19,14 +19,14 @@
 
 use super::ConfigError;
 use super::types::KNOWN_TRANSFORMS;
-use crate::python::repr_str;
+use crate::value_fmt::quote_text;
 
 type Checked = Result<(), ConfigError>;
 
 /// `secret_resolver.KNOWN_SCHEMES`, minus the empty string.
 ///
-/// The empty scheme is a member in Python because `validate_source`
-/// returns early on an empty source; it is excluded from the message's
+/// The empty scheme was a member of the original set because
+/// `validate_source` returns early on an empty source; it is excluded from the message's
 /// `Valid schemes:` list there with `KNOWN_SCHEMES - {""}` and sorted, so
 /// this is that list already sorted.
 pub const KNOWN_SOURCE_SCHEMES: [&str; 4] = ["cmd", "env", "podman", "systemd-creds"];
@@ -34,8 +34,8 @@ pub const KNOWN_SOURCE_SCHEMES: [&str; 4] = ["cmd", "env", "podman", "systemd-cr
 /// `secret_store.KNOWN_BACKENDS`, sorted.
 ///
 /// `cage.yaml`'s `secrets.backend`. Sorted here because the error message
-/// interpolates `", ".join(sorted(KNOWN_BACKENDS))` — it is a `frozenset`
-/// in Python, so the sort is what makes the message deterministic.
+/// lists them sorted and comma-separated; the sort is what makes the
+/// message deterministic.
 pub const KNOWN_BACKENDS: [&str; 4] = ["auto", "keychain", "plaintext", "systemd-creds"];
 
 /// `validate_env_name` — the name must be a safe POSIX identifier.
@@ -62,7 +62,7 @@ pub fn validate_env_name(env_name: &str) -> Checked {
     }
     Err(ConfigError::value(format!(
         "invalid env name: {}. Must match [A-Za-z_][A-Za-z0-9_]*",
-        repr_str(env_name)
+        quote_text(env_name)
     )))
 }
 
@@ -122,8 +122,8 @@ pub fn validate_transform(name: &str) -> Checked {
 /// `invalid secrets.scope: …` / `invalid secrets.backend: …`.
 ///
 /// The two enum checks `load_config` makes on the `secrets:` section.
-/// They take the already-stringified value because `config.py` applies
-/// `str()` with no `or` fallback — an explicit `scope: null` becomes the
+/// They take the already-stringified value because the field is
+/// coerced to a string with no fallback for null — an explicit `scope: null` becomes the
 /// text `None` and the message reads `invalid secrets.scope: 'None'`.
 ///
 /// # Errors
@@ -135,7 +135,7 @@ pub fn validate_enum(field: &str, value: &str, valid: &[&str]) -> Checked {
     }
     Err(ConfigError::value(format!(
         "invalid {field}: {}. Valid: {}",
-        repr_str(value),
+        quote_text(value),
         valid.join(", ")
     )))
 }

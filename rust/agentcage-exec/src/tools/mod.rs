@@ -1,20 +1,20 @@
 //! One module per binary agentcage drives.
 //!
 //! Each wrapper holds a `&dyn CommandRunner` and builds [`Command`]s. It
-//! does no policy: `podman.py` decides *whether* to remove a secret,
+//! does no policy: the CLI decides *whether* to remove a secret,
 //! [`podman::Podman`] only knows how to say it. That split is what makes
 //! the argv assertions meaningful -- a test can pin the exact argv
 //! without also having to set up the decision that produced it.
 //!
-//! | module | binary | Python source |
-//! | :-- | :-- | :-- |
-//! | [`podman`]   | `podman`        | `podman.py` |
-//! | [`systemctl`]| `systemctl`     | `systemd.py`, `secret_resolver.py` |
-//! | [`limactl`]  | `limactl`       | `lima/instance.py` |
-//! | [`apple`]    | `container`     | `apple_container/cli.py` |
-//! | [`skopeo`]   | `skopeo`        | `registry.py` |
-//! | [`security`] | `security`      | `secret_store.py` |
-//! | [`creds`]    | `systemd-creds` | `secret_resolver.py` |
+//! | module | binary |
+//! | :-- | :-- |
+//! | [`podman`]   | `podman`        |
+//! | [`systemctl`]| `systemctl`     |
+//! | [`limactl`]  | `limactl`       |
+//! | [`apple`]    | `container`     |
+//! | [`skopeo`]   | `skopeo`        |
+//! | [`security`] | `security`      |
+//! | [`creds`]    | `systemd-creds` |
 
 pub mod apple;
 pub mod creds;
@@ -61,7 +61,7 @@ impl Elevation {
 
     /// Read the real process's euid and `SUDO_USER`.
     ///
-    /// `euid == 0 && SUDO_USER` is the exact condition the Python uses:
+    /// `euid == 0 && SUDO_USER` is the exact condition:
     /// root *without* `SUDO_USER` gets no prefix, because there is no
     /// real user to drop to and `runuser -u ''` would be nonsense.
     #[must_use]
@@ -97,9 +97,9 @@ impl Elevation {
 mod tests {
     use super::Elevation;
 
-    /// Mirrors `test_podman.py::TestPodmanCmd`, all three cases.
+    /// All three cases: unprivileged, root under sudo, bare root.
     #[test]
-    fn the_runuser_prefix_matches_the_python() {
+    fn the_runuser_prefix_follows_sudo_user() {
         assert_eq!(Elevation::none().command("podman").argv(), ["podman"]);
         assert_eq!(
             Elevation::runuser("alice").command("podman").argv(),

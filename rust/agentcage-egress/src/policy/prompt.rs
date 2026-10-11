@@ -15,7 +15,7 @@ use crate::inspect::domain::DomainInspector;
 use crate::json::{self, Json, object};
 use crate::llm::ToolSpec;
 
-use super::pyfmt::yaml_to_json;
+use super::coerce::yaml_to_json;
 
 /// The forced tool.
 #[must_use]

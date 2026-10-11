@@ -60,7 +60,7 @@ use crate::paths::Paths;
 impl Paths {
     /// `state.grants_dir`, created.
     ///
-    /// The Python helper `mkdir`s on the way in and callers rely on
+    /// It `mkdir`s on the way in and callers rely on
     /// it, so the side effect is in the name here rather than hidden
     /// in a getter. [`Paths::grants_dir`] is the path-only version.
     ///
@@ -87,19 +87,16 @@ impl Paths {
     /// `state.load_grants` — the overlay, or an empty list.
     ///
     /// Infallible: see the module docs. Entries that are not mappings,
-    /// or that carry no truthy `domain`, are dropped — the same
-    /// `[e for e in data if isinstance(e, dict) and e.get("domain")]`
-    /// filter the Python applies, which is the gate that stops a
-    /// malformed overlay entry from reaching the dnsmasq renderer.
+    /// or that carry no truthy `domain`, are dropped. That filter is the gate that
+    /// stops a malformed overlay entry from reaching the dnsmasq renderer.
     #[must_use]
     pub fn load_grants(&self, name: &str) -> Vec<Mapping> {
         let path = self.grants_file(name);
         if !path.is_file() {
             return Vec::new();
         }
-        // `p.read_text()` raising UnicodeDecodeError is one of the
-        // cases the Python catches, so a lossy decode reaches the same
-        // answer by the same route: garbage in, empty overlay out.
+        // An unreadable file is an empty overlay. Invalid UTF-8 is
+        // decoded lossily rather than refusing the whole file.
         let Ok(bytes) = fs::read(&path) else {
             return Vec::new();
         };
@@ -118,7 +115,7 @@ impl Paths {
             .filter(|mapping| {
                 mapping
                     .get("domain")
-                    .is_some_and(agentcage_core::yaml::python_bool)
+                    .is_some_and(agentcage_core::yaml::is_truthy)
             })
             .collect()
     }
@@ -131,7 +128,7 @@ impl Paths {
     /// keeps the two from clobbering each other's in-flight file.
     /// Concurrent writers are bounded by the per-cage request rate
     /// limit, and the resolved final path is last-writer-wins on the
-    /// rare overlap — which is the Python's stated design, not an
+    /// rare overlap — which is the stated design, not an
     /// oversight.
     ///
     /// # Errors
@@ -150,8 +147,8 @@ impl Paths {
 
     /// `state.append_policy_audit` — one JSON object per line.
     ///
-    /// `ts` is **prepended**, not appended: the Python builds
-    /// `{"ts": ..., **entry}`, so a caller that passes its own `ts`
+    /// `ts` is **prepended**, not appended, as earlier releases wrote
+    /// it, so a caller that passes its own `ts`
     /// has it overridden and the key still sorts first in the file.
     /// The fixture asserts that position.
     ///

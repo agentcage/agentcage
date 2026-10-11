@@ -42,9 +42,8 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     let pull = matches.get_flag("pull");
     let show_timing = matches.get_flag("show_timing");
     if show_timing {
-        // `os.environ["AGENTCAGE_TIMING"] = "1"` in the Python. See
-        // `timing::enable_echo` for why this is a flag and not an
-        // environment write.
+        // Turns on timing output. See `timing::enable_echo` for why this
+        // is a flag and not an environment write.
         agentcage_cli::timing::enable_echo();
     }
     let secrets: Vec<String> = matches
@@ -275,11 +274,11 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     Ok(())
 }
 
-/// `cli.py:845` — reconcile the positional config and `-c/--config`.
+/// Reconcile the positional config and `-c/--config`.
 ///
 /// Two parameters for one value, resolved here rather than declared
-/// mutually exclusive, because the Python reports its own error for the
-/// both-given case and `create ./x.yaml -c ./x.yaml` is allowed when
+/// mutually exclusive, because the both-given case has its own pinned
+/// error and `create ./x.yaml -c ./x.yaml` is allowed when
 /// they are the same string.
 fn resolve_config_argument(matches: &ArgMatches) -> Result<PathBuf, ExitCode> {
     let positional = matches.get_one::<String>("config_pos");
@@ -524,9 +523,9 @@ fn state_error(error: &agentcage_state::StateError) -> ExitCode {
 mod tests {
     use super::is_rw_host_bind;
 
-    /// The doctests `cli._is_rw_host_bind` carries, verbatim.
+    /// The pinned examples.
     #[test]
-    fn rw_host_binds_are_the_ones_the_python_flags() {
+    fn rw_host_binds_are_flagged() {
         assert!(is_rw_host_bind("/Users/m1/proj:/workspace"));
         assert!(!is_rw_host_bind("/Users/m1/proj:/workspace:ro"));
         assert!(is_rw_host_bind("/Users/m1/proj:/workspace:rw"));

@@ -1,9 +1,7 @@
-//! `backends/__init__.py` — the backend a cage's `isolation:` names.
+//! The backend a cage's `isolation:` names.
 //!
-//! The Python's `get_backend(config)` returns one of three objects that
-//! answer to the same protocol (`backend.py`), and every command body
-//! calls it rather than naming a backend. There is no such protocol
-//! here: the three backends were ported one at a time, each with the
+//! Every command body goes through this rather than naming a backend.
+//! There is no trait over the three: they were written one at a time, each with the
 //! argv shape its own tests assert, and a trait over them would have
 //! had to be invented before two of them existed.
 //!
@@ -48,8 +46,8 @@ pub enum AnyBackend<'a> {
 impl<'a> AnyBackend<'a> {
     /// `get_backend(config)`.
     ///
-    /// An unrecognized isolation resolves to the container backend,
-    /// which is the Python's fall-through. Note that the fall-through
+    /// An unrecognized isolation resolves to the container backend.
+    /// Note that the fall-through
     /// is reached only by a spelling `validate_config` has already
     /// refused, so in practice the three named arms are the three that
     /// happen.
@@ -131,7 +129,7 @@ impl<'a> AnyBackend<'a> {
             Self::Vm(backend) => backend.ensure_ready(),
             // The only arm whose recovery prints: bringing the Apple
             // apiserver up is slow enough to be worth narrating, and
-            // `quiet` is how the Python decides.
+            // `quiet` decides.
             Self::Apple(backend) => backend.ensure_ready(false),
         }
     }
@@ -211,7 +209,7 @@ impl<'a> AnyBackend<'a> {
             // networks are per-cage with an auto-allocated subnet, so
             // there is no shared `10.89.x` pool to coordinate against,
             // and the cage's config is bind-mounted rather than named
-            // in a unit. The Python ignores them here too.
+            // in a unit.
             Self::Apple(backend) => backend.generate_units(config, deploy_name),
         }
     }
@@ -348,7 +346,7 @@ impl<'a> AnyBackend<'a> {
     ///
     /// Fallible for the apple arm alone, which is why the protocol
     /// returns a `Result` at all: that backend refuses a service name
-    /// it does not have (`BackendUnsupported` in the Python) and
+    /// it does not have and
     /// refuses again when `container(1)` is not installed. The other
     /// two compose an argv for any service name and let podman
     /// complain.
@@ -371,8 +369,8 @@ impl<'a> AnyBackend<'a> {
             Self::Vm(backend) => {
                 Ok(backend.exec_argv(name, service, command, interactive, as_root))
             }
-            // The placeholders are read here rather than passed in
-            // because the Python reads them here: a cage session gets
+            // The placeholders are read here rather than passed in: a
+            // cage session gets
             // the decoy tokens that are in the stored config *at exec
             // time*, so a `secret set` since the last start is
             // reflected without a restart. Apple's `container exec`
@@ -393,7 +391,7 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.audit_argv(name, since, follow),
             Self::Vm(backend) => backend.audit_argv(name, since, follow),
-            // `since` is dropped, as the Python drops it: this is a
+            // `since` is dropped: this is a
             // `tail` over a bind-mounted file, not a journal query.
             Self::Apple(backend) => backend.audit_argv(name, follow),
         }

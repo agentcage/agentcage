@@ -306,8 +306,7 @@ fn a_locked_login_keychain_falls_through_to_sudo_n() {
 fn a_keychain_that_cannot_be_written_fails_closed() {
     let fake = FakeRunner::new();
     // Rules rather than a queue: a *failed* target selection is not
-    // cached -- the Python raises without assigning `_target_cache`, so
-    // a keychain unlocked between two calls is picked up -- and so the
+    // cached -- so a keychain unlocked between two calls is picked up -- and so the
     // probes run again on the second question.
     fake.on(
         ["security", "-i"],
@@ -689,8 +688,8 @@ fn the_apple_plaintext_store_shells_out_to_nothing() {
     store.set("c", "B", "second", temp.path()).unwrap();
     store.set("c", "A", "replaced", temp.path()).unwrap();
 
-    // Insertion order is kept and the replaced key stays in place --
-    // Python's `dict` semantics, which the file format inherits.
+    // Insertion order is kept and the replaced key stays in place, as
+    // the file format has always been written.
     assert_eq!(
         std::fs::read_to_string(ApplePlaintextStore::path(temp.path())).unwrap(),
         r#"[["A", "replaced"], ["B", "second"]]"#
@@ -704,8 +703,7 @@ fn the_apple_plaintext_store_shells_out_to_nothing() {
     );
 }
 
-/// A corrupt file is an empty store, not a crash: the Python's
-/// `except Exception: return {}`, and the reason is that a truncated
+/// A corrupt file is an empty store, not a crash, because a truncated
 /// write must not make the cage unusable.
 #[test]
 fn a_corrupt_pending_secrets_file_reads_as_empty() {

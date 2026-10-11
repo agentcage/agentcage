@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# The three Python trees are read by build.rs, which turns them into
+# The three embedded trees under src/agentcage/ are read by build.rs, which turns them into
 # include_bytes!. They are outside the crate directory, so `cargo
 # package` would not carry them -- this crate is not published, and the
 # workspace builds a binary, so that is fine. Say so rather than leave a
@@ -16,7 +16,7 @@ publish = false
 
 [dependencies]
 # The only runtime dependency, and not a negotiable one: the egress
-# content hash is *defined* as SHA-256 (egress_hash.py), so the choice is
+# content hash is *defined* as SHA-256 (see src/egress.rs), so the choice is
 # between an audited implementation and hand-rolling a primitive. Use the
 # audited one. `default-features = false` drops `std` and the asm
 # backend; the digest is computed over half a megabyte at most, so the

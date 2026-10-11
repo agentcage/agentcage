@@ -32,9 +32,9 @@
 //! so the whole flow runs against temp dirs and a scripted decider in
 //! tests (`tests/fixtures/egress/policy_api.json`).
 
+mod coerce;
 mod overlay;
 mod prompt;
-mod pyfmt;
 mod settings;
 
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -54,8 +54,8 @@ pub use overlay::{DEFAULT_DNS_PUBLISH, DEFAULT_GRANTS_DIR, PolicyPaths};
 pub use prompt::{SYSTEM_PROMPT, decide_tool, system_prompt};
 pub use settings::{ConfigError, DEFAULT_CONTROL_HOST, MAX_CONTEXT_CHARS, decider_enabled};
 
-use pyfmt::{
-    int_or_zero, loads_bytes, normalise_domain, repr_str, str_or_empty, strip, truncate_chars,
+use coerce::{
+    int_or_zero, loads_bytes, normalise_domain, quote_text, str_or_empty, strip, truncate_chars,
     yaml_to_json,
 };
 use settings::Settings;
@@ -274,7 +274,7 @@ impl PolicyApi {
     ///
     /// # Errors
     ///
-    /// The decider block is malformed in a way the Python raised on.
+    /// The decider block is malformed in a way earlier releases refused.
     pub fn new(
         config: &Config,
         dom: Arc<DomainInspector>,
@@ -568,7 +568,7 @@ impl PolicyApi {
             );
             return respond(
                 400,
-                &error_body(format!("invalid domain: {}", repr_str(&domain))),
+                &error_body(format!("invalid domain: {}", quote_text(&domain))),
                 audit,
             );
         }
@@ -1029,7 +1029,7 @@ impl PolicyApi {
             );
             return respond(
                 400,
-                &error_body(format!("invalid domain: {}", repr_str(&domain))),
+                &error_body(format!("invalid domain: {}", quote_text(&domain))),
                 audit,
             );
         }

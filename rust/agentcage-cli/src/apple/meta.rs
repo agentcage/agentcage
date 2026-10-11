@@ -3,15 +3,14 @@
 //! `generate_units` writes one `<cage>.json` per cage and `start()`
 //! reads it to build two `container run` argvs. There is no schema
 //! version in it, so every read has to tolerate the shapes older
-//! agentcages wrote — which is exactly what the Python's
-//! `meta.get("key") or <default>` chain does, and why this is a wrapper
-//! over a `Value` rather than a `#[derive(Deserialize)]` struct.
+//! agentcages wrote — which is why this is a wrapper over a `Value`
+//! rather than a `#[derive(Deserialize)]` struct.
 //!
-//! The distinction that matters: `meta.get(k) or []` treats a present
-//! `null`, a present `[]` and an absent key identically, and so does
-//! every accessor here. A `Deserialize` impl would have had to choose
-//! between rejecting the first and silently accepting a wrong type,
-//! and both are worse than the Python's shrug.
+//! The distinction that matters: every accessor here treats a present
+//! `null`, a present `[]` and an absent key identically. A
+//! `Deserialize` impl would have had to choose between rejecting the
+//! first and silently accepting a wrong type, and both are worse than
+//! falling back to the default.
 
 use std::collections::BTreeMap;
 
@@ -27,10 +26,8 @@ impl Meta {
     /// # Errors
     ///
     /// The `serde_json` message when the bytes are not JSON. A
-    /// non-object document parses: `meta.get` on it answers `None` for
-    /// everything, which is what the Python's `json.loads` + `.get`
-    /// would do only for an object — but a cage whose unit JSON is a
-    /// list is broken either way, and failing on the first `get` is
+    /// non-object document parses and answers `None` for everything — a
+    /// cage whose unit JSON is a list is broken either way, and failing on the first `get` is
     /// not better than failing on everything.
     pub fn parse(text: &str) -> Result<Self, serde_json::Error> {
         Ok(Self(serde_json::from_str(text)?))
@@ -94,8 +91,8 @@ impl Meta {
             .unwrap_or_default()
     }
 
-    /// `bool(meta.get(key, False))` — Python truthiness, so `0`, `""`
-    /// and `[]` are all false.
+    /// Whether a key is set: absent, null, `false`, `0`, `""` and `[]`
+    /// are all false.
     #[must_use]
     pub fn truthy(&self, key: &str) -> bool {
         match self.0.get(key) {
@@ -165,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn truthiness_is_pythons() {
+    fn truthiness_treats_empty_values_as_false() {
         let m = meta(
             r#"{"t": true, "f": false, "zero": 0, "one": 1,
                          "empty": "", "text": "x", "list": [], "items": [1]}"#,

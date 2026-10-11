@@ -1,6 +1,8 @@
-//! `urlparse` + `parse_qs`, narrowed to the query string.
+//! Query-string extraction for HAR entries, with the semantics of
+//! Python's `urllib.parse` (`urlsplit` + `parse_qs`), which is what
+//! earlier releases used and what the golden HAR files pin.
 //!
-//! `_build_query_string` only ever wants one field of the parse, so this
+//! The HAR's `queryString` only needs one field of the parse, so this
 //! skips the scheme/netloc/path split and reproduces the two steps that
 //! decide where the query starts and what it contains:
 //!
@@ -14,9 +16,9 @@
 //!    percent-decodes with UTF-8 and `errors="replace"`, then groups the
 //!    values under their key.
 //!
-//! That grouping is the part worth spelling out. `parse_qs` returns a
-//! dict, and `_build_query_string` walks it key by key, so
-//! `a=1&b=2&a=3` comes out as `a=1, a=3, b=2` — *not* in pair order.
+//! That grouping is the part worth spelling out. `parse_qs` groups
+//! values by key, and the HAR lists them key by key, so `a=1&b=2&a=3`
+//! comes out as `a=1, a=3, b=2` — *not* in pair order.
 
 /// Every leading character `urlsplit` strips: U+0000 through U+0020.
 const C0_CONTROL_OR_SPACE: &[char] = &[
@@ -27,7 +29,7 @@ const C0_CONTROL_OR_SPACE: &[char] = &[
 ];
 
 /// The query parameters of `url`, as `(name, value)` pairs in the order
-/// `_build_query_string` emits them.
+/// the HAR's `queryString` lists them.
 #[must_use]
 pub fn query_pairs(url: &str) -> Vec<(String, String)> {
     let query = extract_query(url);
@@ -82,8 +84,8 @@ fn group_by_key(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
 
 /// `unquote_plus(s, errors="replace")`.
 ///
-/// `+` becomes a space, then `%XX` becomes a byte. Python decodes each
-/// run of percent-decoded bytes as UTF-8 with replacement, so a
+/// `+` becomes a space, then `%XX` becomes a byte. Each
+/// run of percent-decoded bytes is decoded as UTF-8 with replacement, so a
 /// multi-byte character split across escapes still comes back whole and
 /// an invalid sequence becomes U+FFFD; anything that is not a valid
 /// escape — `%zz`, a trailing `%` — is left as the literal text it is.
@@ -114,7 +116,7 @@ fn unquote_plus(text: &str) -> String {
             bytes.push(ch as u8);
         } else {
             // A non-ASCII character ends the byte run, exactly where
-            // Python's `_asciire` split would end it.
+            // `unquote_plus` ends it.
             flush(&mut out, &mut bytes);
             out.push(ch);
         }
@@ -134,9 +136,10 @@ fn flush(out: &mut String, bytes: &mut Vec<u8>) {
 mod tests {
     use super::query_pairs;
 
-    /// Each expectation is `_build_query_string(url)` read off `CPython`.
+    /// Each expectation is what CPython's `urllib.parse` gives (as earlier
+    /// releases used it), for shapes the corpus does not reach.
     #[test]
-    fn matches_python_for_the_shapes_the_corpus_misses() {
+    fn matches_the_reference_for_the_shapes_the_corpus_misses() {
         let cases: &[(&str, &[(&str, &str)])] = &[
             (
                 "https://a/b?key=val&page=2",

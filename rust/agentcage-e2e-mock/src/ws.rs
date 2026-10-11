@@ -23,7 +23,7 @@ use sha1::{Digest as _, Sha1};
 use sha2::{Digest as _, Sha256};
 
 use crate::http::Request;
-use crate::pyjson;
+use crate::spaced_json;
 
 /// RFC 6455 section 1.3.
 const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -51,7 +51,7 @@ pub fn reply(payload: &[u8]) -> String {
         let _ = write!(s, "{b:02x}");
         s
     });
-    pyjson::dumps(&Reply {
+    spaced_json::to_string(&Reply {
         echo: &String::from_utf8_lossy(payload),
         sha256: &hex,
     })

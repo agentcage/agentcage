@@ -3,10 +3,11 @@
 # `clippy::doc_markdown` (from the `pedantic` group the root Cargo.toml
 # turns on) wants every CamelCase-looking word in a doc comment wrapped
 # in backticks, on the theory that it is a Rust item. Most of the time
-# that is right. It is not right for the name of the Python library on
-# the other side of agentcage's trust boundary, which this port's docs
-# have to say out loud rather often -- `PyYAML` reads as a code path and
-# it is a project. `CPython` is there for the same reason.
+# that is right. It is not right for the external projects whose behaviour
+# the docs cite as a spec: `PyYAML` (the YAML 1.1 scalar resolution the
+# config loader keeps) reads as a code path and it is a project.
+# `CPython` (the `repr()` and float spelling pinned messages follow) is
+# there for the same reason.
 #
 # `..` keeps clippy's own default list rather than replacing it.
 doc-valid-idents = ["PyYAML", "CPython", "WebSocket", "WebSockets", "WebAssembly", "OAuth", "OpenRouter", "OpenAI", ".."]

@@ -84,7 +84,7 @@ fn a_real_systemd_creds_blob_decrypts_back_to_its_plaintext() {
         .encrypt_secret(NAME, PLAINTEXT, temp.path(), scope)
         .expect("encrypt");
 
-    // The path the Python returns, and the one the quadlet's
+    // The pinned path, and the one the quadlet's
     // `LoadCredentialEncrypted` is generated against.
     assert_eq!(path, temp.path().join("creds").join("ROUNDTRIP_KEY.cred"));
 

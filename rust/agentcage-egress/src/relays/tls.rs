@@ -91,7 +91,7 @@ pub(crate) async fn handshake(
     let server_name = ServerName::try_from(name.to_owned()).map_err(|_| {
         format!(
             "invalid server name: {}",
-            agentcage_core::python::repr_str(name)
+            agentcage_core::value_fmt::quote_text(name)
         )
     })?;
     let connector = tokio_rustls::TlsConnector::from(config);

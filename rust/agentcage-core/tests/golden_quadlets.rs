@@ -19,7 +19,7 @@
 //!
 //! Replaying the corpus's *scrubbed* paths instead — rendering with
 //! `{{HOME}}` as the literal home — would be simpler and wrong:
-//! `quadlets.py` runs `shlex.quote` over several host paths, and
+//! quadlet rendering shell-quotes several host paths, and
 //! `shlex.quote("{{HOME}}/x")` adds single quotes that
 //! `shlex.quote("/tmp/…/home/x")` does not. So the render happens
 //! against real paths and the *output* is scrubbed, which is the order
@@ -27,7 +27,7 @@
 //!
 //! # The base64 blobs
 //!
-//! `quadlets.py` base64-encodes host paths before embedding them in a
+//! Quadlet rendering base64-encodes host paths before embedding them in a
 //! systemd `Exec=` line (a path is quoted once by systemd and again by
 //! bash, and no single escaping survives both layers). A plain string
 //! replace cannot see inside that blob, so the harness's scrubber
@@ -288,8 +288,8 @@ impl QuadletHost for SandboxHost<'_> {
         // `_stage_vm_file_volume`, including its use of a literal
         // `~/.local/share` rather than `XDG_DATA_HOME`. In the sandbox
         // the two coincide, which is why the corpus cannot tell them
-        // apart — but the implementation should still be the one the
-        // Python has.
+        // apart — but the implementation should still be the one
+        // deployed hosts got.
         let data_dir = self.realpath(&format!(
             "{}/.local/share/agentcage",
             self.sandbox.home.display()
@@ -342,9 +342,9 @@ impl Scrubber {
             // `/private/etc` on a Mac against a fixture recorded as
             // `/etc`.
             //
-            // `scripts/gen-golden-corpus.py` carries the same three
-            // rules for the same reason; the two scrubbers have to
-            // agree or the fixture is only reproducible on one of them.
+            // The recording harness's scrubber carried the same three
+            // rules for the same reason; the two scrubbers had to
+            // agree or the fixture would only be reproducible on one.
             // They sort last, being the shortest, so a sandbox path
             // under `/private/var` still matches its own longer rule
             // first.
@@ -519,7 +519,7 @@ fn every_valid_case_reproduces_its_quadlets() {
         let directory = root.join("valid").join(&case.name);
         let quadlets_dir = directory.join("quadlets");
         if case.isolation == "apple-container" {
-            // `backends/apple_container.py` has no quadlets: it writes
+            // The apple-container backend has no quadlets: it writes
             // one `<cage>.json` metadata blob and a launchd plist, and
             // never calls this module. Those bytes are recorded in the
             // same `quadlets/` directory and checked by
@@ -575,7 +575,7 @@ fn every_valid_case_reproduces_its_quadlets() {
             }
         }
 
-        // `render-warnings.txt` is the Python's stderr, and it is on the
+        // `render-warnings.txt` is the recorded stderr, and it is on the
         // byte-exact side of the corpus's line too — these strings are
         // what an operator sees when a volume is skipped.
         let expected_warnings = read(&directory.join("render-warnings.txt"));
@@ -603,7 +603,7 @@ fn every_valid_case_reproduces_its_quadlets() {
     assert_eq!(
         not_applicable, 8,
         "the corpus's apple-container case count moved; check whether the new ones are really \
-         outside quadlets.py"
+         outside quadlet rendering"
     );
     assert_eq!(
         checked_cases, 122,
@@ -650,7 +650,7 @@ fn a_volume_outside_the_home_directory_is_refused() {
     .expect("the config itself is valid");
     let error = render_case(&sandbox, &config).expect_err("outside the home directory");
     assert_eq!(
-        format!("{}\n", scrubber.text(&error.as_python_traceback_line())),
+        format!("{}\n", scrubber.text(&error.as_error_line())),
         expected
     );
 }
@@ -658,7 +658,7 @@ fn a_volume_outside_the_home_directory_is_refused() {
 /// `state.save_dns_allowlist`'s output, which is
 /// `quadlets._effective_dns_allowlist` crossed with `dns_servers`.
 ///
-/// The file itself is `state.py`'s (Track D), but the ordering and the
+/// The file itself is the state store's, but the ordering and the
 /// merge — passthrough, then relay upstreams, then each enabled agent's
 /// LLM host — are this module's, and nothing else in the corpus
 /// exercises them. Applies to the apple-container cases too: that
@@ -702,9 +702,9 @@ fn every_valid_case_reproduces_its_dns_allowlist() {
 /// Every `.j2` under `src/agentcage/templates/` is byte-identical to
 /// what git has.
 ///
-/// The port renders the templates rather than rewriting them, because
-/// Python renders the same files until cutover. This is the tripwire
-/// for "I made the Rust pass by editing the template".
+/// The templates are rendered as shipped, and the corpus pins what
+/// they produce. This is the tripwire for "I made the test pass by
+/// editing the template".
 #[test]
 fn the_templates_are_unmodified() {
     // The renderer reads them through the embedded assets, so comparing

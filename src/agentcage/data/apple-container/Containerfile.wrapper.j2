@@ -12,9 +12,10 @@
      * /opt/agentcage/cage-init.sh — PID 1; sets route to egress sibling,
        installs proxy CA, capsh-drops, execs the cage CMD.
      * /opt/agentcage/cage-cmd.sh — the user's argv, shell-escaped at
-       build time via Python's shlex.quote() (host-side; the rendered
-       template carries the already-quoted string). No jq, no runtime
-       parsing, no shell-metacharacter risk.
+       build time by the host CLI (`shlex_join` in
+       rust/agentcage-cli/src/apple/wrapper.rs, one `shlex_quote` per
+       element; the rendered template carries the already-quoted
+       string). No jq, no runtime parsing, no shell-metacharacter risk.
 
    What this template no longer carries (vs the legacy version):
      * the egress proxy (and its SHA-pinned 120MB download)

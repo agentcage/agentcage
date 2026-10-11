@@ -1,6 +1,6 @@
-//! `apple_container/prerequisites.py` — what this host is missing.
+//! What this host is missing for apple-container.
 //!
-//! Four checks, in the Python's own order, each producing the string
+//! Four checks, in a fixed order, each producing the string
 //! `cage create` and `doctor` print verbatim. The order matters more
 //! than it looks: a non-Darwin host returns after the first check
 //! rather than going on to complain about its architecture, and a
@@ -13,16 +13,16 @@ use agentcage_exec::tools::apple::AppleContainer;
 
 use crate::hostenv::{machine, system};
 
-/// `_MIN_MACOS_MAJOR` — Apple's `container` needs macOS 26.
+/// Apple's `container` needs macOS 26.
 const MIN_MACOS_MAJOR: u32 = 26;
 
-/// `check_prerequisites()` — one string per unmet requirement, empty
+/// One string per unmet requirement, empty
 /// when the host can run an `apple-container` cage.
 ///
-/// Note that the version check reports the detected major **as the
-/// Python formats it**: `None` renders as `None`, because
-/// `platform.mac_ver()` returning an empty string on a Mac is a real
-/// state and the message has to be able to say so.
+/// Note that the version check reports an undetected major as `None`
+/// (the pinned spelling), because the macOS version probe returning an
+/// empty string on a Mac is a real state and the message has to be able
+/// to say so.
 #[must_use]
 pub fn check_prerequisites(runner: &dyn CommandRunner) -> Vec<String> {
     let mut issues = Vec::new();

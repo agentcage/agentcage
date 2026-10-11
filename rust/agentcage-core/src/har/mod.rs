@@ -3,29 +3,24 @@
 //! Runs on the host — reads capture JSONL entries and produces standard
 //! HAR JSON loadable in Chrome `DevTools`.
 //!
-//! This is the port of `src/agentcage/har.py`. The Python is a handful
-//! of small functions over untyped `dict`s, and the shape of the output
-//! is the whole contract: `tests/fixtures/golden/shared/har/` holds what
-//! the Python produced from `_inputs/capture.jsonl`, in both views and
-//! across eight filters, and `tests/golden_har.rs` reproduces those five
-//! files byte for byte.
+//! The shape of the output is the whole contract:
+//! `tests/fixtures/golden/shared/har/` holds what earlier releases
+//! produced from `_inputs/capture.jsonl`, in both views and across eight
+//! filters, and `tests/golden_har.rs` reproduces those five files byte
+//! for byte.
 //!
-//! # Where the port is deliberately not literal
+//! # Malformed entries
 //!
-//! The Python reads capture entries with `dict.get` and never checks a
-//! type, so a malformed entry can reach an `AttributeError` or a
-//! `TypeError` that nothing catches — `_build_headers` on a header that
-//! is not a pair, `_build_response_entry` on a `response` that is a
-//! string. Rust has no equivalent to a traceback out of a pure function,
-//! and the value of `cage har` is that it exports what it can, so this
-//! port treats a wrongly-typed field the way it treats a missing one.
-//! Each site says so where it happens. The capture writer only ever
-//! emits well-formed entries, so this is about hostile or corrupt files,
-//! not about normal operation.
+//! A capture entry is untyped JSON. Earlier releases never checked a
+//! field's type, so a malformed entry — a header that is not a pair, a
+//! `response` that is a string — crashed the export. The value of
+//! `cage har` is that it exports what it can, so a wrongly-typed field
+//! is treated the way a missing one is. Each site says so where it
+//! happens. The capture writer only ever emits well-formed entries, so
+//! this is about hostile or corrupt files, not about normal operation.
 //!
-//! One behaviour that is *not* a simplification and is preserved
-//! exactly: comparing a naive timestamp against an aware `--since`
-//! cutoff raises `TypeError` in Python and
+//! One edge that is preserved exactly: a naive timestamp does not
+//! compare against an aware `--since` cutoff, and
 //! [`CaptureFilter::matches`] keeps the entry. See [`datetime`].
 
 pub mod datetime;
@@ -40,9 +35,9 @@ use crate::config::types::{CAPTURE_MIN_ACTION_ALIASES, VALID_CAPTURE_MIN_ACTIONS
 /// A minimum-action threshold for [`CaptureFilter::min_action`]: keep
 /// every entry, only flagged and blocked ones, or only blocked ones.
 ///
-/// A typed value rather than the string `har.py` took. The Python looked
-/// the string up with `dict.get(name, 0)`, so a misspelled threshold
-/// quietly meant `all` and the filter kept everything. A threshold can
+/// A typed value rather than a string. Earlier releases looked the
+/// string up with a default, so a misspelled threshold quietly meant
+/// `all` and the filter kept everything. A threshold can
 /// only be built from text by [`MinAction::parse`], which refuses an
 /// unknown value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -106,9 +101,8 @@ impl std::str::FromStr for MinAction {
 
 /// The level an entry's `decision` reaches, for [`MinAction`].
 ///
-/// `allowed`, and anything unrecognized, is [`MinAction::All`]: Python's
-/// `dict.get(decision, "all")` gives both the same answer, so neither
-/// trips a threshold above `all`.
+/// `allowed`, and anything unrecognized, is [`MinAction::All`], so
+/// neither trips a threshold above `all`.
 fn decision_level(decision: &str) -> MinAction {
     match decision {
         "flagged" => MinAction::Flag,
@@ -119,7 +113,7 @@ fn decision_level(decision: &str) -> MinAction {
 
 /// Filter capture entries (mirrors `AuditFilter`'s pattern).
 ///
-/// An empty list means "no constraint on this field", as in the Python.
+/// An empty list means "no constraint on this field".
 #[derive(Clone, Debug, Default)]
 pub struct CaptureFilter {
     /// Keep only these `decision` values.
@@ -175,8 +169,7 @@ impl CaptureFilter {
         if let Some(since) = &self.since {
             // A timestamp that is missing, empty, not a string, not
             // parseable, or naive against an aware cutoff leaves the
-            // entry in: Python either skips the `if ts` branch or
-            // swallows the ValueError/TypeError and falls through.
+            // entry in: there is no timestamp to judge it by.
             let keep = entry
                 .get("ts")
                 .filter(|ts| ts.is_truthy())
@@ -219,8 +212,7 @@ fn get_or(value: &Json, key: &str, default: Json) -> Json {
 /// Convert `[[name, value], …]` to HAR headers format.
 fn build_headers(headers: &Json) -> Json {
     let Json::Array(items) = headers else {
-        // Python iterates whatever this is; a dict would yield its keys
-        // and anything else would raise. Treat it as absent.
+        // Not a list of pairs: treat it as absent.
         return Json::Array(Vec::new());
     };
     Json::Array(
@@ -306,8 +298,7 @@ fn build_request_entry(req: &Json) -> Json {
 /// Convert a capture response snapshot to a HAR response object.
 fn build_response_entry(resp: &Json) -> Json {
     // `if not resp` — a missing, null or empty response, and also a
-    // response that is not an object at all, which Python would reach an
-    // AttributeError on a line later.
+    // response that is not an object at all.
     if !resp.is_truthy() || !matches!(resp, Json::Object(_)) {
         return object(vec![
             ("status", Json::Int(0)),
@@ -363,11 +354,9 @@ fn build_response_entry(resp: &Json) -> Json {
 /// `view` selects which perspective to render: `"inbound"` or
 /// `"outbound"`. The result is ready for [`dumps`].
 ///
-/// The creator version is this binary's [`crate::VERSION`], where the
-/// Python reads `importlib.metadata.version("agentcage")` and falls back
-/// to `"0.0.0"` if the package is not installed — a fallback a compiled
-/// constant cannot need. Use [`capture_to_har_with`] to pin it, which is
-/// what the golden corpus does.
+/// The creator version is this binary's [`crate::VERSION`]. Use
+/// [`capture_to_har_with`] to pin it, which is what the golden corpus
+/// does.
 #[must_use]
 pub fn capture_to_har(entries: &[Json], view: &str) -> Json {
     capture_to_har_with(entries, view, crate::VERSION, DateTime::now_utc())
@@ -462,16 +451,14 @@ pub fn dumps(har: &Json) -> String {
 /// Accepts: `1h`, `30m`, `7d`, or ISO date strings. Returns `None` if
 /// parsing fails.
 ///
-/// Two edges of the Python that this does not reproduce, both
+/// Two edges where earlier releases behaved differently, both
 /// unreachable from a well-formed `--since`:
 ///
-/// * Python's `\d` matches every Unicode decimal digit and `int()`
-///   accepts them, so `١h` is a valid relative offset there. Here the
-///   digits are ASCII.
-/// * A relative offset so large that `timedelta` overflows raises
-///   `OverflowError` out of the Python, uncaught. Here it returns
-///   `None`, i.e. "no cutoff", which is the same path an unparseable
-///   value takes.
+/// * They accepted any Unicode decimal digit, so `١h` was a valid
+///   relative offset. Here the digits are ASCII.
+/// * A relative offset too large to subtract crashed the command. Here
+///   it returns `None`, i.e. "no cutoff", which is the same path an
+///   unparseable value takes.
 #[must_use]
 pub fn parse_since(since: &str) -> Option<DateTime> {
     if let Some((value, unit)) = split_relative(since) {
@@ -481,8 +468,8 @@ pub fn parse_since(since: &str) -> Option<DateTime> {
             'd' => value.checked_mul(86_400),
             _ => None,
         };
-        // A relative form never falls through to the ISO branch: once
-        // the regex has matched, Python has already returned or raised.
+        // A relative form never falls through to the ISO branch, even
+        // when its offset is out of range.
         return seconds.and_then(|s| DateTime::now_utc().checked_sub_seconds(s));
     }
 
@@ -525,7 +512,7 @@ mod tests {
     /// inspector finding.
     const ENTRY: &str = "{\"ts\": \"2024-05-05T01:02:03+00:00\", \"flow_id\": \"flow-\\u00e9\", \"direction\": \"outbound\", \"decision\": \"flagged\", \"inspectors\": [{\"name\": \"secrets\", \"severity\": \"warning\", \"reason\": \"caf\\u00e9\"}], \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://h/p?b=2&a=1&b=3\", \"headers\": [[\"Content-Type\", \"text/plain\"], [\"X\", \"1\"]], \"body\": \"hi\", \"bodySize\": 2}}}";
 
-    /// The Python `json.dumps(har, indent=2)` output for [`ENTRY`].
+    /// The `cage har` output for [`ENTRY`], as an earlier release wrote it.
     const PRODUCTION_HAR: &str = concat!(
         "{
 ",
@@ -672,14 +659,14 @@ mod tests {
         "}"
     );
 
-    /// The format `cage har` actually writes — `json.dumps(har,
-    /// indent=2)`, so Python dict order and `ensure_ascii=True`, not the
-    /// sorted `ensure_ascii=False` text the corpus stores.
+    /// The format `cage har` actually writes — two-space indent,
+    /// insertion order and non-ASCII escaped, not the sorted, unescaped
+    /// text the corpus stores.
     ///
-    /// This expectation was produced by the Python `har.py`, with
-    /// `pkg_version` pinned the way the corpus harness pins it.
+    /// This expectation was recorded from an earlier release, with the
+    /// version pinned the way the corpus harness pins it.
     #[test]
-    fn production_output_matches_python_byte_for_byte() {
+    fn production_output_matches_the_recorded_bytes() {
         let entries = [json::parse(ENTRY).unwrap()];
         let har = capture_to_har_with(&entries, "outbound", "0.0.0-golden", DateTime::now_utc());
         assert_eq!(dumps(&har), PRODUCTION_HAR);
@@ -712,8 +699,8 @@ mod tests {
         assert_eq!(MinAction::Flag.as_str(), "flag");
     }
 
-    /// An unknown threshold is an error, never a silent `all` (the
-    /// Python's `dict.get(name, 0)` kept every entry for one).
+    /// An unknown threshold is an error, never a silent `all` (earlier
+    /// releases kept every entry for one).
     #[test]
     fn min_action_rejects_unknown_values() {
         for text in ["nope", "", "Block", "flags", " all"] {
@@ -761,17 +748,17 @@ mod tests {
         assert_eq!(kept, [false, true, true]);
     }
 
-    /// Filter behaviour the corpus does not reach, each expectation read
-    /// off `CaptureFilter.matches` in Python.
+    /// Filter behaviour the corpus does not reach, each expectation
+    /// matching what earlier releases did.
     #[test]
-    fn filter_edges_match_python() {
+    fn filter_edges_keep_unjudgeable_entries() {
         let cutoff = CaptureFilter {
             since: DateTime::from_isoformat("2024-03-01T00:00:00+00:00"),
             ..CaptureFilter::default()
         };
-        // A naive timestamp against an aware cutoff is a TypeError in
-        // Python, caught, and the entry stays. So does a timestamp that
-        // is missing, empty, unparseable or not a string at all.
+        // A naive timestamp against an aware cutoff does not compare,
+        // and the entry stays. So does a timestamp that is missing,
+        // empty, unparseable or not a string at all.
         assert!(cutoff.matches(&entry_of(&[("ts", Json::string("2024-01-01T00:00:00"))])));
         assert!(cutoff.matches(&entry_of(&[("ts", Json::string("nonsense"))])));
         assert!(cutoff.matches(&entry_of(&[("ts", Json::string(""))])));

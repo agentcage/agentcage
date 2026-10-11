@@ -1,13 +1,13 @@
-//! `audit.py` port, checked against the golden corpus.
+//! Audit parsing, filtering and summaries, checked against the golden
+//! corpus.
 //!
-//! PR A3 recorded what the live Python produced from a fixed
+//! The corpus records what an earlier release produced from a fixed
 //! `audit.jsonl`: the raw-line extraction, the parsed entries, twelve
 //! filters, and the summary as JSON, as text and as a table in both plain
-//! and coloured form. `scripts/gen-golden-corpus.py` (`_write_shared`) is
-//! the recipe; this file is the same recipe in Rust, and every assertion
+//! and coloured form. This file replays that recipe, and every assertion
 //! is a byte comparison against the committed artifact. The relay,
 //! Policy API, watcher and TCP-bypass records at the end of the input
-//! were added by hand after the Python was gone, when `cage audit`
+//! were added by hand after the recorder was retired, when `cage audit`
 //! started showing records that are not HTTP decisions.
 //!
 //! Nothing here hardcodes an expected string. The fixture is the oracle:
@@ -29,7 +29,7 @@ fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/golden")
         .canonicalize()
-        .expect("golden corpus is committed next to the Python tests")
+        .expect("golden corpus is committed under tests/fixtures")
 }
 
 fn read_artifact(rel: &str) -> String {
@@ -48,7 +48,7 @@ fn json_text<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(&value).expect("printable") + "\n"
 }
 
-/// The corpus fixture, split the way Python's `str.splitlines()` splits it.
+/// The corpus fixture, one entry per line.
 fn input_lines() -> Vec<String> {
     read_artifact("_inputs/audit.jsonl")
         .lines()
@@ -226,7 +226,7 @@ fn summary_text_matches_corpus() {
 /// Both table artifacts, byte for byte including the SGR escapes.
 ///
 /// The coloured one is the interesting half: it exercises the colour codes
-/// and the narrower DIRECTION column the Python's colour branch produces.
+/// and the narrower DIRECTION column the colour branch produces.
 #[test]
 fn tables_match_corpus() {
     let entries = parsed_entries();

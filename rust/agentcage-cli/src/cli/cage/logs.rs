@@ -239,8 +239,7 @@ fn logs_vm(
 /// `container logs` cannot:
 ///
 /// * **no `-n`.** The flag does not exist, so `--lines` is accepted and
-///   ignored. The Python marks the parameter unused for the same
-///   reason.
+///   ignored.
 /// * **no `--since`.** Same.
 /// * **no `--level` filtering, and no multi-service interleave.** One
 ///   target per invocation: the first recognized service in the list
@@ -278,13 +277,11 @@ fn shlex_join(parts: &[String]) -> String {
         .join(" ")
 }
 
-/// The exact argv `cli.py` hands to `os.execvp`.
+/// The exact argv handed to journalctl.
 ///
 /// Pulled out of [`logs_container`] because it is the one thing about
-/// this command the Python pins by value — `tests/test_cage_cli.py`
-/// asserts all five of its shapes, element by element, against a mocked
-/// `execvp` — and a list that is asserted by value is worth being able
-/// to assert by value here too.
+/// this command pinned by value: the tests assert all five of its
+/// shapes, element by element.
 ///
 /// `-n` is spelled with its argument as a separate element, not as
 /// `-n50`. journalctl accepts both, but `-n` is an option whose
@@ -320,15 +317,14 @@ fn journalctl_argv(
     argv
 }
 
-/// The `os.execvp` half: hand the terminal to journalctl and be gone.
+/// The exec half: hand the terminal to journalctl and be gone.
 ///
 /// [`agentcage_cli::terminal::run_interactive`] is a true `execvp` when
 /// stdin is not a terminal, which is every scripted and piped caller
 /// including the e2e suite. With a terminal it runs journalctl as a
 /// child so the CLI survives to put the termios back — a `journalctl -f`
-/// that the operator quits with `q` leaves the pager's mode behind
-/// otherwise, and the Python's `execvp` simply had nothing left to fix
-/// it with.
+/// that the operator quits with `q` would leave the pager's mode behind
+/// otherwise.
 fn exec_journalctl(argv: &[String]) -> ExitCode {
     match agentcage_cli::terminal::run_interactive(argv) {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(EXIT_FAILURE)),
@@ -444,10 +440,9 @@ mod tests {
         vec!["cage".to_owned(), "egress".to_owned()]
     }
 
-    /// `TestCageLogs`, transferred by value. Every one of these is a
-    /// `mock_execvp.assert_called_once_with` in `test_cage_cli.py`.
+    /// Every argv shape, by value.
     #[test]
-    fn the_argv_matches_the_python_by_value() {
+    fn the_argv_matches_by_value() {
         assert_eq!(
             journalctl_argv("basic", &both(), 50, false, None),
             [
@@ -497,7 +492,7 @@ mod tests {
 
     /// The ladder the `--severity` comparison runs on.
     #[test]
-    fn levels_rank_in_the_python_order() {
+    fn levels_rank_in_severity_order() {
         assert!(level_rank("debug") < level_rank("info"));
         assert!(level_rank("info") < level_rank("warning"));
         assert!(level_rank("warning") < level_rank("error"));

@@ -1,10 +1,7 @@
 //! `agentcage scaffold <command>` — user-authored cage templates.
 //!
-//! The only group in the tree that is a plain `click.Group` rather than
-//! an `AliasGroup`: it publishes no aliases, and so prints no "Aliases:"
-//! section. It also lives in its own Python module (`scaffold_cli.py`)
-//! and is attached with `main.add_command(scaffold)`, which is why a
-//! grep for `@main.group` in `cli.py` misses it.
+//! The only group in the tree that publishes no aliases, and so prints
+//! no "Aliases:" section.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -80,7 +77,7 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         eprintln!(
             "error: name must be 1-63 lowercase alphanumeric characters or \
              hyphens, starting with a letter or digit (got: {})",
-            agentcage_core::python::repr_str(&name)
+            agentcage_core::value_fmt::quote_text(&name)
         );
         return ExitCode::from(EXIT_FAILURE);
     }
@@ -89,7 +86,7 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     if dest.exists() && !matches.get_flag("force") {
         eprintln!(
             "error: scaffold {} already exists at {}\n  Use --force to overwrite.",
-            agentcage_core::python::repr_str(&name),
+            agentcage_core::value_fmt::quote_text(&name),
             dest.display()
         );
         return ExitCode::from(EXIT_FAILURE);
@@ -100,7 +97,7 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
             let available = scaffolds.list();
             eprintln!(
                 "error: scaffold {} not found (available: {})",
-                agentcage_core::python::repr_str(from),
+                agentcage_core::value_fmt::quote_text(from),
                 if available.is_empty() {
                     "none".to_owned()
                 } else {
@@ -114,8 +111,8 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         }
         println!(
             "Created scaffold {} from {}",
-            agentcage_core::python::repr_str(&name),
-            agentcage_core::python::repr_str(from)
+            agentcage_core::value_fmt::quote_text(&name),
+            agentcage_core::value_fmt::quote_text(from)
         );
     } else {
         let starter = scaffolds.templates_dir().join("scaffold-starter");
@@ -124,7 +121,7 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         }
         println!(
             "Created scaffold {}",
-            agentcage_core::python::repr_str(&name)
+            agentcage_core::value_fmt::quote_text(&name)
         );
     }
 
@@ -159,9 +156,8 @@ pub(crate) fn list_main(ctx: &Ctx) -> ExitCode {
         })
         .collect();
     let headers = ["NAME", "SOURCE", "LIFECYCLE", "DESCRIPTION"];
-    // `max(len(h), max(len(r[i]) for r in rows))` — character counts,
-    // not bytes, because a description may hold a non-ASCII character
-    // and the Python measures a `str`.
+    // The widest of the header and every cell — character counts,
+    // not bytes, because a description may hold a non-ASCII character.
     let widths: Vec<usize> = headers
         .iter()
         .enumerate()
@@ -227,7 +223,7 @@ pub(crate) fn edit_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         eprintln!(
             "error: {} is a built-in scaffold and cannot be edited directly.\n  \
              Fork it first: agentcage scaffold create my-{name} --from {name}",
-            agentcage_core::python::repr_str(&name)
+            agentcage_core::value_fmt::quote_text(&name)
         );
         return ExitCode::from(EXIT_FAILURE);
     }
@@ -284,14 +280,14 @@ pub(crate) fn delete_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     if scaffolds.is_builtin(&name) && !target.join("cage.yaml.j2").exists() {
         eprintln!(
             "error: {} is a built-in scaffold and cannot be deleted.",
-            agentcage_core::python::repr_str(&name)
+            agentcage_core::value_fmt::quote_text(&name)
         );
         return ExitCode::from(EXIT_FAILURE);
     }
     if !target.exists() {
         eprintln!(
             "error: no user scaffold {} at {}",
-            agentcage_core::python::repr_str(&name),
+            agentcage_core::value_fmt::quote_text(&name),
             target.display()
         );
         return ExitCode::from(EXIT_FAILURE);
@@ -299,7 +295,7 @@ pub(crate) fn delete_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     if !matches.get_flag("yes")
         && !confirm(&format!(
             "Delete scaffold {} at {}?",
-            agentcage_core::python::repr_str(&name),
+            agentcage_core::value_fmt::quote_text(&name),
             target.display()
         ))
     {
@@ -312,7 +308,7 @@ pub(crate) fn delete_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     }
     println!(
         "Deleted scaffold {}",
-        agentcage_core::python::repr_str(&name)
+        agentcage_core::value_fmt::quote_text(&name)
     );
     ExitCode::SUCCESS
 }
@@ -339,7 +335,7 @@ pub(crate) fn export_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     }
     println!(
         "Exported {} to {}",
-        agentcage_core::python::repr_str(&name),
+        agentcage_core::value_fmt::quote_text(&name),
         dest.display()
     );
     ExitCode::SUCCESS
@@ -360,7 +356,7 @@ fn named(matches: &ArgMatches, id: &str) -> String {
 fn not_found(name: &str) -> ExitCode {
     eprintln!(
         "error: scaffold {} not found",
-        agentcage_core::python::repr_str(name)
+        agentcage_core::value_fmt::quote_text(name)
     );
     ExitCode::from(EXIT_FAILURE)
 }
@@ -390,8 +386,7 @@ fn replace_tree(
 
 /// The starter template, with `{{SCAFFOLD_NAME}}` substituted.
 ///
-/// Top-level *files* only, as the Python's `for src_file in
-/// _STARTER_DIR.iterdir(): if src_file.is_file()` does.
+/// Top-level *files* only.
 fn expand_starter(starter: &Path, dest: &Path, name: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
     let mut entries: Vec<_> = std::fs::read_dir(starter)?.collect::<Result<_, _>>()?;
@@ -429,12 +424,11 @@ fn copy_tree(source: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// `"  ".join(v.ljust(w) for v, w in zip(row, widths))`.
+/// Each cell left-justified to its column width, joined by two spaces.
 ///
-/// Python's `str.ljust` never truncates and pads by *characters*, and
-/// the trailing column keeps its padding — which is what makes a
-/// `scaffold list` diff against the Python's output byte-exact rather
-/// than nearly so.
+/// Never truncates and pads by *characters*, and the trailing column
+/// keeps its padding — which keeps `scaffold list` byte-identical to
+/// the table earlier releases printed.
 fn join_padded(row: &[String; 4], widths: &[usize]) -> String {
     let mut out = String::new();
     for (index, value) in row.iter().enumerate() {
@@ -469,9 +463,9 @@ mod tests {
     use super::join_padded;
 
     /// `str.ljust` pads the last column too — a table whose rows end
-    /// with trailing spaces is what the Python prints.
+    /// with trailing spaces is the pinned output.
     #[test]
-    fn the_table_pads_the_way_python_does() {
+    fn the_table_pads_every_column() {
         let row = [
             "openclaw".to_owned(),
             "built-in".to_owned(),

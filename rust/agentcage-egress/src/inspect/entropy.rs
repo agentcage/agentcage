@@ -13,11 +13,11 @@
 //!
 //! A host whose parameter allowlist contains `"*"` skips both URL checks.
 //!
-//! The URL is split and its query decoded the way Python's
-//! `urllib.parse.urlparse` / `parse_qs` do, so the same parameter names,
-//! values and segments are measured.
+//! The URL is split and its query decoded the way `urllib.parse.urlparse`
+//! / `parse_qs` do (the splitter earlier releases measured with), so the
+//! same parameter names, values and segments are measured.
 
-use super::pyconf::{self, Num};
+use super::config_values::{self, Num};
 use super::{Action, Context, Inspector, Severity, Verdict, shannon_entropy};
 use crate::config::Value;
 use crate::json::Json;
@@ -69,7 +69,7 @@ impl EntropyInspector {
     ///
     /// A key holds a value of the wrong type.
     pub fn from_config(section: &Value) -> Result<Self, String> {
-        let map = pyconf::section(section, NAME)?;
+        let map = config_values::section(section, NAME)?;
 
         // `merged = dict(defaults); merged.update(user)`, then
         // `{h.lower(): {p.lower() for p in params}}` — keys merge before
@@ -93,15 +93,17 @@ impl EntropyInspector {
                             "{NAME}.host_url_param_allowlist keys must be host names"
                         ));
                     };
-                    let ps =
-                        pyconf::str_items(ps, &format!("{NAME}.host_url_param_allowlist.{h}"))?;
+                    let ps = config_values::str_items(
+                        ps,
+                        &format!("{NAME}.host_url_param_allowlist.{h}"),
+                    )?;
                     merged.insert(h.clone(), ps);
                 }
             }
             Some(v) => {
                 return Err(format!(
                     "{NAME}.host_url_param_allowlist must be a mapping (got {})",
-                    agentcage_core::python::type_name(v)
+                    agentcage_core::value_fmt::kind_name(v)
                 ));
             }
         }
@@ -114,20 +116,31 @@ impl EntropyInspector {
         }
 
         Ok(Self {
-            threshold: pyconf::num(map, "threshold", Num::float(7.0), NAME)?,
-            min_body_bytes: pyconf::num(map, "min_body_bytes", Num::int(256), NAME)?,
-            action: super::content_type::action_of(&pyconf::string(map, "action", "block", NAME)?),
-            exempt_content_types: pyconf::str_list(
+            threshold: config_values::num(map, "threshold", Num::float(7.0), NAME)?,
+            min_body_bytes: config_values::num(map, "min_body_bytes", Num::int(256), NAME)?,
+            action: super::content_type::action_of(&config_values::string(
+                map, "action", "block", NAME,
+            )?),
+            exempt_content_types: config_values::str_list(
                 map,
                 "exempt_content_types",
                 &["image/", "application/gzip", "application/zip"],
                 NAME,
             )?,
-            host_exempt_content_types: pyconf::host_lists(map, "host_exempt_content_types", NAME)?,
-            check_url_params: pyconf::flag(map, "check_url_params", true),
-            check_url_path: pyconf::flag(map, "check_url_path", true),
-            url_threshold: pyconf::num(map, "url_threshold", Num::float(5.5), NAME)?,
-            url_min_value_bytes: pyconf::num(map, "url_min_value_bytes", Num::int(64), NAME)?,
+            host_exempt_content_types: config_values::host_lists(
+                map,
+                "host_exempt_content_types",
+                NAME,
+            )?,
+            check_url_params: config_values::flag(map, "check_url_params", true),
+            check_url_path: config_values::flag(map, "check_url_path", true),
+            url_threshold: config_values::num(map, "url_threshold", Num::float(5.5), NAME)?,
+            url_min_value_bytes: config_values::num(
+                map,
+                "url_min_value_bytes",
+                Num::int(64),
+                NAME,
+            )?,
             host_url_param_allowlist: allow.into_iter().collect(),
         })
     }
@@ -154,7 +167,8 @@ impl EntropyInspector {
         }
         let host = ctx.host.to_lowercase();
         for (h, prefixes) in &self.host_exempt_content_types {
-            if pyconf::host_matches(&host, h) && prefixes.iter().any(|p| ct.starts_with(p.as_str()))
+            if config_values::host_matches(&host, h)
+                && prefixes.iter().any(|p| ct.starts_with(p.as_str()))
             {
                 return None;
             }
@@ -194,7 +208,7 @@ impl EntropyInspector {
         let host = ctx.host.to_lowercase();
         let mut allowed: Vec<&str> = Vec::new();
         for (h, params) in &self.host_url_param_allowlist {
-            if pyconf::host_matches(&host, h) {
+            if config_values::host_matches(&host, h) {
                 allowed.extend(params.iter().map(String::as_str));
             }
         }
@@ -239,7 +253,7 @@ impl EntropyInspector {
         }
         let host = ctx.host.to_lowercase();
         for (h, params) in &self.host_url_param_allowlist {
-            if pyconf::host_matches(&host, h) && params.iter().any(|p| p == "*") {
+            if config_values::host_matches(&host, h) && params.iter().any(|p| p == "*") {
                 return None;
             }
         }
@@ -395,7 +409,7 @@ fn parse_qs(query: &str) -> Vec<(String, Vec<String>)> {
 
 /// `urllib.parse.unquote(s)` (UTF-8, `errors="replace"`).
 ///
-/// Python decodes `%XX` only inside runs of ASCII characters, each run
+/// `%XX` is decoded only inside runs of ASCII characters, each run
 /// decoded to text on its own; non-ASCII characters pass through. An
 /// invalid escape stays literal.
 fn unquote(s: &str) -> String {
@@ -446,7 +460,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn urlparse_splits_like_python() {
+    fn urlparse_splits_like_urllib() {
         let s = |u: &str| {
             let c = clean_url(u);
             split_url(&c).map(|x| (x.path.to_owned(), x.query.to_owned()))
@@ -463,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_qs_like_python() {
+    fn parse_qs_like_urllib() {
         assert_eq!(
             parse_qs("a=1&b&c=&a=2&&d=x+y%20z&e=%zz%4"),
             vec![

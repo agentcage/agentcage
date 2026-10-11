@@ -1,34 +1,24 @@
-//! `lima/provisioning.py` — the Lima YAML a `vm` cage is created from.
+//! The Lima YAML a `vm` cage is created from.
 //!
-//! The first half of the `vm` backend (docs/history/rust-port-plan.md Track E, PR
-//! E1): everything that turns a `cage.yaml` into the text `limactl
-//! create` is handed. No subprocess runs here, so the whole of it is
-//! checkable on a Linux CI runner that has never seen `limactl` — which
-//! is the split the plan draws through this backend, and the reason the
-//! execution half (E4) is a separate PR.
+//! The first half of the `vm` backend: everything that turns a
+//! `cage.yaml` into the text `limactl create` is handed. No subprocess
+//! runs here, so the whole of it is checkable on a Linux CI runner that
+//! has never seen `limactl`; the execution half lives in
+//! `agentcage-cli`'s `vm.rs`.
 //!
 //! # Two host facts arrive as arguments
 //!
-//! The Python reads them from the process:
-//!
-//! ```python
-//! vm_type = "vz" if platform.system() == "Darwin" else "qemu"
-//! provision_script = provision_tmpl.render(
-//!     lima_user=pwd.getpwuid(os.getuid()).pw_name,
-//! )
-//! ```
-//!
-//! Both are in [`LimaFacts`] instead. `agentcage-core` does no I/O, and
-//! the user name in particular is a *password-database* lookup, not an
-//! environment read — the Python's comment is explicit that
-//! `getpass.getuser()` would be wrong because it trusts `$USER` and can
-//! disagree under `sudo`. Making it a parameter also lets the fixture
-//! generator and the Rust test agree on one frozen name instead of
-//! pinning whoever ran them.
+//! The VM driver (`vz` on macOS, `qemu` elsewhere) and the guest user
+//! name are both in [`LimaFacts`] rather than read here.
+//! `agentcage-core` does no I/O, and the user name in particular is a
+//! *password-database* lookup for the invoking uid, not an environment
+//! read — `$USER` can be wrong, and disagrees under `sudo`. Making it a
+//! parameter also lets the fixture generator and the test agree on one
+//! frozen name instead of pinning whoever ran them.
 //!
 //! # The filesystem questions go through [`QuadletHost`]
 //!
-//! `_extra_mounts_for_volumes` calls `realpath`, `exists` and `isdir`
+//! [`extra_mounts_for_volumes`] calls `realpath`, `exists` and `isdir`
 //! on every volume source, and *skips* the ones that are missing or are
 //! files. Those answers change the emitted YAML, so they cannot be
 //! guessed: they come from the same trait the quadlet renderer already
@@ -37,14 +27,14 @@
 //! # What is deliberately not here
 //!
 //! `provision.sh.j2` itself. It installs podman and its network stack
-//! and **no Python** — §2.4's invariant — and the port renders it
-//! unmodified, exactly as it renders every other `.j2` source.
+//! and nothing else, and is rendered as it stands, exactly as every
+//! other `.j2` source is.
 
 use serde::Serialize;
 
 use crate::config::{Config, ConfigError};
-use crate::python::repr_str;
 use crate::quadlets::{QuadletHost, expanduser, expandvars, templates};
+use crate::value_fmt::quote_text;
 use crate::volume_mounts::{
     is_non_persistent_volume, validate_non_persistent_volume, volume_options,
 };
@@ -52,7 +42,7 @@ use crate::volume_mounts::{
 /// Directories that must never be shared into the guest, even when a
 /// user volume points inside one.
 ///
-/// `_BLOCKED_MOUNT_DIRS`. Checked as resolved real-path prefixes under
+/// Checked as resolved real-path prefixes under
 /// the *host* home, and checked before the existence test so that an
 /// explicit attempt to mount `~/.ssh` always fails loudly rather than
 /// being skipped as "does not exist" on a machine that has no such
@@ -61,8 +51,8 @@ pub const BLOCKED_MOUNT_DIRS: [&str; 5] = [".ssh", ".gnupg", ".aws", ".kube", ".
 
 /// One `portForwards` entry.
 ///
-/// Field names are the template's, not Python's dict keys: the template
-/// reads `pf.guest_port` / `pf.host_port` / `pf.host_bind`.
+/// Field names are the template's: it reads `pf.guest_port` /
+/// `pf.host_port` / `pf.host_bind`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PortForward {
     /// The host address Lima binds, `127.0.0.1` unless the spec names
@@ -83,7 +73,7 @@ pub struct ExtraMount {
     pub writable: bool,
 }
 
-/// The two host facts the Python reads from the process.
+/// The two host facts the Lima config depends on.
 #[derive(Clone, Copy, Debug)]
 pub struct LimaFacts<'a> {
     /// `platform.system()` — `"Darwin"` selects the `vz` driver.
@@ -93,14 +83,13 @@ pub struct LimaFacts<'a> {
     pub lima_user: &'a str,
 }
 
-/// A rendered Lima config, plus what the Python printed on the way.
+/// A rendered Lima config, plus the warnings produced on the way.
 #[derive(Clone, Debug, Default)]
 pub struct LimaConfig {
     /// The YAML `limactl create` is handed.
     pub yaml: String,
-    /// `click.echo(..., err=True)` lines, in order, each without its
-    /// trailing newline. Returned rather than printed: this crate has
-    /// no stdout.
+    /// Warning lines for stderr, in order, each without its trailing
+    /// newline. Returned rather than printed: this crate has no stdout.
     pub warnings: Vec<String>,
 }
 
@@ -122,24 +111,24 @@ struct ProvisionContext<'a> {
     lima_user: &'a str,
 }
 
-/// `int(text)` for a port field, with Python's error message.
+/// A port field as an integer, with the pinned error message.
 ///
-/// The Python does not guard these conversions, so a spec that reaches
-/// here with a non-numeric part raises `ValueError` out of `int()` and
-/// the CLI shows its message. Reproduced rather than replaced, because
-/// `cage create` puts it in front of a user.
+/// A spec that reaches here with a non-numeric part fails with
+/// `invalid literal for int() with base 10: '<part>'` — the message
+/// earlier releases showed (Python's own), kept because `cage create`
+/// puts it in front of a user.
 ///
-/// Python's `int()` tolerates surrounding whitespace and a leading sign;
-/// it also tolerates underscores (`1_0`), which this does not. A port
-/// spec containing an underscore is rejected by config validation long
-/// before it reaches this function, so the divergence is unreachable
+/// Surrounding whitespace and a leading sign are tolerated. Underscores
+/// (`1_0`) are not, unlike the config parser's integers; a port spec
+/// containing an underscore is rejected by config validation long
+/// before it reaches this function, so the difference is unreachable
 /// through the CLI.
-fn python_int(text: &str) -> Result<i64, ConfigError> {
+fn parse_int_literal(text: &str) -> Result<i64, ConfigError> {
     let trimmed = text.trim_matches(|c: char| c.is_ascii_whitespace());
     trimmed.parse::<i64>().map_err(|_| {
         ConfigError::value(format!(
             "invalid literal for int() with base 10: {}",
-            repr_str(text)
+            quote_text(text)
         ))
     })
 }
@@ -162,14 +151,14 @@ pub fn parse_port_forwards(ports: &[String]) -> Result<Vec<PortForward>, ConfigE
             _ => {
                 return Err(ConfigError::value(format!(
                     "Invalid port spec {}: expected HOST:GUEST or BIND:HOST:GUEST",
-                    repr_str(spec)
+                    quote_text(spec)
                 )));
             }
         };
         out.push(PortForward {
             host_bind: host_bind.to_owned(),
-            host_port: python_int(host_port)?,
-            guest_port: python_int(guest_port)?,
+            host_port: parse_int_literal(host_port)?,
+            guest_port: parse_int_literal(guest_port)?,
         });
     }
     Ok(out)
@@ -229,7 +218,7 @@ pub fn extra_mounts_for_volumes(
                 return Err(ConfigError::value(format!(
                     "volume host path {} resolves under ~/{blocked} which must \
                      not be exposed to the VM",
-                    repr_str(host_part)
+                    quote_text(host_part)
                 )));
             }
         }
@@ -242,7 +231,7 @@ pub fn extra_mounts_for_volumes(
         if host_path.contains('$') || !host.exists(&host_path) {
             warnings.push(format!(
                 "warning: not mounting {} into the VM (host path does not exist)",
-                repr_str(host_part)
+                quote_text(host_part)
             ));
             continue;
         }
@@ -273,8 +262,8 @@ pub fn extra_mounts_for_volumes(
 
 /// `math.ceil(mem_mb / 1024)`.
 ///
-/// Integer arithmetic rather than a float divide: the Python's operands
-/// are ints and the quotient is exact, so `f64` would only introduce a
+/// Integer arithmetic rather than a float divide: the operands are
+/// integers and the quotient is exact, so `f64` would only introduce a
 /// rounding question at sizes no VM has. Guarded for a non-positive
 /// value, which config validation rejects but which a hand-built
 /// `Config` could still carry.
@@ -421,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn one_part_spec_is_the_python_message() {
+    fn one_part_spec_is_the_pinned_message() {
         let ports = vec!["80".to_owned()];
         let error = parse_port_forwards(&ports).expect_err("refuses");
         assert_eq!(
@@ -498,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_source_warns_in_the_python_words() {
+    fn a_missing_source_warns_in_the_pinned_words() {
         let volumes = vec!["/home/cageuser/nope:/x:rw".to_owned()];
         let (mounts, warnings) = extra_mounts_for_volumes(&volumes, &world()).expect("renders");
         assert!(mounts.is_empty());

@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use agentcage_core::python::{str_of, type_name};
+use agentcage_core::value_fmt::{coerce_to_string, kind_name};
 
 use super::body_size::BodySizeInspector;
 use super::content_type::ContentTypeInspector;
@@ -361,7 +361,7 @@ pub fn plan(cfg: &Config, plugins: &dyn PluginLoader) -> Result<(Vec<Slot>, Vec<
         Some(v) if !truthy(v) => &[],
         Some(Value::Sequence(entries)) => entries,
         Some(v) => {
-            return Err(format!("inspectors must be a list (got {})", type_name(v)));
+            return Err(format!("inspectors must be a list (got {})", kind_name(v)));
         }
     };
     // `next(s for s in plan if name and s.name == name)`.
@@ -376,11 +376,14 @@ pub fn plan(cfg: &Config, plugins: &dyn PluginLoader) -> Result<(Vec<Slot>, Vec<
         let Value::Mapping(entry) = entry else {
             return Err(format!(
                 "inspectors entries must be mappings (got {})",
-                type_name(entry)
+                kind_name(entry)
             ));
         };
-        let name = entry.get("name").map(str_of).unwrap_or_default();
-        let path = entry.get("path").filter(|p| truthy(p)).map(str_of);
+        let name = entry.get("name").map(coerce_to_string).unwrap_or_default();
+        let path = entry
+            .get("path")
+            .filter(|p| truthy(p))
+            .map(coerce_to_string);
         let config = entry.get("config").cloned().unwrap_or_else(empty_mapping);
 
         match path {
@@ -528,9 +531,9 @@ mod tests {
                 .unwrap()
                 .commit(),
         );
-        // The domain section parses, the entropy one does not (Python took
-        // the string and raised on every request instead): the domain
-        // baseline must not move, because nothing was committed.
+        // The domain section parses, the entropy one does not (earlier
+        // releases took the string and failed on every request instead): the
+        // domain baseline must not move, because nothing was committed.
         let bad = "domains: {allow: [b.com]}\nentropy: {threshold: high}\n";
         assert!(build(&domain, bad).is_err());
         assert!(domain.matches_baseline("a.com"));

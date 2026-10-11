@@ -33,9 +33,8 @@
 //! populated by [`crate::apple::backend::AppleBackend`]'s
 //! `stage_secrets` at `start()` and **wiped** as soon as the egress has
 //! read it (the durable copy is the keychain's), so writing a value
-//! into it on a running cage would reach nothing. The Python does not
-//! try: `secret_set`'s apple branch calls
-//! [`restart_if_running`] instead of `_apply_secret_live_or_restart`,
+//! into it on a running cage would reach nothing. So `secret set`'s
+//! apple branch calls [`restart_if_running`] instead of applying live,
 //! and so does every other body here. Cycling the cage *is* the apply
 //! on this backend.
 
@@ -61,9 +60,8 @@ pub(crate) fn is_apple_container(config: &Config) -> bool {
 ///
 /// # The two arguments that are *not* passed, both deliberately
 ///
-/// `podman` is [`None`]: `_store_secret(None, cfg, …)` is how both of
-/// the Python's apple call sites spell it, and there is no host podman
-/// store on this backend for it to mean anything.
+/// `podman` is [`None`]: there is no host podman store on this backend
+/// for it to mean anything.
 ///
 /// `source_scheme` is empty, which is the load-bearing one. A rule
 /// carrying `source: systemd-creds:` would otherwise select
@@ -101,16 +99,14 @@ fn with_store<T>(
 /// these are **names only**: nothing here reads a value, and the
 /// keychain is not asked for one.
 ///
-/// An unresolvable store is an empty set, not an error — Python's
-/// `except SecretStoreError: return set()`. `secret list` then reports
-/// every declared key as `MISSING`, which is the honest answer for a
-/// cage whose store cannot be opened.
+/// An unresolvable store is an empty set, not an error. `secret list`
+/// then reports every declared key as `MISSING`, which is the honest
+/// answer for a cage whose store cannot be opened.
 pub(crate) fn secret_names(ctx: &Ctx, config: &Config, name: &str) -> Vec<String> {
     let state_dir = ctx.paths.deployment_dir(name);
     match with_store(ctx, config, |store| store.names(name, &state_dir)) {
         Ok(Ok(names)) => names,
-        // The inner `Err` is the one the Python does *not* swallow — it
-        // only wraps `resolve_store`. It stays folded in here because
+        // The inner `Err` (a failing `names`) is folded in too, because
         // neither store this backend can resolve to has a fallible
         // `names`: both answer from a file and treat a missing or
         // corrupt one as empty, by design (a broken index must not make
@@ -124,16 +120,14 @@ pub(crate) fn secret_names(ctx: &Ctx, config: &Config, name: &str) -> Vec<String
 /// # Errors
 ///
 /// [`SecretError`] when the store could not be resolved or the removal
-/// failed. The Python lets both raise — `resolve_store(cfg).delete(…)`
-/// is unguarded at `cli.py:4307` — so this is the port's refusal
-/// standing in for a traceback, in the same spirit as
+/// failed — a refusal rather than a traceback, in the same spirit as
 /// `set::rules_for_append`'s.
 pub(crate) fn delete(ctx: &Ctx, config: &Config, name: &str, key: &str) -> Result<(), SecretError> {
     let state_dir = ctx.paths.deployment_dir(name);
     with_store(ctx, config, |store| store.delete(name, key, &state_dir))?
 }
 
-/// `cli._apple_restart_if_running` — cycle the cage so a changed secret
+/// Cycle the cage so a changed secret
 /// takes effect, and do nothing at all if it is not up.
 ///
 /// `stage_secrets` runs only at `start()`, so an edit to a running
@@ -141,13 +135,11 @@ pub(crate) fn delete(ctx: &Ctx, config: &Config, name: &str, key: &str) -> Resul
 /// *stopped* cage needs nothing, because the next start re-stages every
 /// value from the store.
 ///
-/// Silence on the stopped path is the Python's and is worth naming,
-/// because the container path is not silent: `rotate-placeholders`
-/// prints "Cage is not running — the new placeholders apply on next
-/// start." there and nothing at all here. Reproduced rather than
-/// evened out — what this port is judged against is the Python's
-/// output, line for line, and a reassurance no Python release printed
-/// would be this port inventing one.
+/// Silence on the stopped path is worth naming, because the container
+/// path is not silent: `rotate-placeholders` prints "Cage is not
+/// running — the new placeholders apply on next start." there and
+/// nothing at all here. Kept as it was in earlier releases, whose
+/// output is pinned line for line.
 ///
 /// `config.name` is the cage addressed, not the state directory's name:
 /// a cage's stored config owns the name its containers carry.

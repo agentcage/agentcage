@@ -49,8 +49,8 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         .enumerate()
         .filter_map(|(index, rule)| {
             let env = rule.as_mapping()?.get("env")?;
-            agentcage_core::yaml::python_bool(env)
-                .then(|| (index, agentcage_core::python::str_of(env)))
+            agentcage_core::yaml::is_truthy(env)
+                .then(|| (index, agentcage_core::value_fmt::coerce_to_string(env)))
         })
         .collect();
 
@@ -71,9 +71,8 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             return Err(ExitCode::from(EXIT_FAILURE));
         }
         // Named order, not document order: `rotate-placeholders NAME B A`
-        // reports B then A, as the Python's `[by_env[k] for k in keys]`
-        // does. A key named twice rotates twice, and the second token
-        // wins — also the Python's behaviour.
+        // reports B then A. A key named twice rotates twice, and the
+        // second token wins — both as in earlier releases.
         keys.iter()
             .filter_map(|key| {
                 envs.iter()
@@ -92,11 +91,11 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             };
             let env = rule
                 .get("env")
-                .map_or_else(String::new, agentcage_core::python::str_of);
+                .map_or_else(String::new, agentcage_core::value_fmt::coerce_to_string);
             let old = rule
                 .get("placeholder")
                 .filter(|value| !matches!(value, Value::Null))
-                .map_or_else(String::new, agentcage_core::python::str_of);
+                .map_or_else(String::new, agentcage_core::value_fmt::coerce_to_string);
             let new = agentcage_state::mint_placeholder(&env);
             rule.insert(
                 Value::String("placeholder".to_owned()),
@@ -130,12 +129,11 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         // Note what is not printed: the container path's "Cage is not
         // running — the new placeholders apply on next start." has no
         // counterpart here, because the helper is silent when the cage
-        // is down. The Python's shape, kept.
+        // is down, as in earlier releases.
         apple::restart_if_running(ctx, &config);
         return Ok(());
     }
-    // `backend_for`, not `ctx.backend()`: the Python asks
-    // `get_backend(cfg)` (`cli.py:4540`), and on a vm cage the
+    // `backend_for`, not `ctx.backend()`: on a vm cage the
     // container backend's `systemctl --user` runs on the *host*, where
     // that cage's unit does not exist — so a running vm cage would
     // read as stopped and the rotation would print "applies on next

@@ -1,12 +1,11 @@
-//! The two questions every cage-addressing command in `cli.py` asks
+//! The two questions every cage-addressing command asks
 //! before it does anything: does this cage exist, and is it one this
 //! version can still talk to.
 //!
-//! They are here rather than inside a command because `cli.py` calls
-//! `_ensure_v022_cage` from **25 places** and the exists-check from
-//! nearly as many. PR D13 (`cage har`) is the first ported body that
-//! needs either; D6–D12 take them from here rather than copying them,
-//! which is the only way the wording stays one wording.
+//! They are here rather than inside a command because the v0.22 gate
+//! is asked from about **25 places** and the exists-check from
+//! nearly as many. Every command takes them from here rather than
+//! copying them, which is the only way the wording stays one wording.
 //!
 //! Both report to a stream and hand back an exit status rather than
 //! exiting, so a test can read what an operator would have seen. The
@@ -23,13 +22,13 @@ use agentcage_state::paths::Paths;
 pub const EXIT_NO_SUCH_CAGE: u8 = 1;
 
 /// Exit status for "this cage was made by a version whose layout is
-/// gone" — `cli.py:275`'s `sys.exit(2)`.
+/// gone".
 pub const EXIT_LEGACY_CAGE: u8 = 2;
 
 /// `if not state.deployment_exists(name): ... sys.exit(1)`.
 ///
 /// Returns the exit status when the cage is unknown, having written the
-/// Python's one-line message to `stderr`.
+/// long-standing one-line message to `stderr`.
 ///
 /// "Exists" means a stored `cage.yaml`, not a directory: `cage destroy
 /// --keep-secrets` leaves the directory behind with `creds/` in it, and
@@ -54,15 +53,15 @@ pub fn require_cage(paths: &Paths, name: &str, stderr: &mut dyn Write) -> Option
 /// **A missing `metadata.json` reads as v0.0.0**, which is below
 /// `(0, 22)`, so a cage whose metadata never got written — or got
 /// removed — is told to migrate away from a layout it may never have
-/// had. `state.load_metadata` answers `{}` for an absent file and
-/// `cli.py:276` turns that into `"0.0.0"`; both halves are faithful.
+/// had. An absent file reads as no stamp, and no stamp as `"0.0.0"`;
+/// both halves are long-standing.
 ///
-/// **The comparison is `(major, minor)` only.** `_parse_version` reads
+/// **The comparison is `(major, minor)` only.** [`parse_version`] reads
 /// two components and gives `(0, 0)` for anything it cannot, so a
 /// metadata stamp of `"garbage"` also trips the gate.
 ///
-/// A malformed `metadata.json` is the one case that is *not* faithful:
-/// the Python's `json.load` raises out of the command with a traceback.
+/// A malformed `metadata.json` is the one case that differs from
+/// earlier releases, which ended in a traceback.
 /// Here it is a message and [`EXIT_NO_SUCH_CAGE`], because a traceback
 /// is not an error report.
 pub fn ensure_v022_cage(paths: &Paths, name: &str, stderr: &mut dyn Write) -> Option<u8> {
@@ -106,14 +105,12 @@ pub fn ensure_v022_cage(paths: &Paths, name: &str, stderr: &mut dyn Write) -> Op
     Some(EXIT_LEGACY_CAGE)
 }
 
-/// `_parse_version` — `'X.Y[.Z…]'` to `(X, Y)`, and `(0, 0)` on garbage.
+/// `'X.Y[.Z…]'` to `(X, Y)`, and `(0, 0)` on garbage.
 ///
-/// Python catches `ValueError`, `TypeError` and `IndexError` around
-/// `int(parts[0]), int(parts[1])`, so anything that is not two leading
-/// integer components lands on `(0, 0)`. Note `int()` tolerates
-/// surrounding whitespace and a leading `+`/`-`; `str::parse::<u32>`
-/// tolerates neither, which only matters for a metadata stamp no writer
-/// produces.
+/// Anything that is not two leading integer components lands on
+/// `(0, 0)`. Earlier releases also tolerated surrounding whitespace and
+/// a leading `+`/`-` in each component; `str::parse::<u32>` tolerates
+/// neither, which only matters for a metadata stamp no writer produces.
 #[must_use]
 pub fn parse_version(version: &str) -> (u32, u32) {
     let mut parts = version.split('.');
@@ -130,11 +127,11 @@ mod tests {
     use super::parse_version;
 
     #[test]
-    fn version_parsing_matches_the_python() {
+    fn version_parsing_takes_major_and_minor() {
         assert_eq!(parse_version("0.40.1"), (0, 40));
         assert_eq!(parse_version("0.22"), (0, 22));
         assert_eq!(parse_version("1.0.0-rc1"), (1, 0));
-        // Every failure mode Python's three `except` clauses cover.
+        // Every failure mode lands on (0, 0).
         assert_eq!(parse_version("0.0.0"), (0, 0));
         assert_eq!(parse_version("garbage"), (0, 0));
         assert_eq!(parse_version("1"), (0, 0));

@@ -1,4 +1,5 @@
-//! `secret_resolver.py`, minus the parse-time checks C2 already took.
+//! Resolving and encrypting secret values (the parse-time checks live in
+//! [`agentcage_core::config::secret`]).
 //!
 //! Five jobs:
 //!
@@ -15,10 +16,10 @@
 //!    [`SecretHost::resolve_scope`]).
 //! 5. **Encrypt** ([`SecretHost::encrypt_secret`]).
 //!
-//! # Three things the Python does that a straight transcription loses
+//! # Three design points
 //!
-//! **`functools.lru_cache`.** `detect_default_backend`, `detect_default_scope`
-//! and `_systemd_creds_works` are each cached for the life of the
+//! **Memoized probes.** `detect_default_backend`, `detect_default_scope`
+//! and the `systemd-creds` self-test are each cached for the life of the
 //! process, which is load-bearing rather than decorative: without it,
 //! `SystemdCredsStore.available()` re-runs a `systemd-creds encrypt`
 //! probe on every call, and `secret set` calls it more than once. A
@@ -26,14 +27,14 @@
 //! reset, so the memo lives on [`SecretHost`] instead -- one per run,
 //! one per test.
 //!
-//! **`os.environ`.** Reading it is easy; *controlling* it from a test is
+//! **The environment.** Reading it is easy; *controlling* it from a test is
 //! not, because `std::env::set_var` is `unsafe` under the 2024 edition
 //! and this workspace forbids `unsafe` outright. So the environment is a
 //! trait ([`Environment`]) with a real implementation and a map-backed
 //! double, which also means an `env:` test does not mutate global state
 //! that another test in the same binary can observe.
 //!
-//! **`click.echo(..., err=True)`.** The non-strict path prints warnings
+//! **Warnings are returned.** The non-strict path prints warnings
 //! and continues. Printing from here would make the behaviour
 //! untestable without capturing stderr, so the warnings are *returned*
 //! ([`Populated::warnings`]) and the command layer prints them with
@@ -169,8 +170,8 @@ impl Resolution {
         }
     }
 
-    /// `ResolveAction`'s string value, which is what the Python enum
-    /// carries and what a log line should say instead of the value.
+    /// The action's name, which is what a log line should say instead of
+    /// the value.
     #[must_use]
     pub fn action(&self) -> &'static str {
         match self {
@@ -198,8 +199,8 @@ pub struct Populated {
     /// `provided_keys` so they survive the rule-strip filter.
     pub resolved: BTreeSet<String>,
     /// Non-fatal failures, in encounter order, for the `strict=False`
-    /// path. Already carrying the `warning: ` prefix Python's
-    /// `click.echo` line has, so the caller only chooses a stream.
+    /// path. Already carrying the `warning: ` prefix, so the
+    /// caller only chooses a stream.
     pub warnings: Vec<String>,
 }
 
@@ -259,8 +260,8 @@ impl<'a> SecretHost<'a> {
 
     /// `detect_default_backend` -- the best available backend.
     ///
-    /// Three conditions in the Python's order, and the order is what a
-    /// test pins: the binary must exist, `systemctl --version` must
+    /// Three conditions in a fixed order, and the order is what a test
+    /// pins: the binary must exist, `systemctl --version` must
     /// report at least [`MIN_SYSTEMD_VERSION`], and some scope must
     /// actually encrypt. The last one is not redundant with the first
     /// two: a container host with no TPM, no host key and a root
@@ -306,7 +307,7 @@ impl<'a> SecretHost<'a> {
             other => {
                 return Err(SecretError::value(format!(
                     "invalid secrets.scope: {}",
-                    agentcage_core::python::repr_str(other)
+                    agentcage_core::value_fmt::quote_text(other)
                 )));
             }
         }
@@ -324,8 +325,7 @@ impl<'a> SecretHost<'a> {
     ///
     /// The value goes on stdin; `--name` carries the *env variable
     /// name*, which systemd binds the decrypted credential to at unit
-    /// start and which is not secret. Returns the path written, as the
-    /// Python does.
+    /// start and which is not secret. Returns the path written.
     ///
     /// # Errors
     ///
@@ -374,8 +374,8 @@ impl<'a> SecretHost<'a> {
     /// empty or failing `cmd:`, a missing `.cred` file, or a scheme
     /// that is not one of the five. The last one is unreachable through
     /// a parsed config, because `validate_source` rejects it at
-    /// `cage create` time -- it is kept because the Python keeps it,
-    /// and because `resolve` is also reachable from a hand-built rule.
+    /// `cage create` time -- it is kept because `resolve` is also
+    /// reachable from a hand-built rule.
     pub fn resolve(
         &self,
         source: &str,
@@ -502,8 +502,7 @@ impl<'a> SecretHost<'a> {
     /// failure, so `cage create` / `cage start` abort before the unit is
     /// launched with a missing secret. Without it, failures become
     /// [`Populated::warnings`]. A podman failure is always an error:
-    /// `strict` is about *resolution*, and the Python's `try` covers
-    /// only the `resolve` call.
+    /// `strict` is about *resolution* only.
     pub fn resolve_and_populate(
         &self,
         podman: &dyn PodmanSecrets,
@@ -571,13 +570,12 @@ impl<'a> SecretHost<'a> {
 /// `cage start` forever.
 pub const CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// `if podman.secret_exists(f): podman.secret_remove(f)` then
-/// `podman.secret_create(f, value)`.
+/// Remove the secret if it exists, then create it with `value`.
 ///
-/// The three-call shape appears five times in the Python and is
-/// load-bearing: `podman secret create` fails on a duplicate name, so
-/// an update is a remove followed by a create, and the remove is
-/// conditional because removing a missing secret is also a failure.
+/// The three-call shape is load-bearing: `podman secret create` fails
+/// on a duplicate name, so an update is a remove followed by a create,
+/// and the remove is conditional because removing a missing secret is
+/// also a failure.
 ///
 /// # Errors
 ///
@@ -649,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn the_backend_probe_runs_in_the_pythons_order() {
+    fn the_backend_probe_runs_in_a_fixed_order() {
         let fake = FakeRunner::new();
         fake.stub_which("systemd-creds", "/usr/bin/systemd-creds");
         fake.push(Reply::ok("systemd 256 (256.11-1-arch)\n"));

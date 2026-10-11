@@ -143,8 +143,8 @@ pub fn build_image_from_staged(
     argv.push(context_dir.display().to_string());
 
     // Apple's CLI writes its own progress to stderr and would fight an
-    // agentcage spinner for the line, which is why the Python wraps
-    // every streaming `container` call in `pause_active_spinner`.
+    // agentcage spinner for the line, which is why every streaming
+    // `container` call is wrapped in `pause_active_spinner`.
     output::pause_active_spinner(|| {
         AppleContainer::new(runner)
             .run_streaming(argv, true)

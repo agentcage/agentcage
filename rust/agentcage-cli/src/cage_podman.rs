@@ -1,28 +1,26 @@
-//! Which podman answers for a cage — `cli._podman_for_cage`
-//! (`cli.py:54`).
+//! Which podman answers for a cage.
 //!
 //! A `container` cage keeps its secrets in the host's podman store. A
 //! `vm` cage keeps them in a *different* store, inside its Lima guest,
 //! reachable only as `limactl shell <instance> -- podman …`. The two
-//! are the same argv behind different transports, which is why the
-//! Python can hand either object to the same code and why this is an
-//! enum rather than two call paths.
+//! are the same argv behind different transports, which is why this is
+//! an enum rather than two call paths.
 //!
 //! # Why the running check is part of the decision
 //!
-//! The guest's store only exists while the guest runs. The Python asks
-//! `LimaInstance(name).is_running()` and falls back to **host** podman
-//! when it does not, which is not a graceful degradation so much as the
+//! The guest's store only exists while the guest runs. This asks
+//! whether the guest is running and falls back to **host** podman
+//! when it is not, which is not a graceful degradation so much as the
 //! only thing it can do: there is nothing to ask. Every caller below
 //! therefore has to tolerate a host answer about a stopped vm cage —
 //! `secret list` showing every key `MISSING` is the honest reading of
-//! "the store is unreachable", and it is what the Python prints.
+//! "the store is unreachable", and it is what has always been printed.
 //!
 //! # The one thing this deliberately does not fix
 //!
-//! `cage restore` does **not** use this router, and that is faithful
-//! rather than an omission. `cli.py:3973` computes its handle *after*
-//! the `--force` destroy has run `state.remove_deployment`, so
+//! `cage restore` does **not** use this router, and that is long-standing
+//! behaviour rather than an omission. It computes its handle *after*
+//! the `--force` destroy has removed the deployment, so
 //! `deployment_exists` is false and the router returns host podman
 //! every time — including for a vm tarball, whose secrets then land in
 //! the host store where that cage's containers cannot see them. See
@@ -35,7 +33,7 @@ use agentcage_exec::{CommandRunner, ExecError};
 
 /// A cage's secret store, wherever it lives.
 ///
-/// Only the operations `secret_store.py` and the backup paths actually
+/// Only the operations the secret store and the backup paths actually
 /// call are here; [`VmPodman`] implements that same subset and nothing
 /// more, because a `limactl shell` wrapper around every podman verb
 /// would be a wrapper around verbs no caller uses.
@@ -64,8 +62,7 @@ impl<'a> CagePodman<'a> {
             // `is_running` errors on exactly one thing: `limactl` is
             // not installed. That means the same as a stopped guest --
             // there is no store to ask -- and every caller already
-            // handles that answer. `LimaInstance.is_running` on the
-            // Python side swallows it the same way.
+            // handles that answer.
             if instance.is_running().unwrap_or(false) {
                 return Self::Guest(VmPodman::new(runner, cage_name));
             }

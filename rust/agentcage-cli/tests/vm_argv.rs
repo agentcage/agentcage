@@ -17,9 +17,8 @@
 //! `test_podman.py` and it had been hiding an ordering bug, so the
 //! ported tests pin the list.
 //!
-//! Two of them also *never ran*: `logs_argv` and `audit_argv` have no
-//! test at all in the Python suite, on any backend for the vm case.
-//! They are pinned here for the first time.
+//! Two of them also *never ran*: `logs_argv` and `audit_argv` had no
+//! test at all before this file, on any backend for the vm case.
 //!
 //! [`exec_argv`]: agentcage_cli::vm::VmBackend::exec_argv
 
@@ -1254,7 +1253,7 @@ fn the_build_and_copy_argv_are_pinned_for_e4() {
         ]
     );
     // `--no-cache` / `--pull=always` come before the capabilities, as
-    // `*build_flags` does in the Python.
+    // they always have.
     let flags = ["--no-cache".to_owned(), "--pull=always".to_owned()];
     assert_eq!(&backend.egress_build_argv(&flags)[2..4], &flags[..]);
     assert_eq!(
@@ -1814,10 +1813,10 @@ fn a_pinned_octet_reaches_the_network_unit() {
 
 // ── The store router (PR E6) ────────────────────────────────────────
 //
-// `cli._podman_for_cage` (`cli.py:54`) is two lines of Python and the
-// most consequential two lines in the vm secret paths: get it wrong and
-// nothing fails, it just answers about the wrong store. These pin the
-// decision itself, and the argv each arm produces.
+// The store router is two lines and the most consequential two lines
+// in the vm secret paths: get it wrong and nothing fails, it just
+// answers about the wrong store. These pin the decision itself, and
+// the argv each arm produces.
 
 /// A running vm cage routes into the guest, and the argv says so.
 #[test]
@@ -1886,8 +1885,8 @@ fn a_stopped_vm_cage_falls_back_to_host_podman() {
 
 /// A missing `limactl` is a stopped guest, not a panic.
 ///
-/// The Python lets the `FileNotFoundError` escape `_podman_for_cage` as
-/// a traceback. Here it answers host, which is what every caller is
+/// Earlier releases let the not-found error escape as a traceback.
+/// Here it answers host, which is what every caller is
 /// already written to handle.
 #[test]
 fn a_missing_limactl_routes_to_the_host_instead_of_failing() {
@@ -1952,8 +1951,8 @@ fn a_guest_secret_create_keeps_the_value_on_stdin() {
 
 /// The live-channel question, asked of the guest's egress container.
 ///
-/// This is the call whose absence made the Python's vm live-secret path
-/// dead code: `VmPodman` had no `container_inspect`, the
+/// This is the call whose absence made an earlier release's vm
+/// live-secret path dead code: `VmPodman` had no `container_inspect`, the
 /// `AttributeError` was swallowed, and every `secret set` on a running
 /// vm cage restarted the workload instead of staging the value.
 #[test]

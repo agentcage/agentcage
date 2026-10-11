@@ -8,8 +8,8 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# The installed binary is `agentcage`, matching the Python entry point it
-# will eventually replace (PR F2). The crate is named `agentcage-cli` so
+# The installed binary is `agentcage`, the name every release has
+# shipped under. The crate is named `agentcage-cli` so
 # it does not collide with the `agentcage` name on crates.io or with the
 # library crates beside it.
 [[bin]]
@@ -22,8 +22,8 @@ path = "src/main.rs"
 # This exists because a Rust integration test is a separate crate and
 # cannot reach into a `[[bin]]`, and PR D4's modules are precisely the
 # ones that have to be checked against something outside the process --
-# the styling fixtures under `tests/fixtures/output/`, generated from
-# the Python, and a pty for the terminal-restore test.
+# the styling fixtures under `tests/fixtures/output/`, recorded from
+# an earlier release, and a pty for the terminal-restore test.
 [lib]
 name = "agentcage_cli"
 path = "src/lib.rs"
@@ -64,14 +64,14 @@ agentcage-state = { path = "../agentcage-state" }
 #
 #   * `term`    -- tcgetattr / tcsetattr / cfmakeraw.
 #   * `process` -- execvp, for the non-interactive hand-off that keeps
-#                  the Python's `os.execvp` semantics.
+#                  `execvp` semantics (the CLI is replaced, not forked).
 #   * `fs`      -- write(2)/read(2)/pipe(2) on a borrowed descriptor.
 #
 # Note what is NOT here: no TUI crate. `crossterm` would bring its own
 # escape sequences, its own set of modes to reset and its own
 # restoration policy, and the requirement is the opposite of sensible
-# defaults -- the bytes have to be the bytes the Python wrote, in that
-# order, including a Kitty keyboard-protocol pop that no general-purpose
+# defaults -- the bytes have to be the bytes earlier releases wrote, in
+# that order, including a Kitty keyboard-protocol pop that no general-purpose
 # crate emits.
 nix = { version = "0.31", default-features = false, features = [
     "term",
@@ -81,9 +81,9 @@ nix = { version = "0.31", default-features = false, features = [
     # and `std` exposes no filesystem statistics at all.
     "fs",
     # `socket`: PR D15's port probe. `std::net::TcpListener::bind` sets
-    # `SO_REUSEADDR` on Unix and the Python's raw socket does not, so a
-    # port in TIME_WAIT would read as free through `std` and as busy
-    # through the Python -- a diagnostic disagreeing with itself.
+    # `SO_REUSEADDR` on Unix and a raw socket does not, so a port in
+    # TIME_WAIT would read as free through `std` and as busy to a
+    # plain `bind` -- a diagnostic disagreeing with the next deploy.
     "socket",
     # `net`: `SockaddrIn`, which `socket` alone does not export.
     "net",
@@ -102,15 +102,15 @@ nix = { version = "0.31", default-features = false, features = [
 # reaches the CLI as well as the session inside the cage. With the
 # default disposition the CLI dies on the spot -- which skips the
 # destructor that restores the terminal, i.e. exactly the case this PR
-# exists to handle. The Python installs a no-op handler for the duration
-# and restores the previous one after.
+# exists to handle. Earlier releases installed a no-op handler for the
+# duration and restored the previous one after.
 #
 # Installing or restoring a disposition means `sigaction`, which `nix`
 # exposes as an `unsafe fn`, and `[workspace.lints.rust] unsafe_code =
 # "forbid"` cannot be overridden by a crate-level `allow`. signal-hook's
 # `flag` module is the safe equivalent: its actions are async-signal-
 # safe by construction, so the registration functions are safe fns.
-# `register_conditional_default` in particular gives the Python's
+# `register_conditional_default` in particular gives those
 # semantics exactly -- a no-op while a session is running, the default
 # action the rest of the time -- without a restore step to get wrong.
 #
@@ -133,8 +133,8 @@ serde_json = "1"
 # click wraps its help to the terminal width, and several of these help
 # strings are long enough to matter (`cage logs --since` is 150
 # characters, `secret set --declare` is 180). Without it clap wraps at a
-# fixed 100 columns and an 80-column terminal gets ragged output the
-# Python never produced. It costs one small dependency, `terminal_size`.
+# fixed 100 columns and an 80-column terminal gets ragged output
+# earlier releases never produced. It costs one small dependency, `terminal_size`.
 #
 # Not enabled: `derive` (the tree is built with the builder API -- see
 # `src/cli/mod.rs` for why: 19 of the aliases are hidden clones of
@@ -152,8 +152,8 @@ clap_complete = "4"
 # ── `cage backup` / `cage restore` (PR D11) ──────────────────
 #
 # The backup format is a gzipped tar with a `manifest.json`
-# (`cli.py:3209`), and PR A7 committed a tarball the *Python* produced
-# that `cage restore` has to read. PR D2 pinned its contract by shelling
+# and PR A7 committed a tarball an *earlier release* produced that
+# `cage restore` has to read. PR D2 pinned its contract by shelling
 # to the system `tar` and said outright that the decoder is this PR's
 # dependency to add.
 #

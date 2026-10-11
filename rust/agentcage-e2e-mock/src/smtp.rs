@@ -12,7 +12,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::log::LogDir;
-use crate::pyjson;
+use crate::spaced_json;
 
 /// Default listen address (loopback in the egress's namespace).
 pub const ADDR: &str = "127.0.0.1:3025";
@@ -100,7 +100,7 @@ pub fn handle(stream: TcpStream, log: &Arc<LogDir>) -> io::Result<()> {
                 }
                 log.append(
                     "smtp.jsonl",
-                    &pyjson::dumps(&Delivered {
+                    &spaced_json::to_string(&Delivered {
                         from: &sender,
                         to: &rcpts,
                         body: &lines.join("\n"),

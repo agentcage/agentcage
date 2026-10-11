@@ -7,8 +7,8 @@
 
 use std::io::{self, BufRead, Read, Write};
 
-/// Longest request line or header line accepted, as in Python's
-/// `http.server` (which the first version of these mocks used).
+/// Longest request line or header line accepted, as in the
+/// `http.server` the first version of these mocks used.
 const MAX_LINE: usize = 65_536;
 /// Most header lines accepted.
 const MAX_HEADERS: usize = 100;

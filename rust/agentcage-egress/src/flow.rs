@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use agentcage_core::config::is_global_ip;
 use agentcage_core::har::datetime::DateTime;
-use agentcage_core::python::repr_str;
+use agentcage_core::value_fmt::quote_text;
 
 use crate::audit::{self, AuditSink as _, Decision, Direction as AuditDirection, HttpDecision};
 use crate::capture::{FlowInfo, capture_inspectors};
@@ -392,8 +392,8 @@ impl Pipeline {
             "SNI/Host header mismatch: TLS was established with SNI={} but HTTP Host header \
              is {}; agentcage requires strict equality so audit identity, allowlist \
              decisions, and secret-injection routing all reference the same upstream",
-            repr_str(sni),
-            repr_str(&host_hdr)
+            quote_text(sni),
+            quote_text(&host_hdr)
         );
         record(
             req,

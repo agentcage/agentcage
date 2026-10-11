@@ -1,17 +1,17 @@
 //! Stable deployment fingerprints used by `cage update` no-op detection.
 //!
-//! A port of `src/agentcage/fingerprint.py`, and the one module in this
-//! crate where "close enough" is indistinguishable from broken.
+//! The one module in this crate where "close enough" is
+//! indistinguishable from broken.
 //!
 //! # Why byte-identity is the requirement
 //!
 //! `cage update` decides whether a cage needs redeploying by hashing its
 //! inputs and comparing the digest with the `fingerprint.json` the last
-//! deploy left on disk. At cutover every cage on every machine carries a
-//! `fingerprint.json` that the *Python* wrote (see
-//! `tests/fixtures/state-compat/`), and the Rust binary has to agree
-//! with it on first run, with no migration step. There are only two ways
-//! to get that wrong and both are bad:
+//! deploy left on disk. Cages deployed by earlier releases carry a
+//! `fingerprint.json` those releases wrote (see
+//! `tests/fixtures/state-compat/`), and this binary has to agree with
+//! it on first run, with no migration step. There are only two ways to
+//! get that wrong and both are bad:
 //!
 //! * **Hash too eagerly** — any byte of divergence and every cage looks
 //!   changed, so the first `cage update` after the upgrade rebuilds the
@@ -20,10 +20,10 @@
 //!   the interpreter, the filesystem or a hash seed, and `cage update`
 //!   rebuilds forever, or stops noticing real changes.
 //!
-//! So everything here is pinned against fixtures the Python produced
-//! rather than against a reading of the Python: `tests/golden_fingerprint.rs`
-//! reproduces all 125 golden-corpus `fingerprint.json` files and the
-//! deployed-cage one in `tests/fixtures/state-compat/`.
+//! So everything here is pinned against fixtures recorded from earlier
+//! releases: `tests/golden_fingerprint.rs` reproduces all 125
+//! golden-corpus `fingerprint.json` files and the deployed-cage one in
+//! `tests/fixtures/state-compat/`.
 //!
 //! # The shape
 //!
@@ -74,10 +74,10 @@ use crate::yaml;
 ///
 /// [`fingerprint_matches`] refuses to compare across versions, so
 /// bumping this makes every existing cage look changed exactly once.
-/// `fingerprint.py`'s `FINGERPRINT_VERSION`.
 pub const FINGERPRINT_VERSION: i64 = 1;
 
-/// `json.dumps(…, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`.
+/// Sorted keys, compact separators, non-ASCII unescaped — in `json.dumps`
+/// terms, `sort_keys=True, separators=(",", ":"), ensure_ascii=False`.
 const STABLE: DumpOptions = DumpOptions {
     indent: None,
     sort_keys: true,
@@ -87,12 +87,11 @@ const STABLE: DumpOptions = DumpOptions {
 
 /// Serialize a JSON-compatible value deterministically.
 ///
-/// `fingerprint.py`'s `stable_json`. Sorted keys and no optional
-/// whitespace, so two equal values always produce the same bytes and
-/// therefore the same digest.
+/// Sorted keys and no optional whitespace, so two equal values always
+/// produce the same bytes and therefore the same digest.
 ///
 /// Key order comes from [`DumpOptions::sort_keys`], which sorts by the
-/// UTF-8 bytes of each key. Python sorts `str` by code point. Those two
+/// UTF-8 bytes of each key; the pinned digests sort by code point. Those two
 /// orders agree for every valid string, because UTF-8 is defined so that
 /// byte-wise comparison reproduces code-point comparison — see
 /// `sorts_keys_by_code_point` below, which pins it with keys that would
@@ -102,8 +101,8 @@ pub fn stable_json(value: &Json) -> String {
     json::dumps(value, STABLE)
 }
 
-/// `hashlib.sha256(value).hexdigest()`, over UTF-8 for a `str`. Also
-/// how staged inspector plugins are digested for the fingerprint.
+/// Lowercase hex SHA-256 of `bytes`. Also how staged inspector plugins
+/// are digested for the fingerprint.
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(64);
@@ -117,29 +116,29 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Why a fingerprint could not be computed.
 ///
-/// Every variant is something `json.dumps` raises `TypeError` on, or
-/// something `yaml.safe_load` refuses outright. Python fails loudly in
-/// all of these cases and so does this — a fingerprint that silently
+/// Every variant is a value with no JSON form, or YAML the safe loader
+/// refuses outright. Earlier releases failed loudly in all of these
+/// cases and so does this — a fingerprint that silently
 /// papered over an unrepresentable value would be a digest with no
 /// meaning.
 #[derive(Debug)]
 pub enum Error {
     /// The `cage.yaml` text did not parse.
     Yaml(yaml::Error),
-    /// A mapping key that `json.dumps` will not accept. Python allows
-    /// `str`, `int`, `float`, `bool` and `None` keys and coerces the
-    /// last four to strings; agentcage configs have only string keys, so
-    /// rather than guess at Python's cross-type sort order for a shape
-    /// no config has, this refuses. Carries the path to the mapping.
+    /// A non-string mapping key. Earlier releases coerced scalar keys to
+    /// strings with a cross-type sort order nothing pins; agentcage
+    /// configs have only string keys, so rather than guess at that order
+    /// for a shape no config has, this refuses. Carries the path to the
+    /// mapping.
     NonStringKey {
         /// Dotted path to the offending mapping, `<root>` at the top.
         path: String,
         /// The key, as YAML would show it.
         key: String,
     },
-    /// A YAML node carrying an explicit tag. `yaml.safe_load` has no
-    /// constructor for a non-standard tag and raises `ConstructorError`,
-    /// so there is no digest to reproduce here either.
+    /// A YAML node carrying an explicit non-standard tag. A YAML safe
+    /// loader refuses one, so there is no pinned digest to reproduce
+    /// here either.
     Tagged {
         /// Dotted path to the tagged node.
         path: String,
@@ -147,8 +146,6 @@ pub enum Error {
         tag: String,
     },
     /// A value handed in as an already-parsed mapping was not one.
-    /// `fingerprint.py` does `dict(cage_yaml)`, which raises for
-    /// anything else.
     NotAMapping {
         /// Which argument it was.
         argument: &'static str,
@@ -194,18 +191,12 @@ impl From<yaml::Error> for Error {
 
 // ── YAML to JSON ─────────────────────────────────────────────
 
-/// Convert a `yaml.safe_load` result into the JSON value `json.dumps`
-/// would be handed.
+/// Convert a loaded YAML value into the JSON value that gets
+/// serialized. The YAML and JSON value types are separate, so the
+/// correspondence is written down here.
 ///
-/// Python does not convert at all — PyYAML's safe loader produces the
-/// same `dict`/`list`/`str`/`int`/`float`/`bool`/`None` objects the
-/// `json` module serializes, so the two libraries meet in the middle on
-/// their own. Rust has two separate value types, so the meeting has to
-/// be written down.
-///
-/// The mapping is total except for the two cases Python also rejects: a
-/// key `json.dumps` will not take, and a tag `safe_load` will not
-/// construct.
+/// The mapping is total except for the two cases earlier releases also
+/// rejected: a non-string key, and a non-standard tag.
 fn json_from_yaml(value: &yaml::Value, path: &mut Vec<String>) -> Result<Json, Error> {
     Ok(match value {
         yaml::Value::Null => Json::Null,
@@ -290,14 +281,13 @@ fn display_key(key: &yaml::Value) -> String {
 
 // ── Normalization ────────────────────────────────────────────
 
-/// A cage configuration, in either form `fingerprint.py` accepts.
+/// A cage configuration, as text or already parsed.
 ///
-/// The Python signature is `str | Mapping[str, Any]`: callers that have
-/// the file's text pass that, callers that already parsed it pass the
-/// mapping. Both reach the same serializer, so both are kept.
+/// Callers that have the file's text pass that, callers that already
+/// parsed it pass the mapping. Both reach the same serializer.
 #[derive(Clone, Copy, Debug)]
 pub enum CageYaml<'a> {
-    /// The text of a `cage.yaml`, to be parsed with `yaml.safe_load`.
+    /// The text of a `cage.yaml`, to be parsed with [`yaml::load`].
     Text(&'a str),
     /// An already-parsed configuration, which must be a mapping.
     Parsed(&'a Json),
@@ -319,12 +309,11 @@ pub fn normalize_cage_yaml(cage_yaml: CageYaml<'_>) -> Result<String, Error> {
     match cage_yaml {
         CageYaml::Text(text) => {
             let parsed = json_from_yaml(&yaml::load(text)?, &mut Vec::new())?;
-            // `yaml.safe_load(cage_yaml) or {}`. The `or` catches more
-            // than the empty file it is there for: every falsy YAML
-            // document — `null`, `false`, `0`, `""`, `[]`, `{}` — becomes
-            // an empty mapping, and so hashes identically. Python's
-            // truthiness is what decides that, not emptiness, which is
-            // why this asks `Json` rather than checking for null.
+            // An empty document hashes as an empty mapping — and so does
+            // every falsy YAML document (`null`, `false`, `0`, `""`,
+            // `[]`, `{}`), because earlier releases decided by
+            // truthiness, not emptiness. That is why this asks `Json`
+            // rather than checking for null.
             Ok(stable_json(&if parsed.is_truthy() {
                 parsed
             } else {
@@ -404,10 +393,9 @@ pub struct Fingerprint {
 }
 
 impl Components {
-    /// The `components` object, in the order `fingerprint.py` builds it.
+    /// The `components` object.
     ///
-    /// Insertion order is not load-bearing — [`stable_json`] sorts — but
-    /// keeping the Python's order makes the two sources read the same.
+    /// Insertion order is not load-bearing — [`stable_json`] sorts.
     fn to_json(&self) -> Json {
         let mut fields = vec![
             ("cage_yaml".to_string(), Json::string(&self.cage_yaml)),
@@ -474,8 +462,7 @@ fn string_map_to_json(map: &BTreeMap<String, String>) -> Json {
 /// # Errors
 ///
 /// Anything [`normalize_cage_yaml`] can fail on, plus
-/// [`Error::NotAMapping`] if `resolved_config` is not a JSON object —
-/// `fingerprint.py` does `dict(resolved_config)`, which raises.
+/// [`Error::NotAMapping`] if `resolved_config` is not a JSON object.
 pub fn compute_fingerprint(inputs: Inputs<'_>) -> Result<Fingerprint, Error> {
     if !matches!(inputs.resolved_config, Json::Object(_)) {
         return Err(Error::NotAMapping {
@@ -512,12 +499,11 @@ pub fn compute_fingerprint(inputs: Inputs<'_>) -> Result<Fingerprint, Error> {
 /// future-versioned `fingerprint.json` has to answer "no match" rather
 /// than fail.
 ///
-/// One deliberate narrowing from the Python. `stored.get("version") ==
-/// FINGERPRINT_VERSION` is true in Python for `true` and `1.0` as well
-/// as `1`, because `==` coerces across `bool`, `int` and `float`. This
-/// requires the integer. `json.dumps` has never written anything but `1`
-/// there, so the only way to reach the difference is by hand-editing the
-/// file into a shape Python would have accepted — and the cost of
+/// One deliberate narrowing from earlier releases, which also accepted
+/// `true` and `1.0` as version `1` (their equality coerced across
+/// booleans, integers and floats). This requires the integer. Nothing
+/// has ever written anything but `1` there, so the only way to reach
+/// the difference is by hand-editing the file — and the cost of
 /// refusing is one rebuild, against a silent wrong answer.
 #[must_use]
 pub fn fingerprint_matches(stored: &Json, current: &Fingerprint) -> bool {
@@ -530,7 +516,7 @@ pub fn fingerprint_matches(stored: &Json, current: &Fingerprint) -> bool {
 /// State this tool writes into a scaffold cage's directory, which must
 /// not feed back into the hash of that directory.
 ///
-/// `fingerprint.py`'s `_STATE_ARTIFACTS`. A `fingerprint.json` written
+/// A `fingerprint.json` written
 /// into the context would change the context, which would change the
 /// fingerprint, which would rewrite `fingerprint.json` — `cage update`
 /// would never converge.
@@ -562,27 +548,21 @@ pub fn is_state_artifact(relative_posix: &str) -> bool {
 /// the other backends build it directly. Derived deployment state is
 /// excluded so writing a fingerprint cannot invalidate itself.
 ///
-/// This is the pure half of `fingerprint.scaffold_context_version`: this
-/// crate does no I/O (see the crate docs), so the caller supplies the
+/// This is the pure half of the scaffold context version: this crate
+/// does no I/O (see the crate docs), so the caller supplies the
 /// relative POSIX paths of every *file* under the context root and a
 /// `read` closure for their bytes. The ordering, the exclusion and the
-/// framing — which are the parts that change the digest — stay here; the
-/// other half of the Python function is the directory walk, which lands
-/// in `agentcage-cli` with the scaffold commands (docs/history/rust-port-plan.md
-/// Track D, PR D14). That half still owes: `state_dir.resolve()` as the
-/// root, an *absolute* `containerfile` overriding it with its own parent
-/// instead, `""` for an empty `containerfile` and `"missing"` for a root
-/// that is not a directory.
+/// framing — which are the parts that change the digest — stay here;
+/// the directory walk is `agentcage-cli`'s (`deploy.rs`).
 ///
-/// Nothing pins that half yet. A7's state fixtures do not capture a
-/// staged scaffold build context — it needs a real scaffold build — so
-/// the walk has no golden input to check against, only this digest,
-/// which is checked against the Python directly in the unit test below.
+/// The state fixtures do not capture a staged scaffold build context —
+/// it needs a real scaffold build — so the walk has no golden input to
+/// check against, only this digest, which the unit test below pins to
+/// a value recorded from an earlier release.
 ///
-/// Sorting is by the relative POSIX path, exactly as the Python sorts
-/// `root.rglob("*")` by `Path.as_posix()`. The Python sorts directories
-/// into that list too and drops them afterwards, which cannot change the
-/// relative order of the files that remain.
+/// Sorting is by the relative POSIX path, as earlier releases sorted.
+/// Directories never enter the list, which cannot change the relative
+/// order of the files.
 ///
 /// # Errors
 ///
@@ -600,7 +580,7 @@ pub fn scaffold_context_digest<E>(
     let mut digest = Sha256::new();
     for path in ordered {
         // Path and contents are each terminated rather than
-        // length-prefixed, which is what the Python does. The trailing
+        // length-prefixed, as the pinned digests are. The trailing
         // separators are what keep `a/b` + `c` from colliding with `a`
         // + `bc`.
         digest.update(path.as_bytes());
@@ -650,16 +630,15 @@ mod tests {
         .expect("computes")
     }
 
-    /// Every expectation here is `fingerprint.stable_json` output, read
-    /// off `CPython` with PyYAML in the loop.
+    /// Every expectation here was recorded from an earlier release.
     #[test]
     fn stable_json_is_sorted_compact_and_not_ascii_escaped() {
         assert_eq!(
             stable_json(&json(r#"{"b": 1, "a": [1, {"d": null, "c": true}]}"#)),
             r#"{"a":[1,{"c":true,"d":null}],"b":1}"#
         );
-        // `ensure_ascii=False`, which is where this differs from the
-        // `har.py` serializer next door.
+        // Non-ASCII unescaped, which is where this differs from the HAR
+        // serializer next door.
         assert_eq!(
             stable_json(&json(r#"{"k": "héllo 日本 😀"}"#)),
             "{\"k\":\"héllo 日本 😀\"}"
@@ -668,7 +647,7 @@ mod tests {
         assert_eq!(stable_json(&json("[]")), "[]");
     }
 
-    /// Python sorts `str` keys by code point; this sorts by UTF-8 byte.
+    /// The pinned order is by code point; this sorts by UTF-8 byte.
     /// UTF-8 is ordered so the two agree, and these keys are the ones
     /// that would expose it if it did not: an ASCII key against a
     /// two-byte one, a two-byte against a three-byte, and a character
@@ -928,12 +907,12 @@ mod tests {
         }
     }
 
-    /// Pinned against the Python: this digest is what
-    /// `fingerprint.scaffold_context_version` returns for a directory
-    /// holding exactly these three files, with `fingerprint.json` and
-    /// `creds/key.cred` beside them to prove the exclusion.
+    /// Pinned against an earlier release: this digest is what it
+    /// recorded for a directory holding exactly these three files, with
+    /// `fingerprint.json` and `creds/key.cred` beside them to prove the
+    /// exclusion.
     #[test]
-    fn scaffold_context_digest_matches_the_python() {
+    fn scaffold_context_digest_matches_the_recorded_value() {
         let files = [
             ("Containerfile", "FROM scratch\n"),
             ("app/main.py", "print('hi')\n"),
