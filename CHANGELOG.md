@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A new container cage with the domains decider or the traffic watcher on starts its egress again.** Since 0.50.0 the host never created the cage's grants directory (`~/.local/share/agentcage/<name>/grants`), which the egress unit bind-mounts and `chgrp`s before it starts, so the egress failed with `start-limit-hit` and the cage never came up. Cages whose directory already existed from an earlier release were unaffected. `cage create` and `cage update` now create it whenever the egress mounts it (decider, watcher, or an expiring allow entry).
 - **The SMTP relay no longer delivers a message the cage cut off mid-`DATA`.** When the cage disconnected before the end-of-data line (`.`), the relay ran the inspectors on the part it had received and delivered it upstream, so a dropped connection could send a truncated mail. It now drops the partial message, gives the send-rate slot back, and writes an `smtp_data_aborted` audit record (`decision: blocked`, reason `cage disconnected before end of data`, with the sender, recipients and bytes received).
 
 ## [0.50.1] - 2026-10-10
