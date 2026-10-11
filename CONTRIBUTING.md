@@ -34,7 +34,7 @@ The workspace manifest is the root `Cargo.toml`; the crates live under `rust/`:
 | `agentcage-cli` | the `agentcage` binary: argument parsing, subprocess, terminal, exit codes. |
 | `agentcage-egress` | the per-cage egress proxy (`agentcage-egress` binary): TLS interception, inspection, secret injection, audit and capture, the Policy API, the traffic watcher, the protocol relays. Linux-only at runtime; its pure modules build and test everywhere. |
 | `agentcage-egress-embed` | carries the linux-musl `agentcage-egress` binary inside the host binary. |
-| `agentcage-inspector-sdk` | the guest side of custom inspectors: Rust types and a macro over the WIT world `agentcage:inspector@1.0.0`, compiled to `wasm32-wasip2`. Examples are under `examples/inspectors/`. |
+| `agentcage-inspector-sdk` | the guest side of custom inspectors: Rust types and a macro over the WIT world `agentcage:inspector@1.1.0`, compiled to `wasm32-wasip2`. Examples are under `examples/inspectors/`. |
 | `agentcage-e2e-mock` | the mock HTTP services and probes the e2e harness runs next to a cage. |
 | `xtask` | repository tasks: `check-invariants`, `update-deps`, `gen-packaging`. |
 

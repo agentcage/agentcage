@@ -1,6 +1,6 @@
 [package]
 name = "agentcage-inspector-sdk"
-description = "Write agentcage custom inspectors in Rust, compiled to WebAssembly components (agentcage:inspector@1.0.0)."
+description = "Write agentcage custom inspectors in Rust, compiled to WebAssembly components (agentcage:inspector@1.1.0)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

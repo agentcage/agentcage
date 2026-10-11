@@ -1,6 +1,8 @@
 //! A custom inspector that misbehaves on request, for the egress's
 //! fail-closed tests. `config: {"mode": "<mode>"}` picks the behaviour of
 //! `inspect-request`; `inspect-response` always describes its context.
+//! `config: {"phases": "request,websocket"}` picks what `phases`
+//! declares (every phase without it).
 //!
 //! It implements the raw bindings rather than the SDK trait so it can
 //! also break the ABI's rules (metadata that is not JSON), which the SDK
@@ -12,6 +14,7 @@ use agentcage_inspector_sdk::bindings::{self, agentcage::inspector::types as abi
 
 thread_local! {
     static MODE: RefCell<String> = const { RefCell::new(String::new()) };
+    static PHASES: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 struct Misbehave;
@@ -80,6 +83,12 @@ impl bindings::Guest for Misbehave {
             _ => {}
         }
         MODE.with(|m| *m.borrow_mut() = mode);
+        let phases = config
+            .split("\"phases\":")
+            .nth(1)
+            .and_then(|rest| rest.split('"').nth(1))
+            .map(str::to_owned);
+        PHASES.with(|p| *p.borrow_mut() = phases);
         Ok(())
     }
 
@@ -134,6 +143,27 @@ impl bindings::Guest for Misbehave {
 
     fn inspect_response(ctx: abi::Context) -> Option<abi::Verdict> {
         Some(describe(&ctx))
+    }
+
+    /// Every phase, unless `config.phases` names some: a comma-separated
+    /// list of `request`, `response` and `websocket` (`""` for none), or
+    /// `trap`.
+    fn phases() -> abi::PhaseSet {
+        let wanted = PHASES.with(|p| p.borrow().clone());
+        let Some(wanted) = wanted else {
+            return abi::PhaseSet::REQUEST | abi::PhaseSet::RESPONSE | abi::PhaseSet::WEBSOCKET;
+        };
+        let mut set = abi::PhaseSet::empty();
+        for name in wanted.split(',').filter(|n| !n.is_empty()) {
+            set = set
+                | match name {
+                    "request" => abi::PhaseSet::REQUEST,
+                    "response" => abi::PhaseSet::RESPONSE,
+                    "websocket" => abi::PhaseSet::WEBSOCKET,
+                    _ => panic!("phases trapped"),
+                };
+        }
+        set
     }
 }
 
