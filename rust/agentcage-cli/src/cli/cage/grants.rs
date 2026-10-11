@@ -32,7 +32,7 @@ const SYNC_LONG: &str = "\
 Reconcile decided grants into the operator's cage.yaml baseline.
 
 This is bookkeeping, not enforcement. A granted domain is already live:
-the addon applies it to the L7 inspector in-memory and publishes the zone
+the egress applies it to the L7 inspector in-memory and publishes the zone
 to the egress supervisor, which re-renders dnsmasq's servers-file and
 SIGHUPs it. This command makes the grant DURABLE — it writes the domain
 into the operator's ``domains.allow`` so it survives a cage rebuild and
@@ -47,11 +47,11 @@ the static ``domains.allow`` baseline (preserving its TTL into
 ``domains.expires``) and runs the live-reload chain
 (``save_raw_config`` → ``save_proxy_config`` →
 ``_update_dns_quadlet`` → dnsmasq SIGHUP). That is what makes a granted
-domain actually *reachable*: mitmproxy resolves its upstreams through
-dnsmasq, so the L7 ``DomainInspector.grant()`` alone (which the addon
+domain actually *reachable*: the egress resolves its upstreams through
+dnsmasq, so the L7 ``DomainInspector.grant()`` alone (which the egress
 also applies) is not enough — the domain must be resolvable too, and
 the only component that can write the dnsmasq allowlist + SIGHUP it is
-the host CLI (the addon runs as ``acproxy``, uid 200, no ``CAP_KILL``).
+the host CLI (the egress runs as ``acproxy``, uid 200, no ``CAP_KILL``).
 
 Robustness:
   * Idempotent — promoted entries are removed from the overlay (they
@@ -65,7 +65,7 @@ Robustness:
     ``save_raw_config`` + one reload) so a burst of decisions makes one
     atomic baseline edit, not a thundering herd of read-modify-writes.
 
-Grants are APPLIED in-egress automatically: the addon publishes the
+Grants are APPLIED in-egress automatically: the egress publishes the
 decided zone and raises the supervisor's reload flag, the supervisor
 re-renders dnsmasq's servers-file (baseline + granted) and SIGHUPs it,
 and the in-egress sweeper prunes expired grants (30s poll) so they drop
@@ -78,7 +78,7 @@ supervision unit.";
 const REVOKE_LONG: &str = "\
 Remove a runtime grant from the overlay (does not touch the baseline).
 
-The addon hot-reloads the overlay on its mtime poll, so the grant stops
+The egress hot-reloads the overlay on its mtime poll, so the grant stops
 being effective on the next proxied request — no explicit signal needed.";
 
 /// The `grants` group, with its one alias and its leading `NAME`.

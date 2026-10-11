@@ -1,19 +1,19 @@
 [Unit]
-Description=agentcage egress (mitmproxy + dnsmasq)
+Description=agentcage egress (agentcage-egress + dnsmasq)
 
 [Container]
 ContainerName=agents-watcher-full-egress
 Image=localhost/agentcage-egress:0.0.0-golden
 Network=agents-watcher-full-net.network:ip=10.89.135.10
 Network=podman
-# mitmproxy resolves allowlisted upstream hostnames via this file (it
+# The egress proxy resolves allowlisted upstream hostnames via this file (it
 # re-resolves the SNI/Host on the upstream connection — empirically
 # confirmed: breaking only this resolver 502s every allowlisted host even
 # when the cage itself resolved fine). services.write_resolv_files seeds it
 # with config.dns_servers; supervisor-egress.sh then PREPENDS the egress's
 # default-route gateway as the primary nameserver (host-tracking — on
 # netavark that gateway is aardvark, which forwards to the host's CURRENT
-# resolver), keeping dns_servers as fallback. This makes mitmproxy track
+# resolver), keeping dns_servers as fallback. This makes the egress track
 # host network changes with no restart, matching the apple-container egress
 # (whose resolv.conf is the vmnet gateway). getaddrinfo checks /etc/hosts
 # FIRST, so the e2e upstream mock is unaffected by the nameserver order.
@@ -28,10 +28,9 @@ Network=podman
 Volume={{WORK}}/patches/resolv-egress-agents-watcher-full.conf:/etc/resolv.conf:rw,Z
 Volume={{XDG_CONFIG_HOME}}/agentcage/cages/agents-watcher-full/cage.yaml:/etc/agentcage/config.yaml:ro,Z
 Volume={{XDG_CONFIG_HOME}}/agentcage/cages/agents-watcher-full/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro,Z
-Environment="PYTHONUNBUFFERED=1"
 Environment="AGENTCAGE_VERSION=0.0.0-golden"
 # The cage's name, for the subject of the CA the Rust egress generates
-# (`CN=agentcage egress CA (<name>)`). Ignored by the Python egress.
+# (`CN=agentcage egress CA (<name>)`).
 Environment="AGENTCAGE_CAGE_NAME=agents-watcher-full"
 # Upstream resolvers for policy-api granted zones. The supervisor
 # forwards a granted zone here (plus the default-route gateway when
@@ -45,10 +44,10 @@ Volume=agents-watcher-full-certs.volume:/home/acproxy/ca:Z
 # cage's /certs:ro bind reads from this volume (NOT the private-key
 # volume above).
 Volume=agents-watcher-full-public-certs.volume:/home/acproxy/public-certs:Z
-# agents grants overlay — shared between the egress addon (which
+# agents grants overlay — shared between the egress proxy (which
 # writes decided grants here) and the host-side grants watcher (which reads
 # them and promotes into the static baseline via the ``domain add`` chain).
-# RW + acproxy-owned so the addon can write; the cage is in a separate
+# RW + acproxy-owned so the egress can write; the cage is in a separate
 # netns and cannot read it. On container/apple backends this is the host
 # dir state.grants_file(name) points at; on the vm backend it is a
 # VM-LOCAL dir (quadlets.vm_local_grants_dir — Lima mounts can't be
@@ -61,7 +60,7 @@ AddCapability=NET_BIND_SERVICE
 # SETUID + SETGID + SETPCAP: the supervisor uses ``setpriv
 # --reuid=acdns --regid=acdns --bounding-set=-all,+net_bind_service``
 # for dnsmasq and ``--reuid=acproxy --regid=acproxy --bounding-set=-all
-# --no-new-privs`` for mitmproxy.
+# --no-new-privs`` for agentcage-egress.
 #   * setresuid/setresgid need CAP_SETUID / CAP_SETGID
 #   * --bounding-set drops bits from the bounding set, which needs
 #     CAP_SETPCAP
@@ -75,7 +74,7 @@ AddCapability=SETUID
 AddCapability=SETGID
 AddCapability=SETPCAP
 # KILL: the supervisor (PID 1 of the egress container, root in the
-# user namespace) polls dnsmasq + mitmproxy via ``kill -0 "$pid"``
+# user namespace) polls dnsmasq + agentcage-egress via ``kill -0 "$pid"``
 # (step C, step E, the monitor loop). Both daemons run as non-root
 # (acdns=201, acproxy=200) after setpriv drops privileges, so a uid-0
 # → uid-201 signal needs either matching uid OR CAP_KILL. On default
@@ -96,7 +95,7 @@ Sysctl=net.ipv4.ip_forward=1
 # / ``ports.tcp.passthrough`` / ``ports.udp.allow`` (after the inspected =
 # allow − passthrough subtraction in quadlets._effective_port_policy). The
 # supervisor reads these env vars and emits one iptables rule per port —
-# REDIRECT to mitmproxy for INSPECTED_TCP_PORTS, ACCEPT in FORWARD for
+# REDIRECT to the egress for INSPECTED_TCP_PORTS, ACCEPT in FORWARD for
 # PASSTHROUGH_TCP_PORTS and ALLOW_UDP_PORTS. Always rendered (even when a
 # list is empty) so the supervisor can distinguish "use defaults" from
 # "intentionally none" — pre-fix the supervisor's hard-coded ``80 443``
@@ -109,13 +108,13 @@ Environment="ALLOW_UDP_PORTS="
 # FORWARD accept rule only when this is "1"; otherwise the default-deny
 # policy drops echo-request for every in-cage uid.
 Environment="ALLOW_ICMP=0"
-# Bind mitmproxy's regular (forward) proxy to the egress's cage-net IP
+# Bind the egress's regular (forward) proxy to the egress's cage-net IP
 # only. The egress sits on TWO networks — its own ``agents-watcher-full-net``
 # (cage-facing) AND the default ``podman`` network (host-facing, used
 # for the egress's own outbound to the internet). The initial v0.22
-# supervisor used ``--mode regular@:8080`` (i.e. 0.0.0.0) which let
+# supervisor bound the forward proxy to 0.0.0.0:8080, which let
 # any OTHER rootless container on the host's default podman network
-# reach this cage's mitmproxy as an open forward proxy via the
+# reach this cage's egress as an open forward proxy via the
 # egress's podman-network IP. Pinning the bind to ip_egress closes
 # that path and matches what the legacy proxy.container.j2 did.
 #
@@ -127,7 +126,7 @@ Environment="ALLOW_ICMP=0"
 # corresponding note in supervisor-egress.sh.
 #
 # Transparent mode (8443) still listens on all interfaces but is safe
-# in practice because mitmproxy uses SO_ORIGINAL_DST to recover the
+# in practice because the egress uses SO_ORIGINAL_DST to recover the
 # target — a direct connection from a foreign netns has no
 # REDIRECT-supplied original dst and the handshake fails.
 Environment="AGENTCAGE_REGULAR_BIND=10.89.135.10:8080"
@@ -142,7 +141,7 @@ ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/agents-watcher-full/secre
 ExecStartPre=-/bin/bash -c 'podman unshare chown -R 200:200 "%t/agentcage/agents-watcher-full/secrets"'
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-agents-watcher-full --format "{{.Mountpoint}}") && podman unshare chown 200:200 "$mp"'
 # The grants overlay dir is a TRUE DUAL-WRITER across the rootless user
-# namespace: the egress addon (container uid 200, mapped to a subuid on the
+# namespace: the egress proxy (container uid 200, mapped to a subuid on the
 # host — egress sets no UserNS=) writes grants.yaml when the decider grants
 # a domain, AND the host watcher (the operator) rewrites grants.yaml on
 # every tick to remove promoted entries. Both use atomic temp+rename
@@ -154,7 +153,7 @@ ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-agents-wat
 # operator (dir owner) and the container's mapped gid — using rootless
 # podman's user-namespace mapping: ``podman unshare chgrp 200`` runs chgrp
 # INSIDE the container's user namespace, so in-container gid 200 maps to the
-# host subgid that the addon's gid maps to, and the host-side dir's group
+# host subgid that the egress's gid maps to, and the host-side dir's group
 # becomes that mapped gid. ``chmod 0770`` then gives the operator (owner)
 # rwx and the container process (group = mapped gid) rwx; every other local
 # user gets nothing. We chgrp (not chown) so the operator stays the owner

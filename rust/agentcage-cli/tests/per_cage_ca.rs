@@ -1,4 +1,4 @@
-//! A new CA per cage (`EGRESS-PORT-PLAN.md` D11), on every backend.
+//! A new CA per cage (`docs/history/egress-port-plan.md` D11), on every backend.
 //!
 //! The egress generates its CA on first start into a store that belongs
 //! to one cage: the `agentcage-certs-<name>` podman volume (on the host

@@ -48,7 +48,7 @@ fn add_command() -> Command {
         .arg(flag(
             "passthrough",
             "passthrough",
-            "Also add to TLS passthrough list (no MITM interception).",
+            "Also add to TLS passthrough list (no TLS interception).",
         ))
         .arg(value_opt(
             "expires_in",
@@ -495,7 +495,7 @@ pub(crate) fn update_dns_quadlet(
 
     // The guest reads a VM-LOCAL copy of the allowlist, not the host
     // file the quadlets would otherwise bind-mount: Lima's reverse-sshfs
-    // mount caches host writes, so dnsmasq's SIGHUP and mitmproxy's
+    // mount caches host writes, so dnsmasq's SIGHUP and the egress's
     // mtime poll would re-read the same stale bytes forever after a
     // `domain add`. The host file above stays authoritative; this is the
     // copy the running egress actually sees, and it has to be pushed

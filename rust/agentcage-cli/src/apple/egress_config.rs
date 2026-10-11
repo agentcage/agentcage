@@ -111,8 +111,8 @@ impl From<StateError> for EgressConfigError {
 /// That scoping is not a tidiness choice. dnsmasq's `address=/#/<ip>`
 /// sinkhole only covers A and AAAA, so a blanket forwarder would send
 /// TXT/MX/NS/SRV/CNAME queries for *any* hostname upstream — a fully
-/// out-of-band DNS-tunnel exfiltration channel that mitmproxy never
-/// sees, because mitmproxy never sees DNS. The sinkhole line stays as
+/// out-of-band DNS-tunnel exfiltration channel that the egress proxy
+/// never sees, because the egress proxy never sees DNS. The sinkhole line stays as
 /// defence in depth for A/AAAA inside non-allowed zones.
 ///
 /// Empty (or whitespace-only) entries are dropped, and an empty

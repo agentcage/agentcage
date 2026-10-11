@@ -100,7 +100,7 @@ grep -rln "$CONCEPT" docs/ | wc -l
 
 - **Mixed-mode request.** "Document everything about secrets in one page" → push back: which Diataxis mode, which audience?
 - **Duplicate-content request.** "Add a port-policy section to security.md" → push back: port policy lives in `reference/ports.md`; link instead.
-- **Stale-doc preservation.** "Keep the security review from Feb 2026 in `docs/`" → push back: snapshot docs live in `docs/audits/`, date-prefixed.
+- **Stale-doc preservation.** "Keep the security review from Feb 2026 in `docs/`" → push back: snapshot docs live in `docs/history/audits/`, date-prefixed.
 - **Marketing-voice request.** "Make this page sell the product" → push back: that's README territory; operator docs describe what happens.
 
 State the rule, name the alternative, then wait for the human's call. Don't quietly comply with a request that violates the style guide.

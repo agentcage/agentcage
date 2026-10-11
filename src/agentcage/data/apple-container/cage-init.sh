@@ -2,7 +2,7 @@
 # agentcage-apple-container cage-init — PID 1 of the slim cage microVM.
 #
 # This script replaces the 329-line supervisor.sh from the legacy single-
-# microVM model. In the 2-microVM model (PR 3 of #196), mitmproxy + dnsmasq
+# microVM model. In the 2-microVM model (PR 3 of #196), the egress proxy + dnsmasq
 # + iptables live in a sibling <cage>-egress microVM (built from the
 # shared agentcage-egress image). This cage microVM contains only the
 # user's workload + this tiny init script — no proxy, no DNS, no
@@ -15,7 +15,7 @@
 #      is populated, blackholing the first packets.
 #   B. Replace the default route with one via the egress sibling. The
 #      egress container's iptables PREROUTING REDIRECTs cage tcp/80 +
-#      tcp/443 to its in-process mitmproxy on :8443 — same flow shape as
+#      tcp/443 to its agentcage-egress on :8443 — same flow shape as
 #      container/vm in PR 2.
 #   C. Best-effort install the proxy CA into the system trust store. The
 #      egress sibling writes agentcage-ca.pem into a shared /certs

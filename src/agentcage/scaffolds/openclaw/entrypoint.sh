@@ -29,12 +29,12 @@ if [ ! -f /home/node/.openclaw/openclaw.json ]; then
   # plugin refuses to navigate whenever HTTP_PROXY/HTTPS_PROXY env vars
   # are set ("strict browser SSRF policy cannot be enforced while env
   # proxy variables are set"). In agentcage, egress is already policed
-  # by the mitm proxy + domain allowlist + inspectors, so this redundant
+  # by the egress proxy + domain allowlist + inspectors, so this redundant
   # guard just blocks the browser tool. Opt out — cage egress controls
   # remain authoritative.
   #
   # gateway.trustedProxies is deliberately ABSENT. Inbound traffic reaches
-  # the gateway through the egress's mitmproxy reverse listener, which
+  # the gateway through the egress's reverse listener, which
   # cannot attribute the real client (rootless pasta rewrites the source),
   # so it strips forwarded headers instead of rebuilding them. openclaw
   # 2.0 (v2026.8+) then attributes the connection as a direct remote

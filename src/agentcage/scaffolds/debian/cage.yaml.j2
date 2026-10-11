@@ -28,7 +28,7 @@ container:
   image: "localhost/agentcage-scaffold-debian:latest"
   build:
     containerfile: "Containerfile"
-  # Install the agentcage MITM proxy CA into the system trust store at
+  # Install the agentcage egress proxy CA into the system trust store at
   # startup so apt (and any other tool that doesn't read SSL_CERT_FILE)
   # can talk to the package mirrors over the intercepted TLS connection.
   command:

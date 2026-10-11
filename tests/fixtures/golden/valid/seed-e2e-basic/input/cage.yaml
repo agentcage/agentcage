@@ -4,10 +4,10 @@
 # demo cycle (AGENT_DEMO=false). The mock agent's demoCycle resolves
 # httpbin.org on startup, which races against the test harness patching
 # /etc/hosts on the proxy container — if the agent wins the race,
-# mitmproxy caches the real upstream IP and ignores the patch forever,
+# the egress proxy caches the real upstream IP and ignores the patch forever,
 # producing intermittent 502s and timeouts.
 #
-# By disabling the demo, the first DNS resolution mitmproxy does is
+# By disabling the demo, the first DNS resolution the egress proxy does is
 # the test's own /fetch request, which happens after start_mock has
 # patched /etc/hosts to the local mock IP.
 

@@ -356,7 +356,7 @@ impl Drop for ProxyMonitor {
 ///
 /// Only `"decision": "blocked"` entries produce anything, and a line
 /// that is not JSON at all is skipped rather than reported: the proxy's
-/// log carries mitmproxy's own chatter as well.
+/// log carries the egress's own startup lines as well.
 fn blocked_notice(line: &str) -> Option<String> {
     const DIM: &str = "\x1b[2m";
     const RED: &str = "\x1b[31m";
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn only_blocked_decisions_reach_the_terminal() {
         assert!(blocked_notice("").is_none());
-        assert!(blocked_notice("mitmproxy: listening").is_none());
+        assert!(blocked_notice("agentcage-egress: listening").is_none());
         assert!(blocked_notice(r#"{"decision": "allowed", "host": "x"}"#).is_none());
         assert!(blocked_notice(r#"{"decision": "blocked""#).is_none());
         let notice = blocked_notice(

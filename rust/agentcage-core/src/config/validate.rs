@@ -192,7 +192,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // ── Volumes agentcage owns ──────────────────────────
     //
     // Not a `config.py` check: it came with the per-cage CA guarantee
-    // (`EGRESS-PORT-PLAN.md` D11). A cage mounting `agentcage-certs-*`
+    // (`docs/history/egress-port-plan.md` D11). A cage mounting `agentcage-certs-*`
     // reads a CA private key, so every name agentcage creates volumes
     // under is refused here, on every backend.
     for name in config.container.named_volumes.keys() {
@@ -335,10 +335,10 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // reserved-port and collision checks below apply only to the
     // *inspected* TCP set (tcp.allow - tcp.passthrough): those ports
     // become nat:PREROUTING REDIRECT rules, which collide with
-    // mitmdump's own listeners and with in-process listeners (relays,
-    // reverse-mode mitmdump for inbound forwards). Passthrough ports
+    // the egress's own listeners and with in-process listeners (relays,
+    // the egress's reverse listeners for inbound forwards). Passthrough ports
     // never get a REDIRECT, so they do not conflict. UDP entries never
-    // get one either — mitmdump cannot audit UDP — so the reserved-port
+    // get one either — the egress cannot audit UDP — so the reserved-port
     // checks do not apply to them.
     //
     // The `entries must be integers` half of `_check_port_entry` is not
@@ -394,7 +394,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     }
 
     // Against container.ports inbound forwards — the proxy runs
-    // reverse-mode mitmdump listeners on those ports, and PREROUTING
+    // reverse listeners on those ports, and PREROUTING
     // REDIRECT fires before INPUT.
     for spec in &config.container.ports {
         let parts: Vec<&str> = spec.split(':').collect();
@@ -428,10 +428,9 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // `domains.expires` KEYS. All of these flow verbatim into the same
     // dnsmasq `server=/` rendering chain: allow/block directly via
     // `state.save_dns_allowlist`, passthrough via quadlets'
-    // `_effective_dns_allowlist` and the addon's `_apply_passthrough`
-    // (both `re.escape` the entry into a mitmproxy `--ignore-hosts`
-    // regex AND merge it into the DNS allowlist so the bypassed host
-    // still resolves), and `expires` keys are domains too (`load_config`
+    // `_effective_dns_allowlist` and the egress's passthrough rule
+    // (the entry is matched against SNI/Host AND merged into the DNS
+    // allowlist so the bypassed host still resolves), and `expires` keys are domains too (`load_config`
     // has already lowercased them and stripped a trailing dot). A string
     // containing a newline or a slash in any of these would inject extra
     // directives or break the regex.
@@ -624,7 +623,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // ── custom inspectors ───────────────────────────────
     //
     // Not a `config.py` check: plugins became WebAssembly components
-    // with the Rust egress (`EGRESS-PORT-PLAN.md` D2), and a `path:` the
+    // with the Rust egress (`docs/history/egress-port-plan.md` D2), and a `path:` the
     // host cannot stage, or the egress cannot load, is refused here.
     super::inspectors::validate_plugins(config)?;
 
@@ -758,7 +757,7 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
         (
             // Inbound published ports. On the container and vm backends
             // these become egress `PublishPort=` entries plus
-            // reverse-mode mitmdump listeners. Apple's runtime has no
+            // egress reverse listeners. Apple's runtime has no
             // host-port-publishing equivalent — it uses VMNET_SHARED_MODE
             // NAT and reaches containers by their vmnet-assigned IP — so
             // the entry is silently dropped.
@@ -1339,7 +1338,7 @@ mod tests {
 
     /// A cage never mounts a volume agentcage made for a cage — above
     /// all `agentcage-certs-<cage>`, which holds that cage's CA private
-    /// key (`EGRESS-PORT-PLAN.md` D11). On every backend: validation is
+    /// key (`docs/history/egress-port-plan.md` D11). On every backend: validation is
     /// shared, so `vm` and `apple-container` refuse it too.
     #[test]
     fn a_named_volume_in_agentcages_namespace_is_refused() {

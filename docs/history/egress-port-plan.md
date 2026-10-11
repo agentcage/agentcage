@@ -1,3 +1,10 @@
+> **Historical record.** This is the plan the egress rewrite was carried
+> out from (2026-10), kept as written. The Rust egress
+> (`rust/agentcage-egress`) replaced the previous Python-based egress at
+> the cutover, and the code is now the spec; where the two disagree, the
+> code wins. It keeps the replaced implementation's name, which the
+> live tree no longer uses.
+
 # agentcage: mitmproxy + Python addon → Rust egress plan
 
 Against `origin/master` after v0.50.0 (the Rust host CLI). Scope: replace

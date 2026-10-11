@@ -3,7 +3,7 @@
 //! The wrapper is `FROM <user image>` plus two scripts: `cage-init.sh`,
 //! which becomes PID 1 of the cage microVM, and `cage-cmd.sh`, which
 //! carries the user's own argv shell-escaped at **build** time. Nothing
-//! of the proxy is in it — mitmproxy, dnsmasq and the supervisor live
+//! of the proxy is in it — agentcage-egress, dnsmasq and the supervisor live
 //! in the egress sibling, built once per host from the shared
 //! `agentcage-egress` image.
 //!
