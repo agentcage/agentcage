@@ -1511,8 +1511,9 @@ fn reject_ambiguous(text: &str) -> Result<(), String> {
     };
     match radix {
         Some(radix) => Err(format!(
-            "'{text}' is a YAML 1.1 {radix} literal, which the egress proxy's PyYAML \
-             reads as a different number than a plain decimal parse would. agentcage \
+            "'{text}' is a YAML 1.1 {radix} literal, which YAML 1.1 readers \
+             (and earlier agentcage releases) read as a different number than a plain \
+             decimal parse would. agentcage \
              will not guess which one you meant; write it as a plain decimal number"
         )),
         None => Ok(()),

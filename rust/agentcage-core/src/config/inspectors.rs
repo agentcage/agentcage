@@ -207,8 +207,8 @@ pub fn inspector_warnings(config: &Config) -> Vec<String> {
             let mut valid: Vec<&str> = BUILTIN_INSPECTOR_NAMES.to_vec();
             valid.sort_unstable();
             warnings.push(format!(
-                "inspectors[{index}] {}: not a known built-in inspector — the in-cage \
-                 addon will skip this entry. Valid names: {}.",
+                "inspectors[{index}] {}: not a known built-in inspector — the egress \
+                 will skip this entry. Valid names: {}.",
                 quote_text(&name),
                 valid.join(", ")
             ));
@@ -249,7 +249,7 @@ mod tests {
             produced,
             [
                 "inspectors[1] 'not-a-real-inspector': not a known built-in inspector — \
-              the in-cage addon will skip this entry. Valid names: body-size, \
+              the egress will skip this entry. Valid names: body-size, \
               content-type, domain, entropy, secrets."
             ]
         );

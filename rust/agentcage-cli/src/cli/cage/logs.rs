@@ -96,7 +96,6 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
         agentcage_cli::backends::AnyBackend::refusal(&config.isolation, "cage logs")
     {
         eprintln!("{refusal}");
-        eprintln!("  run the Python `agentcage cage logs {name}` for now");
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
