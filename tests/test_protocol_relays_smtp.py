@@ -2208,3 +2208,63 @@ class TestLogAllowed:
                        and e.get("decision") == "allowed"]
             assert len(allowed) == 1
         _run(_go())
+
+
+# ── A message cut off mid-DATA ───────────────────────────
+
+
+class TestTruncatedData:
+    """A cage that disconnects before the end-of-data line sent no
+    message. The relay used to inspect and deliver the body it had read so
+    far; it must drop it, give the send slot back, and audit the abort."""
+
+    def test_partial_message_is_not_delivered(self):
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port, send_rate_limit="1/hour"),
+                    audit_log=entries.append,
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        code, _ = await _cmd(w, r, b"DATA")
+                        assert code == 354
+                        w.write(b"Subject: half\r\n\r\nthe first half\r\n.")
+                        await w.drain()
+                    await asyncio.sleep(0.2)
+                    # The slot came back: a whole message still goes out.
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(b"Subject: whole\r\n\r\nall of it\r\n.\r\n")
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 250
+                assert [t["data"] for t in recorder.transactions] == [
+                    b"Subject: whole\r\n\r\nall of it\r\n",
+                ]
+                assert entries == [{
+                    "kind": "smtp_data_aborted",
+                    "relay": "test-smtp",
+                    "decision": "blocked",
+                    "reason": "cage disconnected before end of data",
+                    "sender": "agent@example.com",
+                    "recipients": ["friend@example.com"],
+                    "size": 34,
+                }]
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())

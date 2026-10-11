@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The SMTP relay no longer delivers a message the cage cut off mid-`DATA`.** When the cage disconnected before the end-of-data line (`.`), the relay ran the inspectors on the part it had received and delivered it upstream, so a dropped connection could send a truncated mail. It now drops the partial message, gives the send-rate slot back, and writes an `smtp_data_aborted` audit record (`decision: blocked`, reason `cage disconnected before end of data`, with the sender, recipients and bytes received).
+
 ## [0.50.1] - 2026-10-10
 
 ### Removed
