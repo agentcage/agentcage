@@ -30,7 +30,8 @@ serde_norway = "0.9.42"
 indexmap = "2"
 
 # Capture bodies and WebSocket frames that are not UTF-8 are stored as
-# standard base64 (`base64.b64encode` in the replaced implementation).
+# standard base64 (`base64.b64encode` in the replaced implementation);
+# the relays use it for SMTP `AUTH PLAIN` and IMAP mailbox names.
 base64 = "0.22"
 
 # The LLM decider's and watcher's outbound HTTPS client: small, blocking
@@ -47,12 +48,31 @@ getrandom = "0.3"
 # drawn from the OS.
 rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "os_rng"] }
 
+# The async runtime the listeners and relays run on (plan §4.1).
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+# Upstream TLS for the relays (and the proxy): rustls on the ring
+# provider, so no OpenSSL and no cmake in the build (plan D8).
+rustls = { version = "0.23.36", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
+# The Mozilla root store, the one trust store every upstream uses (D8).
+webpki-roots = "1.0.5"
+# Digest of a relay's resolved credentials, so a reload notices a
+# rotated secret without keeping another plaintext copy of it.
+sha2 = "0.10.9"
+# IMAP folder lists compare names the way Python's `unicodedata.normalize`
+# and `str.casefold` do: NFC plus full Unicode case folding.
+unicode-normalization = "0.1.25"
+caseless = "0.2.2"
+
 [dev-dependencies]
 # Test-only: the host's own grants-overlay reader and writer, so an
 # interop test proves the egress and `cage grants` agree on the shared
 # `grants.yaml`. Never a runtime dependency (the egress image carries no
 # host code).
 agentcage-state = { path = "../agentcage-state" }
+
+# Test certificates for the relays' upstream TLS cases, minted in-process.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [lints]
 workspace = true
