@@ -40,6 +40,8 @@
 mod budget;
 mod conn;
 mod detect;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod fuzz;
 mod h1;
 mod h2;
 mod io;

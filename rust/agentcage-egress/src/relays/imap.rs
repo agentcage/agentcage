@@ -275,7 +275,7 @@ pub fn client_literal(line: &[u8]) -> Result<Option<Literal>, MalformedLiteral> 
 }
 
 /// `line` with its literal announced as synchronising (`{n+}` → `{n}`).
-fn synchronising(line: &[u8], lit: Literal) -> Vec<u8> {
+pub(crate) fn synchronising(line: &[u8], lit: Literal) -> Vec<u8> {
     if lit.sync {
         return line.to_vec();
     }
@@ -320,7 +320,7 @@ pub fn line_fault(line: &[u8]) -> Option<&'static str> {
 
 /// `line` ending in CRLF where it ends in a bare LF, so a server ending
 /// lines at CRLF only sees the same command boundaries the relay did.
-fn crlf(line: &[u8]) -> Vec<u8> {
+pub(crate) fn crlf(line: &[u8]) -> Vec<u8> {
     if line.ends_with(b"\n") && !line.ends_with(b"\r\n") {
         let mut out = line[..line.len() - 1].to_vec();
         out.extend_from_slice(b"\r\n");
@@ -503,7 +503,7 @@ pub fn command_name(line: &[u8]) -> String {
 }
 
 /// Quote an IMAP string (RFC 3501 §4.3 `quoted`).
-fn quote(value: &str) -> Vec<u8> {
+pub(crate) fn quote(value: &str) -> Vec<u8> {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     let mut out = vec![b'"'];
     out.extend_from_slice(escaped.as_bytes());

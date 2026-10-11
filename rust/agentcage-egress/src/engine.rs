@@ -216,7 +216,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// `float(rl.get("requests_per_second", 10))`, `int(rl.get("burst", 50))`.
-fn parse_rate(cfg: &Config) -> Result<(f64, f64), String> {
+pub(crate) fn parse_rate(cfg: &Config) -> Result<(f64, f64), String> {
     let rl = match cfg.get("rate_limit") {
         None => return Ok((10.0, 50.0)),
         Some(v) if !config::truthy(v) => return Ok((10.0, 50.0)),

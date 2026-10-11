@@ -338,6 +338,37 @@ fn split_universal_lines(data: &[u8]) -> Vec<&[u8]> {
     out
 }
 
+/// One line of a message as the cage sent it after `DATA`, dot-unstuffed
+/// (RFC 5321 §4.5.2); `None` for the end-of-data line.
+pub(crate) fn data_line(line: &[u8]) -> Option<&[u8]> {
+    if line == b".\r\n" || line == b".\n" {
+        return None;
+    }
+    Some(if line.starts_with(b"..") {
+        &line[1..]
+    } else {
+        line
+    })
+}
+
+/// `body` as it goes to the upstream after `DATA`: every line that starts
+/// with a dot (after a CRLF, CR or LF) dot-stuffed, ended in CRLF, then
+/// the end-of-data line.
+pub(crate) fn dot_stuff(body: &[u8]) -> Vec<u8> {
+    let mut stuffed = Vec::with_capacity(body.len() + 16);
+    for line in splitlines_keepends(body) {
+        if line.starts_with(b".") {
+            stuffed.push(b'.');
+        }
+        stuffed.extend_from_slice(line);
+    }
+    if !stuffed.ends_with(b"\r\n") {
+        stuffed.extend_from_slice(b"\r\n");
+    }
+    stuffed.extend_from_slice(b".\r\n");
+    stuffed
+}
+
 /// Split `data` at CRLF, CR or LF keeping the endings (`bytes.splitlines`).
 fn splitlines_keepends(data: &[u8]) -> Vec<&[u8]> {
     split_universal_lines(data)
@@ -1004,13 +1035,8 @@ impl Inner {
             if line.is_empty() {
                 return Ok(DataRead::Eof(body.len()));
             }
-            if line == b".\r\n" || line == b".\n" {
+            let Some(line) = data_line(&line) else {
                 break;
-            }
-            let line = if line.starts_with(b"..") {
-                &line[1..]
-            } else {
-                &line[..]
             };
             if !oversize {
                 body.extend_from_slice(line);
@@ -1349,18 +1375,7 @@ impl UpstreamSmtp {
         if code != 354 {
             return Err(format!("upstream DATA rejected: {code} {text}"));
         }
-        let mut stuffed = Vec::with_capacity(body.len() + 16);
-        for line in splitlines_keepends(body) {
-            if line.starts_with(b".") {
-                stuffed.push(b'.');
-            }
-            stuffed.extend_from_slice(line);
-        }
-        if !stuffed.ends_with(b"\r\n") {
-            stuffed.extend_from_slice(b"\r\n");
-        }
-        stuffed.extend_from_slice(b".\r\n");
-        write_all(&mut self.writer, &stuffed).await?;
+        write_all(&mut self.writer, &dot_stuff(body)).await?;
         let (code, text) = self.read_response().await?;
         if !(200..300).contains(&code) {
             return Err(format!("upstream DATA body rejected: {code} {text}"));

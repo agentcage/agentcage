@@ -828,7 +828,7 @@ fn put_body(out: &mut Vec<u8>, body: &[u8], chunked: bool) {
 }
 
 /// The wire bytes of `req`, origin-form, as an HTTP/1 request.
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) fn encode_request(req: &Request) -> Vec<u8> {
     let (mut out, chunked) = request_head(req);
     put_body(&mut out, &req.body, chunked);
