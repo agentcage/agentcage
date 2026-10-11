@@ -171,6 +171,12 @@ pub struct Chain {
 }
 
 impl Chain {
+    /// Whether any inspector in the chain inspects responses.
+    #[must_use]
+    pub fn inspects_responses(&self) -> bool {
+        self.inspectors.iter().any(|i| i.inspects_responses())
+    }
+
     /// The inspectors, in order, for [`super::run_chain`].
     #[must_use]
     pub fn inspectors(&self) -> &[Arc<dyn Inspector>] {
@@ -291,6 +297,10 @@ impl Inspector for RefuseAll {
 
     fn inspect_response(&self, ctx: &Context) -> Option<Verdict> {
         self.inspect_request(ctx)
+    }
+
+    fn inspects_responses(&self) -> bool {
+        true
     }
 }
 
@@ -540,6 +550,30 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("not supported"), "{err}");
+    }
+
+    #[test]
+    fn only_a_chain_with_a_response_inspector_inspects_responses() {
+        let domain = Arc::new(DomainInspector::new());
+        let chain = build(&domain, "domains: {allow: [a.com]}\nentropy: {}\n")
+            .unwrap()
+            .commit();
+        assert_eq!(chain.names(), BUILTIN_NAMES);
+        // No built-in inspects responses, so the pipeline skips building
+        // a response's context for this chain...
+        assert!(!chain.inspects_responses());
+        // ...and that skips nothing: none of them answers a response,
+        // even one that would trip it as a request.
+        let secret = format!("key=AKIA{} {}", "ABCDEFGHIJKLMNOP", "x".repeat(4096));
+        for inspector in chain.inspectors() {
+            assert!(!inspector.inspects_responses(), "{}", inspector.name());
+            assert_eq!(
+                inspector.inspect_response(&ctx("evil.example", &secret)),
+                None
+            );
+        }
+        // A refusing chain answers responses too.
+        assert!(Chain::refuse_all(domain, "x").inspects_responses());
     }
 
     #[test]

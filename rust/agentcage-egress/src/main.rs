@@ -64,6 +64,12 @@ struct RunArgs {
     /// The largest body buffered, in bytes.
     #[arg(long, env = "AGENTCAGE_MAX_BODY_BYTES", default_value_t = proxy::DEFAULT_MAX_BODY)]
     max_body_bytes: usize,
+    /// The most body bytes buffered at once across all flows (default
+    /// 1 GiB); a body that would exceed it waits briefly for room, then is
+    /// refused with a 503 instead of risking an allocation failure that
+    /// would abort the egress.
+    #[arg(long, env = "AGENTCAGE_BODY_BUDGET_BYTES", default_value_t = proxy::DEFAULT_BODY_BUDGET)]
+    body_budget_bytes: usize,
     /// The egress config (`/etc/agentcage/config.yaml`).
     #[arg(long, env = "AGENTCAGE_CONFIG")]
     config: Option<PathBuf>,
@@ -136,7 +142,8 @@ async fn run(args: RunArgs) -> Result<(), String> {
     let engine = Engine::boot(EngineOptions::from_env(args.config.clone()));
     engine.start();
     let handler = Arc::new(Pipeline::new(Arc::clone(&engine)));
-    let mut proxy = Proxy::new(handler, Arc::clone(&ca), settings);
+    let mut proxy =
+        Proxy::new(handler, Arc::clone(&ca), settings).with_body_budget(args.body_budget_bytes);
     if let Some(path) = &args.upstream_ca {
         use rustls::pki_types::CertificateDer;
         use rustls::pki_types::pem::PemObject as _;

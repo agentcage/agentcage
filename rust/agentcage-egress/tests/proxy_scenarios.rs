@@ -155,7 +155,7 @@ impl FlowHandler for Recorder {
     ) -> Response {
         self.push(format!("upstream_error {flow} {err:?}"));
         make_response(
-            502,
+            err.status(),
             &[("Content-Type", "application/json")],
             b"{\"blocked\": false}".to_vec(),
         )
@@ -166,6 +166,7 @@ impl FlowHandler for Recorder {
         match refusal {
             Refusal::ForwardPort { .. } => make_response(403, &[], b"port".to_vec()),
             Refusal::RequestBodyTooLarge { .. } => make_response(413, &[], b"big".to_vec()),
+            Refusal::BodyBudgetExhausted { .. } => make_response(503, &[], b"budget".to_vec()),
         }
     }
 
@@ -516,6 +517,17 @@ async fn egress(
     max_body: usize,
     reverse_target: Option<SocketAddr>,
 ) -> Egress {
+    egress_with_budget(handler, root, ports, max_body, reverse_target, None).await
+}
+
+async fn egress_with_budget(
+    handler: Arc<Recorder>,
+    root: &TestRoot,
+    ports: Vec<u16>,
+    max_body: usize,
+    reverse_target: Option<SocketAddr>,
+    body_budget: Option<usize>,
+) -> Egress {
     let (ca, _) = CertAuthority::load_or_create(&temp_dir("ca"), "scenario").unwrap();
     let ca = Arc::new(ca);
     let original_dst = Arc::new(Mutex::new("127.0.0.1:9".parse().unwrap()));
@@ -530,6 +542,10 @@ async fn egress(
     )
     .with_extra_upstream_roots(vec![root.cert.clone()])
     .with_original_dst(Arc::new(move |_| Ok(*od.lock().unwrap())));
+    let proxy = match body_budget {
+        Some(limit) => proxy.with_body_budget(limit),
+        None => proxy,
+    };
     let mut specs = vec![
         ListenerSpec::Regular("127.0.0.1:0".parse().unwrap()),
         ListenerSpec::Transparent("127.0.0.1:0".parse().unwrap()),
@@ -1168,6 +1184,61 @@ async fn body_caps_and_upstream_failures_go_to_the_handler() {
     .await;
     assert!(head.starts_with("HTTP/1.1 200"), "{head}");
     assert_eq!(body.len(), 2000);
+}
+
+#[tokio::test]
+async fn bodies_past_the_process_budget_are_refused_with_a_503() {
+    const MIB: usize = 1024 * 1024;
+    let root = test_root();
+    let up = mock(Kind::Plain, &root).await;
+    let handler = Arc::new(Recorder::default());
+    let eg = egress_with_budget(
+        Arc::clone(&handler),
+        &root,
+        vec![up.addr.port()],
+        64 * MIB,
+        None,
+        Some(2 * MIB),
+    )
+    .await;
+    let p = up.addr.port();
+    let get = |n: usize| {
+        format!("GET http://127.0.0.1:{p}/big/{n} HTTP/1.1\r\nHost: 127.0.0.1:{p}\r\n\r\n")
+    };
+
+    // A response under the per-body cap but over the whole budget.
+    let mut s = TcpStream::connect(eg.regular).await.unwrap();
+    let (head, body) = roundtrip(&mut s, get(3 * MIB).as_bytes()).await;
+    assert!(head.starts_with("HTTP/1.1 503"), "{head}");
+    assert_eq!(body, b"{\"blocked\": false}");
+    assert!(
+        handler.has(&format!(
+            "upstream_error /big/{} BodyBudgetExhausted",
+            3 * MIB
+        )),
+        "{:?}",
+        handler.events()
+    );
+    // Its reservation was released: what fits still goes through, on the
+    // same connection.
+    let (head, body) = roundtrip(&mut s, get(MIB + MIB / 2).as_bytes()).await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert_eq!(body.len(), MIB + MIB / 2);
+
+    // A request body over the budget is refused before it is read.
+    let mut s = TcpStream::connect(eg.regular).await.unwrap();
+    let (head, body) = roundtrip(
+        &mut s,
+        format!(
+            "POST http://127.0.0.1:{p}/up HTTP/1.1\r\nHost: 127.0.0.1:{p}\r\nContent-Length: {}\r\n\r\n",
+            3 * MIB
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(head.starts_with("HTTP/1.1 503"), "{head}");
+    assert_eq!(body, b"budget");
+    assert!(handler.has("refusal BodyBudgetExhausted"));
 }
 
 #[tokio::test]

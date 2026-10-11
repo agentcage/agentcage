@@ -507,3 +507,162 @@ fn set_url_re_parses_and_rewrites_host() {
     assert!(set_url(&mut req, "https://bad host/").is_err());
     assert!(set_url(&mut req, "https://h:99999/").is_err());
 }
+
+/// Every byte string a corpus case hands the injector.
+fn corpus_inputs(case: &Json) -> Vec<Vec<u8>> {
+    let mut out = vec![bytes_of(case.get("content"))];
+    if let Some(Json::Str(text)) = case.get("text") {
+        out.push(text.as_bytes().to_vec());
+    }
+    for key in ["request", "response"] {
+        if let Some(msg) = case.get(key) {
+            out.push(bytes_of(msg.get("body")));
+            if let Some(Json::Str(url)) = msg.get("url") {
+                out.push(url.as_bytes().to_vec());
+            }
+            for value in headers_of(msg.get("headers").unwrap_or(&Json::Null)).0 {
+                out.push(value.1);
+            }
+        }
+    }
+    out
+}
+
+/// A small deterministic generator (xorshift), so the random bodies are
+/// the same on every run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        usize::try_from(self.next() % (n as u64)).unwrap()
+    }
+}
+
+#[test]
+fn the_redaction_prefilter_never_changes_a_result() {
+    let corpus = corpus();
+    let mut forms = Vec::new();
+    let mut inputs: Vec<Vec<u8>> = Vec::new();
+    for case in arr(&corpus, "cases") {
+        for rule in arr(case, "rules").iter().map(rule_of) {
+            forms.push(SecretForms::new(
+                &rule.real_value,
+                &rule.placeholder,
+                &rule.name,
+            ));
+        }
+        inputs.extend(corpus_inputs(case));
+    }
+    assert!(forms.len() > 20 && inputs.len() > 100);
+    // Random bodies stitched from pieces of the corpus inputs, random
+    // bytes and the secrets' own values (so the forms do occur, cut and
+    // joined in places the corpus never put them).
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let values: Vec<Vec<u8>> = forms.iter().map(|f| f.raw().to_vec()).collect();
+    for _ in 0..400 {
+        let mut body = Vec::new();
+        for _ in 0..rng.below(8) {
+            match rng.below(4) {
+                0 => {
+                    let src = &inputs[rng.below(inputs.len())];
+                    if !src.is_empty() {
+                        let a = rng.below(src.len());
+                        let b = a + rng.below(src.len() - a + 1);
+                        body.extend_from_slice(&src[a..b]);
+                    }
+                }
+                1 => body.extend_from_slice(&values[rng.below(values.len())]),
+                2 => {
+                    let v = &values[rng.below(values.len())];
+                    let blob = b64_encode_std(&[b"x:".as_slice(), v].concat());
+                    body.extend_from_slice(blob.as_bytes());
+                }
+                _ => body.extend((0..rng.below(16)).map(|_| (rng.next() & 0xff) as u8)),
+            }
+        }
+        inputs.push(body);
+    }
+    let mut hits = 0;
+    for f in &forms {
+        for input in &inputs {
+            let want = f.redact_unfiltered(input);
+            hits += usize::from(want.is_some());
+            assert_eq!(f.redact(input), want, "{} over {input:?}", f.name());
+            let occurs_unfiltered = contains(input, f.raw())
+                || (f.has_derived() && f.redact_derived(std::borrow::Cow::Borrowed(input)).1);
+            assert_eq!(f.occurs(input), occurs_unfiltered, "{}", f.name());
+            if want.is_some() {
+                assert!(f.may_occur(input));
+            }
+        }
+    }
+    // The comparison bites: plenty of inputs do hold a secret.
+    assert!(hits > 100, "{hits}");
+}
+
+#[test]
+fn a_predecoded_response_redacts_exactly_as_one_decoded_lazily() {
+    let corpus = corpus();
+    let mut checked = 0;
+    for case in arr(&corpus, "cases") {
+        if s(case, "op") != "redact_response" {
+            continue;
+        }
+        let rules: Vec<Rule> = arr(case, "rules").iter().map(rule_of).collect();
+        let inj = Injector::with_rules(rules, &[]);
+        let mut lazy = response_of(case.get("response").unwrap());
+        let mut eager = lazy.clone();
+        let want = inj.redact_response(&mut lazy);
+        let decoded = match crate::text::decoded_body(&eager.headers, &eager.body) {
+            Ok(std::borrow::Cow::Owned(v)) => Some(v),
+            Ok(std::borrow::Cow::Borrowed(_)) => None,
+            // The pipeline fails such a response closed before redaction
+            // (as it did when the context build decoded it).
+            Err(_) => continue,
+        };
+        let had_decoded = decoded.clone();
+        let (got, back) = inj.redact_response_decoded(&mut eager, decoded);
+        assert_eq!(got.ok(), want.ok(), "{}", s(case, "name"));
+        assert_eq!(eager.headers, lazy.headers, "{}", s(case, "name"));
+        assert_eq!(eager.body, lazy.body, "{}", s(case, "name"));
+        // Handed back only while it still differs from the body.
+        if back.is_some() {
+            assert_eq!(back, had_decoded);
+        }
+        checked += 1;
+    }
+    assert!(checked >= 2, "{checked}");
+
+    // A gzip body without a secret is handed back decoded, untouched.
+    let inj = Injector::with_rules(
+        vec![rule_of(
+            &arr(&corpus, "cases")
+                .iter()
+                .find(|c| !arr(c, "rules").is_empty())
+                .map(|c| arr(c, "rules")[0].clone())
+                .unwrap(),
+        )],
+        &[],
+    );
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut enc, b"nothing secret here").unwrap();
+    let mut resp = Response {
+        status: 200,
+        body: enc.finish().unwrap(),
+        ..Response::default()
+    };
+    resp.headers.add("Content-Encoding", "gzip");
+    let raw = resp.body.clone();
+    let (names, back) =
+        inj.redact_response_decoded(&mut resp, Some(b"nothing secret here".to_vec()));
+    assert_eq!(names.unwrap(), Vec::<String>::new());
+    assert_eq!(back.as_deref(), Some(&b"nothing secret here"[..]));
+    assert_eq!(resp.body, raw);
+}

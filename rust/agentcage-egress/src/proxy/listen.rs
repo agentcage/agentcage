@@ -132,6 +132,7 @@ pub(crate) async fn bind<H: FlowHandler>(
             ca: proxy.ca,
             upstream_tls: proxy.upstream_tls,
             settings: proxy.settings,
+            budget: proxy.budget,
         }),
         listeners,
         original_dst: proxy.original_dst.unwrap_or_else(|| Arc::new(original_dst)),

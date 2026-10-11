@@ -17,7 +17,9 @@
 use std::io;
 
 use bytes::BytesMut;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+use super::budget::Reservation;
 use super::detect::find;
 use super::io::Buffered;
 use crate::message::{Headers, Request, Response};
@@ -39,6 +41,8 @@ pub(crate) enum ReadError {
     HeadTooLarge,
     /// The body exceeds the cap.
     BodyTooLarge,
+    /// Buffering the body would exceed the process-wide body budget.
+    BudgetExhausted,
 }
 
 impl std::fmt::Display for ReadError {
@@ -49,6 +53,7 @@ impl std::fmt::Display for ReadError {
             Self::Malformed(why) => f.write_str(why),
             Self::HeadTooLarge => f.write_str("header section too large"),
             Self::BodyTooLarge => f.write_str("body too large"),
+            Self::BudgetExhausted => f.write_str("body budget exhausted"),
         }
     }
 }
@@ -320,10 +325,18 @@ pub(crate) fn response_framing(
 }
 
 /// Read a body framed by `framing`, refusing more than `max` bytes.
+///
+/// Every byte buffered is reserved on `budget` first (refused with
+/// [`ReadError::BudgetExhausted`] when the process-wide budget stays
+/// full), and every allocation is fallible: an allocation failure is a
+/// refused body, never an abort of the whole egress. A body of known
+/// length is read into one allocation of exactly that size; one of
+/// unknown length grows by a quarter at a time, never by doubling.
 pub(crate) async fn read_body(
     conn: &mut Buffered,
     framing: Framing,
     max: usize,
+    budget: &mut Reservation,
 ) -> Result<Vec<u8>, ReadError> {
     match framing {
         Framing::Length(n) => {
@@ -331,28 +344,91 @@ pub(crate) async fn read_body(
             if n > max {
                 return Err(ReadError::BodyTooLarge);
             }
-            while conn.buf.len() < n {
-                if conn.fill().await.map_err(ReadError::Io)? == 0 {
-                    return Err(ReadError::Malformed(
-                        "connection closed before the body was complete".into(),
-                    ));
-                }
+            if !budget.grow_to(n).await {
+                return Err(ReadError::BudgetExhausted);
             }
-            Ok(conn.buf.split_to(n).to_vec())
+            if conn.buf.len() >= n {
+                return Ok(conn.buf.split_to(n).to_vec());
+            }
+            let mut body: Vec<u8> = Vec::new();
+            body.try_reserve_exact(n)
+                .map_err(|_| ReadError::BudgetExhausted)?;
+            read_exact_into(
+                conn,
+                &mut body,
+                n,
+                "connection closed before the body was complete",
+            )
+            .await?;
+            Ok(body)
         }
         Framing::UntilEof => {
+            let head = conn.buf.split();
+            if head.len() > max {
+                return Err(ReadError::BodyTooLarge);
+            }
+            let mut body: Vec<u8> = Vec::new();
+            reserve(budget, &mut body, head.len()).await?;
+            body.extend_from_slice(&head);
+            drop(head);
             loop {
-                if conn.buf.len() > max {
+                reserve(budget, &mut body, READ_STEP).await?;
+                let read = (&mut conn.io)
+                    .take(READ_STEP as u64)
+                    .read_buf(&mut body)
+                    .await
+                    .map_err(ReadError::Io)?;
+                if read == 0 {
+                    return Ok(body);
+                }
+                if body.len() > max {
                     return Err(ReadError::BodyTooLarge);
                 }
-                if conn.fill().await.map_err(ReadError::Io)? == 0 {
-                    break;
-                }
             }
-            Ok(conn.buf.split().to_vec())
         }
-        Framing::Chunked => read_chunked(conn, max).await,
+        Framing::Chunked => read_chunked(conn, max, budget).await,
     }
+}
+
+/// How much one read of a body of unknown length asks for.
+const READ_STEP: usize = 64 * 1024;
+
+async fn reserve(
+    budget: &mut Reservation,
+    body: &mut Vec<u8>,
+    extra: usize,
+) -> Result<(), ReadError> {
+    if budget.make_room(body, extra).await {
+        Ok(())
+    } else {
+        Err(ReadError::BudgetExhausted)
+    }
+}
+
+/// Append exactly `n` more bytes to `body` (which has room for them):
+/// whatever is already buffered first, then straight from the socket,
+/// so the bytes are never staged in the read buffer and copied again.
+async fn read_exact_into(
+    conn: &mut Buffered,
+    body: &mut Vec<u8>,
+    n: usize,
+    truncated: &str,
+) -> Result<(), ReadError> {
+    let from_buf = n.min(conn.buf.len());
+    body.extend_from_slice(&conn.buf.split_to(from_buf));
+    let end = body.len() + (n - from_buf);
+    while body.len() < end {
+        let want = (end - body.len()) as u64;
+        let read = (&mut conn.io)
+            .take(want)
+            .read_buf(body)
+            .await
+            .map_err(ReadError::Io)?;
+        if read == 0 {
+            return Err(ReadError::Malformed(truncated.into()));
+        }
+    }
+    Ok(())
 }
 
 async fn read_line(conn: &mut Buffered) -> Result<BytesMut, ReadError> {
@@ -376,7 +452,12 @@ async fn read_line(conn: &mut Buffered) -> Result<BytesMut, ReadError> {
     }
 }
 
-async fn read_chunked(conn: &mut Buffered, max: usize) -> Result<Vec<u8>, ReadError> {
+async fn read_chunked(
+    conn: &mut Buffered,
+    max: usize,
+    budget: &mut Reservation,
+) -> Result<Vec<u8>, ReadError> {
+    const CLOSED: &str = "connection closed inside a chunked body";
     let mut body = Vec::new();
     loop {
         let line = read_line(conn).await?;
@@ -397,14 +478,13 @@ async fn read_chunked(conn: &mut Buffered, max: usize) -> Result<Vec<u8>, ReadEr
         if body.len().saturating_add(size) > max {
             return Err(ReadError::BodyTooLarge);
         }
-        while conn.buf.len() < size + 2 {
+        reserve(budget, &mut body, size).await?;
+        read_exact_into(conn, &mut body, size, CLOSED).await?;
+        while conn.buf.len() < 2 {
             if conn.fill().await.map_err(ReadError::Io)? == 0 {
-                return Err(ReadError::Malformed(
-                    "connection closed inside a chunked body".into(),
-                ));
+                return Err(ReadError::Malformed(CLOSED.into()));
             }
         }
-        body.extend_from_slice(&conn.buf.split_to(size));
         let crlf = conn.buf.split_to(2);
         if &crlf[..] != b"\r\n" {
             return Err(ReadError::Malformed("missing CRLF after chunk".into()));
@@ -456,6 +536,53 @@ fn put_headers(out: &mut Vec<u8>, headers: &Headers) {
     out.extend_from_slice(b"\r\n");
 }
 
+/// The bytes that frame a body: what goes before and after it.
+fn body_frame(len: usize, chunked: bool) -> (Vec<u8>, &'static [u8]) {
+    match (chunked, len) {
+        (false, _) => (Vec::new(), b""),
+        (true, 0) => (Vec::new(), b"0\r\n\r\n"),
+        (true, n) => (format!("{n:x}\r\n").into_bytes(), b"\r\n0\r\n\r\n"),
+    }
+}
+
+/// Write a head and a body without first concatenating them: a large
+/// body is not copied a second time just to be sent.
+async fn write_message(
+    conn: &mut Buffered,
+    mut head: Vec<u8>,
+    body: &[u8],
+    chunked: bool,
+) -> io::Result<()> {
+    let (before, after) = body_frame(body.len(), chunked);
+    head.extend_from_slice(&before);
+    if body.len() <= 64 * 1024 {
+        head.extend_from_slice(body);
+        head.extend_from_slice(after);
+        return conn.write_all(&head).await;
+    }
+    conn.io.write_all(&head).await?;
+    conn.io.write_all(body).await?;
+    conn.io.write_all(after).await?;
+    conn.io.flush().await
+}
+
+/// Send `req` as [`encode_request`] encodes it.
+pub(crate) async fn write_request(conn: &mut Buffered, req: &Request) -> io::Result<()> {
+    let (head, chunked) = request_head(req);
+    write_message(conn, head, &req.body, chunked).await
+}
+
+/// Send `resp` as [`encode_response`] encodes it.
+pub(crate) async fn write_response(
+    conn: &mut Buffered,
+    resp: &Response,
+    method: &str,
+) -> io::Result<()> {
+    let (head, chunked, has_body) = response_head(resp, method);
+    let body: &[u8] = if has_body { &resp.body } else { b"" };
+    write_message(conn, head, body, chunked && has_body).await
+}
+
 fn put_body(out: &mut Vec<u8>, body: &[u8], chunked: bool) {
     if chunked {
         if !body.is_empty() {
@@ -470,7 +597,15 @@ fn put_body(out: &mut Vec<u8>, body: &[u8], chunked: bool) {
 }
 
 /// The wire bytes of `req`, origin-form, as an HTTP/1 request.
+#[cfg(test)]
 pub(crate) fn encode_request(req: &Request) -> Vec<u8> {
+    let (mut out, chunked) = request_head(req);
+    put_body(&mut out, &req.body, chunked);
+    out
+}
+
+/// The head of [`encode_request`], and whether the body goes out chunked.
+fn request_head(req: &Request) -> (Vec<u8>, bool) {
     let mut headers = req.headers.clone();
     let version = if req.http_version.starts_with("HTTP/1") {
         req.http_version.as_str()
@@ -488,12 +623,21 @@ pub(crate) fn encode_request(req: &Request) -> Vec<u8> {
     let path = if req.path.is_empty() { "/" } else { &req.path };
     let mut out = format!("{} {} {}\r\n", req.method, path, version).into_bytes();
     put_headers(&mut out, &headers);
-    put_body(&mut out, &req.body, chunked);
-    out
+    (out, chunked)
 }
 
 /// The wire bytes of `resp`, as an HTTP/1 response to a `method` request.
 pub(crate) fn encode_response(resp: &Response, method: &str) -> Vec<u8> {
+    let (mut out, chunked, has_body) = response_head(resp, method);
+    if has_body {
+        put_body(&mut out, &resp.body, chunked);
+    }
+    out
+}
+
+/// The head of [`encode_response`], whether the body goes out chunked,
+/// and whether the response carries a body at all.
+fn response_head(resp: &Response, method: &str) -> (Vec<u8>, bool, bool) {
     let mut headers = resp.headers.clone();
     let (version, reason) = if resp.http_version.starts_with("HTTP/1") {
         (resp.http_version.as_str(), resp.reason.clone())
@@ -504,10 +648,7 @@ pub(crate) fn encode_response(resp: &Response, method: &str) -> Vec<u8> {
     let chunked = has_body && fix_framing(&mut headers, resp.body.len(), true);
     let mut out = format!("{version} {} {reason}\r\n", resp.status).into_bytes();
     put_headers(&mut out, &headers);
-    if has_body {
-        put_body(&mut out, &resp.body, chunked);
-    }
-    out
+    (out, chunked, has_body)
 }
 
 /// The head of a `101 Switching Protocols` (or any body-less response),
@@ -523,6 +664,10 @@ mod tests {
     use super::*;
     use crate::proxy::io::Buffered;
 
+    fn budget() -> crate::proxy::budget::Reservation {
+        crate::proxy::budget::Reservation::new(&crate::proxy::budget::BodyBudget::new(usize::MAX))
+    }
+
     fn conn(data: &[u8]) -> Buffered {
         let (client, mut server) = tokio::io::duplex(1 << 20);
         let data = data.to_vec();
@@ -534,6 +679,79 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         });
         Buffered::new(Box::new(client))
+    }
+
+    #[tokio::test]
+    async fn known_lengths_are_read_into_one_exact_allocation() {
+        use crate::proxy::budget::{BodyBudget, Reservation};
+        let n: usize = 3 << 20;
+        let mut data = vec![b'a'; n];
+        data.extend_from_slice(b"NEXT");
+        let mut c = conn(&data);
+        // Some of the body is already buffered, the rest still unread.
+        c.fill().await.unwrap();
+        assert!(!c.buf.is_empty() && c.buf.len() < n);
+        let budget = BodyBudget::new(usize::MAX);
+        let mut r = Reservation::new(&budget);
+        let body = read_body(&mut c, Framing::Length(n as u64), n, &mut r)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), n);
+        assert_eq!(body.capacity(), n, "exactly the declared length");
+        assert_eq!(budget.used(), n);
+        // The bytes after the body are left for the next message.
+        while c.buf.len() < 4 {
+            assert!(c.fill().await.unwrap() > 0);
+        }
+        assert_eq!(&c.buf[..], b"NEXT");
+        drop(r);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn unknown_lengths_grow_by_a_quarter_within_the_budget() {
+        use crate::proxy::budget::{BodyBudget, Reservation};
+        let big: usize = 2 << 20;
+        let mut chunked = format!("{big:x}\r\n").into_bytes();
+        chunked.extend(std::iter::repeat_n(b'b', big));
+        chunked.extend_from_slice(b"\r\n5\r\nhello\r\n0\r\n\r\n");
+        let budget = BodyBudget::new(usize::MAX);
+        let mut r = Reservation::new(&budget);
+        let mut c = conn(&chunked);
+        let body = read_body(&mut c, Framing::Chunked, usize::MAX, &mut r)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), big + 5);
+        assert!(
+            body.capacity() <= big + big / 4 + 64 * 1024,
+            "{}",
+            body.capacity()
+        );
+        assert_eq!(budget.used(), body.capacity());
+        drop(r);
+
+        let mut r = Reservation::new(&budget);
+        let mut c = conn(&vec![b'e'; 3 << 20]);
+        let body = read_body(&mut c, Framing::UntilEof, usize::MAX, &mut r)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), 3 << 20);
+        assert!(body.capacity() <= (3 << 20) * 5 / 4 + 64 * 1024 * 2);
+        drop(r);
+        assert_eq!(budget.used(), 0);
+
+        // Over the budget: refused, and nothing stays reserved.
+        let small = BodyBudget::with_wait(1 << 20, std::time::Duration::from_millis(10));
+        for framing in [Framing::Chunked, Framing::Length(big as u64)] {
+            let mut r = Reservation::new(&small);
+            let mut c = conn(&chunked);
+            assert!(matches!(
+                read_body(&mut c, framing, usize::MAX, &mut r).await,
+                Err(ReadError::BudgetExhausted)
+            ));
+            drop(r);
+            assert_eq!(small.used(), 0);
+        }
     }
 
     #[tokio::test]
@@ -554,7 +772,10 @@ mod tests {
             .map(|(a, b)| (a.to_string(), b.to_string()))
         );
         let framing = request_framing(&req.headers).unwrap();
-        assert_eq!(read_body(&mut c, framing, 10).await.unwrap(), b"abc");
+        assert_eq!(
+            read_body(&mut c, framing, 10, &mut budget()).await.unwrap(),
+            b"abc"
+        );
         assert_eq!(&c.buf[..], b"GET");
     }
 
@@ -562,18 +783,20 @@ mod tests {
     async fn chunked_bodies_are_joined_and_capped() {
         let mut c = conn(b"4;x=y\r\nWiki\r\n5\r\npedia\r\n0\r\nTrailer: t\r\n\r\nrest");
         assert_eq!(
-            read_body(&mut c, Framing::Chunked, 100).await.unwrap(),
+            read_body(&mut c, Framing::Chunked, 100, &mut budget())
+                .await
+                .unwrap(),
             b"Wikipedia"
         );
         assert_eq!(&c.buf[..], b"rest");
         let mut c = conn(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n");
         assert!(matches!(
-            read_body(&mut c, Framing::Chunked, 8).await,
+            read_body(&mut c, Framing::Chunked, 8, &mut budget()).await,
             Err(ReadError::BodyTooLarge)
         ));
         let mut c = conn(b"");
         assert!(matches!(
-            read_body(&mut c, Framing::Length(9), 8).await,
+            read_body(&mut c, Framing::Length(9), 8, &mut budget()).await,
             Err(ReadError::BodyTooLarge)
         ));
     }

@@ -31,6 +31,7 @@
 //! Header case, order and duplicates survive HTTP/1 in both directions
 //! (plan D10): the HTTP/1 codec is our own, on top of `httparse`.
 
+mod budget;
 mod conn;
 mod detect;
 mod h1;
@@ -50,6 +51,7 @@ use arc_swap::ArcSwap;
 use crate::ca::CertAuthority;
 use crate::message::{Headers, Request, Response};
 
+pub use budget::DEFAULT_BODY_BUDGET;
 pub use detect::{ClientHello, parse_client_hello};
 pub use listen::{
     BoundProxy, ListenerSpec, OriginalDstFn, ReverseSpecError, original_dst, parse_bind,
@@ -220,6 +222,12 @@ pub enum Refusal {
         /// The cap, in bytes.
         limit: usize,
     },
+    /// Buffering this body would take the egress past its process-wide
+    /// budget for buffered bodies (`AGENTCAGE_BODY_BUDGET_BYTES`).
+    BodyBudgetExhausted {
+        /// The budget, in bytes.
+        limit: usize,
+    },
 }
 
 /// Why a forwarded request got no upstream response.
@@ -250,6 +258,12 @@ pub enum UpstreamError {
         /// The cap, in bytes.
         limit: usize,
     },
+    /// Buffering the response would take the egress past its budget for
+    /// buffered bodies.
+    BodyBudgetExhausted {
+        /// The budget, in bytes.
+        limit: usize,
+    },
 }
 
 impl std::fmt::Display for UpstreamError {
@@ -263,6 +277,23 @@ impl std::fmt::Display for UpstreamError {
             Self::ResponseBodyTooLarge { limit } => {
                 write!(f, "response body exceeds the {limit}-byte limit")
             }
+            Self::BodyBudgetExhausted { limit } => write!(
+                f,
+                "the egress is already buffering its {limit}-byte budget of bodies; retry later"
+            ),
+        }
+    }
+}
+
+impl UpstreamError {
+    /// The status the cage gets for this error: 503 when the egress is
+    /// out of body budget (the request can be retried as it is), else
+    /// 502.
+    #[must_use]
+    pub fn status(&self) -> u16 {
+        match self {
+            Self::BodyBudgetExhausted { .. } => 503,
+            _ => 502,
         }
     }
 }
@@ -445,6 +476,7 @@ pub struct Proxy<H: FlowHandler> {
     upstream_tls: Arc<tls::UpstreamTls>,
     settings: Arc<ArcSwap<TransportSettings>>,
     original_dst: Option<OriginalDstFn>,
+    budget: Arc<budget::BodyBudget>,
 }
 
 impl<H: FlowHandler> std::fmt::Debug for Proxy<H> {
@@ -464,7 +496,16 @@ impl<H: FlowHandler> Proxy<H> {
             upstream_tls: Arc::new(tls::UpstreamTls::new(Vec::new())),
             settings: Arc::new(ArcSwap::from_pointee(settings)),
             original_dst: None,
+            budget: budget::BodyBudget::new(DEFAULT_BODY_BUDGET),
         }
+    }
+
+    /// Bound the bytes of all bodies buffered at once (default
+    /// [`DEFAULT_BODY_BUDGET`]).
+    #[must_use]
+    pub fn with_body_budget(mut self, limit: usize) -> Self {
+        self.budget = budget::BodyBudget::new(limit);
+        self
     }
 
     /// Also trust these roots upstream. Test-only (`--upstream-ca`): a
@@ -745,7 +786,7 @@ impl FlowHandler for PassThroughHandler {
 
     fn upstream_error(&self, _: &ConnInfo, (): (), _: &Request, err: &UpstreamError) -> Response {
         make_response(
-            502,
+            err.status(),
             &[("Content-Type", "text/plain")],
             err.to_string().into_bytes(),
         )
@@ -762,6 +803,13 @@ impl FlowHandler for PassThroughHandler {
                 413,
                 &[("Content-Type", "text/plain")],
                 format!("request body exceeds {limit} bytes").into_bytes(),
+            ),
+            Refusal::BodyBudgetExhausted { limit } => make_response(
+                503,
+                &[("Content-Type", "text/plain")],
+                UpstreamError::BodyBudgetExhausted { limit: *limit }
+                    .to_string()
+                    .into_bytes(),
             ),
         }
     }

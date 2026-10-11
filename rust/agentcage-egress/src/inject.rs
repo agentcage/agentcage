@@ -34,6 +34,7 @@
 //! `Content-Encoding` dropped and `Content-Length` fixed. An unmodified
 //! body is forwarded byte for byte.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
@@ -243,16 +244,23 @@ fn store_body(headers: &mut Headers, body: &mut Vec<u8>, new: Vec<u8>) {
 /// the replaced implementation did) and written back once.
 #[derive(Default)]
 struct LazyBody {
+    /// The decoded (or rewritten) body, when it differs from the raw one.
     decoded: Option<Vec<u8>>,
+    /// The raw body needs no decoding: read it in place rather than copy
+    /// it (a full copy of every body on every pass otherwise).
+    identity: bool,
     modified: bool,
 }
 
 impl LazyBody {
-    fn get(&mut self, headers: &Headers, raw: &[u8]) -> Result<&[u8], DecodeError> {
-        if self.decoded.is_none() {
-            self.decoded = Some(crate::text::decoded_body(headers, raw)?.into_owned());
+    fn get<'s>(&'s mut self, headers: &Headers, raw: &'s [u8]) -> Result<&'s [u8], DecodeError> {
+        if self.decoded.is_none() && !self.identity {
+            match crate::text::decoded_body(headers, raw)? {
+                Cow::Borrowed(_) => self.identity = true,
+                Cow::Owned(v) => self.decoded = Some(v),
+            }
         }
-        Ok(self.decoded.as_deref().unwrap_or_default())
+        Ok(self.decoded.as_deref().unwrap_or(raw))
     }
 
     fn set(&mut self, new: Vec<u8>) {
@@ -260,9 +268,28 @@ impl LazyBody {
         self.modified = true;
     }
 
+    /// A body already decoded by the caller: `Some(decoded)`, or `None`
+    /// for one without a Content-Encoding (read in place).
+    fn predecoded(decoded: Option<Vec<u8>>) -> Self {
+        Self {
+            identity: decoded.is_none(),
+            decoded,
+            modified: false,
+        }
+    }
+
     fn finish(self, headers: &mut Headers, body: &mut Vec<u8>) {
+        let _ = self.finish_keep(headers, body);
+    }
+
+    /// [`LazyBody::finish`], handing back the decoded body when it was
+    /// not rewritten (and so still differs from the raw one).
+    fn finish_keep(self, headers: &mut Headers, body: &mut Vec<u8>) -> Option<Vec<u8>> {
         if self.modified {
             store_body(headers, body, self.decoded.unwrap_or_default());
+            None
+        } else {
+            self.decoded
         }
     }
 }
@@ -623,7 +650,9 @@ impl SecretForms {
         self.ph_raw().to_vec()
     }
 
-    fn redact_derived(&self, data: Vec<u8>) -> (Vec<u8>, bool) {
+    /// `data` with every derived form replaced, and whether any was.
+    /// Borrowed data is copied only once a form is found in it.
+    fn redact_derived<'a>(&self, data: Cow<'a, [u8]>) -> (Cow<'a, [u8]>, bool) {
         let mut data = data;
         let mut found = false;
         if let Some(pattern) = &self.pattern {
@@ -634,38 +663,77 @@ impl SecretForms {
                     self.placeholder_for(&caps[0])
                 });
                 if n > 0 {
-                    data = replaced.into_owned();
+                    let replaced = replaced.into_owned();
+                    data = Cow::Owned(replaced);
                     found = true;
                 }
             }
         }
         for core in &self.b64_cores {
             if contains(&data, core) {
-                let (new, n) = rewrite_base64(data, core, self.raw(), self.ph_raw());
-                data = new;
+                let (new, n) = rewrite_base64(data.into_owned(), core, self.raw(), self.ph_raw());
+                data = Cow::Owned(new);
                 found = found || n > 0;
             }
         }
         (data, found)
     }
 
+    /// Whether `data` can hold the value in any form: the literal, the
+    /// escaped form's anchor (or an escaped form without one) or a base64
+    /// core. Each is a substring every match of its form contains, so
+    /// `false` means [`SecretForms::redact`] would find nothing — checked
+    /// first, with a fast substring search, so a body without the secret
+    /// is neither copied nor rewritten.
+    #[must_use]
+    pub fn may_occur(&self, data: &[u8]) -> bool {
+        contains(data, self.raw())
+            || self
+                .pattern
+                .as_ref()
+                .is_some_and(|_| self.anchor.as_deref().is_none_or(|a| contains(data, a)))
+            || self.b64_cores.iter().any(|core| contains(data, core))
+    }
+
     /// `data` with the literal and every derived form replaced by the
     /// placeholder; `None` when nothing matched.
     #[must_use]
     pub fn redact(&self, data: &[u8]) -> Option<Vec<u8>> {
+        if !self.may_occur(data) {
+            return None;
+        }
         let mut found = false;
         let mut out = if contains(data, self.raw()) {
             found = true;
-            replace_all(data, self.raw(), self.ph_raw())
+            Cow::Owned(replace_all(data, self.raw(), self.ph_raw()))
         } else {
-            data.to_vec()
+            Cow::Borrowed(data)
         };
         if self.has_derived() {
             let (new, derived) = self.redact_derived(out);
             out = new;
             found = found || derived;
         }
-        found.then_some(out)
+        found.then(|| out.into_owned())
+    }
+
+    /// [`SecretForms::redact`] without the [`SecretForms::may_occur`]
+    /// prefilter: the reference the prefilter is tested against.
+    #[cfg(test)]
+    fn redact_unfiltered(&self, data: &[u8]) -> Option<Vec<u8>> {
+        let mut found = false;
+        let mut out = if contains(data, self.raw()) {
+            found = true;
+            Cow::Owned(replace_all(data, self.raw(), self.ph_raw()))
+        } else {
+            Cow::Borrowed(data)
+        };
+        if self.has_derived() {
+            let (new, derived) = self.redact_derived(out);
+            out = new;
+            found = found || derived;
+        }
+        found.then(|| out.into_owned())
     }
 
     /// [`SecretForms::redact`] for text.
@@ -680,7 +748,10 @@ impl SecretForms {
     /// Whether `data` holds the literal or a derived form.
     #[must_use]
     pub fn occurs(&self, data: &[u8]) -> bool {
-        contains(data, self.raw()) || (self.has_derived() && self.redact_derived(data.to_vec()).1)
+        contains(data, self.raw())
+            || (self.has_derived()
+                && self.may_occur(data)
+                && self.redact_derived(Cow::Borrowed(data)).1)
     }
 }
 
@@ -1519,8 +1590,29 @@ impl Injector {
     /// The body could not be decoded (only read when there is a secret to
     /// look for).
     pub fn redact_response(&self, resp: &mut Response) -> Result<Vec<String>, DecodeError> {
+        let body = LazyBody::default();
+        self.redact_response_body(resp, body).0
+    }
+
+    /// [`Injector::redact_response`] for a body the caller already
+    /// decoded (`None`: it has no Content-Encoding), so it is not decoded
+    /// again. Also hands the decoded body back when redaction did not
+    /// rewrite it, for the caller to reuse (capture records it); `None`
+    /// when the response body is itself the decoded one.
+    pub fn redact_response_decoded(
+        &self,
+        resp: &mut Response,
+        decoded: Option<Vec<u8>>,
+    ) -> (Result<Vec<String>, DecodeError>, Option<Vec<u8>>) {
+        self.redact_response_body(resp, LazyBody::predecoded(decoded))
+    }
+
+    fn redact_response_body(
+        &self,
+        resp: &mut Response,
+        mut body: LazyBody,
+    ) -> (Result<Vec<String>, DecodeError>, Option<Vec<u8>>) {
         let mut names: Vec<String> = Vec::new();
-        let mut body = LazyBody::default();
         let result = (|| {
             for forms in self.redaction_forms() {
                 let mut found = redact_headers(&mut resp.headers, &forms);
@@ -1537,8 +1629,8 @@ impl Injector {
             }
             Ok(())
         })();
-        body.finish(&mut resp.headers, &mut resp.body);
-        result.map(|()| names)
+        let decoded = body.finish_keep(&mut resp.headers, &mut resp.body);
+        (result.map(|()| names), decoded)
     }
 
     /// `text` with every secret, in every form, swapped for its rule's
