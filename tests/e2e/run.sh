@@ -57,6 +57,10 @@ else
         echo "Environment:"
         echo "  E2E_PORT_BASE    Port base for test cages (default: 19080)"
         echo "  AGENTCAGE        CLI binary under test (default: agentcage)"
+        echo "  E2E_MOCK_BIN     agentcage-e2e-mock binary (default: built with cargo into"
+        echo "                   target/<arch>-unknown-linux-musl/release/)"
+        echo "  E2E_MOCK_IMAGE   image the mock runs in (default: tests/e2e/mock-image.ref)"
+        echo "  E2E_INSPECTOR_WASM  header-policy inspector component for 6.12 (else skipped)"
         exit 0
         ;;
       *)
@@ -112,6 +116,25 @@ fi
 echo "agentcage E2E test suite"
 echo "========================"
 echo ""
+
+# The container phases run the agentcage-e2e-mock binary beside each
+# cage's egress (lib.sh start_mock). Resolve it — building it if need be —
+# once, here, rather than in every phase: phases 3, 5, 6 and 9 run in
+# parallel, and the path is then simply inherited.
+NEEDS_MOCK=false
+for p in "${PHASES[@]}"; do
+  case "$p" in
+    1|2|3|4|5|6|9) NEEDS_MOCK=true ;;
+  esac
+done
+if [ "$NEEDS_MOCK" = true ]; then
+  # shellcheck disable=SC2016 # $1 is expanded by the inner shell
+  if ! E2E_MOCK_BIN=$(bash -c 'source "$1" && e2e_mock_bin' _ "$SCRIPT_DIR/lib.sh"); then
+    echo "ERROR: the e2e mock binary is unavailable (see above)." >&2
+    exit 1
+  fi
+  export E2E_MOCK_BIN
+fi
 
 # Check for stale e2e cages
 STALE=$("$AGENTCAGE" cage list 2>/dev/null | grep -E "^e2e-" | awk '{print $1}' || true)

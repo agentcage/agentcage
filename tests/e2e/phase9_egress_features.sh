@@ -6,31 +6,26 @@
 # covers what they never reach, against mocks in the egress's network
 # namespace so nothing depends on a real mail server or LLM provider:
 #
-#   * IMAP and SMTP protocol relays end to end (mock-services.py upstreams)
+#   * IMAP and SMTP protocol relays end to end (the upstreams are
+#     `agentcage-e2e-mock services`, see rust/agentcage-e2e-mock)
 #   * the Policy API with the decider answered by a stub LLM, and one
 #     traffic-watcher scan against the same stub
 #   * a WebSocket round trip, with a secret placeholder injected into a
 #     message and redacted back out of the echo
 #   * a passthrough domain (the cage sees the upstream's own certificate)
-#     and the D4 guard against SNI spoofing (Rust egress only)
+#     and the D4 guard against SNI spoofing
 #   * the 403 block body, byte for byte
 #
 # Every in-cage client is tests/e2e/fixtures/probe/probe.js, mounted at
 # /probe: node:22-slim has neither curl nor python.
-#
-# Must pass on both engines (AGENTCAGE_EGRESS_ENGINE=rust or unset); where
-# the Python egress lacks a behaviour by design the assertion is gated on
-# the engine with the reason next to it.
 source "$(dirname "$0")/lib.sh"
-preflight_check "$AGENTCAGE" podman curl openssl python3 sha256sum
+preflight_check "$AGENTCAGE" podman curl jq sha256sum
 phase_header 9 "Egress features — relays, Policy API, WebSocket, passthrough"
 
 CAGE="e2e-egress"
 CONFIGS="$(dirname "$0")/configs"
 PORT="${E2E_PORT_EGRESS:-19089}"
 BASE="http://localhost:$PORT"
-ENGINE="${AGENTCAGE_EGRESS_ENGINE:-python}"
-SERVICES_SCRIPT="$_E2E_DIR/mock-services.py"
 DEPLOY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agentcage/cages/$CAGE"
 
 # Credentials the egress holds and the cage never sees.
@@ -39,18 +34,9 @@ MAIL_PASSWORD="e2e-mail-password-31337"
 LLM_KEY="e2e-llm-key-27182"
 WS_VALUE="ws-real-value-4242"
 
-# The passthrough upstream's certificate, made here so no private key is
-# ever committed. Under $HOME rather than /tmp: rootless podman on some
-# hosts cannot bind-mount another user's private /tmp.
-WORK="$(mktemp -d "$HOME/.agentcage-e2e-egress-XXXXXX")"
-chmod 755 "$WORK"
-
 _phase9_cleanup() {
   podman rm -f -t 0 "${CAGE}-svc" >/dev/null 2>&1 || true
   _cleanup_cages
-  if [ -n "${WORK:-}" ]; then
-    rm -rf "$WORK"
-  fi
 }
 trap _phase9_cleanup EXIT
 
@@ -68,18 +54,18 @@ probe() {
 
 # jget PATH — a field of the JSON document on stdin, printed raw (strings
 # unquoted, everything else as JSON). PATH is dot-separated; a number
-# indexes a list. Missing → empty.
+# indexes a list. Missing, or stdin not JSON → empty.
 jget() {
-  python3 -c '
-import json, sys
-try:
-    d = json.loads(sys.stdin.read())
-    for k in sys.argv[1].split("."):
-        d = d[int(k)] if isinstance(d, list) else d[k]
-except Exception:
-    sys.exit(0)
-print(d if isinstance(d, str) else json.dumps(d), end="")
-' "$1"
+  jq -j --arg p "$1" '
+    try (
+      reduce ($p | split(".")[]) as $k (.;
+        if type == "array" then
+          ($k | tonumber) as $i
+          | if $i < length and $i >= -length then .[$i] else error("missing") end
+        elif type == "object" and has($k) then .[$k]
+        else error("missing") end)
+      | if type == "string" then . else tojson end
+    ) catch empty' 2>/dev/null || true
 }
 
 sha256() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
@@ -89,7 +75,7 @@ stub_findings() {
   grep -c 'e2e stub finding' <<<"$("$AGENTCAGE" watcher findings "$CAGE" --json -n 0 2>/dev/null)" || true
 }
 
-# svc_log FILE — a mock-services log file (empty when absent).
+# svc_log FILE — a mock services log file (empty when absent).
 svc_log() { podman exec "${CAGE}-svc" cat "/tmp/mock-log/$1" 2>/dev/null || true; }
 
 # audit_lines — the cage's audit records, one JSON object per line.
@@ -112,7 +98,9 @@ wait_audit() {
   return 1
 }
 
-# start_services — run mock-services.py in its own container in the
+# start_services — run `agentcage-e2e-mock services` (IMAP, SMTP, the stub
+# LLM and the passthrough TLS server, which generates its certificate at
+# startup so no private key is ever committed) in its own container in the
 # egress's network namespace (the same arrangement as start_mock; see
 # lib.sh for why the namespace is joined by path), and wait until all four
 # listeners answer.
@@ -124,28 +112,25 @@ start_services() {
     sleep 1
   done
   [ -n "$netns" ] || return 1
+  _ensure_mock_bin || return 1
   podman rm -f -t 0 "${CAGE}-svc" >/dev/null 2>&1 || true
   local out rc=0
   out=$(podman run -d --name "${CAGE}-svc" \
     --network "ns:${netns}" \
-    -v "${SERVICES_SCRIPT}:/mock-services.py:ro" \
-    -v "${WORK}:/pt:ro" \
-    "$E2E_MOCK_IMAGE" python3 /mock-services.py /pt/pt.crt /pt/pt.key 2>&1) || rc=$?
+    -v "${E2E_MOCK_BIN}:${_MOCK_BIN_IN}:ro" \
+    "$E2E_MOCK_IMAGE" "$_MOCK_BIN_IN" services 2>&1) || rc=$?
   if [ "$rc" -ne 0 ]; then
-    _dump_captured "podman run mock-services FAILED (exit $rc)" "$out"
+    _dump_captured "podman run mock services FAILED (exit $rc)" "$out"
     return 1
   fi
   for _ in $(seq 1 20); do
-    if podman exec "${CAGE}-svc" python3 -c "
-import socket
-for port in (3143, 3025, 18089, 443):
-    s = socket.socket(); s.settimeout(1); s.connect(('127.0.0.1', port)); s.close()
-" 2>/dev/null; then
+    if podman exec "${CAGE}-svc" "$_MOCK_BIN_IN" probe \
+        127.0.0.1:3143 127.0.0.1:3025 127.0.0.1:18089 127.0.0.1:443 2>/dev/null; then
       return 0
     fi
     sleep 0.5
   done
-  _dump_captured "mock-services logs" "$(podman logs "${CAGE}-svc" 2>&1 | tail -20)"
+  _dump_captured "mock services logs" "$(podman logs "${CAGE}-svc" 2>&1 | tail -20)"
   return 1
 }
 
@@ -169,13 +154,7 @@ ${l}"
 
 # ── setup ────────────────────────────────────────────────────────────
 
-echo "Creating egress-features cage ($ENGINE egress)..."
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
-  -keyout "$WORK/pt.key" -out "$WORK/pt.crt" \
-  -subj "/O=e2e passthrough mock/CN=pt.e2e.test" \
-  -addext "subjectAltName=DNS:pt.e2e.test" >/dev/null 2>&1
-chmod 644 "$WORK/pt.key" "$WORK/pt.crt"
-
+echo "Creating egress-features cage..."
 export E2E_PORT_EGRESS="$PORT"
 export E2E_PROBE_DIR="$_E2E_DIR/fixtures/probe"
 if ! create_cage "$CONFIGS/egress-features.yaml" \
@@ -205,7 +184,7 @@ fi
 # (the API key would travel in clear), and the stub cannot present a
 # certificate the egress trusts (it verifies against the Mozilla roots
 # only), so the DEPLOYED egress config is rewritten in place instead:
-# both engines re-read it when its mtime changes, and neither checks the
+# the egress re-reads it when its mtime changes, and does not check the
 # scheme itself. A truncating write, not a rename, because the file is
 # bind-mounted into the egress by inode. Nothing later in this phase
 # restarts the cage, which would regenerate the file from cage.yaml.
@@ -218,7 +197,7 @@ _cfg=$(sed 's#https://llm\.e2e\.invalid#http://127.0.0.1:18089#g' "$PROXY_CFG")
 printf '%s\n' "$_cfg" > "$PROXY_CFG"
 
 # The passthrough name resolves, in the egress, to the egress's own
-# address on the cage network, where mock-services.py's TLS listener
+# address on the cage network, where the mock services' TLS listener
 # answers. The cage dials that address directly (no DNS in the cage).
 EGRESS_IP=$(podman inspect --format \
   '{{(index .NetworkSettings.Networks "'"${CAGE}"'-net").IPAddress}}' "${CAGE}-egress" 2>/dev/null || true)
@@ -450,7 +429,7 @@ fi
 
 # The agent gives grants back: out of the published names, the host's
 # view and the allowlist. example.net stays refused whatever its grant
-# says — both engines remember a host caught resolving to a non-global
+# says — the egress remembers a host caught resolving to a non-global
 # address for the life of the process — so the allowlist half is shown on
 # a second grant, example.org, never fetched while granted: once removed,
 # a request for it is refused as outside the allowlist again.
@@ -526,22 +505,16 @@ else
     "got: $OUT; egress ip: ${EGRESS_IP:-?}; audit: $(audit_lines | grep 'pt.e2e.test' | tail -2 | tr '\n' '|')"
 fi
 
-# D4 (EGRESS-PORT-PLAN.md §2): the same SNI to an address that is NOT one
-# of the name's must be intercepted, not spliced — otherwise any IP is an
-# uninspected tunnel for a cage that names a passthrough domain. The
-# Python egress predates D4 and splices on the SNI alone, so the
-# assertion is Rust-only.
-if [ "$ENGINE" = "rust" ]; then
-  e2e_timer_start
-  OUT=$(probe tls-peer 192.0.2.10 443 pt.e2e.test)
-  if [[ "$(jget issuer <<<"$OUT")" == "agentcage egress CA"* ]]; then
-    e2e_pass "9.22" "Passthrough: spoofed SNI intercepted (D4)"
-  else
-    e2e_fail "9.22" "Passthrough: spoofed SNI intercepted (D4)" "got: $OUT"
-  fi
+# D4 (the egress port's decision on passthrough): the same SNI to an
+# address that is NOT one of the name's must be intercepted, not spliced —
+# otherwise any IP is an uninspected tunnel for a cage that names a
+# passthrough domain.
+e2e_timer_start
+OUT=$(probe tls-peer 192.0.2.10 443 pt.e2e.test)
+if [[ "$(jget issuer <<<"$OUT")" == "agentcage egress CA"* ]]; then
+  e2e_pass "9.22" "Passthrough: spoofed SNI intercepted (D4)"
 else
-  e2e_skip "9.22" "Passthrough: spoofed SNI intercepted (D4)" \
-    "Python egress has no D4 check: it splices on the SNI alone"
+  e2e_fail "9.22" "Passthrough: spoofed SNI intercepted (D4)" "got: $OUT"
 fi
 
 # ── 9.23: traffic watcher ────────────────────────────────────────────

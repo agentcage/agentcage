@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 7: VM Mode — Lifecycle & Core Security
 source "$(dirname "$0")/lib.sh"
-preflight_check "$AGENTCAGE" podman curl limactl
+preflight_check "$AGENTCAGE" podman curl jq limactl
 phase_header 7 "VM Mode — Lifecycle & Core Security"
 
 if [ ! -e /dev/kvm ] && [ "$(uname)" = "Linux" ]; then
@@ -57,7 +57,7 @@ fi
 # ── VM Lifecycle ────────────────────────────────────────────────────
 e2e_timer_start
 VM_STATUS=$(limactl list --json "$VM_NAME" 2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unknown")
+  | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
 if [ "$VM_STATUS" = "Running" ]; then
   e2e_pass "7.1" "VM created and running"
 else
@@ -119,7 +119,7 @@ rm -f "$HAR_FILE"
 #     the whole home, so the host's private files must not be reachable
 #     under their own paths inside the guest.
 #   * The GUEST's own home, `/home/<user>.guest`. Lima creates it, puts
-#     its own `authorized_keys` in it, and it is where `backends/vm.py`
+#     its own `authorized_keys` in it, and it is where the vm backend
 #     pushes the quadlets (`mkdir -p ~/.config/containers/systemd`, run
 #     through a guest-side shell). Nothing about it is a host mount.
 #
@@ -180,7 +180,7 @@ fi
 
 e2e_timer_start
 VM_STATUS=$(limactl list --json "$VM_NAME" 2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unknown")
+  | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
 if [ "$VM_STATUS" = "Stopped" ]; then
   e2e_pass "7.33" "VM stopped"
 else

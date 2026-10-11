@@ -2,9 +2,10 @@
 # protocol relays, the Policy API with a decider (and the traffic watcher)
 # answered by a stub LLM, WebSockets, passthrough domains, the block body.
 #
-# Every upstream is a mock in the egress's network namespace:
-# mock-httpbin.py (httpbin.org and the granted names, WebSocket echo on
-# /ws) and mock-services.py (IMAP, SMTP, LLM stub, passthrough TLS).
+# Every upstream is a mock in the egress's network namespace, both run
+# from the agentcage-e2e-mock binary (rust/agentcage-e2e-mock):
+# `httpbin` (httpbin.org and the granted names, WebSocket echo on /ws) and
+# `services` (IMAP, SMTP, LLM stub, passthrough TLS).
 name: e2e-egress
 secrets:
   allow_plaintext: true

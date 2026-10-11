@@ -281,7 +281,7 @@ dump_cage_diagnostics() {
 #   This is the readiness probe to call between start_mock/repatch_mock and
 #   any test that depends on the mock being reachable through the proxy.
 #   wait_ready alone isn't enough — it only checks GET / on the cage and
-#   doesn't exercise the DNS → iptables → mitmproxy → /etc/hosts → mock path.
+#   doesn't exercise the DNS → iptables → egress proxy → /etc/hosts → mock path.
 #
 #   Timeout is generous (120s) because CI parallel phases can saturate
 #   Podman, slowing container startup well past the 120s the data path
@@ -448,11 +448,12 @@ preflight_check() {
 
 # ── mock HTTP server ─────────────────────────────────────────────────
 # Replaces external httpbin.org/example.com with a local HTTP server so
-# tests don't depend on the internet. The mock runs in its OWN container
-# (a stock python image — the egress image ships no interpreter the
-# harness may rely on) that shares the egress container's network
-# namespace and listens on 127.0.0.1:80 there. The egress's /etc/hosts
-# is patched so the mocked names resolve to 127.0.0.1, i.e. to the mock.
+# tests don't depend on the internet. The mock is the static
+# `agentcage-e2e-mock` binary (crate rust/agentcage-e2e-mock), run in its
+# OWN container — never in the egress, whose image the harness must not
+# depend on — that shares the egress container's network namespace and
+# listens on 127.0.0.1:80 there. The egress's /etc/hosts is patched so
+# the mocked names resolve to 127.0.0.1, i.e. to the mock.
 #
 # Why share the egress netns rather than put the mock on the cage
 # network: only the egress's own outbound connections can reach a
@@ -466,14 +467,66 @@ preflight_check() {
 # domain first, the proxy caches the real IP and never honors the patch.
 
 _E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MOCK_SCRIPT="$_E2E_DIR/mock-httpbin.py"
 
-# The mock's image: stock python on alpine, pinned by exact tag AND
-# multi-arch index digest so a registry retag can't change what runs.
-# Kept in its own file so CI can key its image cache on it. Override with
-# E2E_MOCK_IMAGE (e.g. a pre-mirrored copy) — anything with python3 on
-# PATH works, the mock is stdlib-only.
+# The image the mock binary runs in. The binary is static and
+# bind-mounted read-only, so the image only has to provide a root
+# filesystem; it is the same pinned debian digest the egress image is
+# built FROM, which `cage create` has already pulled by the time a mock
+# starts, so nothing extra is fetched. Kept in its own file so CI can
+# key its image cache on it. Override with E2E_MOCK_IMAGE (e.g. a
+# pre-mirrored copy) — any linux image will do.
 E2E_MOCK_IMAGE="${E2E_MOCK_IMAGE:-$(tr -d '[:space:]' < "$_E2E_DIR/mock-image.ref")}"
+
+# Where the mock binary is mounted inside its container.
+_MOCK_BIN_IN=/agentcage-e2e-mock
+
+# e2e_mock_bin
+#   Print the path of the agentcage-e2e-mock binary, building it first
+#   when needed. E2E_MOCK_BIN wins when set (e.g. a binary copied next to
+#   a worktree snapshot that has no target/). Otherwise the static musl
+#   build under target/ is used, refreshed with cargo when cargo is on
+#   PATH (a no-op when it is up to date); without cargo an existing build
+#   is used as is.
+#
+#   Static (musl) because it runs in the debian image above, whose libc
+#   need not match the host's.
+e2e_mock_bin() {
+  if [ -n "${E2E_MOCK_BIN:-}" ]; then
+    if [ -f "$E2E_MOCK_BIN" ] && [ -x "$E2E_MOCK_BIN" ]; then
+      printf '%s\n' "$E2E_MOCK_BIN"
+      return 0
+    fi
+    echo "ERROR: E2E_MOCK_BIN=$E2E_MOCK_BIN is not an executable file" >&2
+    return 1
+  fi
+  local triple bin
+  triple="$(uname -m)-unknown-linux-musl"
+  bin="$REPO_ROOT/target/$triple/release/agentcage-e2e-mock"
+  if command -v cargo >/dev/null 2>&1; then
+    # ring (rustls's crypto) compiles C, which needs a musl C compiler.
+    local cc_var="CC_${triple//-/_}"
+    if ! (cd "$REPO_ROOT" && env "${cc_var}=${!cc_var:-musl-gcc}" \
+          cargo build --quiet --release --locked --target "$triple" -p agentcage-e2e-mock >&2); then
+      echo "ERROR: building agentcage-e2e-mock for $triple failed" >&2
+      echo "       (needs: rustup target add $triple, and musl-gcc)" >&2
+      return 1
+    fi
+  fi
+  if [ ! -x "$bin" ]; then
+    echo "ERROR: $bin not found, and cargo is not on PATH to build it." >&2
+    echo "       Build it with: cargo build --release --target $triple -p agentcage-e2e-mock" >&2
+    echo "       or point E2E_MOCK_BIN at a copy." >&2
+    return 1
+  fi
+  printf '%s\n' "$bin"
+}
+
+# _ensure_mock_bin — resolve (and if needed build) the mock binary once,
+# exporting E2E_MOCK_BIN so later calls and child phases reuse it.
+_ensure_mock_bin() {
+  E2E_MOCK_BIN=$(e2e_mock_bin) || return 1
+  export E2E_MOCK_BIN
+}
 
 # Upstream names are mapped to this address in the egress's /etc/hosts.
 MOCK_IP=127.0.0.1
@@ -517,6 +570,7 @@ _mock_netns() {
 #   (Re)create the mock container inside NETNS and wait until it listens.
 _run_mock() {
   local cage="$1" netns="$2"
+  _ensure_mock_bin || return 1
   podman rm -f -t 0 "${cage}-mock" >/dev/null 2>&1 || true
 
   # No --sysctl / --user tweaks needed: binding :80 happens in the
@@ -530,23 +584,22 @@ _run_mock() {
   run_out=$(podman run -d --name "${cage}-mock" \
     --network "ns:${netns}" \
     --label "${_MOCK_NETNS_LABEL}=${netns}" \
-    -v "${MOCK_SCRIPT}:/mock.py:ro" \
-    "$E2E_MOCK_IMAGE" python3 /mock.py "$MOCK_IP" 2>&1) || run_rc=$?
+    -v "${E2E_MOCK_BIN}:${_MOCK_BIN_IN}:ro" \
+    "$E2E_MOCK_IMAGE" "$_MOCK_BIN_IN" httpbin "$MOCK_IP" 2>&1) || run_rc=$?
   if [ "$run_rc" -ne 0 ]; then
     echo "WARNING: failed to start mock container for $cage (image: $E2E_MOCK_IMAGE)" >&2
     _dump_captured "podman run FAILED (exit $run_rc)" "$run_out"
     return 1
   fi
 
-  # Wait for the mock to actually listen. The probe runs in the MOCK
-  # container (which has python), never in the egress: nothing in the
-  # harness may assume an interpreter in the egress image. Both share the
-  # namespace, so this is the same socket the egress will connect to.
+  # Wait for the mock to actually listen. The probe is the mock binary's
+  # own `probe` subcommand, run in the MOCK container, never in the
+  # egress: nothing in the harness may assume a tool in the egress image.
+  # Both share the namespace, so this is the same socket the egress will
+  # connect to.
   local i
   for i in $(seq 1 20); do
-    if podman exec "${cage}-mock" python3 -c "
-import socket; s=socket.socket(); s.settimeout(1); s.connect(('${MOCK_IP}',80)); s.close()
-" 2>/dev/null; then
+    if podman exec "${cage}-mock" "$_MOCK_BIN_IN" probe "${MOCK_IP}:80" 2>/dev/null; then
       return 0
     fi
     sleep 0.5
@@ -700,8 +753,8 @@ repatch_mock() {
   return 1
 }
 
-# stop_mock CAGE — remove mock container. `-t 0`: python as PID 1 ignores
-# SIGTERM, so a graceful stop would just burn podman's 10s timeout.
+# stop_mock CAGE — remove mock container. `-t 0`: the mock is PID 1 with no
+# SIGTERM handler, so a graceful stop would just burn podman's 10s timeout.
 stop_mock() {
   podman rm -f -t 0 "${1}-mock" >/dev/null 2>&1 || true
 }
