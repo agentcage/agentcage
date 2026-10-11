@@ -27,6 +27,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -175,6 +176,8 @@ impl RateLimiter {
 pub struct Engine {
     config_path: Option<PathBuf>,
     live: ArcSwap<Live>,
+    /// Bumped every time `live` is replaced (see [`Engine::config_epoch`]).
+    epoch: AtomicU64,
     reload: Mutex<ReloadState>,
     /// The audit funnel (stderr, `audit.jsonl`, watcher ring).
     pub audit: Arc<AuditWriter>,
@@ -295,6 +298,7 @@ impl Engine {
         let engine = Arc::new(Self {
             config_path: options.config_path,
             live: ArcSwap::from_pointee(refuse("no config loaded yet")),
+            epoch: AtomicU64::new(0),
             reload: Mutex::new(ReloadState::default()),
             audit: options.audit,
             injector,
@@ -329,6 +333,7 @@ impl Engine {
                     }
                     Err(e) => {
                         engine.live.store(Arc::new(refuse(&e)));
+                        engine.epoch.fetch_add(1, Ordering::Release);
                         let mut state = lock(&engine.reload);
                         state.reported = stamp;
                         drop(state);
@@ -354,6 +359,14 @@ impl Engine {
     #[must_use]
     pub fn live(&self) -> Arc<Live> {
         self.live.load_full()
+    }
+
+    /// Which config the live state came from: a number bumped on every
+    /// (re)load, so the transport can drop pooled upstream connections
+    /// opened under an earlier config.
+    #[must_use]
+    pub fn config_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
     }
 
     /// The Policy API, while `agents.decider` is enabled.
@@ -476,6 +489,7 @@ impl Engine {
             burst,
             passthrough,
         }));
+        self.epoch.fetch_add(1, Ordering::Release);
         self.apply_watcher();
     }
 

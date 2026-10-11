@@ -44,6 +44,7 @@ mod h1;
 mod h2;
 mod io;
 mod listen;
+mod pool;
 mod tls;
 mod upstream;
 mod ws;
@@ -458,6 +459,32 @@ pub trait FlowHandler: Send + Sync + 'static {
         target: &ConnectTarget,
         resolved: &[IpAddr],
     ) -> ConnectDecision;
+
+    /// Whether a pooled upstream connection that reached `peer`, opened
+    /// for `target`, may carry another request now: the peer guard
+    /// applied again, at the moment of reuse, to the address the
+    /// connection actually reached. A connection that fails it is
+    /// dropped and a fresh one opened (through
+    /// [`FlowHandler::server_connect`], which then refuses or allows it
+    /// the usual way).
+    ///
+    /// The default asks [`FlowHandler::server_connect`] about that one
+    /// address; a handler whose `server_connect` audits or otherwise has
+    /// side effects should answer here without them.
+    fn may_reuse(&self, conn: &ConnInfo, target: &ConnectTarget, peer: IpAddr) -> bool {
+        matches!(
+            self.server_connect(conn, target, &[peer]),
+            ConnectDecision::Allow(allowed) if allowed.contains(&peer)
+        )
+    }
+
+    /// A number that changes whenever the handler's configuration changes
+    /// in a way that could change how an upstream is chosen or vetted (a
+    /// reload): pooled upstream connections from another epoch are never
+    /// reused.
+    fn upstream_epoch(&self) -> u64 {
+        0
+    }
 
     /// Whether `candidate` (`host:port`, a `Host` header, `sni:port`)
     /// names a passthrough destination. [`PassthroughMatcher`] implements

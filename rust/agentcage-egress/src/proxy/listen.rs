@@ -134,6 +134,7 @@ pub(crate) async fn bind<H: FlowHandler>(
             upstream_tls: proxy.upstream_tls,
             settings: proxy.settings,
             budget: proxy.budget,
+            pool: Arc::new(super::pool::UpstreamPool::default()),
             tickets: super::tls::ticketer(),
         }),
         listeners,
@@ -165,6 +166,7 @@ impl<H: FlowHandler> BoundProxy<H> {
     /// Never returns `Ok`; an accept loop that fails for good returns its
     /// error.
     pub async fn run(self) -> io::Result<()> {
+        tokio::spawn(super::pool::reap(Arc::downgrade(&self.shared.pool)));
         let mut tasks = tokio::task::JoinSet::new();
         for (spec, listener) in self.listeners {
             let shared = Arc::clone(&self.shared);

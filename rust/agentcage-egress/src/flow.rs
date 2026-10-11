@@ -278,6 +278,29 @@ fn normalise(name: &str) -> String {
 }
 
 impl Pipeline {
+    /// The peer guard, without side effects: the grant-only name `target`
+    /// goes by and the first of `resolved` that is not a global address,
+    /// when there is one. Only grant-only hosts are guarded.
+    fn peer_guard_violation<'t>(
+        &self,
+        target: &'t ConnectTarget,
+        resolved: &[std::net::IpAddr],
+    ) -> Option<(&'t str, std::net::IpAddr)> {
+        let dom = &self.engine.domain;
+        if dom.grant_count() == 0 {
+            return None;
+        }
+        let candidates = [Some(target.host.as_str()), target.sni.as_deref()];
+        let name = candidates
+            .into_iter()
+            .flatten()
+            .find(|h| !h.is_empty() && dom.is_grant_only(h))?;
+        // Every answer, not just the first: a rebinding payload returns a
+        // public address beside the internal one.
+        let bad = resolved.iter().find(|ip| !is_global_ip(**ip))?;
+        Some((name, *bad))
+    }
+
     /// Hold `n` bytes of a body copy (a decoded one) on the body budget
     /// until the returned reservation drops; refused (the flow fails
     /// closed) when the budget stays full.
@@ -1026,24 +1049,8 @@ impl FlowHandler for Pipeline {
         target: &ConnectTarget,
         resolved: &[std::net::IpAddr],
     ) -> ConnectDecision {
-        let allow = ConnectDecision::Allow(resolved.to_vec());
-        let dom = &self.engine.domain;
-        if dom.grant_count() == 0 {
-            return allow;
-        }
-        let candidates = [Some(target.host.as_str()), target.sni.as_deref()];
-        let Some(name) = candidates
-            .into_iter()
-            .flatten()
-            .find(|h| !h.is_empty() && dom.is_grant_only(h))
-        else {
-            return allow;
-        };
-        // Every answer, not just the first: a rebinding payload returns a
-        // public address beside the internal one.
-        let bad = resolved.iter().find(|ip| !is_global_ip(**ip));
-        let Some(bad) = bad else {
-            return allow;
+        let Some((name, bad)) = self.peer_guard_violation(target, resolved) else {
+            return ConnectDecision::Allow(resolved.to_vec());
         };
         let ip = match bad {
             std::net::IpAddr::V6(v6) => v6
@@ -1060,6 +1067,17 @@ impl FlowHandler for Pipeline {
         self.engine.poison(&normalise(name));
         self.engine.audit.emit(record);
         ConnectDecision::Refuse(reason)
+    }
+
+    fn may_reuse(&self, _conn: &ConnInfo, target: &ConnectTarget, peer: std::net::IpAddr) -> bool {
+        // The same check, without the audit record and the poisoning: a
+        // refusal here only means a fresh connection is opened, and that
+        // goes through `server_connect`, which records it once.
+        self.peer_guard_violation(target, &[peer]).is_none()
+    }
+
+    fn upstream_epoch(&self) -> u64 {
+        self.engine.config_epoch()
     }
 
     fn is_passthrough(&self, _conn: &ConnInfo, candidate: &str) -> bool {

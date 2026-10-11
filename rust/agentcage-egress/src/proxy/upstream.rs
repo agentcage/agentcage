@@ -96,7 +96,7 @@ pub(crate) async fn connect_vetted<H: FlowHandler>(
 }
 
 /// Open an HTTP connection to `target`, over TLS (verified against
-/// `sni`, offering `alpn`) when `tls` is set.
+/// `sni`, offering `alpn`) when `tls` is set; also the address it reached.
 pub(crate) async fn open<H: FlowHandler>(
     handler: &H,
     conn: &ConnInfo,
@@ -104,10 +104,15 @@ pub(crate) async fn open<H: FlowHandler>(
     target: &ConnectTarget,
     tls: bool,
     alpn: &[Vec<u8>],
-) -> Result<UpstreamConn, UpstreamError> {
+) -> Result<(UpstreamConn, IpAddr), UpstreamError> {
     let tcp = connect_vetted(handler, conn, target, None).await?;
+    let peer = tcp.peer_addr().map_err(|e| UpstreamError::Connect {
+        target: super::host_port("", &target.host, target.port),
+        error: e.to_string(),
+    })?;
+    let peer = peer.ip();
     if !tls {
-        return Ok(UpstreamConn::H1(Buffered::new(Box::new(tcp))));
+        return Ok((UpstreamConn::H1(Buffered::new(Box::new(tcp))), peer));
     }
     let config = upstream_tls
         .client_config(alpn)
@@ -120,11 +125,12 @@ pub(crate) async fn open<H: FlowHandler>(
         .map_err(|e| UpstreamError::Tls(e.to_string()))?;
     let negotiated = stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
     let io: BoxIo = Box::new(stream);
-    if negotiated.as_deref() == Some(b"h2") {
-        Ok(UpstreamConn::H2(super::h2::client(io).await?))
+    let opened = if negotiated.as_deref() == Some(b"h2") {
+        UpstreamConn::H2(super::h2::client(io).await?)
     } else {
-        Ok(UpstreamConn::H1(Buffered::new(io)))
-    }
+        UpstreamConn::H1(Buffered::new(io))
+    };
+    Ok((opened, peer))
 }
 
 /// The head of an HTTP/1 upstream response, its body not read yet.
