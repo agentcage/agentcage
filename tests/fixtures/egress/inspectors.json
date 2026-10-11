@@ -32,7 +32,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: evil.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -47,7 +48,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: anthropic.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -79,7 +81,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: notanthropic.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -89,7 +92,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: anthropic.com.evil",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -120,7 +124,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain in blocklist: evil.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -130,7 +135,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain in blocklist: x.evil.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -166,7 +172,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): anything.example.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -176,7 +183,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): a.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -186,7 +194,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): ",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -214,7 +223,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): anything.example.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -224,7 +234,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): a.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -234,7 +245,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): ",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -262,7 +274,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): anything.example.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -272,7 +285,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): a.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -282,7 +296,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): ",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -313,7 +328,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): anything.example.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -323,7 +339,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): a.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -333,7 +350,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "no domain allowlist configured (default-deny): ",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -361,7 +379,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: anything.example.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -406,7 +425,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: b.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -451,7 +471,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain in blocklist: b.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -497,7 +518,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: example.com.",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -507,7 +529,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: trailing.org",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -532,7 +555,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: b.net",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -547,7 +571,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: ",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -557,7 +582,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: .",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -613,7 +639,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain in blocklist: EVIL.COM",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -623,7 +650,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain in blocklist: a.evil.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -740,7 +768,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -750,7 +779,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -826,7 +856,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: sub.example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -836,7 +867,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -909,7 +941,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: a.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1025,7 +1058,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: a.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1064,7 +1098,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1137,7 +1172,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1210,7 +1246,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1283,7 +1320,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1322,7 +1360,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1361,7 +1400,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1400,7 +1440,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1439,7 +1480,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1478,7 +1520,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: example.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1761,7 +1804,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: past.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1771,7 +1815,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: past.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         }
       ]
@@ -1806,7 +1851,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: x.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1922,7 +1968,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: new.example.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -1969,7 +2016,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain in blocklist: evil.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -2023,7 +2071,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain not in allowlist: a.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -2052,7 +2101,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain in blocklist: g.com",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -2354,7 +2404,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: a.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -2553,7 +2604,8 @@
             "inspector": "domain",
             "action": "block",
             "reason": "domain allowlist entry expired: new.com (was allowed until its TTL elapsed)",
-            "severity": "error"
+            "severity": "error",
+            "metadata": {}
           }
         },
         {
@@ -2576,6 +2628,3817 @@
         {
           "op": "granted_entries",
           "expect": []
+        }
+      ]
+    },
+    {
+      "name": "global cap",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": 100
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=",
+            "body_text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "body_size": 200,
+            "body_entropy": 0.0
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 200 > 100",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 200,
+              "max_bytes": 100,
+              "host": "api.example.com"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA==",
+            "body_text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "body_size": 100,
+            "body_entropy": 0.0
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHg=",
+            "body_text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "body_size": 101,
+            "body_entropy": 0.0
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 101 > 100",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 101,
+              "max_bytes": 100,
+              "host": "api.example.com"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "zero disables",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": 0
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 10000000,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "defaults: no cap",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {},
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 10000000,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "float cap prints as float",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": 100.5
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 101,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 101 > 100.5",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 101,
+              "max_bytes": 100.5,
+              "host": "api.example.com"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 100,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "bool cap is one byte",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": true
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 2,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 2 > True",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 2,
+              "max_bytes": true,
+              "host": "api.example.com"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "host override raises",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": 100,
+            "host_max_bytes": {
+              "fcos-vm-home-01": 1000
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://fcos-vm-home-01/v1/x",
+            "host": "fcos-vm-home-01",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 500,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.anthropic.com/v1/x",
+            "host": "api.anthropic.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 500,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 500 > 100",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 500,
+              "max_bytes": 100,
+              "host": "api.anthropic.com"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "host override lowers",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": 1000,
+            "host_max_bytes": {
+              "strict.example.com": 100
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://strict.example.com/v1/x",
+            "host": "strict.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 500,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 500 > 100",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 500,
+              "max_bytes": 100,
+              "host": "strict.example.com"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://STRICT.example.com/v1/x",
+            "host": "STRICT.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 500,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 500 > 100",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 500,
+              "max_bytes": 100,
+              "host": "STRICT.example.com"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://notstrict.example.com/v1/x",
+            "host": "notstrict.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 500,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "host override suffix and longest wins",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": 100,
+            "host_max_bytes": {
+              "ts.net": 10000,
+              "paperless.taile1b309.ts.net": 500,
+              "Upper.Example": "300"
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://paperless.taile1b309.ts.net/v1/x",
+            "host": "paperless.taile1b309.ts.net",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 1000,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 1000 > 500",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 1000,
+              "max_bytes": 500,
+              "host": "paperless.taile1b309.ts.net"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://x.paperless.taile1b309.ts.net/v1/x",
+            "host": "x.paperless.taile1b309.ts.net",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 1000,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 1000 > 500",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 1000,
+              "max_bytes": 500,
+              "host": "x.paperless.taile1b309.ts.net"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://other.ts.net/v1/x",
+            "host": "other.ts.net",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 1000,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://upper.example/v1/x",
+            "host": "upper.example",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 400,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 400 > 300",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 400,
+              "max_bytes": 300,
+              "host": "upper.example"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://ts.net.evil/v1/x",
+            "host": "ts.net.evil",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 400,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 400 > 100",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 400,
+              "max_bytes": 100,
+              "host": "ts.net.evil"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "host override zero disables for host",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": 100,
+            "host_max_bytes": {
+              "unlimited.example.com": 0
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://unlimited.example.com/v1/x",
+            "host": "unlimited.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 10000000,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://example.com/v1/x",
+            "host": "example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 101,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 101 > 100",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 101,
+              "max_bytes": 100,
+              "host": "example.com"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "host override int() coercion",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "max_bytes": 100,
+            "host_max_bytes": {
+              "a.com": 50.9,
+              "b.com": " 70 "
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://a.com/v1/x",
+            "host": "a.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 60,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 60 > 50",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 60,
+              "max_bytes": 50,
+              "host": "a.com"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://b.com/v1/x",
+            "host": "b.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 71,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "body-size",
+            "action": "block",
+            "reason": "body too large: 71 > 70",
+            "severity": "warning",
+            "metadata": {
+              "body_size": 71,
+              "max_bytes": 70,
+              "host": "b.com"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "bad host override value",
+      "inspector": "body-size",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "host_max_bytes": {
+              "a.com": "lots"
+            }
+          },
+          "expect": "error"
+        }
+      ]
+    },
+    {
+      "name": "defaults",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {},
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/octet-stream",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy body: 7.77 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.7685461891039145,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "application/octet-stream"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBmYWlybHkgb3JkaW5hcnkgc2VudGVuY2UuIGhlbGxvIHdvcmxkLCB0aGlzIGlzIGEgZmFpcmx5IG9yZGluYXJ5IHNlbnRlbmNlLiBoZWxsbyB3b3JsZCwgdGhpcyBpcyBhIGZhaXJseSBvcmRpbmFyeSBzZW50ZW5jZS4gaGVsbG8gd29ybGQsIHRoaXMgaXMgYSBmYWlybHkgb3JkaW5hcnkgc2VudGVuY2UuIGhlbGxvIHdvcmxkLCB0aGlzIGlzIGEgZmFpcmx5IG9yZGluYXJ5IHNlbnRlbmNlLiBoZWxsbyB3b3JsZCwgdGhpcyBpcyBhIGZhaXJseSBvcmRpbmFyeSBzZW50ZW5jZS4gaGVsbG8gd29ybGQsIHRoaXMgaXMgYSBmYWlybHkgb3JkaW5hcnkgc2VudGVuY2UuIGhlbGxvIHdvcmxkLCB0aGlzIGlzIGEgZmFpcmx5IG9yZGluYXJ5IHNlbnRlbmNlLiBoZWxsbyB3b3JsZCwgdGhpcyBpcyBhIGZhaXJseSBvcmRpbmFyeSBzZW50ZW5jZS4gaGVsbG8gd29ybGQsIHRoaXMgaXMgYSBmYWlybHkgb3JkaW5hcnkgc2VudGVuY2UuIGhlbGxvIHdvcmxkLCB0aGlzIGlzIGEgZmFpcmx5IG9yZGluYXJ5IHNlbnRlbmNlLiBoZWxsbyB3b3JsZCwgdGhpcyBpcyBhIGZhaXJseSBvcmRpbmFyeSBzZW50ZW5jZS4gaGVsbG8gd29ybGQsIHRoaXMgaXMgYSBmYWlybHkgb3JkaW5hcnkgc2VudGVuY2UuIGhlbGxvIHdvcmxkLCB0aGlzIGlzIGEgZmFpcmx5IG9yZGluYXJ5IHNlbnRlbmNlLiBoZWxsbyB3b3JsZCwgdGhpcyBpcyBhIGZhaXJseSBvcmRpbmFyeSBzZW50ZW5jZS4gaGVsbG8gd29ybGQsIHRoaXMgaXMgYSBmYWlybHkgb3JkaW5hcnkgc2VudGVuY2UuIGhlbGxvIHdvcmxkLCB0aGlzIGlzIGEgZmFpcmx5IG9yZGluYXJ5IHNlbnRlbmNlLiBoZWxsbyB3b3JsZCwgdGhpcyBpcyBhIGZhaXJseSBvcmRpbmFyeSBzZW50ZW5jZS4gaGVsbG8gd29ybGQsIHRoaXMgaXMgYSBmYWlybHkgb3JkaW5hcnkgc2VudGVuY2UuIGhlbGxvIHdvcmxkLCB0aGlzIGlzIGEgZmFpcmx5IG9yZGluYXJ5IHNlbnRlbmNlLiA=",
+            "body_text": "hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. hello world, this is a fairly ordinary sentence. ",
+            "body_size": 980,
+            "body_entropy": 3.9204333133263534
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/x-foo",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1d",
+            "body_text": null,
+            "body_size": 255,
+            "body_entropy": 7.170125728997199
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "image/png",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/gzip",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "Image/png",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy body: 7.77 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.7685461891039145,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "Image/png"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "explicit entropy values",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "flag"
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 8.0
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "flag",
+            "reason": "high entropy body: 8.00 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 8.0,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "x/y"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.0
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "flag",
+            "reason": "high entropy body: 7.00 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.0,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "x/y"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 6.999
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.125
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "flag",
+            "reason": "high entropy body: 7.12 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.125,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "x/y"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.995
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "flag",
+            "reason": "high entropy body: 8.00 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.995,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "x/y"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9U",
+            "body_text": null,
+            "body_size": 63,
+            "body_entropy": 8.0
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "int threshold prints as int",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "threshold": 7,
+            "action": "block"
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy body: 7.77 (threshold 7)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.7685461891039145,
+              "threshold": 7,
+              "body_size": 1024,
+              "content_type": "x/y"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "action flag",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "action": "flag"
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "flag",
+            "reason": "high entropy body: 7.77 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.7685461891039145,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "x/y"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "custom exempt list replaces defaults",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "exempt_content_types": [
+              "application/x-tar"
+            ]
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "image/png",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy body: 7.77 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.7685461891039145,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "image/png"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/x-tar; x=1",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "host exemptions",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "host_exempt_content_types": {
+              "Matrix.Example.com": [
+                "audio/",
+                "video/"
+              ]
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://matrix.example.com/v1/x",
+            "host": "matrix.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "audio/ogg",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://a.matrix.example.com/v1/x",
+            "host": "a.matrix.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "audio/ogg",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://other.com/v1/x",
+            "host": "other.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "audio/ogg",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy body: 7.77 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.7685461891039145,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "audio/ogg"
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://matrix.example.com/v1/x",
+            "host": "matrix.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/x-tar",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy body: 7.77 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.7685461891039145,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "application/x-tar"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "url params",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "url_min_value_bytes": 32
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://github.com/search?q=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=&type=code",
+            "host": "github.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL param 'q': 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "param": "q",
+              "param_length": 172
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://github.com/search?q=agentcage+python&type=code",
+            "host": "github.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://github.com/search?Q%5Fx=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "github.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL param 'Q_x': 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "param": "Q_x",
+              "param_length": 172
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://github.com/s?a=short&b=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2sw&c=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX",
+            "host": "github.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/p?x&y=&z=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=#frag",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL param 'z': 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "param": "z",
+              "param_length": 172
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/p?k=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=&k=again",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL param 'k': 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "param": "k",
+              "param_length": 172
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/p#?k=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "url param percent and plus decoding",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "url_min_value_bytes": 16,
+            "check_url_path": false
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/p?v=%14%8D%E9%C5%A7%A4%4D%19%E5%6C%D9%AE%1A%55%4B%F6%78%47%AF%B0%C5%8F%6E%12%FA%29%AC%7D%DF%CA%99%40%99%0F%DC%3D%B6%BA%7E%8B%F6%63%39%57%B1%1B%9A%D7",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/p?v=%C3%28%E2%82%F0%9F%98a%ED%A0%80%C3%28%E2%82%F0%9F%98a%ED%A0%80%C3%28%E2%82%F0%9F%98a%ED%A0%80%C3%28%E2%82%F0%9F%98a%ED%A0%80",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/p?v=a+b%2Bc%zz%4a+b%2Bc%zz%4a+b%2Bc%zz%4a+b%2Bc%zz%4a+b%2Bc%zz%4a+b%2Bc%zz%4",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/p?v=\u00e9%C3%A9jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "url checks disabled",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "check_url_params": false,
+            "check_url_path": 0,
+            "url_min_value_bytes": 32
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://github.com/jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=?q=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "github.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "url path segments",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "url_min_value_bytes": 32
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/a/jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=/b",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL path segment: 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "segment_length": 172
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/api/v1/users/12345/repos",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/a/jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2sw",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/a/x;jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/a;jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=/b",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL path segment: 5.83 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.827162160127729,
+              "url_threshold": 5.5,
+              "segment_length": 174
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "  https://h.com/\tjjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL path segment: 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "segment_length": 172
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/%14%8D%E9%C5%A7%A4%4D%19%E5%6C%D9%AE%1A%55%4B%F6%78%47%AF%B0%C5%8F%6E%12%FA%29%AC%7D%DF%CA%99%40%99%0F%DC%3D%B6%BA%7E%8B%F6%63%39%57%B1%1B%9A%D7",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "cdn allowlist defaults",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "url_min_value_bytes": 32
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://d1.cloudfront.net/f?Signature=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=&Policy=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "d1.cloudfront.net",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://d1.cloudfront.net/f?Other=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "d1.cloudfront.net",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL param 'Other': 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "param": "Other",
+              "param_length": 172
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://b.s3.amazonaws.com/k?x-amz-signature=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "b.s3.amazonaws.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "allowlist merge and wildcard",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "url_min_value_bytes": 32,
+            "host_url_param_allowlist": {
+              "googleapis.com": [
+                "*"
+              ],
+              "cloudfront.net": [
+                "Custom"
+              ],
+              "API.example.com": [
+                "Token"
+              ]
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://www.googleapis.com/x/jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=?pageToken=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "www.googleapis.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://d1.cloudfront.net/f?Signature=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "d1.cloudfront.net",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL param 'Signature': 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "param": "Signature",
+              "param_length": 172
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://d1.cloudfront.net/f?custom=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "d1.cloudfront.net",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/f?token=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://other.com/f?token=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "other.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": null
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy URL param 'token': 5.80 (threshold 5.5)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 5.80332317089132,
+              "url_threshold": 5.5,
+              "param": "token",
+              "param_length": 172
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "body wins over url",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "url_min_value_bytes": 32
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://h.com/p?q=jjXCzTv2ZBvbDiBQt2kyy7LmA0oN2swdm-qCprpX98_nfM3mnz3ngsu84IIe8G2GQwNki9B0BST0YD19VKykEPrDp-qoAhTzItJw4XJxgBjuu4rxPtP6f6sjPFY5du8DEa3NZ5jH5Neeor1tN0qAvkp-h6KkZtlVLWg-MGS14vo=",
+            "host": "h.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "x/y",
+            "body_b64": "zYMrnTsb1ifcTMgi+P+0TK5IWbknT9izOvsiI/u6dX/DdNKSz6LC2vDtk6h54eyUvBj9fR5emQUpXIZzzT9UNeITHkVlmXp0Ys9RDgvS+SXtbEUSdn/7ofvwBGGQRy6Y0nUYp+YUDrYtjrqcyY7zhgOOAr98VKQ+0yhEuvXnUy8nigCuVNzqmULxJFWeJctmu4OrLmoWfWVOeCtn/GadHtiXpXkGfFgAt47+USQT9yK+o4sxCu0j/EtK5wGxr2wTDFnl1L/RpSZExIwJLvta4s2ABYa/XNJmfJ6Dt6heoEpMavpHopkuPOlPk7wIh4oeKppXoce7W660S1+smG1dcCe1r3MK3HTOSLhxYftSu14c8qRrf4OBx4Vu7YoBzcKvxIx12WzDYSVE61FY8SIWvz/6+kP85bj1wKC6zpe7QglkwVj+eOrZumTxVMAD7sEBwDJ+Km86Yol00+iYMHkNeD1qpRAYKaskgs0JV3ksy5zgjPnHN4kvPME26Xpf375qwsKYVkBip+8a3AvHxtDKzCcmnY+pu8H8cs2asQt1mlvv/Q2qtvfZRmJWo+aMcxPNqHL7UIzU3PYOJCzQ/FwdvAjn7LNMpcm1G3WEl4TsEf9ojFMxf5IqxV84QNlaE1nlNxBFK/5yzIwyYqgR9a9pwg28h/nSdfpWk/oZ1AWGbReyfRUDdOAi6e0MyaKVc63a1g1gbpe+eHZ96WfbquhSF+dWnaTg0yvWQ9sDgQE5GBlTKVIijjm+ekOFpikRvtH36vcw9wYVypEBH/PXoSo3t8jNzlj44FlSJEl3HKcOdKH80BHpfIDhhdhICd9Iv5VW2h3OeOkrvzXdmQROnd+ShoyOxaylNMVEt7/+jGIykjlQ+O0W/ssuDqk/8M7Hl3ySXijSZPuiq6unWUQ5jEt72Z1Mtd2TqMlQyTY7NDzfN9JDg3kG85CuMJK2EgCOMfuYcOQv1p0RrL9HNn66pL8G5yrGQ3u5l3VMhYx1ahmOrtpizShW5mOjfJby218CFXpXXOdbNhxL1Ik0lQIGvs6x+4acUQJtgrA/XPejwE6/MOi//dmHanlNObm4a+NTTrtuOvqwRXBR/4ofJw0Xic98XLq1bs47l+V2kdbjMbrQJKQeOrrsBaDhRpPBU2Pl1aRnm09+0Cmovhrkr20+PLcK+gKBD6ms1zhqIXnavjydTRt081NHTUTC1erAFXyuu96l2tnw8so/fAZ5oU3Ryaiahq/3lYMX9GPtjpNx5YYWU6STj+d8IEaPm9LTHCTyDWdZ/hraz6TNParbtAuDt0xePCtUmvub/oXqTxudpwwVv7zgI2VIId8z6WDIwjokHQ58GcwJNUT30qRCG2KBOS4Gqg==",
+            "body_text": null,
+            "body_size": 1024,
+            "body_entropy": 7.7685461891039145
+          },
+          "expect": {
+            "inspector": "entropy",
+            "action": "block",
+            "reason": "high entropy body: 7.77 (threshold 7.0)",
+            "severity": "error",
+            "metadata": {
+              "entropy": 7.7685461891039145,
+              "threshold": 7.0,
+              "body_size": 1024,
+              "content_type": "x/y"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "bad allowlist type",
+      "inspector": "entropy",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "host_url_param_allowlist": [
+              "x"
+            ]
+          },
+          "expect": "error"
+        }
+      ]
+    },
+    {
+      "name": "entropy ceiling",
+      "inspector": "content-type",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "entropy_ceiling": 6.5,
+            "action": "flag"
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": "eyJrIjogInYifQ==",
+            "body_text": "{\"k\": \"v\"}",
+            "body_size": 10,
+            "body_entropy": 7.2
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "flag",
+            "reason": "content-type mismatch: application/json declared but body entropy is 7.20 (expected <6.5)",
+            "severity": "error",
+            "metadata": {
+              "content_type": "application/json",
+              "entropy": 7.2,
+              "ceiling": 6.5
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": "eyJrIjogInYifQ==",
+            "body_text": "{\"k\": \"v\"}",
+            "body_size": 10,
+            "body_entropy": 6.5
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": "eyJrIjogInYifQ==",
+            "body_text": "{\"k\": \"v\"}",
+            "body_size": 10,
+            "body_entropy": 4.0
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/octet-stream",
+            "body_b64": "c29tZSBkYXRh",
+            "body_text": "some data",
+            "body_size": 9,
+            "body_entropy": 7.9
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "",
+            "body_b64": "ZGF0YQ==",
+            "body_text": "data",
+            "body_size": 4,
+            "body_entropy": 7.9
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": null,
+            "body_text": null,
+            "body_size": 0,
+            "body_entropy": 7.9
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "TEXT/plain",
+            "body_b64": "eA==",
+            "body_text": "x",
+            "body_size": 1,
+            "body_entropy": 7.9
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "defaults block",
+      "inspector": "content-type",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {},
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "multipart/form-data; boundary=x",
+            "body_b64": "eHh4eHh4eHh4eA==",
+            "body_text": "xxxxxxxxxx",
+            "body_size": 10,
+            "body_entropy": 6.6
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "block",
+            "reason": "content-type mismatch: multipart/form-data; boundary=x declared but body entropy is 6.60 (expected <6.5)",
+            "severity": "error",
+            "metadata": {
+              "content_type": "multipart/form-data; boundary=x",
+              "entropy": 6.6,
+              "ceiling": 6.5
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "cHJlCkFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QCnBvc3Q=",
+            "body_text": "pre\nABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP\npost",
+            "body_size": 329,
+            "body_entropy": 4.146086660166986
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "block",
+            "reason": "large base64 blob (329 chars) in text/plain body",
+            "severity": "warning",
+            "metadata": {
+              "content_type": "text/plain",
+              "base64_length": 329
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "QUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5P",
+            "body_text": "ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNO",
+            "body_size": 255,
+            "body_entropy": 3.999830460646592
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "QUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUA==",
+            "body_text": "ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP",
+            "body_size": 256,
+            "body_entropy": 4.0
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "block",
+            "reason": "large base64 blob (256 chars) in text/plain body",
+            "severity": "warning",
+            "metadata": {
+              "content_type": "text/plain",
+              "base64_length": 256
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "int ceiling prints as int",
+      "inspector": "content-type",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "entropy_ceiling": 6
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/csv",
+            "body_b64": "eA==",
+            "body_text": "x",
+            "body_size": 1,
+            "body_entropy": 6.01
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "block",
+            "reason": "content-type mismatch: text/csv declared but body entropy is 6.01 (expected <6)",
+            "severity": "error",
+            "metadata": {
+              "content_type": "text/csv",
+              "entropy": 6.01,
+              "ceiling": 6
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "base64 detection",
+      "inspector": "content-type",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "detect_base64": true,
+            "base64_min_len": 64,
+            "action": "flag"
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "c29tZSBwcmVhbWJsZQpBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUApzb21lIHBvc3RhbWJsZQ==",
+            "body_text": "some preamble\nABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP\nsome postamble",
+            "body_size": 349,
+            "body_entropy": 4.366463152161744
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "flag",
+            "reason": "large base64 blob (349 chars) in text/plain body",
+            "severity": "warning",
+            "metadata": {
+              "content_type": "text/plain",
+              "base64_length": 349
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "cHJlYW1ibGUKQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtX0FCQ0RFRmdoLV9BQkNERUZnaC1fQUJDREVGZ2gtXwpwb3N0YW1ibGU=",
+            "body_text": "preamble\nABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_ABCDEFgh-_\npostamble",
+            "body_size": 419,
+            "body_entropy": 3.5902190221072074
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "flag",
+            "reason": "large base64 blob (419 chars) in text/plain body",
+            "severity": "warning",
+            "metadata": {
+              "content_type": "text/plain",
+              "base64_length": 419
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": "eyJkYXRhIjogImFHVnNiRzg9In0=",
+            "body_text": "{\"data\": \"aGVsbG8=\"}",
+            "body_size": 20,
+            "body_entropy": 3.5841837197791886
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4IQ==",
+            "body_text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx!",
+            "body_size": 64,
+            "body_entropy": 0.11611507530476972
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhCmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=",
+            "body_text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "body_size": 71,
+            "body_entropy": 1.0781437157898925
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "flag",
+            "reason": "large base64 blob (71 chars) in text/plain body",
+            "severity": "warning",
+            "metadata": {
+              "content_type": "text/plain",
+              "base64_length": 71
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIOKAgyAcYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYg==",
+            "body_text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \u2003 \u001cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "body_size": 76,
+            "body_entropy": 1.4836664389205587
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "flag",
+            "reason": "large base64 blob (74 chars) in text/plain body",
+            "severity": "warning",
+            "metadata": {
+              "content_type": "text/plain",
+              "base64_length": 74
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "YWLDqWNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2PDqQ==",
+            "body_text": "ab\u00e9cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\u00e9",
+            "body_size": 76,
+            "body_entropy": 0.5499036820469059
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYw0KIQ==",
+            "body_text": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\r\n!",
+            "body_size": 73,
+            "body_entropy": 0.31242988509717273
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "flag",
+            "reason": "large base64 blob (71 chars) in text/plain body",
+            "severity": "warning",
+            "metadata": {
+              "content_type": "text/plain",
+              "base64_length": 71
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "IWNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MKZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZCE=",
+            "body_text": "!cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ndddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd!",
+            "body_size": 143,
+            "body_entropy": 1.1451886628462544
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "base64 detection off",
+      "inspector": "content-type",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "detect_base64": false
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://api.example.com/v1/x",
+            "host": "api.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "text/plain",
+            "body_b64": "QUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1BBQkNERUZHSElKS0xNTk9QQUJDREVGR0hJSktMTU5PUEFCQ0RFRkdISUpLTE1OT1A=",
+            "body_text": "ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP",
+            "body_size": 320,
+            "body_entropy": 4.0
+          },
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "host exemptions",
+      "inspector": "content-type",
+      "steps": [
+        {
+          "op": "configure",
+          "config": {
+            "host_exempt_content_types": {
+              "Paperless.example.com": [
+                "multipart/form-data"
+              ]
+            }
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://paperless.example.com/v1/x",
+            "host": "paperless.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "multipart/form-data; b=1",
+            "body_b64": "eA==",
+            "body_text": "x",
+            "body_size": 1,
+            "body_entropy": 7.8
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://a.paperless.example.com/v1/x",
+            "host": "a.paperless.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "multipart/form-data; b=1",
+            "body_b64": "eA==",
+            "body_text": "x",
+            "body_size": 1,
+            "body_entropy": 7.8
+          },
+          "expect": null
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://other.com/v1/x",
+            "host": "other.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "multipart/form-data; b=1",
+            "body_b64": "eA==",
+            "body_text": "x",
+            "body_size": 1,
+            "body_entropy": 7.8
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "block",
+            "reason": "content-type mismatch: multipart/form-data; b=1 declared but body entropy is 7.80 (expected <6.5)",
+            "severity": "error",
+            "metadata": {
+              "content_type": "multipart/form-data; b=1",
+              "entropy": 7.8,
+              "ceiling": 6.5
+            }
+          }
+        },
+        {
+          "op": "inspect",
+          "ctx": {
+            "url": "https://paperless.example.com/v1/x",
+            "host": "paperless.example.com",
+            "method": "POST",
+            "headers": [],
+            "content_type": "application/json",
+            "body_b64": "eA==",
+            "body_text": "x",
+            "body_size": 1,
+            "body_entropy": 7.8
+          },
+          "expect": {
+            "inspector": "content-type",
+            "action": "block",
+            "reason": "content-type mismatch: application/json declared but body entropy is 7.80 (expected <6.5)",
+            "severity": "error",
+            "metadata": {
+              "content_type": "application/json",
+              "entropy": 7.8,
+              "ceiling": 6.5
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "bare",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {},
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "domains only",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            }
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "legacy all on",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "entropy": {
+              "threshold": 7.5
+            },
+            "max_request_body": 1000,
+            "content_type": {
+              "entropy_ceiling": 6.0
+            },
+            "secrets": {
+              "action": "block"
+            }
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {
+                  "action": "block"
+                }
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 1000
+                }
+              ],
+              [
+                "entropy",
+                "builtin",
+                null,
+                {
+                  "threshold": 7.5
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {
+                  "entropy_ceiling": 6.0
+                }
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "entropy",
+              "content-type"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "legacy all off",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "content_type": false,
+            "max_request_body": 0,
+            "entropy": false
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "legacy falsy spellings",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "content_type": 0,
+            "max_request_body": null,
+            "entropy": null
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "content-type"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "content_type non-mapping truthy",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "content_type": "yes"
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "section builtins append in section order",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "entropy",
+                "config": {
+                  "threshold": 6.5
+                }
+              },
+              {
+                "name": "body-size",
+                "config": {
+                  "max_bytes": 50
+                }
+              }
+            ],
+            "max_request_body": 0
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "entropy",
+                "builtin",
+                null,
+                {
+                  "threshold": 6.5
+                }
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 50
+                }
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "content-type",
+              "entropy",
+              "body-size"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "section overrides legacy wholesale",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "content_type": {
+              "entropy_ceiling": 7.0,
+              "action": "flag"
+            },
+            "max_request_body": 0,
+            "inspectors": [
+              {
+                "name": "content-type",
+                "config": {
+                  "entropy_ceiling": 8.0
+                }
+              },
+              {
+                "name": "secrets",
+                "config": {
+                  "action": "flag"
+                }
+              },
+              {
+                "name": "body-size",
+                "config": {
+                  "max_bytes": 10
+                }
+              },
+              {
+                "name": "body-size",
+                "config": {
+                  "max_bytes": 20
+                }
+              },
+              {
+                "name": "domain",
+                "config": {
+                  "block": [
+                    "evil.com"
+                  ]
+                }
+              }
+            ]
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "block": [
+                    "evil.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {
+                  "action": "flag"
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {
+                  "entropy_ceiling": 8.0
+                }
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 20
+                }
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "content-type",
+              "body-size"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "section entry without config",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "content-type"
+              },
+              {
+                "name": "entropy"
+              }
+            ]
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "entropy",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type",
+              "entropy"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown entries warn",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "nope"
+              },
+              {
+                "config": {}
+              },
+              {
+                "name": null
+              },
+              {
+                "name": "entropy",
+                "path": ""
+              }
+            ]
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "entropy",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type",
+              "entropy"
+            ],
+            "warnings": [
+              "skipping unknown inspector: nope",
+              "skipping unknown inspector: ",
+              "skipping unknown inspector: None"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugins",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "content_type": false,
+            "inspectors": [
+              {
+                "name": "my-check",
+                "path": "/etc/agentcage/inspectors/my.wasm",
+                "config": {
+                  "marker": "m"
+                }
+              },
+              {
+                "name": "entropy",
+                "config": {}
+              }
+            ]
+          },
+          "plugins": {
+            "/etc/agentcage/inspectors/my.wasm": "my-check",
+            "/etc/agentcage/inspectors/other.wasm": "other-check",
+            "/etc/agentcage/inspectors/sec.wasm": "secrets",
+            "/etc/agentcage/inspectors/broken.wasm": null
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "my-check",
+                "plugin",
+                "/etc/agentcage/inspectors/my.wasm",
+                {
+                  "marker": "m"
+                }
+              ],
+              [
+                "entropy",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "my-check",
+              "entropy"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugin first then builtin",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "my-check",
+                "path": "/etc/agentcage/inspectors/my.wasm"
+              },
+              {
+                "name": "content-type",
+                "config": {
+                  "action": "flag"
+                }
+              }
+            ]
+          },
+          "plugins": {
+            "/etc/agentcage/inspectors/my.wasm": "my-check",
+            "/etc/agentcage/inspectors/other.wasm": "other-check",
+            "/etc/agentcage/inspectors/sec.wasm": "secrets",
+            "/etc/agentcage/inspectors/broken.wasm": null
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {
+                  "action": "flag"
+                }
+              ],
+              [
+                "my-check",
+                "plugin",
+                "/etc/agentcage/inspectors/my.wasm",
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type",
+              "my-check"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugin declares another name",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "listed",
+                "path": "/etc/agentcage/inspectors/other.wasm",
+                "config": {
+                  "a": 1
+                }
+              }
+            ]
+          },
+          "plugins": {
+            "/etc/agentcage/inspectors/my.wasm": "my-check",
+            "/etc/agentcage/inspectors/other.wasm": "other-check",
+            "/etc/agentcage/inspectors/sec.wasm": "secrets",
+            "/etc/agentcage/inspectors/broken.wasm": null
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "other-check",
+                "plugin",
+                "/etc/agentcage/inspectors/other.wasm",
+                {
+                  "a": 1
+                }
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type",
+              "other-check"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugin entry named like a slot only reconfigures it",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "my-check",
+                "path": "/etc/agentcage/inspectors/my.wasm",
+                "config": {
+                  "v": 1
+                }
+              },
+              {
+                "name": "my-check",
+                "path": "/etc/agentcage/inspectors/broken.wasm",
+                "config": {
+                  "v": 2
+                }
+              },
+              {
+                "name": "content-type",
+                "path": "/etc/agentcage/inspectors/broken.wasm",
+                "config": {
+                  "threshold": 5
+                }
+              }
+            ]
+          },
+          "plugins": {
+            "/etc/agentcage/inspectors/my.wasm": "my-check",
+            "/etc/agentcage/inspectors/other.wasm": "other-check",
+            "/etc/agentcage/inspectors/sec.wasm": "secrets",
+            "/etc/agentcage/inspectors/broken.wasm": null
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {
+                  "threshold": 5
+                }
+              ],
+              [
+                "my-check",
+                "plugin",
+                "/etc/agentcage/inspectors/my.wasm",
+                {
+                  "v": 2
+                }
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type",
+              "my-check"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugin declaring a builtin name takes its config",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "x",
+                "path": "/etc/agentcage/inspectors/sec.wasm",
+                "config": {
+                  "action": "block"
+                }
+              }
+            ]
+          },
+          "plugins": {
+            "/etc/agentcage/inspectors/my.wasm": "my-check",
+            "/etc/agentcage/inspectors/other.wasm": "other-check",
+            "/etc/agentcage/inspectors/sec.wasm": "secrets",
+            "/etc/agentcage/inspectors/broken.wasm": null
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {
+                  "action": "block"
+                }
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugin declared twice merges",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "a",
+                "path": "/etc/agentcage/inspectors/my.wasm",
+                "config": {
+                  "n": 1
+                }
+              },
+              {
+                "name": "b",
+                "path": "/etc/agentcage/inspectors/my.wasm",
+                "config": {
+                  "n": 2
+                }
+              }
+            ]
+          },
+          "plugins": {
+            "/etc/agentcage/inspectors/my.wasm": "my-check",
+            "/etc/agentcage/inspectors/other.wasm": "other-check",
+            "/etc/agentcage/inspectors/sec.wasm": "secrets",
+            "/etc/agentcage/inspectors/broken.wasm": null
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "my-check",
+                "plugin",
+                "/etc/agentcage/inspectors/my.wasm",
+                {
+                  "n": 2
+                }
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type",
+              "my-check"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "plugin load failure fails the build",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "x",
+                "path": "/etc/agentcage/inspectors/broken.wasm"
+              }
+            ]
+          },
+          "plugins": {
+            "/etc/agentcage/inspectors/my.wasm": "my-check",
+            "/etc/agentcage/inspectors/other.wasm": "other-check",
+            "/etc/agentcage/inspectors/sec.wasm": "secrets",
+            "/etc/agentcage/inspectors/broken.wasm": null
+          },
+          "expect": "error"
+        }
+      ]
+    },
+    {
+      "name": "bad section config fails the build",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": [
+              {
+                "name": "body-size",
+                "config": {
+                  "host_max_bytes": {
+                    "a": "x"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": "error"
+        }
+      ]
+    },
+    {
+      "name": "bad secrets pattern fails the build",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "secrets": {
+              "extra_patterns": [
+                {
+                  "name": "x",
+                  "pattern": "("
+                }
+              ]
+            }
+          },
+          "expect": "error"
+        }
+      ]
+    },
+    {
+      "name": "inspectors not a list fails",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": {
+              "name": "x"
+            }
+          },
+          "expect": "error"
+        }
+      ]
+    },
+    {
+      "name": "inspectors falsy",
+      "inspector": "chain",
+      "steps": [
+        {
+          "op": "build",
+          "config": {
+            "domains": {
+              "allow": [
+                "example.com"
+              ]
+            },
+            "inspectors": null
+          },
+          "expect": {
+            "slots": [
+              [
+                "domain",
+                "builtin",
+                null,
+                {
+                  "allow": [
+                    "example.com"
+                  ]
+                }
+              ],
+              [
+                "secrets",
+                "builtin",
+                null,
+                {}
+              ],
+              [
+                "body-size",
+                "builtin",
+                null,
+                {
+                  "max_bytes": 10485760
+                }
+              ],
+              [
+                "content-type",
+                "builtin",
+                null,
+                {}
+              ]
+            ],
+            "relay": [
+              "secrets",
+              "body-size",
+              "content-type"
+            ],
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "python whitespace",
+      "inspector": "whitespace",
+      "steps": [
+        {
+          "op": "isspace",
+          "expect": [
+            9,
+            10,
+            11,
+            12,
+            13,
+            28,
+            29,
+            30,
+            31,
+            32,
+            133,
+            160,
+            5760,
+            8192,
+            8193,
+            8194,
+            8195,
+            8196,
+            8197,
+            8198,
+            8199,
+            8200,
+            8201,
+            8202,
+            8232,
+            8233,
+            8239,
+            8287,
+            12288
+          ]
+        },
+        {
+          "op": "re_s",
+          "expect": [
+            9,
+            10,
+            11,
+            12,
+            13,
+            28,
+            29,
+            30,
+            31,
+            32,
+            133,
+            160,
+            5760,
+            8192,
+            8193,
+            8194,
+            8195,
+            8196,
+            8197,
+            8198,
+            8199,
+            8200,
+            8201,
+            8202,
+            8232,
+            8233,
+            8239,
+            8287,
+            12288
+          ]
         }
       ]
     }
