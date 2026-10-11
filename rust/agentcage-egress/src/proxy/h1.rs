@@ -670,7 +670,7 @@ pub(crate) fn encode_stream_head(resp: &Response, framing: StreamFraming) -> Vec
             headers.remove("transfer-encoding");
         }
     }
-    let mut out = format!("{version} {} {reason}\r\n", resp.status).into_bytes();
+    let mut out = status_line(version, resp.status, &reason);
     put_headers(&mut out, &headers);
     out
 }
@@ -763,6 +763,13 @@ fn fix_framing(headers: &mut Headers, len: usize, needs_length: bool) -> bool {
         headers.add("content-length", len.to_string());
     }
     false
+}
+
+/// A status line. The code is always three digits, the only shape the
+/// parser accepts: an upstream's `000`..`099` goes out as it came, not as
+/// a one- or two-digit code no client can parse.
+fn status_line(version: &str, status: u16, reason: &str) -> Vec<u8> {
+    format!("{version} {status:03} {reason}\r\n").into_bytes()
 }
 
 fn put_headers(out: &mut Vec<u8>, headers: &Headers) {
@@ -885,7 +892,7 @@ fn response_head(resp: &Response, method: &str) -> (Vec<u8>, bool, bool) {
     };
     let has_body = response_has_body(method, resp.status);
     let chunked = has_body && fix_framing(&mut headers, resp.body.len(), true);
-    let mut out = format!("{version} {} {reason}\r\n", resp.status).into_bytes();
+    let mut out = status_line(version, resp.status, &reason);
     put_headers(&mut out, &headers);
     (out, chunked, has_body)
 }
@@ -893,7 +900,7 @@ fn response_head(resp: &Response, method: &str) -> (Vec<u8>, bool, bool) {
 /// The head of a `101 Switching Protocols` (or any body-less response),
 /// written as-is.
 pub(crate) fn encode_head_only(resp: &Response) -> Vec<u8> {
-    let mut out = format!("HTTP/1.1 {} {}\r\n", resp.status, resp.reason).into_bytes();
+    let mut out = status_line("HTTP/1.1", resp.status, &resp.reason);
     put_headers(&mut out, &resp.headers);
     out
 }
@@ -1115,6 +1122,29 @@ mod tests {
             b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi"
         );
         assert_eq!(encode_response(&resp, "HEAD"), b"HTTP/1.1 200 OK\r\n\r\n");
+    }
+
+    /// Found by the `h1_response` fuzz target: a status the parser took
+    /// from three digits (`000`) went out as one (`0`), which no client
+    /// (nor the egress itself) can parse.
+    #[test]
+    fn status_codes_go_out_as_three_digits() {
+        let head = parse_response_head(b"HTTP/1.1 042 odd\r\n\r\n").unwrap();
+        let resp = Response {
+            status: head.status,
+            reason: head.reason,
+            http_version: head.version,
+            headers: head.headers,
+            body: Vec::new(),
+        };
+        assert_eq!(
+            encode_response(&resp, "GET"),
+            b"HTTP/1.1 042 odd\r\ncontent-length: 0\r\n\r\n"
+        );
+        assert!(encode_head_only(&resp).starts_with(b"HTTP/1.1 042 odd\r\n"));
+        assert!(
+            encode_stream_head(&resp, StreamFraming::Chunked).starts_with(b"HTTP/1.1 042 odd\r\n")
+        );
     }
 
     /// Found by the `h1_response` fuzz target: a response framed by a
