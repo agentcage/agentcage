@@ -359,6 +359,7 @@ const REPRODUCED: &[&str] = &[
     "err-domain-syntax-short-tld",
     "err-domain-syntax-uppercase",
     "err-domains-allow-and-block",
+    "err-egress-budget-below-cap",
     "err-image-invalid-ref",
     "err-image-missing",
     "err-inspectors-python-path",

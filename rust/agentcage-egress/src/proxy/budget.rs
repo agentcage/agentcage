@@ -38,11 +38,18 @@ pub(crate) const FREE_BYTES: usize = 1024 * 1024;
 pub(crate) const WAIT: Duration = Duration::from_secs(2);
 
 /// The shared counter: the process-wide budget for buffered body bytes.
+///
+/// The limit can change while the egress runs (`egress.body_budget_bytes`
+/// on a config reload, [`BodyBudget::set_limit`]). Lowering it below
+/// what is already reserved refuses nothing in flight: reservations keep
+/// what they hold and only further growth is judged against the new
+/// limit.
 #[derive(Debug)]
 pub struct BodyBudget {
     used: AtomicUsize,
-    limit: usize,
-    /// Woken whenever bytes are released, for reservations waiting.
+    limit: AtomicUsize,
+    /// Woken whenever bytes are released (or the limit rises), for
+    /// reservations waiting.
     released: Notify,
     wait: Duration,
 }
@@ -55,16 +62,24 @@ impl BodyBudget {
     pub(crate) fn with_wait(limit: usize, wait: Duration) -> Arc<Self> {
         Arc::new(Self {
             used: AtomicUsize::new(0),
-            limit,
+            limit: AtomicUsize::new(limit),
             released: Notify::new(),
             wait,
         })
     }
 
-    /// The configured limit.
+    /// The current limit.
     #[must_use]
     pub fn limit(&self) -> usize {
-        self.limit
+        self.limit.load(Ordering::Acquire)
+    }
+
+    /// Change the limit. A raise wakes reservations waiting for room.
+    pub fn set_limit(&self, limit: usize) {
+        let before = self.limit.swap(limit, Ordering::AcqRel);
+        if limit > before {
+            self.released.notify_waiters();
+        }
     }
 
     /// Bytes currently reserved (tests, diagnostics).
@@ -100,7 +115,7 @@ impl Reservation {
 
     /// The budget's limit.
     pub(crate) fn limit(&self) -> usize {
-        self.budget.limit
+        self.budget.limit()
     }
 
     /// Grow the reservation to `total` bytes now, without waiting;
@@ -115,7 +130,7 @@ impl Reservation {
             self.held = total;
             return true;
         }
-        let limit = self.budget.limit;
+        let limit = self.budget.limit();
         let used = &self.budget.used;
         let mut current = used.load(Ordering::Acquire);
         let granted = loop {
@@ -141,7 +156,7 @@ impl Reservation {
             return true;
         }
         // More than the whole budget never fits: refuse at once.
-        if total > self.budget.limit.max(FREE_BYTES) {
+        if total > self.budget.limit().max(FREE_BYTES) {
             return false;
         }
         let budget = Arc::clone(&self.budget);
@@ -230,6 +245,32 @@ mod tests {
         assert_eq!(budget.used(), 2 * FREE_BYTES);
         drop(b);
         assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_limit_can_change_under_live_reservations() {
+        let budget = BodyBudget::with_wait(4 * FREE_BYTES, Duration::from_secs(5));
+        let mut a = Reservation::new(&budget);
+        assert!(a.try_grow_to(3 * FREE_BYTES));
+        // Lowered under what is held: nothing is taken back, nothing
+        // more is granted.
+        budget.set_limit(2 * FREE_BYTES);
+        assert_eq!(budget.used(), 3 * FREE_BYTES);
+        let mut b = Reservation::new(&budget);
+        assert!(!b.try_grow_to(2 * FREE_BYTES));
+        // A raise wakes a reservation waiting for room (one that fits the
+        // limit but not what is left of it).
+        let waiter = {
+            let budget = Arc::clone(&budget);
+            tokio::spawn(async move {
+                let mut c = Reservation::new(&budget);
+                c.grow_to(2 * FREE_BYTES).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        budget.set_limit(8 * FREE_BYTES);
+        assert!(waiter.await.unwrap());
+        assert_eq!(budget.limit(), 8 * FREE_BYTES);
     }
 
     #[tokio::test]

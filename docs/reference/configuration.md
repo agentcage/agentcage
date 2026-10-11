@@ -59,6 +59,7 @@ secret_injection:
 | `protocol_relays`| list[object] | `[]` | Hardened non-HTTP protocol relays (IMAP, SMTP). See [Protocol Relays Reference](protocol-relays.md). |
 | `logging` | object | `{}` | Operational and DNS query logging verbosity. |
 | `capture` | object | `{}` | L7 payload capture and HAR 1.2 generation settings. |
+| `egress` | object | `{}` | Memory limits of the egress process: the largest body it buffers and the total it buffers at once. See [`egress`](#7a-egress-memory-limits). |
 | `vm` | object | `{}` | Resource allocations for the Lima VM backend. |
 
 ---
@@ -401,6 +402,33 @@ inspectors:
 ```
 
 `cage create` and `cage update` copy each plugin into the cage and mount it read-only into the egress; a changed plugin file makes `cage update` redeploy. A path that does not end in `.wasm` is refused, and a `.py` path is refused with a pointer to the migration guide: Python inspectors are no longer supported. Plugins run with no capabilities and a CPU and memory budget, and a plugin that fails counts as a `block`. See [Custom Inspectors](../how-to/custom-inspectors.md).
+
+---
+
+## 7a. `egress` (Memory Limits)
+
+How much memory the egress may spend holding bodies. Request bodies are buffered whole, because the inspectors and the secret injector need all of them, and so is a response that cannot stream (see [Inspectors](#7-inspectors) and `capture`). This is not policy: the policy limit on uploads is `max_request_body`, which the `body-size` inspector enforces with a `403` well below these numbers.
+
+```yaml
+egress:
+  max_body_bytes: 268435456 # one buffered body: 256 MiB (default)
+  body_budget_bytes: 1073741824 # all buffered bodies at once: 1 GiB (default)
+```
+
+| Key | Default | Over it |
+| :--- | :--- | :--- |
+| `max_body_bytes` | `268435456` (256 MiB) | A request body gets a `413`, and a response that has to be buffered a `502`, each with a `blocked` or `upstream_error` audit record. |
+| `body_budget_bytes` | `1073741824` (1 GiB) | A body that would take the total past the budget waits up to two seconds for room, then gets a `503` asking to retry. The first 1 MiB of each body is never refused. |
+
+Both are whole numbers of bytes between `1048576` (1 MiB) and `68719476736` (64 GiB). `body_budget_bytes` must be at least `max_body_bytes`. Anything else, including a quoted number or an unknown key under `egress:`, is refused at `cage create` and `cage update`.
+
+The egress runs under an address-space limit (`prlimit --as`), which the supervisor sets when the egress starts: 2 GiB, or `body_budget_bytes` plus 1 GiB when that is larger. Raising the budget raises the limit with it.
+
+Both settings reach the egress through its config, so an edit takes effect on the egress's next config reload, with no restart, for the next body. Bodies already in flight keep what they hold. The one exception is a budget raised beyond what the running egress's address-space limit leaves room for: the egress holds the budget at that room, logs why, and applies the full value when it next starts. `cage edit` restarts the cage for an `egress:` change, so there the new limit applies at once.
+
+On `isolation: vm`, the egress shares the Lima guest's memory (`vm.mem_mb`) with the cage. On apple-container, the egress microVM has 512 MiB. `cage create` warns when an `egress:` section sets a budget larger than half of that memory.
+
+For development, `AGENTCAGE_MAX_BODY_BYTES` and `AGENTCAGE_BODY_BUDGET_BYTES` in the egress's environment override the config and pin the value across reloads. A cage deploy never sets them.
 
 ---
 

@@ -341,6 +341,23 @@ fn both_daemons_drop_their_bounding_set() {
     assert!(!s.contains("--bounding-set=-all,+net_bind_service --no-new-privs"));
 }
 
+/// The egress's address-space limit follows `egress.body_budget_bytes`:
+/// the binary computes it (as acproxy, from the config it then runs),
+/// and anything but a plain number falls back to the old fixed 2 GiB.
+#[test]
+fn the_egress_address_space_limit_comes_from_its_config() {
+    let s = supervisor();
+    let launch = index_of(&s, r#""$EGRESS_BIN" run"#);
+    let ask = index_of(&s, r#""$EGRESS_BIN" address-space"#);
+    assert!(ask < launch);
+    let asking = &s[s[..ask].rfind("EGRESS_AS_BYTES=$(").expect("the probe")..ask];
+    assert!(asking.contains("setpriv --reuid=acproxy --regid=acproxy --clear-groups"));
+    assert!(asking.contains("AGENTCAGE_CONFIG=/etc/agentcage/config.yaml"));
+    assert!(s.contains("''|*[!0-9]*) EGRESS_AS_BYTES=$((2 * 1024 * 1024 * 1024)) ;;"));
+    let prelude = &s[s[..launch].rfind("prlimit").expect("egress prlimit")..launch];
+    assert!(prelude.starts_with(r#"prlimit --as="$EGRESS_AS_BYTES" --"#));
+}
+
 /// Only the public half of the CA reaches the cage. The cage mounts
 /// `/home/acproxy/public-certs` at `/certs`; the private store holds the
 /// key (exposed to uid 1000 in 0.22.0-0.22.5). One file is published,

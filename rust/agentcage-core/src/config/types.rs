@@ -955,6 +955,8 @@ pub struct Config {
     pub logging: LoggingConfig,
     /// Capture knobs.
     pub capture: CaptureConfig,
+    /// The egress process's memory limits (`egress:`).
+    pub egress: super::egress::EgressConfig,
     /// Egress port policy.
     pub ports: PortsConfig,
     /// Lima guest sizing, for `isolation: vm`.
@@ -996,6 +998,7 @@ impl Default for Config {
             agents: AgentsConfig::default(),
             logging: LoggingConfig::default(),
             capture: CaptureConfig::default(),
+            egress: super::egress::EgressConfig::default(),
             ports: PortsConfig::default(),
             vm: VmConfig::default(),
             help: String::new(),

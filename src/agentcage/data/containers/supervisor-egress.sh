@@ -577,15 +577,19 @@ ss -lnup 2>/dev/null | grep -q ':53 ' \
 # secret_injection rules, capture settings) is at
 # /etc/agentcage/config.yaml via bind-mount.
 #
-# `--as=2G`: the address-space limit counts *reservations*, not resident
+# `--as`: the address-space limit counts *reservations*, not resident
 # memory, and the egress reserves generously: every thread's stack (the
 # tokio workers plus its capped blocking pool, 2 MiB each), and every
-# fully buffered request body up to the per-body cap (256 MiB by
-# default) with a decoded copy beside it while it is inspected. The
-# process-wide body budget (AGENTCAGE_BODY_BUDGET_BYTES, 1 GiB by
-# default) keeps the sum of buffered bodies inside this envelope, so a
-# burst of large uploads waits or is refused instead of failing an
-# allocation and taking down the cage's only path to the network.
+# fully buffered body up to the per-body cap (`egress.max_body_bytes`,
+# 256 MiB by default) with a decoded copy beside it while it is
+# inspected. The process-wide body budget (`egress.body_budget_bytes`,
+# 1 GiB by default) keeps the sum of buffered bodies inside this
+# envelope, so a burst of large uploads waits or is refused instead of
+# failing an allocation and taking down the cage's only path to the
+# network. The limit is 2 GiB, or the budget plus 1 GiB when an
+# operator raised the budget past that; the egress binary computes it
+# from the same config it is about to run (`address-space`), as the
+# unprivileged user, and anything but a plain number falls back to 2 GiB.
 #
 # Pre-create the egress-owned log files at 0640 owned by acproxy so the
 # cage workload (uid 1000, via virtiofs identity-mapping) cannot read or
@@ -607,7 +611,14 @@ CA_DIR=/home/acproxy/ca
 # this file to the cage.
 CA_PATH="$CA_DIR/agentcage-ca.pem"
 EGRESS_BIN=/opt/agentcage/agentcage-egress
-log "step D: starting agentcage-egress (uid 200, CapBnd=0, prlimit --as=2G)"
+EGRESS_AS_BYTES=$(setpriv --reuid=acproxy --regid=acproxy --clear-groups \
+  --no-new-privs --bounding-set=-all --inh-caps=-all -- \
+  env AGENTCAGE_CONFIG=/etc/agentcage/config.yaml "$EGRESS_BIN" address-space) \
+  || EGRESS_AS_BYTES=""
+case "$EGRESS_AS_BYTES" in
+  ''|*[!0-9]*) EGRESS_AS_BYTES=$((2 * 1024 * 1024 * 1024)) ;;
+esac
+log "step D: starting agentcage-egress (uid 200, CapBnd=0, prlimit --as=$EGRESS_AS_BYTES)"
 
 # Reverse listeners for inbound port forwards: `<cage_ip>:<port>` is the
 # upstream, `0.0.0.0:<port>` the listen address. The backend stages them
@@ -624,7 +635,7 @@ if [ -n "${AGENTCAGE_INBOUND_PORTS:-}" ] && [ -n "${AGENTCAGE_CAGE_IP:-}" ]; the
 fi
 
 # shellcheck disable=SC2086  # REVERSE_FLAGS is intentionally word-split
-prlimit --as=$((2 * 1024 * 1024 * 1024)) -- \
+prlimit --as="$EGRESS_AS_BYTES" -- \
   setpriv --reuid=acproxy --regid=acproxy --clear-groups \
           --no-new-privs --bounding-set=-all --inh-caps=-all -- \
   env HOME=/home/acproxy AGENTCAGE_CONFIG=/etc/agentcage/config.yaml \

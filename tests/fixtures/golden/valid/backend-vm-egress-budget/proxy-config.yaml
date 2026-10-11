@@ -1,0 +1,7 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+egress:
+  body_budget_bytes: 1610612736
+agentcage_version: 0.0.0-golden

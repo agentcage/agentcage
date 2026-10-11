@@ -837,6 +837,14 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
             .collect(),
     };
 
+    // ── Egress ──────────────────────────────────────────
+    //
+    // Added after the Python port, so no `config.py` behaviour to match:
+    // the section is validated whole here, by the parser the egress runs
+    // on the same keys (see `super::egress`).
+    config.egress =
+        super::egress::EgressConfig::from_yaml(raw.get("egress")).map_err(ConfigError::value)?;
+
     // ── Ports ───────────────────────────────────────────
     //
     // Nested by protocol. Per-entry range and duplicate checks are

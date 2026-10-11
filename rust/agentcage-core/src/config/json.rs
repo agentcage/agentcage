@@ -74,6 +74,32 @@ pub fn to_json(config: &Config) -> String {
 /// The [`Json`] tree behind [`to_json`].
 #[must_use]
 pub fn to_value(config: &Config) -> Json {
+    let mut value = python_fields(config);
+    // `egress:` came after the Python port. It is rendered only when it
+    // differs from the defaults: this document feeds the deploy
+    // fingerprint, and a key every cage gained would redeploy every cage
+    // for a setting none of them changed (the same reason
+    // `fingerprint`'s `inspector_plugins` is absent when empty).
+    if config.egress != super::egress::EgressConfig::default() {
+        value.set(
+            "egress",
+            object([
+                ("max_body_bytes", uint(config.egress.max_body_bytes)),
+                ("body_budget_bytes", uint(config.egress.body_budget_bytes)),
+            ]),
+        );
+    }
+    value
+}
+
+/// A byte count. Bounded far below `i64::MAX` by validation
+/// ([`super::egress::MAX_BODY_BUDGET_BYTES`]).
+fn uint(n: u64) -> Json {
+    Json::Int(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
+/// The fields `config.Config` had, as the Python harness dumped them.
+fn python_fields(config: &Config) -> Json {
     object([
         ("name", Json::string(&config.name)),
         ("isolation", Json::string(&config.isolation)),
