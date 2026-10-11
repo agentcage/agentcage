@@ -1,6 +1,6 @@
-//! Tests for the injector: the `injection.json` corpus recorded from the
-//! Python egress, plus the reload and lifetime behaviour the corpus cannot
-//! express as single operations.
+//! Tests for the injector: the `injection.json` corpus recorded from an
+//! earlier release's egress, plus the reload and lifetime behaviour the
+//! corpus cannot express as single operations.
 
 use super::*;
 use crate::json;
@@ -259,7 +259,7 @@ fn run(case: &Json) -> Json {
 }
 
 #[test]
-fn corpus_cases_match_python() {
+fn corpus_cases_match_the_recording() {
     let corpus = corpus();
     let mut failures = Vec::new();
     for case in arr(&corpus, "cases") {
@@ -296,7 +296,7 @@ fn a_wrong_expectation_fails() {
 }
 
 #[test]
-fn configure_matches_python() {
+fn configure_matches_the_recording() {
     let corpus = corpus();
     for case in arr(&corpus, "configure") {
         let staged = case.get("staged").cloned().unwrap_or(Json::Null);

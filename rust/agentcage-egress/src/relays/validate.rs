@@ -1,8 +1,7 @@
 //! Structural validation for `protocol_relays` entries.
 //!
-//! The host and the egress used to import one Python module for this, so
-//! both sides of the trust boundary refused the same configs with the
-//! same words. The host's Rust port of it lives in
+//! Both sides of the trust boundary must refuse the same configs with
+//! the same words. The implementation lives in
 //! [`agentcage_core::relays`], pinned by the language-neutral
 //! `validate_relay_entry` contract fixture; the egress reuses it rather
 //! than keep a third copy that could drift.

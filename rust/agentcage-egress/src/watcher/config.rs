@@ -36,7 +36,7 @@ pub struct WatcherConfig {
     /// The raw block, kept so a reload can tell "unchanged" (keep the
     /// running watcher and its scan state) from "changed" (rebuild).
     pub block: Value,
-    /// `enable`, by Python truthiness.
+    /// `enable`, by truthiness.
     pub enable: bool,
     /// Mean seconds between scans, floored at 60.
     pub interval_seconds: f64,
@@ -219,7 +219,9 @@ fn flag(m: &Mapping, key: &str, warn: &mut dyn FnMut(&str)) -> bool {
     }
 }
 
-/// Python `float(x)` on a loaded YAML value.
+/// `float(x)` on a loaded YAML value: numbers, bools as 0/1, and
+/// numeric strings (surrounding whitespace and single `_` separators
+/// allowed).
 fn coerce_float(v: &Value) -> Option<f64> {
     match v {
         Value::Bool(b) => Some(f64::from(u8::from(*b))),
@@ -236,8 +238,7 @@ fn coerce_float(v: &Value) -> Option<f64> {
     }
 }
 
-/// `str.strip()`: Python's whitespace, which adds the four C0 separators
-/// to Unicode's.
+/// `str.strip()`: Unicode whitespace plus the four C0 separators.
 fn strip_space(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
 }

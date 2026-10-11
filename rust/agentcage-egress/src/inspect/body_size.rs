@@ -95,10 +95,10 @@ impl Inspector for BodySizeInspector {
         if limit.is_zero() {
             return None;
         }
-        #[allow(clippy::cast_precision_loss)] // compared as Python compares an int with a limit
+        #[allow(clippy::cast_precision_loss)] // compared as a float, as it always was
         let size = ctx.body_size as f64;
-        // Not `<=`: a NaN limit compares false both ways in Python too,
-        // and must not block.
+        // Not `<=`: a NaN limit compares false both ways, and must not
+        // block.
         if size.partial_cmp(&limit.value) != Some(std::cmp::Ordering::Greater) {
             return None;
         }

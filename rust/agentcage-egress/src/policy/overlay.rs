@@ -85,8 +85,8 @@ impl PolicyPaths {
     }
 }
 
-/// The overlay's mtime, `None` when it cannot be stat'ed (the Python's
-/// `0.0`). Compared for equality only: any change means "reconcile".
+/// The overlay's mtime, `None` when it cannot be stat'ed. Compared for
+/// equality only: any change means "reconcile".
 pub(crate) fn mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -98,7 +98,7 @@ pub(crate) fn load(path: &Path) -> Vec<Mapping> {
     let Ok(bytes) = fs::read(path) else {
         return Vec::new();
     };
-    // Strict UTF-8, as Python's text-mode `open` decodes it: a file with
+    // Strict UTF-8: a file with
     // one bad byte is garbage, not a document with a replacement char.
     let Ok(text) = String::from_utf8(bytes) else {
         return Vec::new();

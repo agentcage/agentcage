@@ -95,7 +95,7 @@ fn every_recorded_case_is_reproduced() {
                     s(input, "provider"),
                     s(input, "tool_name"),
                 );
-                // Where the Python raised, the port answers `{}`: both
+                // Where the recording raised, this answers `{}`: both
                 // are "no usable tool call" to every caller.
                 let want = expected
                     .get("args")
@@ -263,8 +263,9 @@ fn the_key_never_appears_in_debug_output() {
 }
 
 #[test]
-fn bytes_repr_matches_cpython() {
-    // Right-hand sides measured with CPython 3.12 `repr(bytes)`.
+fn bytes_literal_spelling() {
+    // Right-hand sides are CPython 3.12's `repr(bytes)`, the reference
+    // spelling.
     assert_eq!(bytes_literal(b""), "b''");
     assert_eq!(bytes_literal(b"it's"), "b\"it's\"");
     assert_eq!(bytes_literal(b"a'b\"c"), "b'a\\'b\"c'");

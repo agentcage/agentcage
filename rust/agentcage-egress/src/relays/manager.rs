@@ -170,8 +170,9 @@ fn to_json(value: &Value) -> Json {
     }
 }
 
-/// The key a relay name is tracked under, or Python's complaint about an
-/// unhashable one. A string and a number that print alike stay apart.
+/// The key a relay name is tracked under, or the pinned complaint about one
+/// that cannot be a key (a sequence or mapping). A string and a number that
+/// print alike stay apart.
 fn name_key(name: &Value) -> Result<String, String> {
     match name {
         Value::Sequence(_) | Value::Mapping(_) => Err(format!(

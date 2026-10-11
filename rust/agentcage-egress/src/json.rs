@@ -1,15 +1,15 @@
-//! JSON exactly as Python's `json` module writes it.
+//! JSON in the spaced, ASCII-only form the egress has always written.
 //!
 //! Audit lines, capture lines, block bodies and every Policy API response
-//! are byte-for-byte what `json.dumps` produced in the implementation this
-//! crate replaces: `", "` / `": "` separators, insertion-ordered keys,
-//! `ensure_ascii`, `repr()` floats. The host already has that writer (it
+//! keep the byte layout earlier releases wrote and their readers parse:
+//! `", "` / `": "` separators, insertion-ordered keys, non-ASCII
+//! escaped, shortest-round-trip floats. The host already has that writer (it
 //! reads and re-emits the same records), so it is reused rather than
 //! re-derived.
 
 pub use agentcage_core::har::json::{DumpOptions, Json, ParseError, dumps, format_float, parse};
 
-/// `json.dumps(value)` with Python's defaults.
+/// `value` in the default layout: spaced separators, ASCII-only.
 #[must_use]
 pub fn to_string(value: &Json) -> String {
     dumps(value, DumpOptions::default())

@@ -642,8 +642,8 @@ pub fn extract_mailbox(args: &[u8]) -> Option<String> {
 
 // ── Config ──────────────────────────────────────────────
 
-/// `x.get(key) or {}`, with Python's complaint when a truthy value is not
-/// a mapping.
+/// `x.get(key) or {}`, with the pinned complaint when a truthy value is
+/// not a mapping.
 pub(crate) fn mapping_or_empty(value: Option<&Value>) -> Result<Option<&Mapping>, String> {
     match value {
         Some(Value::Mapping(m)) => Ok(Some(m)),
@@ -714,7 +714,7 @@ pub(crate) fn parse_upstream(entry: &Mapping) -> Result<Upstream, String> {
     })
 }
 
-/// `entry` as a mapping, or Python's complaint.
+/// `entry` as a mapping, or the pinned complaint.
 pub(crate) fn entry_mapping(entry: &Value) -> Result<&Mapping, String> {
     match entry {
         Value::Mapping(m) => Ok(m),

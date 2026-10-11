@@ -734,10 +734,10 @@ pub(crate) mod tests {
         assert!(TokenBucket::new(0, 0.0).take(0.0));
     }
 
-    /// The construction errors and the signed assertion, as recorded from
-    /// the Python transform (`injection.json` → `transform`).
+    /// The construction errors and the signed assertion, as recorded in
+    /// `injection.json` → `transform`.
     #[test]
-    fn matches_the_python_transform() {
+    fn matches_the_recorded_transform() {
         let f = fixture();
         let t = f.get("transform").unwrap();
         let Some(Json::Array(errors)) = t.get("config_errors") else {

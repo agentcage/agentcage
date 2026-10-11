@@ -197,13 +197,13 @@ fn without_credentials(text: &str, credentials: &[&str]) -> String {
     text
 }
 
-/// The content type and header list the inspector chain sees for a
-/// message, read the way Python's `email` package (policy `compat32`)
-/// reads one: header lines up to the first line that is neither a header
-/// nor a continuation, continuation lines joined with their line breaks
-/// kept, a leading `From ` envelope line skipped, non-ASCII bytes shown
-/// as U+FFFD; the content type lower-cased without its parameters,
-/// `text/plain` when absent or not `type/subtype`.
+/// The content type and header list the inspector chain sees for a message,
+/// read the way earlier releases read one (the `email` package's `compat32`
+/// policy): header lines up to the first line that is neither a header nor a
+/// continuation, continuation lines joined with their line breaks kept, a
+/// leading `From ` envelope line skipped, non-ASCII bytes shown as U+FFFD;
+/// the content type lower-cased without its parameters, `text/plain` when
+/// absent or not `type/subtype`.
 #[must_use]
 pub fn message_headers(body: &[u8]) -> (String, Vec<(String, String)>) {
     let lines = split_universal_lines(body);
@@ -289,8 +289,8 @@ fn text_of(data: &[u8]) -> String {
     super::ascii_lossy(data)
 }
 
-/// `headerRE` of Python's feed parser: an envelope `From `, a field name
-/// (printable ASCII but `:`) and a colon, or a continuation.
+/// The `headerRE` of the `email` feed parser: an envelope `From `, a
+/// field name (printable ASCII but `:`) and a colon, or a continuation.
 fn header_line(line: &[u8]) -> bool {
     if line.starts_with(b"From ") || matches!(line.first(), Some(b' ' | b'\t')) {
         return true;
@@ -1224,7 +1224,7 @@ enum DataRead {
     Shutdown,
 }
 
-/// Python's `arg[n:]` on a `str`: by characters, not bytes.
+/// `arg[n:]`, by characters, not bytes.
 fn char_slice(text: &str, n: usize) -> &str {
     text.char_indices().nth(n).map_or("", |(i, _)| &text[i..])
 }

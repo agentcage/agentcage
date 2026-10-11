@@ -170,7 +170,7 @@ fn suffixes(host: &str) -> impl Iterator<Item = &str> {
 }
 
 /// A grant entry's `expires_at`: `entry.get("expires_at") or ""`. A
-/// non-string value reads as its Python `str()`.
+/// non-string value reads as its [`coerce_to_string`] text.
 fn entry_expiry(entry: &Mapping) -> String {
     match entry.get("expires_at") {
         Some(v) if truthy(v) => coerce_to_string(v),
@@ -179,8 +179,8 @@ fn entry_expiry(entry: &Mapping) -> String {
 }
 
 /// Whether `exp` is still in the future at `now`, or `None` when it
-/// cannot be compared: unparseable, or naive (Python's `TypeError`
-/// comparing it with an aware "now"). Callers treat `None` as "no
+/// cannot be compared: unparseable, or naive (no offset, so it cannot
+/// be ordered against an aware "now"). Callers treat `None` as "no
 /// expiry" — fail open on a malformed timestamp, never closed.
 fn expiry_in_future(exp: &str, now: Timestamp) -> Option<bool> {
     match Timestamp::parse_iso_aware(exp) {
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn suffix_walk_matches_python_split() {
+    fn suffix_walk_matches_a_dot_split() {
         let got: Vec<_> = suffixes("a..b.").collect();
         assert_eq!(got, ["a..b.", ".b.", "b.", ""]);
         assert_eq!(suffixes("").collect::<Vec<_>>(), [""]);

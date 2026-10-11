@@ -551,8 +551,8 @@ fn replace_bytes(haystack: &[u8], needle: &[u8], with: &[u8]) -> Vec<u8> {
     out
 }
 
-/// CPython's `repr(bytes)`: `b'…'`, switching to double quotes when the
-/// bytes hold a `'` and no `"`.
+/// A byte string written as a `b'…'` literal, switching to double
+/// quotes when the bytes hold a `'` and no `"`.
 #[must_use]
 pub fn bytes_literal(bytes: &[u8]) -> String {
     use std::fmt::Write as _;

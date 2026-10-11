@@ -13,9 +13,9 @@
 //!
 //! A host whose parameter allowlist contains `"*"` skips both URL checks.
 //!
-//! The URL is split and its query decoded the way Python's
-//! `urllib.parse.urlparse` / `parse_qs` do, so the same parameter names,
-//! values and segments are measured.
+//! The URL is split and its query decoded the way `urllib.parse.urlparse`
+//! / `parse_qs` do (the splitter earlier releases measured with), so the
+//! same parameter names, values and segments are measured.
 
 use super::config_values::{self, Num};
 use super::{Action, Context, Inspector, Severity, Verdict, shannon_entropy};
@@ -409,7 +409,7 @@ fn parse_qs(query: &str) -> Vec<(String, Vec<String>)> {
 
 /// `urllib.parse.unquote(s)` (UTF-8, `errors="replace"`).
 ///
-/// Python decodes `%XX` only inside runs of ASCII characters, each run
+/// `%XX` is decoded only inside runs of ASCII characters, each run
 /// decoded to text on its own; non-ASCII characters pass through. An
 /// invalid escape stays literal.
 fn unquote(s: &str) -> String {
@@ -460,7 +460,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn urlparse_splits_like_python() {
+    fn urlparse_splits_like_urllib() {
         let s = |u: &str| {
             let c = clean_url(u);
             split_url(&c).map(|x| (x.path.to_owned(), x.query.to_owned()))
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_qs_like_python() {
+    fn parse_qs_like_urllib() {
         assert_eq!(
             parse_qs("a=1&b&c=&a=2&&d=x+y%20z&e=%zz%4"),
             vec![

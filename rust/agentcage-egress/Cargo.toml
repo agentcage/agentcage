@@ -23,10 +23,10 @@ path = "src/main.rs"
 fuzzing = []
 
 [dependencies]
-# The pure helpers the host already ported byte-for-byte from Python:
-# `valid_domain`, `encoded_private_ip`, the never-grant floor, the relay
-# validator, the PyYAML-compatible loader, the `json.dumps`-compatible
-# writer and CPython `isoformat` timestamps. Reused, not copied, so the
+# The pure helpers both sides of the trust boundary must agree on byte for
+# byte: `valid_domain`, `encoded_private_ip`, the never-grant floor, the
+# relay validator, the PyYAML-compatible loader, the spaced JSON writer
+# and the `isoformat`-style timestamps. Reused, not copied, so the
 # host and the egress cannot drift apart on any of them.
 agentcage-core = { path = "../agentcage-core" }
 
@@ -128,8 +128,8 @@ wasmtime = { version = "49", default-features = false, features = ["runtime", "c
 # rotated secret without keeping another plaintext copy of it; compiled
 # inspector plugins are cached by the SHA-256 of their bytes.
 sha2 = "0.10.9"
-# IMAP folder lists compare names the way Python's `unicodedata.normalize`
-# and `str.casefold` do: NFC plus full Unicode case folding.
+# IMAP folder lists compare names NFC-normalized and fully case-folded
+# (Unicode full case folding), as earlier releases compared them.
 unicode-normalization = "0.1.25"
 caseless = "0.2.2"
 

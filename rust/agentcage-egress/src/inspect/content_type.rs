@@ -26,11 +26,11 @@ const TEXT_CT_PREFIXES: [&str; 5] = [
     "multipart/form-data",
 ];
 
-/// `^[A-Za-z0-9+/=\-_\s]{64,}$` with `re.MULTILINE`. Python's `\s` in a
-/// `str` pattern also matches U+001C–U+001F, which the `regex` crate's
+/// `^[A-Za-z0-9+/=\-_\s]{64,}$`, multi-line. The pattern earlier releases
+/// used counted U+001C–U+001F as `\s` too, which the `regex` crate's
 /// Unicode `\s` does not, so they are added to the class explicitly. The
 /// rest is a regular language, so the leftmost-first match the `regex`
-/// crate finds is the one Python's backtracking search finds.
+/// crate finds is the one a backtracking search finds.
 static BASE64_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!("(?m)^[{BASE64_CLASS}]{{64,}}$")).expect("static pattern compiles")
 });

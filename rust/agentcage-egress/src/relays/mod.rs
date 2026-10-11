@@ -157,16 +157,17 @@ impl RateLimiter {
     }
 }
 
-// ── Python-compatible text helpers ──────────────────────
+// ── Text helpers with the pinned whitespace and int rules ──
 
-/// `bytes.isspace()` for one byte: Python's ASCII whitespace set, which
-/// has the vertical tab `u8::is_ascii_whitespace` leaves out.
+/// ASCII whitespace for one byte, including the vertical tab
+/// `u8::is_ascii_whitespace` leaves out (the `bytes.isspace()` set).
 pub(crate) fn is_ascii_strip_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c')
 }
 
-/// `str.isspace()` for one char: Unicode whitespace plus the four ASCII
-/// separators (`\x1c`–`\x1f`) Python counts and Rust does not.
+/// Whitespace for one char: Unicode whitespace plus the four ASCII
+/// separators (`\x1c`–`\x1f`) that `str.isspace()` counts and Rust does
+/// not.
 pub(crate) fn is_strip_space(c: char) -> bool {
     c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
 }
@@ -226,7 +227,7 @@ pub(crate) fn ascii_lossy(data: &[u8]) -> String {
         .collect()
 }
 
-/// `display_value(data)` of a Python `bytes`, for log lines.
+/// `data` as a `b'…'` byte-string literal, for log lines.
 pub(crate) fn bytes_repr(data: &[u8]) -> String {
     let quote = if data.contains(&b'\'') && !data.contains(&b'"') {
         '"'
@@ -255,7 +256,7 @@ pub(crate) fn bytes_repr(data: &[u8]) -> String {
     out
 }
 
-/// Python's `int(value)` on a YAML value, with its error messages.
+/// `int(value)` on a YAML value, with the pinned error messages.
 pub(crate) fn coerce_int(value: &Value) -> Result<i64, String> {
     match value {
         Value::Bool(b) => Ok(i64::from(*b)),
@@ -323,7 +324,7 @@ pub(crate) fn resolve_credential(source: &str) -> Result<String, String> {
     })
 }
 
-// ── Buffered reads with Python `StreamReader` semantics ─
+// ── Buffered reads with asyncio `StreamReader` semantics ─
 
 /// asyncio's default `StreamReader` line limit: a line whose LF lies
 /// past this offset ends the session.
@@ -736,7 +737,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_matches_python() {
+    fn split_matches_bytes_split() {
         assert_eq!(
             split_ws(b"a b  c \r\n", Some(2)),
             [&b"a"[..], b"b", b"c \r\n"]

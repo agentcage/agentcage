@@ -274,7 +274,7 @@ impl PolicyApi {
     ///
     /// # Errors
     ///
-    /// The decider block is malformed in a way the Python raised on.
+    /// The decider block is malformed in a way earlier releases refused.
     pub fn new(
         config: &Config,
         dom: Arc<DomainInspector>,

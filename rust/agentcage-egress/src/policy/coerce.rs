@@ -1,12 +1,12 @@
-//! The Python value semantics the Policy API's responses are made of.
+//! The value coercions and spellings the Policy API's responses are made
+//! of.
 //!
-//! The control host answers a caged agent with text the replaced
-//! implementation built from Python builtins applied to agent- and
-//! model-supplied JSON: `str(payload.get("domain"))`, `{domain!r}`,
-//! `int(args.get("ttl_seconds"))` and the exception messages `int()`
-//! raises. Those strings are part of the recorded responses, so they are
-//! reproduced here over [`Json`] rather than approximated with Rust's
-//! formatting.
+//! The control host answers a caged agent with text built from agent- and
+//! model-supplied JSON the way earlier releases built it:
+//! `str(payload.get("domain"))`, `{domain!r}`, `int(args.get("ttl_seconds"))`
+//! and the exception messages `int()` raises. Those strings are part of the
+//! recorded responses, so they are reproduced here over [`Json`] rather than
+//! approximated with Rust's formatting.
 
 use std::fmt::Write as _;
 
@@ -20,7 +20,7 @@ pub(crate) fn strip(text: &str) -> &str {
     text.trim_matches(is_strip_space)
 }
 
-/// `text[:n]`, counted in code points as Python counts.
+/// The first `n` code points of `text`.
 pub(crate) fn truncate_chars(text: &str, n: usize) -> String {
     match text.char_indices().nth(n) {
         Some((at, _)) => text[..at].to_owned(),
@@ -34,8 +34,8 @@ pub(crate) fn normalise_domain(text: &str) -> String {
     text.to_lowercase().trim_end_matches('.').to_owned()
 }
 
-/// `display_value(float)`: [`format_float`] except for the three values the JSON
-/// writer spells differently.
+/// `display_value(float)`: [`format_float`] except for the three values the
+/// JSON writer spells differently.
 fn float_repr(value: f64) -> String {
     if value.is_nan() {
         "nan".to_owned()
@@ -86,7 +86,8 @@ pub(crate) fn str_or_empty(value: Option<&Json>) -> String {
     }
 }
 
-/// `display_value(str)`, CPython's `unicode_repr`.
+/// A string written as a quoted literal, with CPython's `unicode_repr`
+/// escaping (the reference spelling).
 ///
 /// `agentcage_core::value_fmt::quote_text` covers the control characters a
 /// config value can hold; this one faces the caged agent, which can send
@@ -151,8 +152,8 @@ fn is_printable(c: char) -> bool {
 }
 
 /// `int(value or 0)`, saturated to `i64` (the callers only compare the
-/// result against 0 and 86400), with `int()`'s own error text when
-/// Python would raise.
+/// result against 0 and 86400), with `int()`'s pinned error text when
+/// the value is not an integer.
 pub(crate) fn int_or_zero(value: Option<&Json>) -> Result<i64, String> {
     let Some(value) = value.filter(|v| v.is_truthy()) else {
         return Ok(0);
@@ -224,7 +225,7 @@ pub(crate) fn int_literal(text: &str) -> Option<i64> {
 
 /// `json.loads(body)` on request bytes: the encoding detection
 /// `json.detect_encoding` does (UTF-8, UTF-16 and UTF-32, with or without
-/// a BOM), then the parse. `None` wherever Python raised.
+/// a BOM), then the parse. `None` wherever either fails.
 pub(crate) fn loads_bytes(body: &[u8]) -> Option<Json> {
     let text = decode_json_bytes(body)?;
     json::parse(&text).ok()
@@ -305,9 +306,8 @@ fn utf32(b: &[u8], big_endian: bool) -> Option<String> {
         .collect()
 }
 
-/// A YAML value from the grants overlay as `json.dumps` would render the
-/// Python object `yaml.safe_load` made of it. Non-string mapping keys
-/// become strings the way `json.dumps` coerces them.
+/// A YAML value from the grants overlay as the JSON value it loads as.
+/// Non-string mapping keys become strings the way `json.dumps` coerces them.
 pub(crate) fn yaml_to_json(value: &Value) -> Json {
     match value {
         Value::Null => Json::Null,
@@ -347,8 +347,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repr_matches_cpython() {
-        // Right-hand sides measured with CPython 3.12.
+    fn quoting_and_display_spelling() {
+        // Right-hand sides are CPython 3.12's, the reference spelling.
         assert_eq!(quote_text("x.com\n"), "'x.com\\n'");
         assert_eq!(quote_text("it's"), "\"it's\"");
         assert_eq!(quote_text("a'b\"c"), "'a\\'b\"c'");
@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn int_matches_cpython() {
+    fn int_literals_and_their_errors() {
         let j = |t: &str| json::parse(t).unwrap();
         assert_eq!(int_or_zero(None), Ok(0));
         assert_eq!(int_or_zero(Some(&j("null"))), Ok(0));

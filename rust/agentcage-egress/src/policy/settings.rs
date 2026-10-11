@@ -1,10 +1,10 @@
-//! The `agents.decider` block, read the way the replaced implementation
-//! read it on every (re)load.
+//! The `agents.decider` block, read on every (re)load with the coercions
+//! earlier releases applied.
 //!
 //! The block arrives from the raw proxy config, which unvalidated host
-//! write paths can produce, so every field is coerced exactly as the
-//! Python coerced it (`str(x or "")`, `float(x or 15.0)`, …) and a value
-//! that made the Python raise is a [`ConfigError`]: the whole block is
+//! write paths can produce, so every field is coerced exactly as earlier
+//! releases coerced it (`str(x or "")`, `float(x or 15.0)`, …) and a
+//! value they refused is a [`ConfigError`]: the whole block is
 //! refused and, on a reload, the running settings are kept.
 
 use agentcage_core::value_fmt::coerce_to_string;
@@ -18,7 +18,7 @@ pub const DEFAULT_CONTROL_HOST: &str = "agentcage.local";
 /// The longest operator context carried into the prompt, in characters.
 pub const MAX_CONTEXT_CHARS: usize = 4096;
 
-/// A decider block the Python would have raised on.
+/// A decider block that cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigError(pub String);
 
@@ -67,8 +67,8 @@ pub(crate) struct Settings {
     pub(crate) agentcage_version: String,
 }
 
-/// `value or {}` where the Python went on to call `.get` on it: falsy is
-/// empty, a mapping is itself, anything else raised `AttributeError`.
+/// `value or {}` for a value read as a mapping: falsy is empty, a
+/// mapping is itself, anything else is refused.
 fn mapping_or_empty<'a>(
     value: Option<&'a Value>,
     what: &str,
@@ -222,8 +222,8 @@ impl Settings {
             Some(v) if truthy(v) => to_int(v, "max_tokens")?,
             _ => 8192,
         };
-        // The wire field is unsigned; a value the Python would have sent
-        // only for the provider to reject it is refused here instead.
+        // The wire field is unsigned; a value the provider would only
+        // reject is refused here instead.
         let max_tokens = u32::try_from(max_tokens)
             .map_err(|_| ConfigError(format!("max_tokens out of range: {max_tokens}")))?;
 

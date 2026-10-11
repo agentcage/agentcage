@@ -255,9 +255,9 @@ pub fn shannon_entropy(data: &[u8]) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     let len = data.len() as f64;
     let mut entropy = 0.0;
-    // Python's `Counter` iterates in first-seen order, and float addition
-    // is not associative, so sum in that order to reproduce its result to
-    // the last bit.
+    // Sum in first-seen byte order: float addition is not associative,
+    // and that order reproduces the recorded entropy values to the last
+    // bit.
     let mut seen = [false; 256];
     for &b in data {
         let i = usize::from(b);
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn entropy_matches_python() {
+    fn entropy_matches_the_recorded_values() {
         assert!((shannon_entropy(b"") - 0.0).abs() < f64::EPSILON);
         assert!((shannon_entropy(b"aaaa") - 0.0).abs() < f64::EPSILON);
         assert!((shannon_entropy(b"ab") - 1.0).abs() < f64::EPSILON);

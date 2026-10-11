@@ -531,9 +531,9 @@ mod tests {
                 .unwrap()
                 .commit(),
         );
-        // The domain section parses, the entropy one does not (Python took
-        // the string and raised on every request instead): the domain
-        // baseline must not move, because nothing was committed.
+        // The domain section parses, the entropy one does not (earlier
+        // releases took the string and failed on every request instead): the
+        // domain baseline must not move, because nothing was committed.
         let bad = "domains: {allow: [b.com]}\nentropy: {threshold: high}\n";
         assert!(build(&domain, bad).is_err());
         assert!(domain.matches_baseline("a.com"));

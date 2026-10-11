@@ -855,7 +855,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn configs_are_handed_over_as_python_would_dump_them() {
+    fn configs_are_handed_over_as_spaced_json() {
         assert_eq!(config_json(None), "{}");
         assert_eq!(config_json(Some(&Value::Null)), "{}");
         let yaml: Value =

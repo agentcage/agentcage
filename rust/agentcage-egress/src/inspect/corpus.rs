@@ -45,7 +45,7 @@ pub(super) fn json_to_yaml(value: &Json) -> Value {
     }
 }
 
-/// A YAML tree as `json.dumps` would see the Python object it loads as.
+/// A YAML tree as the JSON value it loads as.
 pub(super) fn yaml_to_json(value: &Value) -> Json {
     match value {
         Value::Null => Json::Null,

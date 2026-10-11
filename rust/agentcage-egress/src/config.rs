@@ -6,10 +6,10 @@
 //! `cage.yaml` is accepted too, with unknown keys ignored.
 //!
 //! The tree is kept as the YAML value the host's PyYAML-compatible loader
-//! produces, and each module reads its own section with the Python
-//! semantics it replaces (`cfg.get("x") or {}`, `bool(...)`). That keeps
-//! lenient parsing — a wrong-typed value treated the way the Python
-//! treated it — local to the module that owns the key, instead of one
+//! produces, and each module reads its own section with the lenient
+//! semantics earlier releases applied (`cfg.get("x") or {}`, truthiness).
+//! That keeps lenient parsing — a wrong-typed value treated the way it
+//! always was — local to the module that owns the key, instead of one
 //! schema struct guessing for everyone.
 
 use std::path::Path;
@@ -130,7 +130,7 @@ pub fn mget<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
     mapping.get(key)
 }
 
-/// Python `bool(value)`.
+/// Whether a value is truthy: see [`agentcage_core::yaml::is_truthy`].
 #[must_use]
 pub fn truthy(value: &Value) -> bool {
     agentcage_core::yaml::is_truthy(value)

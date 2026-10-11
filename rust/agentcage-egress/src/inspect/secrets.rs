@@ -223,9 +223,9 @@ impl SecretsInspector {
     ///
     /// A key holds a value of the wrong type, an extra pattern lacks its
     /// `name` or `pattern`, or a pattern does not compile. Patterns are
-    /// compiled by the `regex` crate: its syntax is Python's for ordinary
-    /// patterns, but lookaround and backreferences are refused (a reload
-    /// that adds one fails closed rather than scanning without it).
+    /// compiled by the `regex` crate: its syntax matches Python `re` for
+    /// ordinary patterns, but lookaround and backreferences are refused (a
+    /// reload that adds one fails closed rather than scanning without it).
     pub fn from_config(section: &Value) -> Result<Self, String> {
         let map = config_values::section(section, NAME)?;
         let enabled = config_values::flag(map, "enabled", true);
