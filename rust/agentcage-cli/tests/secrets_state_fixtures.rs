@@ -26,7 +26,7 @@
 //! blob into its generator and says: assert presence, filename and
 //! shape, never contents. That is exactly what
 //! [`the_cred_blobs_are_present_and_shaped_right`] does, and the reader
-//! it exercises has the same obligation the Python's has -- find the
+//! it exercises has the same obligation as ever -- find the
 //! file, hand it to `systemd-creds decrypt`, never parse it.
 //! `tests/secrets_creds_roundtrip.rs` is where a blob really is
 //! decrypted, and it makes its own.
@@ -227,7 +227,7 @@ fn a_missing_cred_file_names_the_path() {
 /// A7 recorded.
 ///
 /// `json.dumps` separates with `", "`, and a serializer that dropped
-/// the space would produce a file the Python reader still accepts but a
+/// the space would produce a file a JSON reader still accepts but a
 /// byte-comparing fixture check does not -- which is why both writers
 /// here go through `agentcage_core`'s `json.dumps` clone rather than
 /// through `serde_json`.

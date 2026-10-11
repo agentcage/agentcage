@@ -37,7 +37,7 @@ use serde_json::Value;
 /// Every environment in the fixture, ported and unported.
 const TOTAL_CASES: usize = 41;
 
-/// The cases whose Python behaviour comes from `_safe_check`.
+/// The cases whose recorded behaviour is a crashed check.
 const UNPORTED: [&str; 2] = ["linux-check-crashes", "linux-subnet-json-garbage"];
 
 fn fixture() -> Value {
@@ -182,8 +182,8 @@ impl DoctorHost for FakeHost {
 /// shared `command_keys` table.
 ///
 /// Every key in that table gets a rule, whether or not the case named
-/// it: an unnamed probe is one the Python's fake answered with
-/// `FileNotFoundError`, and leaving it unstubbed would turn a
+/// it: an unnamed probe is one the recording answered with "not
+/// installed", and leaving it unstubbed would turn a
 /// deliberately-absent binary into a panic. A probe that is in *neither*
 /// still panics, which is the point — a new subprocess in `doctor` must
 /// be declared on both sides.
@@ -235,7 +235,7 @@ fn reply_for(spec: &Value) -> Reply {
         "ok" => Reply::ok(str_at(spec, "stdout")),
         "rc" => {
             let code = i32::try_from(spec["code"].as_i64().expect("code")).expect("an exit code");
-            // The Python's fake puts its bytes on stdout whatever the
+            // The recording puts its bytes on stdout whatever the
             // exit status, and two checks read stdout on a non-zero exit.
             Reply::Ran(agentcage_exec::Output {
                 status: agentcage_exec::ExitStatus::exited(code),
@@ -268,7 +268,7 @@ fn ported_cases(doc: &Value) -> Vec<&Value> {
 
 /// The whole point: the bytes, for every host the fixture declares.
 #[test]
-fn every_environment_reproduces_the_python_output() {
+fn every_environment_reproduces_the_recorded_output() {
     let doc = fixture();
     let mut checked = 0;
     for case in ported_cases(&doc) {
@@ -284,13 +284,13 @@ fn every_environment_reproduces_the_python_output() {
         assert_eq!(
             color,
             str_at(&case["expected"], "color"),
-            "{id}: styled output differs from the Python's ({})",
+            "{id}: styled output differs from the recording ({})",
             str_at(case, "why")
         );
         assert_eq!(
             plain,
             str_at(&case["expected"], "plain"),
-            "{id}: piped output differs from the Python's ({})",
+            "{id}: piped output differs from the recording ({})",
             str_at(case, "why")
         );
         checked += 1;
@@ -301,7 +301,7 @@ fn every_environment_reproduces_the_python_output() {
 /// The structured half, which is what a caller other than the printer
 /// would read — and which localizes a failure to one check.
 #[test]
-fn every_environment_reproduces_the_python_results() {
+fn every_environment_reproduces_the_recorded_results() {
     let doc = fixture();
     for case in ported_cases(&doc) {
         let id = str_at(case, "id");
@@ -337,7 +337,7 @@ fn the_exit_code_is_one_if_and_only_if_something_errored() {
 
 /// PR D4's invariant, restated for this command: colour only ever *adds*
 /// escapes, so the piped form is the styled form stripped. The generator
-/// asserts the same thing on the Python side before recording.
+/// asserted the same thing before recording.
 #[test]
 fn colour_only_adds_escapes() {
     let doc = fixture();
@@ -356,13 +356,14 @@ fn colour_only_adds_escapes() {
 
 /// The deletion, stated as a test.
 ///
-/// The port drops `check_python_version` (docs/history/rust-port-plan.md §2.4: the
-/// host no longer needs Python). The fixture records what the Python
-/// printed *and* what it printed minus that one line; this asserts the
-/// difference is exactly one line, that it is the Python-version line,
-/// and that the port emits nothing resembling it.
+/// Earlier releases checked the host for a Python interpreter; that
+/// check is gone, because the host no longer needs one. The fixture
+/// records what the recorded release printed (its `python` key) *and*
+/// what it printed minus that one line; this asserts the difference is
+/// exactly one line, that it is the interpreter-version line, and that
+/// `doctor` emits nothing resembling it.
 #[test]
-fn the_python_version_check_is_gone_and_nothing_else_went_with_it() {
+fn the_interpreter_check_is_gone_and_nothing_else_went_with_it() {
     let doc = fixture();
     let pinned = str_at(&doc, "pinned_python_version");
     for case in cases(&doc) {
@@ -372,7 +373,7 @@ fn the_python_version_check_is_gone_and_nothing_else_went_with_it() {
         let line = dropped[0].as_str().expect("a line");
         assert!(
             line.contains(&format!("Python {pinned}")),
-            "{id}: the dropped line is not the Python-version line: {line:?}"
+            "{id}: the dropped line is not the interpreter-version line: {line:?}"
         );
 
         let full = str_at(&case["python"], "plain");
@@ -380,7 +381,7 @@ fn the_python_version_check_is_gone_and_nothing_else_went_with_it() {
         assert_eq!(
             full.lines().count(),
             expected.lines().count() + 1,
-            "{id}: dropping the Python check removed more than one line"
+            "{id}: dropping the interpreter check removed more than one line"
         );
     }
 
@@ -390,7 +391,7 @@ fn the_python_version_check_is_gone_and_nothing_else_went_with_it() {
         let report = doctor::run(&runner, &host);
         assert!(
             !report.results().any(|r| r.message.starts_with("Python ")),
-            "{}: the port still reports a host Python version",
+            "{}: doctor still reports a host interpreter version",
             str_at(case, "id")
         );
     }

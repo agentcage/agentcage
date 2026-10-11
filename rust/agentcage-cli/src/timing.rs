@@ -1,4 +1,4 @@
-//! Per-phase wall times — the port of `src/agentcage/_timing.py`.
+//! Per-phase wall times.
 //!
 //! Cage creation routes through the VM backend on macOS and takes
 //! 60–180s on a fresh Mac. Without per-phase timings every perf change
@@ -6,7 +6,7 @@
 //! that records `{label, ms, ts}` into a per-cage JSONL ledger, and a
 //! reader for the hidden `--timings` flags.
 //!
-//! Defaults, unchanged from the Python:
+//! Defaults, unchanged from earlier releases:
 //!
 //! * the JSONL append is always on — it is cheap and the directory is
 //!   rotated to a fixed size;
@@ -22,11 +22,11 @@
 //!
 //! # Why the ledger line is assembled by hand
 //!
-//! `serde_json` would write `{"label":"x","ms":1.0,"ts":2.0}`; CPython's
-//! `json.dumps` writes `{"label": "x", "ms": 1.0, "ts": 2.0}`, because
-//! its default separators carry a space. Both parse, and only agentcage
-//! reads these files — but the fixture records the Python's bytes, and
-//! matching them costs one `format!`. The float and string formatting
+//! `serde_json` would write `{"label":"x","ms":1.0,"ts":2.0}`; earlier
+//! releases wrote `{"label": "x", "ms": 1.0, "ts": 2.0}`, with a space
+//! after each separator. Both parse, and only agentcage reads these
+//! files — but the fixture records the spaced bytes, and matching them
+//! costs one `format!`. The float and string formatting
 //! still go through `serde_json`, which is where the hard parts are
 //! (shortest round-trip floats, and `0.0` rather than `0`).
 
@@ -47,9 +47,9 @@ const MAX_FILES_PER_CAGE: usize = 20;
 
 /// `~/.local/share/agentcage`, honouring `XDG_DATA_HOME`.
 ///
-/// Read on every call rather than cached at startup: the Python reads
-/// `os.environ` at import time, but a test that sets `XDG_DATA_HOME` per
-/// case needs the later answer, and the CLI reads it once per process
+/// Read on every call rather than cached at startup: a test that sets
+/// `XDG_DATA_HOME` per case needs the later answer, and the CLI reads it
+/// once per process
 /// either way.
 fn data_dir() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
@@ -66,7 +66,7 @@ fn timings_dir(cage: &str) -> PathBuf {
 
 /// The run file each cage's phases append to, memoized per cage.
 ///
-/// The Python keys this on `(cage, pid)`; a process cannot change its
+/// A process cannot change its
 /// pid, so the cage alone is the key here and the pid stays in the file
 /// name, where it is what makes two concurrent `agentcage` invocations
 /// land in different files.
@@ -108,8 +108,7 @@ fn rotate(dir: &Path, keep: usize) {
 /// Every `*.jsonl` in `dir`, sorted by name.
 ///
 /// The names start with a UTC `%Y%m%dT%H%M%S` stamp, so lexical order is
-/// chronological order — which is what makes "the last one" cheap and
-/// what `sorted(d.glob(...))` relies on in the Python.
+/// chronological order — which is what makes "the last one" cheap.
 fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -169,36 +168,35 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Round to two decimals, as Python's `round(x, 2)`.
+/// Round to two decimals.
 ///
-/// Not bit-for-bit Python: CPython rounds half to even on the decimal
-/// representation, this rounds half away from zero. The two disagree
-/// only on an exact tie in the third decimal place of a measured
-/// duration, which is a value neither implementation can produce on
-/// purpose. Pinned by the fixture's `record-*` cases.
+/// Half away from zero. Earlier releases rounded half to even on the
+/// decimal representation; the two disagree only on an exact tie in the
+/// third decimal place of a measured duration, which is a value no
+/// measurement produces on purpose. Pinned by the fixture's `record-*`
+/// cases.
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
-/// A float as CPython's `repr` writes it inside `json.dumps`.
+/// A float as the ledger has always spelled it.
 ///
-/// `serde_json` and CPython both emit the shortest decimal that round-
-/// trips, and both write an integral float with a trailing `.0` — which
-/// Rust's own `Display` does not (`format!("{}", 0.0)` is `0`). They
-/// diverge only for magnitudes large enough to reach exponent notation,
-/// which a millisecond count and a Unix timestamp do not.
+/// `serde_json` emits the shortest decimal that round-trips and writes
+/// an integral float with a trailing `.0` — which Rust's own `Display`
+/// does not (`format!("{}", 0.0)` is `0`). It would differ from the
+/// recorded files only for magnitudes large enough to reach exponent
+/// notation, which a millisecond count and a Unix timestamp do not.
 fn json_float(value: f64) -> String {
     serde_json::Value::from(value).to_string()
 }
 
-/// A string as CPython's `json.dumps` writes it: quoted, escaped, and
-/// ASCII-only.
+/// A JSON string, quoted, escaped, and ASCII-only.
 ///
-/// `ensure_ascii=True` is the default there and `serde_json` has no
-/// equivalent, so the non-ASCII escaping is done here. Labels are
-/// internal identifiers and have never been anything but ASCII, but a
-/// label reaching this from a cage name would otherwise change the
-/// file's encoding depending on which implementation wrote it.
+/// `serde_json` has no ASCII-only mode, so the non-ASCII escaping is
+/// done here. Labels are internal identifiers and have never been
+/// anything but ASCII, but a label reaching this from a cage name would
+/// otherwise change the file's encoding depending on which release
+/// wrote it.
 fn json_ascii_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -216,8 +214,8 @@ fn json_ascii_string(value: &str) -> String {
             }
             c if c.is_ascii() => out.push(c),
             c => {
-                // Above the BMP CPython emits a surrogate pair, which
-                // is what `encode_basestring_ascii` does.
+                // Above the BMP: a UTF-16 surrogate pair, as JSON's
+                // `\u` escapes require.
                 let mut buf = [0u16; 2];
                 for unit in c.encode_utf16(&mut buf) {
                     let _ = write!(out, "\\u{unit:04x}");
@@ -232,7 +230,7 @@ fn json_ascii_string(value: &str) -> String {
 /// One ledger line, newline included.
 ///
 /// Public because it is the format contract: `tests/fixtures/output/`
-/// records what CPython's `json.dumps` wrote, and `golden_output.rs`
+/// records what earlier releases wrote, and `golden_output.rs`
 /// holds this to it.
 #[must_use]
 pub fn ledger_line(label: &str, ms: f64, ts: f64) -> String {
@@ -264,8 +262,8 @@ fn append(cage: &str, label: &str, ms: f64) {
 /// persisted — for code paths that do not yet know the cage name.
 ///
 /// A guard rather than a `with` block, for the same reason as
-/// [`crate::terminal::RestoredTerminal`]: the Python's `__exit__` runs
-/// when the block raises, and only `Drop` does that in Rust. A phase
+/// [`crate::terminal::RestoredTerminal`]: the record has to be written
+/// when the step fails too, and only `Drop` does that in Rust. A phase
 /// that vanished whenever its step failed would hide exactly the runs
 /// worth looking at.
 #[derive(Debug)]
@@ -305,7 +303,7 @@ impl Drop for Phase {
     }
 }
 
-/// `--time`, which the Python spells `os.environ["AGENTCAGE_TIMING"] = "1"`.
+/// `--time`, the flag form of `AGENTCAGE_TIMING=1`.
 ///
 /// A process-global flag rather than an environment write, for one
 /// reason: `std::env::set_var` is `unsafe` from Rust 2024 on (it races
@@ -342,10 +340,9 @@ pub fn phase_echo_line(label: &str, ms: f64) -> String {
 
 /// One record from a run file.
 ///
-/// Both fields carry a default because the Python reader uses
-/// `r.get("label", "?")` and `r.get("ms", 0)`, and a truncated final
-/// line — a run that was killed mid-write — is exactly the case that
-/// produces one.
+/// Both fields carry a default (`"?"` and `0`), because a truncated
+/// final line — a run that was killed mid-write — is exactly the case
+/// that produces a record missing one.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct Record {
     /// The phase name.
@@ -438,13 +435,12 @@ pub fn summary_lines(records: &[Record]) -> Vec<String> {
     lines
 }
 
-/// `f"{value:.0f}"` — a float to a whole number, ties to even.
+/// A float to a whole number, ties to even.
 ///
-/// Python's format spec rounds half to even, and the summary is full of
-/// values that land on a tie because they came out of `round(ms, 2)`.
+/// The recorded summaries round half to even, and the summary is full of
+/// values that land on a tie because they were rounded to two decimals.
 /// Rust's `{:.0}` rounds half away from zero, so `0.5` would print `1`
-/// where Python prints `0`. Recorded by the fixture's
-/// `summary-rounding` case.
+/// where the recorded output has `0`. Recorded by the fixture's `summary-rounding` case.
 #[allow(clippy::cast_possible_truncation, clippy::float_cmp)]
 fn round_half_even(value: f64) -> i64 {
     let rounded = value.round();
@@ -504,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn round_half_even_matches_pythons_format_spec() {
+    fn round_half_even_rounds_ties_to_even() {
         assert_eq!(round_half_even(0.5), 0);
         assert_eq!(round_half_even(1.5), 2);
         assert_eq!(round_half_even(2.5), 2);
@@ -522,7 +518,7 @@ mod tests {
         assert_eq!(json_ascii_string("nl\n"), "\"nl\\n\"");
         assert_eq!(json_ascii_string("\u{1}"), "\"\\u0001\"");
         assert_eq!(json_ascii_string("caf\u{e9}"), "\"caf\\u00e9\"");
-        // Above the BMP: a surrogate pair, as CPython writes it.
+        // Above the BMP: a surrogate pair.
         assert_eq!(json_ascii_string("\u{1f600}"), "\"\\ud83d\\ude00\"");
     }
 
@@ -586,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ledger_line_keeps_pythons_separators() {
+    fn the_ledger_line_keeps_the_spaced_separators() {
         assert_eq!(
             ledger_line("build.egress", 1234.5678, 1_758_283_200.5),
             "{\"label\": \"build.egress\", \"ms\": 1234.57, \"ts\": 1758283200.5}\n"
@@ -594,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_field_reads_as_the_pythons_default() {
+    fn a_missing_field_reads_as_its_default() {
         let parsed: Record = serde_json::from_str("{}").expect("defaults");
         assert_eq!(parsed.label, "?");
         assert!(parsed.ms.abs() < f64::EPSILON);

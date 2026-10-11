@@ -75,7 +75,7 @@ pub fn resolve_build_args(
 /// The difference from [`resolve_build_args`] is the last case in the
 /// untagged branch: there, an unresolvable ref is left bare; here it
 /// falls back to the stored value. They coincide when the two maps are
-/// the same, but the Python spells them separately and so does this.
+/// the same, but they have always been spelled separately.
 #[must_use]
 pub fn resolve_scaffold_build_args(
     runner: &dyn CommandRunner,
@@ -134,13 +134,13 @@ fn resolve_one(runner: &dyn CommandRunner, current: &str) -> String {
     }
 }
 
-/// `registry.resolve_latest_tag` — the highest version-shaped tag.
+/// The highest version-shaped tag.
 ///
 /// Version-shaped means `^v?\d[\d.]*$`, and an architecture suffix
 /// (`-amd64`, `-arm64`, `-x86_64`, `-aarch64`) disqualifies a tag — but
 /// the arch check runs on the *unfiltered* tag, so it can only ever
 /// exclude something the version pattern already rejected. Kept anyway,
-/// because reproducing the Python is the point.
+/// because the resolved tags are pinned as they have always been.
 #[must_use]
 pub fn resolve_latest_tag(runner: &dyn CommandRunner, image: &str) -> Option<String> {
     let tags = Skopeo::new(runner).list_tags(image).ok()?;
@@ -166,11 +166,11 @@ fn has_arch_suffix(tag: &str) -> bool {
         .any(|suffix| tag.ends_with(suffix))
 }
 
-/// One component of a dotted version, as `registry._version_key` sorts
-/// them: integers compare as integers, everything else as text.
+/// One component of a dotted version, for sorting: integers compare as
+/// integers, everything else as text.
 ///
-/// Python would raise comparing an `int` to a `str`; it never does,
-/// because the caller has already filtered to `^v?\d[\d.]*$`, where
+/// An integer never meets a text component in practice, because the
+/// caller has already filtered to `^v?\d[\d.]*$`, where
 /// every component that is not empty is an integer.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum Part {
@@ -207,13 +207,13 @@ pub fn infer_scaffold_from_image(image: &str) -> Option<String> {
     embedded_scaffolds().into_iter().find(|known| known == name)
 }
 
-/// `init.list_scaffolds`, restricted to what the binary embeds.
+/// The scaffold list, restricted to what the binary embeds.
 ///
-/// The Python globs two sources: `templates/presets/*.yaml.j2` and every
-/// directory on the scaffold search path holding a `cage.yaml.j2`. Both
-/// are reproduced against the embedded trees; what is *not* reproduced
+/// Two sources: `templates/presets/*.yaml.j2` and every
+/// directory on the scaffold search path holding a `cage.yaml.j2`, both
+/// read from the embedded trees. What is *not* consulted
 /// is the project-local `.agentcage/scaffolds` directory, which needs a
-/// `git rev-parse` and belongs to PR D14. This call site only ever asks
+/// `git rev-parse`. This call site only ever asks
 /// "is this name one agentcage ships?", which a project-local scaffold
 /// is not.
 ///
@@ -247,7 +247,7 @@ mod tests {
     use agentcage_exec::{FakeRunner, Reply};
 
     #[test]
-    fn version_tags_are_the_ones_the_python_matches() {
+    fn version_tags_match_the_version_pattern() {
         assert!(is_version_tag("2026.2.24"));
         assert!(is_version_tag("v0.1.2"));
         assert!(is_version_tag("1"));

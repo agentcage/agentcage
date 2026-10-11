@@ -189,11 +189,10 @@ pub(crate) fn list(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 fn run_list(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     let config = open_cage(ctx, name, false)?;
     require_store_backend(&config, name)?;
-    // `secret_list`'s apple branch (`cli.py:4050`). The *table* is the
-    // same one — same classifications, same `MISSING`, same exit 1 —
-    // and only where the present keys come from differs, which is the
-    // shape the Python has and the reason `render` takes a list of
-    // names rather than a podman handle.
+    // The apple branch. The *table* is the same one — same
+    // classifications, same `MISSING`, same exit 1 — and only where the
+    // present keys come from differs, which is the reason `render`
+    // takes a list of names rather than a podman handle.
     let present: Vec<String> = if apple::is_apple_container(&config) {
         apple::secret_names(ctx, &config, name)
     } else {

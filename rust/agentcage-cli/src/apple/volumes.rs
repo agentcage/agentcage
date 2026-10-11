@@ -93,8 +93,8 @@ pub struct VolumeArgv {
 /// # Errors
 ///
 /// [`NonPersistentVolumeError`] when an `np` option is combined with
-/// something it cannot compose with. The Python raises here rather than
-/// warning, and it raises *before* anything else in the loop, so a bad
+/// something it cannot compose with. This is a refusal rather than a
+/// warning, and it happens *before* anything else in the loop, so a bad
 /// `np` spec fails the deploy instead of being quietly dropped.
 pub fn user_volume_argv(
     raw_entries: &[String],

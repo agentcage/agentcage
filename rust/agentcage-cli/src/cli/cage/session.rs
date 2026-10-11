@@ -58,9 +58,8 @@ fn exec_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
     }
 
     // clap makes `COMMAND...` required, so an empty argv cannot reach
-    // here through the parser. The Python checks anyway and so does
-    // this: `cli.py:2549` is the message an operator sees if the
-    // declaration and the body ever disagree.
+    // here through the parser. This checks anyway: it is the message
+    // an operator sees if the declaration and the body ever disagree.
     if command.is_empty() {
         eprintln!("error: no command specified");
         return Err(ExitCode::from(EXIT_FAILURE));
@@ -87,20 +86,19 @@ fn exec_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
             as_root,
         )
         .map_err(|error| {
-            // `BackendUnsupported` in the Python: an unknown
-            // `--service` on the apple backend, or a `container` CLI
+            // An unknown `--service` on the apple backend, or a `container` CLI
             // that is not installed. Both already say what to do.
             eprintln!("error: {error}");
             ExitCode::from(EXIT_FAILURE)
         })?;
     // The container backend runs the session as a *child* whether or
-    // not there is a terminal — `cli.py:2604` reaches `run_interactive`
-    // (and its `execvp`) only for vm and apple-container. Keeping the
+    // not there is a terminal — only vm and apple-container reach
+    // `run_interactive` (and its `execvp`). Keeping the
     // child here is what leaves this process alive to restore the
     // terminal after a full-screen program inside the cage dies with
     // it.
     //
-    // On vm the Python hands the process over: a non-interactive
+    // On vm the process is handed over: a non-interactive
     // `cage exec` becomes the `limactl shell`, so its exit status and
     // its signal disposition are the ssh client's rather than
     // agentcage's. With a terminal `run_interactive` falls back to the
@@ -135,10 +133,9 @@ fn shell_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
         return shell_backend(ctx, &config.isolation, &name, &service, as_root);
     }
 
-    // `cage shell` has no stopped-cage pre-flight in `cli.py` — only
-    // `cage exec` grew one — and adding one here would be a behaviour
-    // change this port is not entitled to make. The podman error the
-    // operator gets instead is the Python's.
+    // `cage shell` has no stopped-cage pre-flight — only `cage exec`
+    // grew one — and adding one here would change pinned behaviour.
+    // The operator gets podman's own error instead.
     let container = format!("{name}-{service}");
     let spec = uid_spec(as_root);
     let shell = detect_shell(ctx, &container, spec);
@@ -156,15 +153,14 @@ fn shell_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
     argv.push(shell);
     // `cage shell` goes through `run_interactive`, which keeps the
     // historical `execvp` hand-off when there is no terminal to
-    // restore. `cli.py:2726` does the same, and a non-interactive
-    // `cage shell` is a scripted `podman exec` either way.
+    // restore; a non-interactive `cage shell` is a scripted
+    // `podman exec` either way.
     Ok(status(terminal::run_interactive(&argv)))
 }
 
 /// `cage shell` on the vm backend — the same probe, wrapped.
 ///
-/// `cli.py:2626`. Two things differ from the container path and both
-/// are the Python's. The probe and the session are both `limactl shell
+/// Two things differ from the container path. The probe and the session are both `limactl shell
 /// --workdir / <instance> -- podman exec …`, because the containers
 /// live in the guest; and `--workdir /` is spelled out here rather than
 /// coming from [`LimaInstance::shell_command`], since the session argv

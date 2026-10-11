@@ -179,14 +179,12 @@ pub(crate) fn restart(ctx: &Ctx, cage: &str) {
 ///
 /// `config_host_path` and `patches_host_dir` are the quadlet path's
 /// arguments and this backend ignores them — it bakes absolute paths
-/// at create time — so they are passed empty, as the Python passes
-/// `""`. The octet arguments are the container backend's shared
+/// at create time — so they are passed empty. The octet arguments are the container backend's shared
 /// `10.89.x` pool, which Apple's per-cage auto-allocated subnets have
 /// no equivalent of.
 ///
 /// A failure is a warning, not a refusal: `restart` has no error
-/// channel and its two file writes above already report this way. The
-/// Python lets the exception propagate into a traceback.
+/// channel and its two file writes above already report this way.
 fn reinstall_apple_units(
     backend: &agentcage_cli::backends::AnyBackend<'_>,
     config: &Config,
@@ -226,7 +224,7 @@ fn reinstall_apple_units(
 /// daemon-reload on the same user systemd instance. e2e phases 3, 5
 /// and 6 run in parallel and would otherwise collide.
 pub(crate) fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<(), String> {
-    // apple-container is excluded, in the Python and here, because its
+    // apple-container is excluded because its
     // `generate_units` output is a metadata snapshot tied to the build
     // pipeline and its `start()` already reads live state.
     //
@@ -315,21 +313,19 @@ pub(crate) fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<()
     Ok(())
 }
 
-/// `cli._installed_unit_matches` — is `filename` already on disk with
+/// Is `filename` already on disk with
 /// exactly this content?
 ///
 /// Two candidate locations, both under the quadlet directory: the file
 /// itself, and a `quadlets/` subdirectory some installations use.
 ///
-/// A divergence worth naming, because it is the Python's and is
-/// reproduced rather than fixed: `install_units` writes a plain
+/// A quirk worth naming, kept from earlier releases rather than fixed: `install_units` writes a plain
 /// `.service` unit to the *systemd user* directory, and this looks for
 /// it in the quadlet directory, so such a unit never matches and forces
 /// a reinstall. The container backend emits no `.service` units today —
 /// the one it used to emit, the grants watcher, is what
 /// `legacy_watcher` removes — so the branch is unreachable in practice.
-/// Correcting it here would make this the one place in the port that
-/// decides where a unit lives, which is `agentcage_state::Units`'s job.
+/// Correcting it here would make this the one place that decides where a unit lives, which is `agentcage_state::Units`'s job.
 fn installed_matches(dir: &std::path::Path, filename: &str, content: &str) -> bool {
     [dir.join(filename), dir.join("quadlets").join(filename)]
         .iter()

@@ -1,7 +1,7 @@
 //! The vm fixtures, against [`VmBackend::generate_units`].
 //!
-//! `tests/fixtures/vm/` records what the Python's
-//! `backends/vm.py::VmBackend.generate_units` returned for ten cages:
+//! `tests/fixtures/vm/` records what an earlier release's vm backend
+//! rendered for ten cages:
 //! the Lima YAML, every quadlet, the dict order, the stderr, and — for
 //! the one case that raises — the `ValueError` a user would see. This
 //! reproduces all of it byte for byte, which is PR E1's acceptance
@@ -406,7 +406,7 @@ fn every_case_reproduces_its_units() {
             }
         }
 
-        // The warnings are the Python's stderr, and they are what an
+        // The warnings are the recorded stderr, and they are what an
         // operator sees when a volume is skipped — byte-exact too.
         let expected_warnings = read(&directory.join("render-warnings.txt"));
         let mut actual_warnings = String::new();
@@ -462,9 +462,9 @@ fn every_case_reproduces_its_units() {
 ///
 /// `cage update` fingerprints the parsed config and re-renders from it;
 /// a floor that mutated it in place would make the second render differ
-/// from the first and report a change that is not one. The Python takes
-/// a `copy.deepcopy` for this reason and `test_vm_backend.py` pins the
-/// resulting `TimeoutStartSec`, but not the absence of the mutation.
+/// from the first and report a change that is not one. This pins
+/// the absence of the mutation, not just the resulting
+/// `TimeoutStartSec`.
 #[test]
 fn the_floor_does_not_reach_the_callers_config() {
     let _serialised = exclusive();

@@ -1,4 +1,4 @@
-//! `apple_container/wrapper.py` — the per-cage wrapper image.
+//! The per-cage apple-container wrapper image.
 //!
 //! The wrapper is `FROM <user image>` plus two scripts: `cage-init.sh`,
 //! which becomes PID 1 of the cage microVM, and `cage-cmd.sh`, which
@@ -12,12 +12,12 @@
 //! The legacy wrapper shipped `cage-cmd.json` and parsed it in-guest
 //! with `jq` at boot. That made the cage's entrypoint a string the
 //! guest had to interpret, which is an argv-injection surface for any
-//! `container.command` carrying a shell metacharacter. The Python
-//! instead `shlex.quote`s each element host-side and writes
+//! `container.command` carrying a shell metacharacter. Instead each
+//! element is shell-quoted host-side by [`shlex_join`] and written as
 //! `exec <quoted argv>` into a `/bin/sh` script with a `RUN` heredoc,
-//! so the guest parses nothing. [`shlex_join`] is that quoting, and it
-//! is [`agentcage_core::quadlets::shlex_quote`] — the same function the
-//! quadlet backend's mask hooks use, because it is the same `shlex`.
+//! so the guest parses nothing. The per-element quoting is
+//! [`agentcage_core::quadlets::shlex_quote`] — the same function the
+//! quadlet backend's mask hooks use.
 
 use std::path::Path;
 
@@ -43,7 +43,7 @@ pub fn wrapped_image_name(cage: &str) -> String {
     format!("localhost/agentcage-apple-{cage}:latest")
 }
 
-/// `_shlex_join_argv` — shell-escape each element and join with spaces.
+/// Shell-escape each element and join with spaces.
 #[must_use]
 pub fn shlex_join(argv: &[String]) -> String {
     argv.iter()
@@ -52,14 +52,13 @@ pub fn shlex_join(argv: &[String]) -> String {
         .join(" ")
 }
 
-/// `_user_cmd` — the user image's effective CMD (`ENTRYPOINT` + `CMD`).
+/// The user image's effective CMD (`ENTRYPOINT` + `CMD`).
 ///
 /// Apple's `container image inspect` answers with the OCI image index
 /// plus a per-platform variant block, and the OCI config sits at
 /// `variants[<platform>].config.config` with capitalized keys. The
 /// arm64 variant wins; the first variant is the fallback, and three
-/// older/flatter schemas are tried after that, exactly as the Python
-/// does.
+/// older/flatter schemas are tried after that.
 ///
 /// # Errors
 ///
@@ -98,7 +97,7 @@ pub fn user_cmd(
     Ok(combined)
 }
 
-/// The OCI config block, across the four schemas the Python tries.
+/// The OCI config block, across the four schemas tried.
 fn image_config(data: &Value) -> Option<Value> {
     if let Some(variants) = data
         .get("variants")
@@ -112,10 +111,10 @@ fn image_config(data: &Value) -> Option<Value> {
                 .and_then(Value::as_str)
                 == Some("arm64")
         });
-        // `cfg = ((v["config"] or {})["config"]) or {}` — an empty map
-        // when the keys are absent, which is *not* the same as falling
-        // through to the flatter schemas below. The Python only tries
-        // those when no variants list was found at all.
+        // An empty map when the variant's `config.config` is absent,
+        // which is *not* the same as falling through to the flatter
+        // schemas below: those are tried only when no variants list was
+        // found at all.
         if let Some(variant) = arm64.or_else(|| variants.first()) {
             return Some(
                 variant
@@ -133,8 +132,8 @@ fn image_config(data: &Value) -> Option<Value> {
         .cloned()
 }
 
-/// Python's `[x] if isinstance(x, str) else (x or [])`, for a JSON
-/// value that should be an argv.
+/// A JSON value that should be an argv: a lone string becomes a
+/// one-element list, a missing or empty value an empty one.
 fn string_list(value: Option<&Value>) -> Vec<String> {
     match value {
         Some(Value::String(one)) => vec![one.clone()],
@@ -170,13 +169,11 @@ pub fn render_wrapper_containerfile(
     .map_err(|error| format!("could not render {WRAPPER_TEMPLATE}: {error}"))
 }
 
-/// `stage_build_context` — `cage-init.sh`, and nothing else.
+/// Stage the build context: `cage-init.sh`, and nothing else.
 ///
 /// The 2-microVM refactor moved every other file the legacy context
-/// carried into the egress image or onto the host bind mounts, so the
-/// Python's remaining body is a single `shutil.copy2`. Its back-compat
-/// keyword arguments are not reproduced: there is no caller here that
-/// could pass them.
+/// carried into the egress image or onto the host bind mounts, so all
+/// that is left is a single copy.
 ///
 /// # Errors
 ///
@@ -291,7 +288,7 @@ mod tests {
         assert!(string_list(None).is_empty());
     }
 
-    /// The whitespace settings are the Python's, so the rendered file
+    /// The template's whitespace settings are pinned, so the rendered file
     /// opens with the blank line the comment block leaves behind.
     #[test]
     fn the_render_keeps_the_comment_blocks_newline() {

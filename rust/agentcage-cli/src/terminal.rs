@@ -1,4 +1,4 @@
-//! Host terminal hygiene — the port of `src/agentcage/terminal.py`.
+//! Host terminal hygiene.
 //!
 //! `cage exec` / `cage shell` hand the operator's terminal to a program
 //! running *inside* the cage. Full-screen programs in there — pi, claude,
@@ -35,8 +35,8 @@
 //!
 //! What it does **not** cover is a signal that kills the process
 //! outright: `SIGKILL`, or `SIGTERM` with no handler. There is no
-//! portable, async-signal-safe way to restore a terminal from there, and
-//! the Python does not try either. `SIGINT` *is* covered, because it is
+//! portable, async-signal-safe way to restore a terminal from there, so
+//! this does not try. `SIGINT` *is* covered, because it is
 //! the one a user actually sends — see [`RestoredTerminal::new`].
 //!
 //! # No TUI crate
@@ -44,8 +44,8 @@
 //! `crossterm` and friends bring their own escape sequences, their own
 //! idea of which modes to reset, and their own restoration policy. This
 //! module's requirement is the opposite of "sensible defaults": the
-//! bytes have to be the same bytes the Python wrote, in the same order,
-//! because that list was assembled against real terminals and the Kitty
+//! bytes have to be the same bytes earlier releases wrote, in the same
+//! order, because that list was assembled against real terminals and the Kitty
 //! pop in particular is not something a general-purpose crate emits.
 //! `nix` is the dependency, and it only wraps the termios syscalls.
 
@@ -66,7 +66,7 @@ use nix::sys::termios::{self, SetArg, Termios};
 /// not implement the corresponding protocol, since an unknown CSI
 /// sequence is ignored.
 ///
-/// Byte-identical to the Python CLI's `RESTORE_SEQUENCE` (pinned by
+/// Byte-identical to the sequence earlier releases sent (pinned by
 /// `is_pinned_byte_for_byte` below), and deliberately *not* including `\x1b[?1049l`: DECRST 1049 on a terminal that is not
 /// in the alternate screen also performs DECRC, which on some emulators
 /// homes the cursor over the prompt. Not worth it for a mode our own
@@ -90,12 +90,9 @@ pub const RESTORE_SEQUENCE: &[u8] = b"\x1b[<u\
 /// (`-it`) — and therefore whether the program inside the cage can have
 /// touched the host terminal at all.
 ///
-/// The Python deliberately asks `sys.stdin`, not fd 0, because click's
-/// `CliRunner` and pytest swap `sys.stdin` for a non-tty object while
-/// leaving fd 0 attached to the developer's terminal. Rust has no such
-/// indirection to swap, so the same protection comes from the API
-/// instead: every entry point here takes the terminal explicitly, and
-/// only [`run_interactive`] consults this.
+/// A test must not be able to reach the developer's real terminal
+/// through this, so every entry point here takes the terminal
+/// explicitly, and only [`run_interactive`] consults this.
 #[must_use]
 pub fn is_interactive() -> bool {
     io::stdin().is_terminal()
@@ -172,16 +169,14 @@ static OUTSIDE_SESSION: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 ///
 /// # Why it is not `SIG_IGN`
 ///
-/// The Python installs a no-op Python handler and says why in a comment:
 /// `SIG_IGN` survives `exec`, so the program inside the cage would
 /// inherit it and Ctrl-C would be silently dead *inside* the session.
 /// A handled signal is reset to its default on `exec`, so a handler is
-/// the only shape that stays out of the child's way. That applies
-/// unchanged here.
+/// the only shape that stays out of the child's way.
 ///
-/// # What differs from the Python
+/// # Why the previous handler is not restored
 ///
-/// The Python saves the previous handler and puts it back. Restoring a
+/// Restoring a
 /// disposition needs `sigaction`, which `nix` exposes as an `unsafe fn`
 /// and this workspace forbids. `signal-hook` gets to the same place by a
 /// different route: the action is installed once, for the life of the
@@ -190,10 +185,8 @@ static OUTSIDE_SESSION: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 /// which for SIGINT resets the disposition and re-raises — so the
 /// process dies exactly as it would with no handler at all.
 ///
-/// The observable difference is that a Rust CLI dies *by the signal*
-/// where CPython raised `KeyboardInterrupt` and unwound. That is the
-/// right analogue: each language's default is preserved, not CPython's
-/// grafted onto Rust.
+/// So a Ctrl-C outside a session kills the CLI *by the signal*, which
+/// is the process default; nothing unwinds.
 #[derive(Debug)]
 struct SigintDiversion {
     /// `false` when the action could not be installed, so `Drop` does
@@ -208,8 +201,7 @@ impl SigintDiversion {
             // Failure here means the process cannot install signal
             // actions at all. Nothing useful to do about it: the
             // session still has to run, and Ctrl-C keeps whatever
-            // behaviour it had. The Python is no better off — it lets
-            // the `ValueError` propagate out of a `cage shell`.
+            // behaviour it had.
             let _ = signal_hook::flag::register_conditional_default(
                 signal_hook::consts::SIGINT,
                 Arc::clone(&flag),
@@ -257,7 +249,7 @@ pub struct RestoredTerminal<F: AsFd> {
     /// is one we decline to write attributes back to, rather than one we
     /// guess at. The escape sequence is still sent.
     saved: Option<Termios>,
-    /// Dropped first, to match the Python's `finally` order.
+    /// Dropped first; see the `Drop` impl for the order.
     sigint: Option<SigintDiversion>,
 }
 
@@ -285,7 +277,7 @@ impl<F: AsFd> RestoredTerminal<F> {
 
 impl<F: AsFd> Drop for RestoredTerminal<F> {
     fn drop(&mut self) {
-        // Order matches the Python's `finally` block: signal handler
+        // Signal handler
         // first, then the attributes, then the escape sequence. The
         // sequence goes last because it is the part that has to survive
         // a terminal still draining the session's output —
@@ -297,8 +289,7 @@ impl<F: AsFd> Drop for RestoredTerminal<F> {
         if let Some(saved) = &self.saved {
             // A failure here is not actionable and must not mask the
             // escape sequence below, which is the half that fixes
-            // Kitty mode. The Python swallows `termios.error` for the
-            // same reason.
+            // Kitty mode.
             let _ = termios::tcsetattr(self.fd.as_fd(), SetArg::TCSADRAIN, saved);
         }
 
@@ -317,8 +308,7 @@ impl<F: AsFd> Drop for RestoredTerminal<F> {
 /// Guard the controlling terminal, if this session has one.
 ///
 /// `None` when stdin is not a terminal or no standard stream is one —
-/// the Python's two early `yield`s, which make the context manager a
-/// no-op rather than an error.
+/// either makes the guard a no-op rather than an error.
 #[must_use]
 pub fn restored_terminal() -> Option<RestoredTerminal<Tty>> {
     session_tty().map(RestoredTerminal::new)
@@ -333,9 +323,8 @@ pub fn restored_terminal() -> Option<RestoredTerminal<Tty>> {
 /// hand-off saw the latter, so keep it.
 ///
 /// Kept as a function over a plain `i32` — rather than folded into
-/// [`exit_status_of`] — because it is the Python's contract, and the
-/// table `tests/test_terminal.py` asserts it against transfers straight
-/// over.
+/// [`exit_status_of`] — because the negative-return-code form is the
+/// contract the tests' table is written against.
 #[must_use]
 pub fn exit_status(returncode: i32) -> i32 {
     if returncode < 0 {
@@ -348,8 +337,8 @@ pub fn exit_status(returncode: i32) -> i32 {
 /// The same mapping, from a Rust [`ExitStatus`].
 ///
 /// Rust does not use the negative-return-code convention: a signalled
-/// child has `code() == None` and a `signal()`. Converting to the Python
-/// convention first keeps one implementation of the arithmetic.
+/// child has `code() == None` and a `signal()`. Converting to the
+/// `-signum` convention first keeps one implementation of the arithmetic.
 #[must_use]
 pub fn exit_status_of(status: &ExitStatus) -> i32 {
     match status.code() {
@@ -365,9 +354,6 @@ pub fn exit_status_of(status: &ExitStatus) -> i32 {
 #[derive(Debug)]
 pub enum SessionError {
     /// An argument contained a NUL byte, so it cannot become a C string.
-    ///
-    /// The Python raises `ValueError` from `os.execvp` for the same
-    /// input.
     NulInArgument(NulError),
     /// `execvp` failed — almost always "no such program".
     Exec(nix::errno::Errno),
@@ -399,11 +385,10 @@ impl std::error::Error for SessionError {}
 /// client runs as a child so that the CLI is still alive to clean up
 /// once the session ends — however it ends.
 ///
-/// # Where this differs from the Python
+/// # Why it returns rather than exits
 ///
 /// `run_interactive` returns the status instead of exiting the process
-/// with it. `sys.exit` inside the Python is caught by click and turned
-/// into an exit code; in Rust, `std::process::exit` **skips every
+/// with it: `std::process::exit` **skips every
 /// destructor**, which in this module is the whole point — the guard
 /// above it would not have run. So the exit belongs to the caller, after
 /// this has returned and the guard has done its work.
@@ -428,8 +413,8 @@ pub fn run_interactive(argv: &[String]) -> Result<i32, SessionError> {
 /// Replace this process with `argv`.
 ///
 /// `os.execvp`, and it only returns when the exec failed — hence a bare
-/// [`SessionError`] rather than a `Result`. The Python reaches for this
-/// wherever the CLI has nothing left to do after handing off: a
+/// [`SessionError`] rather than a `Result`. The CLI reaches for this
+/// wherever it has nothing left to do after handing off: a
 /// non-interactive session, and every `cage logs` stream that needs no
 /// client-side filtering, where it is also what gives `journalctl -f`
 /// its native Ctrl-C.
@@ -456,8 +441,7 @@ pub fn exec_replacing(argv: &[String]) -> SessionError {
 
 /// The terminal a session should guard, or `None`.
 ///
-/// The two early `yield`s of the Python's context manager, as a value:
-/// no terminal on stdin means nothing inside the cage can have touched
+/// No terminal on stdin means nothing inside the cage can have touched
 /// the host terminal, and no standard stream being a terminal means
 /// there is nothing to write the restore sequence to.
 #[must_use]

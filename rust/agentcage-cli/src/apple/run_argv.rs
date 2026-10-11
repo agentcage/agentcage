@@ -151,8 +151,7 @@ pub fn egress_argv(
     }
     argv.push("-e".to_owned());
     argv.push(format!("AGENTCAGE_VERSION={version}"));
-    // The CA subject's cage name (the Rust egress; the Python one
-    // ignores it).
+    // The CA subject's cage name.
     argv.push("-e".to_owned());
     argv.push(format!("AGENTCAGE_CAGE_NAME={name}"));
     // The upstreams for policy-api granted zones. Same env as
@@ -964,7 +963,7 @@ mod tests {
         assert!(pairs(&argv, "--memory").is_empty(), "{argv:?}");
         assert!(pairs(&argv, "--cpus").is_empty(), "{argv:?}");
 
-        // A zero `cpus` is falsy in the Python's `not in (None, "", 0)`.
+        // A zero `cpus` counts as unset, like a missing or empty one.
         let argv = run(r#"{"cpus": 0}"#);
         assert!(pairs(&argv, "--cpus").is_empty(), "{argv:?}");
     }

@@ -61,11 +61,10 @@ fn expectation(case: &Value) -> Result<Vec<String>, String> {
     }
 }
 
-/// The Python renders a `BackendUnsupported` as
-/// `"<ExceptionType>: <message>"`; the Rust error's `Display` is the
-/// message alone, because it is not an exception and `agentcage-core`
-/// prints nothing.
-fn as_python(error: &AppleArgvError) -> String {
+/// The fixtures record a `BackendUnsupported` as
+/// `"<ExceptionType>: <message>"`; the error's `Display` is the
+/// message alone, because `agentcage-core` prints nothing.
+fn as_recorded(error: &AppleArgvError) -> String {
     format!("BackendUnsupported: {error}")
 }
 
@@ -104,7 +103,7 @@ fn every_recorded_exec_argv_is_reproduced() {
             case["as_root"].as_bool().expect("as_root"),
             &placeholders,
         )
-        .map_err(|error| as_python(&error));
+        .map_err(|error| as_recorded(&error));
         assert_eq!(
             produced,
             expectation(case),
@@ -122,7 +121,7 @@ fn every_recorded_logs_argv_is_reproduced() {
     let recorded = cases(&fixture, "logs_argv");
     for case in recorded {
         // `lines` and `min_level` are recorded but have no parameter:
-        // Apple's `container logs` accepts neither, and the Python
+        // Apple's `container logs` accepts neither, and the backend
         // takes them only for protocol parity. Asserting that the
         // recorded argv ignores them is the whole point of those cases.
         let produced = logs_argv(
@@ -131,7 +130,7 @@ fn every_recorded_logs_argv_is_reproduced() {
             &strings(&case["services"]),
             case["follow"].as_bool().expect("follow"),
         )
-        .map_err(|error| as_python(&error));
+        .map_err(|error| as_recorded(&error));
         assert_eq!(
             produced,
             expectation(case),

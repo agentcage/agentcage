@@ -24,9 +24,8 @@
 //!
 //! Both copies need a stored `cage.yaml`, which `cage create` writes
 //! before `build_artifacts` runs — so on the happy path it is there.
-//! When it is not, the Python catches `FileNotFoundError` and writes a
-//! minimal config inline instead. That branch is reproduced rather than
-//! tidied away, because it is reachable (a test, a partial create) and
+//! When it is not, a minimal config is written inline instead. That
+//! branch is kept rather than tidied away, because it is reachable (a test, a partial create) and
 //! because what it *omits* matters: no `agentcage_version` stamp, no
 //! passthrough list, no inspectors, no secret-injection rules. An egress
 //! started against it enforces `domains.allow` and nothing else.

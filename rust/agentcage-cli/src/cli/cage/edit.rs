@@ -8,16 +8,13 @@
 //! atomic, and the operator is then told which of their changes applied
 //! live and which need a restart or a rebuild.
 //!
-//! # The editor seam is `click.edit`, not the `$EDITOR` dance
-//! `scaffold edit` does
+//! # `cage edit` and `scaffold edit` pick the editor differently
 //!
-//! Two different behaviours in the Python, reproduced separately rather
-//! than unified:
+//! Two different behaviours, kept separate rather than unified:
 //!
 //! * `scaffold edit` reads `EDITOR` then `VISUAL` and opens the
 //!   scaffold's file **in place**;
-//! * `cage edit` is `click.edit(text=…, require_save=True)`, which
-//!   prefers **`VISUAL` over `EDITOR`**, falls back to
+//! * `cage edit` prefers **`VISUAL` over `EDITOR`**, falls back to
 //!   `sensible-editor` / `vim` / `nano` / `vi`, edits a *copy* in a
 //!   temporary file, and treats "mtime unchanged" as "the operator
 //!   quit without saving".
@@ -25,8 +22,8 @@
 //! The order really is opposite between the two commands. Unifying them
 //! would be a behaviour change dressed as tidying.
 //!
-//! The mtime dance is click's and is not superstition: it backdates the
-//! temp file by two seconds before launching the editor, because a
+//! The mtime dance is not superstition: it backdates the temp file by
+//! two seconds before launching the editor, because a
 //! filesystem with 1- or 2-second timestamp resolution plus an editor
 //! that exits quickly would otherwise look like "no change" and discard
 //! the operator's work.
@@ -231,15 +228,11 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
         }
     };
 
-    // Validate through the real loader. The Python writes `rendered` to
-    // a temporary file inside the state directory because `load_config`
-    // takes a path; `config::load` takes the text, so there is no temp
-    // file to create, fail to clean up, or leak into the state tree.
-    //
-    // One visible consequence, and it is an improvement: a parse-stage
-    // message that embeds its source now names the cage's own
-    // `cage.yaml` instead of a temporary filename that has already been
-    // deleted by the time the operator reads it.
+    // Validate through the real loader. `config::load` takes the text,
+    // so there is no temp file to create, fail to clean up, or leak into
+    // the state tree, and a parse-stage message that embeds its source
+    // names the cage's own `cage.yaml`. (Earlier releases validated a
+    // temporary copy and named that instead.)
     let host = agentcage_cli::hostenv::RealHost;
     let config: Config = match config::load(&config_path.display().to_string(), &rendered, &host) {
         Ok(config) => config,
@@ -572,7 +565,7 @@ fn filetime_set(_path: &Path, _when: SystemTime) -> std::io::Result<()> {
 /// `difflib.unified_diff(..., lineterm="\n")` over whole lines.
 ///
 /// The header is difflib's: `--- fromfile` / `+++ tofile`, with no
-/// trailing tab-date because the Python passes no `fromfiledate`.
+/// trailing tab-date.
 /// Hunks are `@@ -l,s +l,s @@` with three lines of context.
 ///
 /// **One documented divergence.** difflib groups its opcodes with
@@ -775,7 +768,7 @@ mod tests {
     }
 
     /// A key added or removed counts as changed, not just one whose
-    /// value moved — `set(before) | set(after)` in the Python.
+    /// value moved — the union of both key sets.
     #[test]
     fn an_added_or_removed_key_counts() {
         let c = classify_changes(&doc("name: x\n"), &doc("name: x\ncapture: {}\n"));
@@ -811,8 +804,8 @@ mod tests {
         );
     }
 
-    /// No change is the empty string, not a bare header — the Python
-    /// guards on `if diff:` and prints nothing.
+    /// No change is the empty string, not a bare header, so nothing is
+    /// printed.
     #[test]
     fn an_unchanged_document_has_no_diff() {
         assert_eq!(unified_diff("a\nb\n", "a\nb\n", "f", "t"), "");

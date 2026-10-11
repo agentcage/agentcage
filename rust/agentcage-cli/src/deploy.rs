@@ -1,11 +1,10 @@
-//! The half of `cli.py` that decides whether a `cage update` has
-//! anything to do.
+//! Deciding whether a `cage update` has anything to do.
 //!
 //! `cage update` must be a **no-op when nothing changed** — that is what
 //! `fingerprint.json` exists for, and it is the cutover's acceptance
-//! check (docs/history/rust-port-plan.md Track F, F2). PR C4 ported the hash itself
-//! and matched every corpus case; what lives here is the part that
-//! gathers the five inputs, which is where a port goes wrong silently:
+//! check. The hash itself lives in `agentcage-core` and matches every
+//! corpus case; what lives here is the part that
+//! gathers the five inputs, which is where it goes wrong silently:
 //! a digest computed over the wrong image set still *looks* like a
 //! fingerprint, it just never matches twice.
 //!
@@ -31,7 +30,7 @@ use crate::backends::AnyBackend;
 
 // ── image identities ─────────────────────────────────────────
 
-/// `cli._image_identity` — a stable content identity from an inspect.
+/// A stable content identity from an inspect.
 ///
 /// Digests before ids, and a sorted JSON array of `RepoDigests` before
 /// either: a locally built image has no digest at all, and an image
@@ -46,8 +45,8 @@ pub fn image_identity(inspect: Option<&serde_json::Value>) -> String {
             if !values.is_empty() {
                 let mut strings: Vec<String> = values.iter().map(value_to_str).collect();
                 strings.sort();
-                // `json.dumps(sorted(...))` — Python's default
-                // separators put a space after each comma.
+                // Spaced JSON, as earlier releases wrote it into
+                // `fingerprint.json`: a space after each comma.
                 return serde_json::to_string(&strings)
                     .unwrap_or_default()
                     .replace("\",\"", "\", \"");
@@ -180,7 +179,7 @@ fn parse_from(line: &str) -> Option<(String, Option<String>)> {
     }
     let mut tokens = rest.split_whitespace();
     let mut reference = tokens.next()?;
-    // A single optional `--flag`, as the Python's regex allows.
+    // A single optional `--flag`.
     if reference.starts_with("--") {
         reference = tokens.next()?;
     }
@@ -298,8 +297,8 @@ pub fn update_image_digests(
 /// `fingerprint.scaffold_context_version` — the I/O half.
 ///
 /// The digest itself is [`scaffold_context_digest`]; this is the
-/// directory walk the pure crate cannot do. The three special answers
-/// are the Python's: `""` for a cage with no Containerfile, `"missing"`
+/// directory walk the pure crate cannot do. The three answers are
+/// fixed by stored fingerprints: `""` for a cage with no Containerfile, `"missing"`
 /// for a root that is not a directory, and the digest otherwise.
 #[must_use]
 pub fn scaffold_context_version(state_dir: &Path, containerfile: &str) -> String {
@@ -344,7 +343,7 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
         if is_state_artifact(&relative) {
             continue;
         }
-        // `path.is_file()` follows symlinks, as the Python's does.
+        // `path.is_file()` follows symlinks.
         if path.is_dir() {
             collect_files(root, &path, out);
         } else if path.is_file() {
@@ -443,12 +442,12 @@ pub fn update_fingerprint(
             Some(&used),
             network_octet,
         )?;
-        // The Python's `generate_quadlets` writes these to stderr
-        // itself, so they appear once here on a no-op update and twice
+        // The render's warnings go to stderr here, so they appear once
+        // on a no-op update and twice
         // on a real one (preflight, then the deploy's own render).
-        // Reproduced rather than deduplicated: a warning the operator
-        // saw under Python and not under Rust is a regression in the
-        // only output this path has.
+        // Kept rather than deduplicated: a warning the operator
+        // saw from an earlier release and no longer sees is a
+        // regression in the only output this path has.
         for warning in &rendered.warnings {
             eprintln!("{warning}");
         }

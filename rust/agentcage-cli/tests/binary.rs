@@ -178,8 +178,8 @@ fn doctor_runs_for_real() {
         "doctor wrote to stderr: {}",
         stderr(&out)
     );
-    // The check the port deletes: docs/history/rust-port-plan.md §2.4 makes "no host
-    // Python" an invariant, so `doctor` must not go looking for one.
+    // A host interpreter is not a dependency, so `doctor` must not go
+    // looking for one (earlier releases reported a version line).
     assert!(
         !text.contains("Python"),
         "doctor still reports a host Python version:\n{text}"
@@ -413,7 +413,7 @@ fn the_ported_commands_are_wired_up() {
 }
 
 /// A command that names a cage which does not exist refuses with the
-/// Python's message and exit 1 — not with the stub's 70.
+/// pinned message and exit 1 — not with the stub's 70.
 #[test]
 fn an_unknown_cage_is_refused_rather_than_stubbed() {
     let dir = agentcage_state::TestDir::new("binary-unknown");
@@ -459,7 +459,7 @@ fn destroying_an_absent_cage_is_a_reported_no_op() {
 }
 
 /// `cage create` with neither a positional config nor `-c` is the
-/// Python's own error, not clap's usage message.
+/// CLI's own error, not clap's usage message.
 #[test]
 fn create_without_a_config_names_both_ways_to_give_one() {
     let dir = agentcage_state::TestDir::new("binary-create");
@@ -831,7 +831,7 @@ fn logs_forwards_journalctls_own_status() {
 /// on a cage whose secret was present and whose `secret list` said
 /// `ok` — two commands disagreeing about the same cage, with the wrong
 /// one being the reassuring-looking summary. Observed against a real
-/// cage before the fix, where the Python answered `1/1`.
+/// cage before the fix, where an earlier release answered `1/1`.
 ///
 /// `backend: plaintext` keeps this to a file in the cage's own state
 /// directory, so the test never reaches the macOS keychain — and so it

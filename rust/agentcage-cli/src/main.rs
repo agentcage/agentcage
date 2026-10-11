@@ -16,10 +16,7 @@
 //!
 //! # What lives here now
 //!
-//! The clap command tree — see [`cli`], which replaces `cli.py`'s 5,632
-//! lines with one module per command group. PR D5 built the whole parse
-//! surface and wired every command to a stub; D6–D16 fill the bodies in,
-//! each gated on the e2e phase that already covers it.
+//! The clap command tree — see [`cli`], one module per command group.
 //!
 //! `main` itself stays this short on purpose. Decide first, print last:
 //! the tree and the dispatch are testable without spawning a process,

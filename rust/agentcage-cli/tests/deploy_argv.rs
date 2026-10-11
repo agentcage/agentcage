@@ -103,7 +103,7 @@ fn deploy(paths: &Paths, fake: &FakeRunner, config: &Config, network_octet: Opti
 
 /// The whole sequence, exactly.
 #[test]
-fn the_deploy_sequence_is_the_pythons() {
+fn the_deploy_sequence_is_pinned() {
     let dir = TestDir::new("deploy-argv");
     let paths = Paths::under(dir.path());
     let fake = FakeRunner::new();
@@ -113,8 +113,8 @@ fn the_deploy_sequence_is_the_pythons() {
 
     // The egress build. Its `-f` and context arguments are absolute
     // paths into the asset cache -- the one structural difference from
-    // the Python (§2.1), where the package's own `data/` directory is
-    // already on disk -- so they are checked by shape and the rest of
+    // earlier releases, whose package `data/` directory was already
+    // on disk -- so they are checked by shape and the rest of
     // the line byte for byte.
     let build = fake.argv(0);
     let containerfile = build[5].clone();
@@ -161,7 +161,7 @@ fn the_deploy_sequence_is_the_pythons() {
     let rest: Vec<Vec<String>> = fake.argv_sequence().into_iter().skip(1).collect();
     let expected = [
         // `rootless=` comes from here, and it defaults to true when the
-        // key is absent -- as the Python's chained `.get`s do.
+        // key is absent -- as it always has.
         vec!["podman", "info", "--format", "json"],
         // The store-aware `Secret=` probe (issue #262), before the
         // render rather than after it.

@@ -8,9 +8,8 @@
 //!
 //! This is the other reader. It cannot import click, so reproducing
 //! these bytes is the whole proof that the escapes, the padding and the
-//! stream choice survived the port. `tests/test_output_fixture.py` is
-//! the Python half; between them, an undeclared change to what a user
-//! sees breaks one side or the other.
+//! stream choice survived the port. An undeclared
+//! change to what a user sees breaks this file.
 //!
 //! The two modes are asserted separately and both matter. `color` is
 //! what the styling functions return; `plain` is what
@@ -68,7 +67,7 @@ fn echoed(line: &str, color: bool) -> String {
 
 /// Every `kind: "value"` case: the styling functions' return values.
 #[test]
-fn styled_values_match_the_python() {
+fn styled_values_match_the_fixture() {
     let doc = fixture("styled");
     let mut checked = 0;
     for case in cases(&doc) {
@@ -97,7 +96,7 @@ fn styled_values_match_the_python() {
 
 /// Every `kind: "echo"` case: the helpers that print, on both streams.
 #[test]
-fn styled_lines_match_the_python() {
+fn styled_lines_match_the_fixture() {
     let doc = fixture("styled");
     let mut checked = 0;
     for case in cases(&doc) {
@@ -176,7 +175,7 @@ fn records(case: &Value) -> Vec<timing::Record> {
 
 /// The `--timings` phase table, and the ledger line behind it.
 #[test]
-fn timing_output_matches_the_python() {
+fn timing_output_matches_the_fixture() {
     let doc = fixture("timings");
     let mut checked = 0;
     for case in cases(&doc) {

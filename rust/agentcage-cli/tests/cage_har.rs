@@ -1,8 +1,8 @@
-//! `cage har` against the Python's own recordings.
+//! `cage har` against recordings of an earlier release.
 //!
 //! `tests/fixtures/cage-har/cases.json` is 26 runs of the real
-//! `agentcage cage har` over a throwaway copy of PR A7's frozen 0.40.1
-//! state, recorded by `scripts/gen-cage-har-fixture.py`: argv, the setup
+//! `agentcage cage har` over a throwaway copy of the frozen 0.40.1
+//! state fixture, recorded from that release: argv, the setup
 //! each one needed, the exit status, stdout, stderr, and the file any
 //! `-o` wrote. This replays every one of them through
 //! [`agentcage_cli::har::run`] and compares all four outputs byte for
@@ -12,10 +12,10 @@
 //!
 //! Two of the four are JSON and it would be easy to parse both sides and
 //! compare values. That would throw away the thing being tested.
-//! `cli.py:3101` is `json.dumps(har, indent=2)` — Python **insertion
-//! order**, `ensure_ascii=True`, two-space indent — and the golden
+//! The export is written in **insertion order**, ASCII-only, with a
+//! two-space indent — and the golden
 //! corpus stores the *other* serialization of the same value
-//! (`sort_keys=True, ensure_ascii=False`). A value comparison passes
+//! (sorted keys, non-ASCII kept). A value comparison passes
 //! under either, so it would not notice this command shipping the wrong
 //! one. C6's unit tests pin `dumps`; these pin what reaches a file.
 //!
@@ -26,11 +26,9 @@
 //! runner — there is no browser here and importing a HAR into Chrome
 //! `DevTools`' Network panel is a human action. What is checked instead is
 //! stronger than a smoke test and weaker than a load: every byte this
-//! command writes is a byte the Python wrote, for five capture files
-//! across two state roots. If `DevTools` accepted the Python's export, it
-//! accepts this one, because they are the same file. Whether `DevTools`
-//! accepts the Python's export at all is a question about `har.py`,
-//! which this port does not change.
+//! command writes is a byte the recorded release wrote, for five capture
+//! files across two state roots. If `DevTools` accepted that export, it
+//! accepts this one, because they are the same file.
 
 mod common;
 
@@ -330,8 +328,8 @@ fn the_apple_backend_reads_the_apple_root() {
 
 /// Reading a capture must not create anything.
 ///
-/// `state.capture_dir` calls `mkdir(parents=True, exist_ok=True)` before
-/// returning, so the Python leaves an empty
+/// Earlier releases created the capture directory while looking it
+/// up, leaving an empty
 /// `$XDG_DATA_HOME/agentcage/<name>/capture/` behind even when it goes
 /// on to report that there is no capture file. That is a side effect of
 /// asking where a file is, and it is not reproduced — this asserts the
@@ -370,11 +368,10 @@ fn a_missing_capture_creates_no_directory() {
 
 /// An unreadable capture file is a message, not a traceback.
 ///
-/// The Python has no `try` around `open(_src)`: a `PermissionError` there
-/// escapes `cage_har` and click prints a stack trace naming this
-/// repository's files. That cannot be recorded as a contract, so it is
-/// asserted here instead — the exit status is the same 1 the Python's
-/// crash produces, and what changes is that the line is readable.
+/// Earlier releases crashed here with a stack trace. That cannot be
+/// recorded as a contract, so it is asserted here instead — the exit
+/// status is the same 1 the crash produced, and what changes is that
+/// the line is readable.
 #[test]
 #[cfg_attr(
     target_os = "linux",
@@ -428,7 +425,7 @@ fn an_unreadable_capture_file_reports_cleanly() {
 }
 
 /// An `-o` path that cannot be written is a message too, for the same
-/// reason: the Python's `open(output_file, "w")` is unguarded.
+/// reason: earlier releases crashed on it.
 #[test]
 fn an_unwritable_output_path_reports_cleanly() {
     let dir = TestDir::new("cage-har-unwritable");

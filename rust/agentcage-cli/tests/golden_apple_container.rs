@@ -1,13 +1,11 @@
-//! Reproduce `tests/fixtures/apple-container/`, recorded from the Python.
+//! Reproduce `tests/fixtures/apple-container/`, recorded from an earlier
+//! release.
 //!
-//! The fixtures under that directory were produced by
-//! `scripts/gen-apple-container-fixtures.py`, which drives the real
-//! `backends/apple_container.py` with `platform.system()` patched to
-//! `"Darwin"` — the same trick `tests/test_apple_container.py` has used
-//! since that backend existed, because there is no macOS runner in CI
-//! and there never has been. So this file runs on Linux and is not a
-//! weaker check for it: it is the *same* check the Python suite makes,
-//! against the same recording.
+//! The fixtures under that directory were produced by driving that
+//! release's real apple-container backend with the platform reported
+//! as `"Darwin"`, because there is no macOS runner in CI and there
+//! never has been. So this file runs on Linux and is not a weaker check
+//! for it: it replays the same recording.
 //!
 //! What it covers is Track E's generation half A — image naming, the
 //! egress content-hash wiring, `_render_egress_config`,
@@ -18,11 +16,9 @@
 //! What E5 cannot check this way is the `container build` it is handed to.
 //!
 //! The fixture is the specification. Every expectation in it was
-//! computed by running the Python, never typed, so a divergence here is
-//! a diff rather than a judgement call. Re-blessing is
-//! `uv run python scripts/gen-apple-container-fixtures.py`, and the
-//! `--check` mode of the same script runs in CI so a change to the
-//! Python that this port does not follow fails there too.
+//! computed by running the recorded release, never typed, so a
+//! divergence here is a diff rather than a judgement call. The fixture
+//! is frozen; a deliberate change edits it by hand alongside the code.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -207,7 +203,7 @@ fn image_name_is_repo_version_hash() {
 
 /// One byte of one `COPY` source changes the tag.
 ///
-/// The recording is of the Python over a two-file build context; this
+/// The recording is over a two-file build context; this
 /// rebuilds that context and computes the same two tags. It is the
 /// property the whole hash exists for (#312) — a version-only tag would
 /// give the same string twice, which is how the #186 proxy-log fix
@@ -294,11 +290,11 @@ fn build_argv_matches_the_fixture() {
 ///
 /// `_state_dir` is a bare `expanduser("~/.config/agentcage/apple-container")`.
 /// A port that "fixed" it to follow XDG would relocate the state of
-/// every cage a Python release deployed — and an XDG-only test sandbox
+/// every cage an earlier release deployed — and an XDG-only test sandbox
 /// would not notice, which is why the fixture was recorded with the two
 /// roots deliberately pointed at different places.
 #[test]
-fn state_paths_match_the_python() {
+fn state_paths_match_the_fixture() {
     let fixture = document("state-paths.json");
     let dir = TestDir::new("apple-state");
     let root = PathBuf::from(agentcage_cli::hostenv::realpath(
@@ -372,7 +368,7 @@ fn state_paths_match_the_python() {
               through helpers with no meaning apart from this sequence."
 )]
 #[test]
-fn volumes_match_the_python() {
+fn volumes_match_the_fixture() {
     let fixture = document("volumes.json");
     let (_dir, host) = build_tree(&fixture["tree"]);
     let root = PathBuf::from(host.home.trim_end_matches("/home"));
@@ -391,14 +387,14 @@ fn volumes_match_the_python() {
             Ok(argv) => {
                 assert!(
                     argv_expected.get("error").is_none(),
-                    "{id}: the Python raised and this did not"
+                    "{id}: the recording raised and this did not"
                 );
                 argv
             }
             Err(error) => {
                 // The one input that raises rather than warning: an `np`
-                // option that cannot compose. Recorded with the Python's
-                // exception class prefixed, as its corpus does.
+                // option that cannot compose. Recorded with the
+                // exception class prefixed, as the corpus does.
                 assert_eq!(
                     format!("ValueError: {error}"),
                     text_of(&argv_expected["error"]),
@@ -506,7 +502,7 @@ fn volumes_match_the_python() {
 /// run` argv and a launchd plist instead of units, and the artifacts it
 /// *does* produce were recorded nowhere. Three of them are these files.
 #[test]
-fn egress_config_matches_the_python() {
+fn egress_config_matches_the_fixture() {
     let fixture = document("egress-config.json");
     // The resolvers the generator pinned. `save_dns_allowlist` consults
     // the host only when the cage.yaml names none, and every fixture
@@ -615,7 +611,7 @@ fn dnsmasq_scopes_recursion_per_zone() {
 /// argv-injection bug and a failure in the render alone is a
 /// whitespace one. Reading which assertion fired is the difference.
 #[test]
-fn the_wrapper_containerfile_matches_the_python() {
+fn the_wrapper_containerfile_matches_the_fixture() {
     let fixture = document("wrapper.json");
     assert_eq!(
         wrapped_image_name("demo"),

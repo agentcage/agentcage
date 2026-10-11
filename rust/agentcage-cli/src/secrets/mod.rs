@@ -1,16 +1,15 @@
 //! Where a cage's secrets come from, and where they are kept.
 //!
-//! The port of two Python modules that only make sense together:
+//! Two halves that only make sense together:
 //!
-//! | Python | here |
-//! | :-- | :-- |
-//! | `secret_resolver.py` | [`resolver`] -- read a value out of a `source:` scheme, and drive `systemd-creds` |
-//! | `secret_store.py` | [`store`] -- the four at-rest backends, and the fail-closed choice between them |
+//! - [`resolver`] -- read a value out of a `source:` scheme, and drive
+//!   `systemd-creds`
+//! - [`store`] -- the four at-rest backends, and the fail-closed choice
+//!   between them
 //!
-//! The parse-time halves of `secret_resolver` are *not* here:
-//! `validate_env_name`, `validate_source` and the `secrets.backend` /
-//! `secrets.scope` enum checks landed with PR C2 in
-//! [`agentcage_core::config::secret`], because they are pure value
+//! The parse-time checks are *not* here: `validate_env_name`,
+//! `validate_source` and the `secrets.backend` / `secrets.scope` enum
+//! checks live in [`agentcage_core::config::secret`], because they are pure value
 //! checks that `load_config` makes and the golden corpus pins their
 //! messages. What is left -- and what this module is -- is everything
 //! that needs the outside world: an environment variable, a subprocess,
@@ -87,8 +86,7 @@
 //! [`resolver::SecretHost`] is the host's secret facilities: the
 //! `CommandRunner` to shell out with, the environment to read, whether
 //! the invoker is root, and the two memoized capability answers
-//! (`detect_default_backend`, `detect_default_scope`) that Python gets
-//! from `functools.lru_cache`. The stores borrow one.
+//! (`detect_default_backend`, `detect_default_scope`). The stores borrow one.
 //!
 //! [`store::resolve_store`] is the fail-closed choice between the four
 //! backends. It is the function to read first if you are trying to work
@@ -109,11 +107,9 @@ pub use store::{
 
 /// Why a secret could not be resolved, stored or retrieved.
 ///
-/// Python raises two types here and `cli._store_secret` catches them in
-/// one `except (SecretStoreError, ValueError)`, so the split does no
-/// work at the call sites that matter. It is kept as two *variants*
-/// rather than two types because one place does read it:
-/// `resolve_store` raises only `SecretStoreError`, and `_store_secret`
+/// Most call sites treat the two kinds alike, so the split does no work
+/// there. It is kept as two *variants* because one place does read it:
+/// `resolve_store` fails only with a store error, and storing a secret
 /// answers that with a different message and a different hint than a
 /// failure to store. [`SecretError::is_store_error`] is that question.
 ///
@@ -121,33 +117,31 @@ pub use store::{
 ///
 /// Every message is built from a key name, a path, an exit code or a
 /// child's stderr. That is a property worth stating because it is what
-/// makes `{e}` safe at the ~20 call sites in `cli.py` that interpolate
-/// one into operator-facing output.
+/// makes `{e}` safe at the ~20 call sites that interpolate one into
+/// operator-facing output.
 ///
-/// The child's stderr is the interesting case, and it is Python's
-/// behaviour reproduced rather than a choice made here: a `cmd:` source
+/// The child's stderr is the interesting case, and it is behaviour kept
+/// from earlier releases rather than a choice made here: a `cmd:` source
 /// whose command writes a credential to *its own stderr* puts it in the
-/// message. `secret_resolver.resolve` does exactly that
-/// (`command failed (exit {rc}): {r.stderr.strip()}`), and agentcage
+/// message (`command failed (exit <rc>): <stderr>`), and agentcage
 /// cannot tell a diagnostic from a leak. Keeping the message is the
 /// compatible choice; the alternative -- dropping the stderr -- turns
 /// every misconfigured `cmd:` source into an unexplained failure.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SecretError {
-    /// `SecretStoreError`: a backend is unavailable, refused, or was
+    /// A backend is unavailable, refused, or was
     /// asked for something it does not do.
     Store(String),
-    /// `ValueError`: a source could not be resolved, or a scope is not
+    /// A source could not be resolved, or a scope is not
     /// usable.
     Value(String),
     /// A file under the deployment directory could not be read or
     /// written.
     ///
-    /// Python lets `OSError` escape from `ApplePlaintextStore._save`
-    /// and from `encrypt_secret`'s `mkdir`, and swallows it in the two
-    /// readers. Both behaviours survive; this variant is the escaping
-    /// half.
+    /// Raised by `ApplePlaintextStore::save` and by `encrypt_secret`'s
+    /// `mkdir`; the two readers swallow the same failure instead. This
+    /// variant is the raising half.
     Io {
         /// The file that failed.
         path: PathBuf,
@@ -214,12 +208,12 @@ impl std::error::Error for SecretError {
     }
 }
 
-/// `p.is_file()`, which is what every reader here gates on.
+/// Whether `path` is a regular file, which is what every reader here
+/// gates on.
 ///
-/// Python's `Path.is_file()` answers False for a missing path, a
-/// directory and a broken symlink alike, and never raises. `std`'s
-/// `Path::is_file` has the same three answers for the same reason, so
-/// this is only here to name the intent at the call sites.
+/// False for a missing path, a directory and a broken symlink alike,
+/// and never an error. This is only here to name the intent at the
+/// call sites.
 pub(crate) fn is_file(path: &Path) -> bool {
     path.is_file()
 }

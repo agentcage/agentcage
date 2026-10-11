@@ -340,8 +340,7 @@ mod tests {
         assert!(ensure_v022_cage(&paths, "new").is_ok());
     }
 
-    /// A cage with no metadata at all reads as `0.0.0`, which is what
-    /// the Python's `meta.get(...) or "0.0.0"` produces — and it is
+    /// A cage with no metadata at all reads as `0.0.0` — and it is
     /// refused, deliberately: an unidentifiable cage is not one this
     /// version knows how to address.
     #[test]

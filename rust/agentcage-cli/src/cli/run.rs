@@ -162,8 +162,8 @@ pub(crate) fn main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         no_cache: matches.get_flag("no_cache"),
         pull: matches.get_flag("pull"),
     };
-    // The Python's `sys.exit(exit_code)`: the session's own status is
-    // this process's status, which is what makes
+    // The session's own status is this process's status, which is
+    // what makes
     // `agentcage run codex -- codex --version` usable in a script.
     ExitCode::from(u8::try_from(execute(ctx, &options)).unwrap_or(1))
 }
@@ -665,17 +665,15 @@ fn store_secrets(
 ///
 /// # Ctrl-C
 ///
-/// The Python catches `KeyboardInterrupt`, prints `Session interrupted.`
-/// and falls through to its `finally` — the point being that the cage is
-/// stopped either way. Rust's default for SIGINT is to die, which would
+/// The cage has to be stopped however the session ends. Rust's default for SIGINT is to die, which would
 /// skip the stop, so the session is held inside
 /// [`agentcage_cli::terminal::restored_terminal`]: its guard diverts
 /// SIGINT away from this process for as long as the child is running,
 /// and the child (which is in the same foreground process group) gets
 /// the signal. The child then exits 130 and that becomes this function's
-/// answer, so the status is the Python's. The `Session interrupted.`
-/// line is not printed, because there is no longer an interruption here
-/// to report — and printing it on any 130 would mislabel a workload that
+/// answer, the same status earlier releases gave. Their
+/// `Session interrupted.` line is not printed, because there is no
+/// longer an interruption here to report — and printing it on any 130 would mislabel a workload that
 /// chose to exit 130 itself.
 ///
 /// This is deliberately **not**

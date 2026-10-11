@@ -1,4 +1,4 @@
-//! `backends/vm.py` — a Lima guest with podman and quadlets inside it.
+//! The `vm` backend — a Lima guest with podman and quadlets inside it.
 //!
 //! Both halves (docs/history/rust-port-plan.md Track E). **E1** is the generation
 //! half: the units, the Lima YAML, the argv every `limactl` invocation
@@ -15,7 +15,8 @@
 //! # `setsid` vs `setpgid` on `limactl start` — settled
 //!
 //! D1 built [`agentcage_exec::Command::new_process_group`] as the safe
-//! stand-in for the Python's `start_new_session=True`: `setpgid(0, 0)`
+//! stand-in for the `setsid()` earlier releases used (they started
+//! `limactl` in a new session): `setpgid(0, 0)`
 //! rather than `setsid()`, because a real `setsid` needs a `pre_exec`
 //! closure and this workspace forbids `unsafe_code`. It left the
 //! difference for E4 to settle on a real Lima host. Measured here, and
@@ -30,8 +31,8 @@
 //! * `limactl start` never reads the terminal. The one prompt Lima has
 //!   is `create`'s configuration survey, and
 //!   [`LimaInstance::create`] passes `--yes` precisely to suppress it.
-//! * Run live with both binaries under `script(1)`: `cage start`
-//!   returned in 30s (Rust) and 33s (Python), and in both cases the
+//! * Run live with both variants under `script(1)`: `cage start`
+//!   returned in 30s (`setpgid`) and 33s (`setsid`), and in both cases the
 //!   hostagent was left at `ppid=1`, in its own process group, with
 //!   **no controlling terminal** — Lima daemonizes it itself, so the
 //!   flag on the parent does not decide the daemon's fate. The instance
@@ -55,8 +56,7 @@
 //! guest *shell* does not expand it, and neither does `~` once
 //! `shlex.quote` has been over it. So every command this module sends
 //! into the guest resolves `%h` first, from the guest's own `echo ~`,
-//! and `test_vm_backend.py` pins the absence of both markers in the
-//! argv that results.
+//! so neither marker appears in the argv that results.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -164,21 +164,19 @@ const USER_SESSION_READY_STATES: [&str; 2] = ["running", "degraded"];
 
 /// The `vm` backend.
 ///
-/// Holds no Lima instance: one is built per cage name, as the Python
-/// does, so a single backend serves `cage list` across cages.
+/// Holds no Lima instance: one is built per cage name, so a single
+/// backend serves `cage list` across cages.
 #[derive(Debug)]
 pub struct VmBackend<'a> {
     runner: &'a dyn CommandRunner,
     paths: &'a Paths,
     version: &'a str,
-    /// `vm._guest_home` — the guest `$HOME` per cage name.
+    /// The guest `$HOME` per cage name, cached.
     ///
-    /// The Python's is a module-level dict, so it survives for the
-    /// life of the process; this one lives on the backend, which the
-    /// CLI builds once per command. Same effect for the loops that
-    /// motivated it (a reconcile tick doing ensure/pull/push used to
-    /// run `echo ~` three times), and no state shared between
-    /// unrelated commands.
+    /// It lives on the backend, which the CLI builds once per command,
+    /// so it lasts for the loops that motivated it (a reconcile tick
+    /// doing ensure/pull/push used to run `echo ~` three times), and no
+    /// state is shared between unrelated commands.
     ///
     /// Keyed by cage name, not by instance: a destroyed and recreated
     /// guest lands on the identical home.
@@ -188,8 +186,8 @@ pub struct VmBackend<'a> {
     /// Held rather than read at each use so that the macOS branches —
     /// the `vz` driver, and the prerequisite check that must *not* look
     /// for QEMU or `/dev/kvm` — are reachable from a Linux CI runner.
-    /// That is the same trick `test_lima_provisioning.py` plays with
-    /// `patch("platform.system")`, made an argument instead of a patch.
+    /// The platform is an argument rather than a global lookup for
+    /// exactly that reason.
     facts: OwnedFacts,
 }
 
@@ -306,10 +304,10 @@ impl<'a> VmBackend<'a> {
 
     /// `VmBackend.unit_dir` — `~/.config/agentcage/lima`.
     ///
-    /// Home-rooted, **not** `XDG_CONFIG_HOME`-rooted: the Python is an
-    /// `os.path.expanduser` with no XDG lookup, the same wart the
+    /// Home-rooted, **not** `XDG_CONFIG_HOME`-rooted: earlier releases
+    /// put it under `~` with no XDG lookup, the same wart the
     /// quadlet directory and the apple-container root carry, and a cage
-    /// deployed by the Python has its `lima.yaml` there.
+    /// deployed by one of them has its `lima.yaml` there.
     #[must_use]
     pub fn unit_dir(&self) -> PathBuf {
         self.paths.lima_dir()
@@ -317,7 +315,7 @@ impl<'a> VmBackend<'a> {
 
     /// `VmBackend.generate_units` — Lima YAML plus the guest's quadlets.
     ///
-    /// The returned map is the Python's dict: `lima.yaml` first, then
+    /// The returned map holds `lima.yaml` first, then
     /// one `quadlets/<filename>` per unit, in render order.
     ///
     /// Two things happen here that the container backend does not do.
@@ -406,7 +404,7 @@ impl<'a> VmBackend<'a> {
     ///
     /// Every failure mode answers `None`: no guest, a stopped guest, a
     /// `limactl` that is not installed, or a listing that failed
-    /// in flight. The Python's blanket `except Exception` spelled out,
+    /// in flight. Each one is spelled out rather than caught wholesale,
     /// because which failures collapse to "don't know" is the whole
     /// content of #262.
     fn guest_store_view(&self, cage_name: &str, deploy_name: &str) -> Option<BTreeSet<String>> {
@@ -493,10 +491,10 @@ impl<'a> VmBackend<'a> {
     ///
     /// Separate from [`Self::guest_home`] because
     /// [`Self::push_config_files`] resolves the home *without* the
-    /// cache, exactly as the Python does — it holds `home` as a local
-    /// and never consults `_guest_home`. Populating the cache from it
-    /// would remove a round-trip from the deploy sequence E4 has to
-    /// reproduce, so the wart is kept rather than tidied.
+    /// cache — it holds `home` as a local
+    /// and never consults the cache. Populating the cache from it
+    /// would remove a round-trip from the pinned deploy sequence, so the
+    /// wart is kept rather than tidied.
     fn probe_guest_home(&self, name: &str) -> Result<String, ExecError> {
         let out = self.instance(name).exec(&bash_c("echo ~"), true)?;
         Ok(out.stdout_text().trim().to_owned())
@@ -526,8 +524,8 @@ impl<'a> VmBackend<'a> {
     /// [`ExecError`] from any of the guest commands.
     pub fn push_config_files(&self, name: &str) -> Result<(), ExecError> {
         let instance = self.instance(name);
-        // The Python resolves the home here rather than through
-        // `_abs_path`, so this call happens even on a warm cache. See
+        // The home is resolved here rather than through the cache, so
+        // this call happens even on a warm cache. See
         // `probe_guest_home`.
         let home = self.probe_guest_home(name)?;
         let absolute = |path: &str| -> String {
@@ -629,10 +627,9 @@ impl<'a> VmBackend<'a> {
     /// the waits — is [`VmBackend::deploy_cage`], below the execution
     /// rule.
     ///
-    /// Files are pushed in sorted order. The Python iterates
-    /// `Path.iterdir()`, which is `readdir` order and therefore
-    /// filesystem-dependent; sorting is the one place this module does
-    /// not reproduce the Python exactly, because "whatever the
+    /// Files are pushed in sorted order. Earlier releases pushed them in
+    /// `readdir` order, which is filesystem-dependent; sorting is the
+    /// one place this module deliberately differs, because "whatever the
     /// filesystem says" is not a contract and a test cannot pin it.
     ///
     /// # Errors
@@ -698,9 +695,9 @@ impl<'a> VmBackend<'a> {
     /// exit 42 is the "absent" sentinel, and any other non-zero exit is
     /// a real failure.
     ///
-    /// Entries that are not mappings are dropped. The Python keeps
-    /// them, and then every reader does `entry.get(...)` on them and
-    /// raises; nothing that writes this file produces one.
+    /// Entries that are not mappings are dropped, rather than kept for
+    /// every reader to fail on; nothing that writes this file produces
+    /// one.
     #[must_use]
     pub fn pull_grants(&self, name: &str) -> Option<Vec<Mapping>> {
         let text = self.read_guest_file(name, &vm_local_grants_file(name))?;
@@ -791,7 +788,7 @@ impl<'a> VmBackend<'a> {
 
     /// `VmBackend._bridge_secrets` — host secrets into the guest store.
     ///
-    /// Two sources, in the Python's order: the `.cred` blobs under the
+    /// Two sources, in this order: the `.cred` blobs under the
     /// deployment directory, decrypted on the host with `systemd-creds`
     /// and piped in; then whatever the *host's* podman store holds
     /// under this cage's prefix, read back with `--showsecret` and
@@ -803,7 +800,7 @@ impl<'a> VmBackend<'a> {
     /// host for as long as the command runs, and the guest side would
     /// be readable inside the guest too.
     ///
-    /// Best-effort per secret, as the Python is: one that cannot be
+    /// Best-effort per secret: one that cannot be
     /// bridged warns and the rest continue, because the alternative is
     /// a deploy that aborts halfway with some secrets already in the
     /// guest.
@@ -854,8 +851,8 @@ impl<'a> VmBackend<'a> {
         // --- the host's own podman store ---
         //
         // `podman secret ls` without `check=True`: a host that has no
-        // podman at all is the normal case on macOS, and the Python's
-        // `except FileNotFoundError: return` makes it a silent one.
+        // podman at all is the normal case on macOS, and a missing
+        // binary is therefore a silent return.
         let host_podman = agentcage_exec::tools::podman::Podman::new(self.runner);
         let Ok(names) = host_podman.secret_list(&format!("{name}.")) else {
             return Ok(out);
@@ -905,8 +902,8 @@ impl<'a> VmBackend<'a> {
     ///
     /// # Errors
     ///
-    /// [`ExecError`] from a guest command. The file is deleted first —
-    /// the Python's `finally` — so an error does not leave it on disk.
+    /// [`ExecError`] from a guest command. The file is deleted first,
+    /// so an error does not leave it on disk.
     pub fn create_pending_secrets(&self, name: &str) -> Result<Vec<String>, ExecError> {
         let path = self.paths.pending_secrets_path(name);
         let Ok(text) = fs::read_to_string(&path) else {
@@ -1405,7 +1402,7 @@ impl<'a> VmBackend<'a> {
     /// and its secrets.
     ///
     /// Returns the removal descriptions `cage destroy` prints, in the
-    /// Python's order.
+    /// order it has always printed them.
     ///
     /// The shared `~/.config/agentcage/lima` directory itself survives;
     /// only `lima.yaml` and `quadlets/` inside it are removed.
@@ -1493,7 +1490,7 @@ impl<'a> VmBackend<'a> {
     /// `VmBackend.start` — create the guest if it is absent, boot it if
     /// it is down, then deploy into it.
     ///
-    /// `quiet` is accepted and ignored, as the Python's is: none of the
+    /// `quiet` is accepted and ignored: none of the
     /// progress lines below are guarded by it, and a `cage update` that
     /// printed nothing for four minutes of guest provisioning would be
     /// indistinguishable from a hang.
@@ -1561,8 +1558,8 @@ impl<'a> VmBackend<'a> {
 
     /// `VmBackend.restart` — stop, then start.
     ///
-    /// A full guest power cycle, not a `systemctl restart`. It is the
-    /// Python's, and it is what makes `cage restart` on this backend
+    /// A full guest power cycle, not a `systemctl restart`: that is
+    /// what makes `cage restart` on this backend
     /// adopt a regenerated `lima.yaml`.
     ///
     /// # Errors
@@ -1587,8 +1584,7 @@ impl<'a> VmBackend<'a> {
     /// `~/.local/share/agentcage` are shared with the guest, and the
     /// context is neither. On a single binary it does not exist on disk
     /// at all until [`agentcage_assets::extract::build_context`]
-    /// materializes it, which is §2.1 of the plan and the one structural
-    /// difference from the Python here.
+    /// materializes it (§2.1 of docs/history/rust-port-plan.md).
     ///
     /// # Errors
     ///
@@ -1682,7 +1678,7 @@ impl<'a> VmBackend<'a> {
     /// the scaffold source is the fallback for a cage whose staging did
     /// not happen. A Containerfile found at neither is a warning rather
     /// than a failure, because the cage image may simply already be in
-    /// the guest — the Python's shape, and the cage unit's own start
+    /// the guest, and the cage unit's own start
     /// will say otherwise if it is not.
     fn build_cage_image_in_vm(
         &self,
@@ -1744,7 +1740,7 @@ impl<'a> VmBackend<'a> {
     /// `VmBackend._deploy_cage` — everything between a booted guest and
     /// a running cage.
     ///
-    /// The order is the Python's and every step of it is load-bearing:
+    /// Every step of the order is load-bearing:
     ///
     /// 1. Quadlets into the guest's `~/.config/containers/systemd`.
     /// 2. The guest-local mirrors of `proxy-config.yaml`,
@@ -1886,13 +1882,13 @@ impl<'a> VmBackend<'a> {
 
     /// `_resolve_source_secrets` — both halves of it.
     ///
-    /// E1 split the Python's one function in two so the store half could
+    /// The two halves are separate functions so the store half can
     /// take a caller-chosen [`crate::secrets::SecretStore`]; this is the
-    /// seam that puts them back together, with the `seen` set the
-    /// Python shares between them.
+    /// seam that puts them back together, with one `seen` set
+    /// shared between them.
     ///
-    /// A store that cannot be resolved at all is the Python's bare
-    /// `except: return` — it means no encrypting backend is usable
+    /// A store that cannot be resolved at all is a silent return — it
+    /// means no encrypting backend is usable
     /// here, and the source pass has already done what it could.
     fn stage_secrets(&self, name: &str, config: Option<&Config>) -> Result<Bridged, ExecError> {
         let Some(config) = config else {
@@ -2084,7 +2080,7 @@ impl<'a> VmBackend<'a> {
     /// swallowed rather than replacing it.
     ///
     /// The journal filter here is `--user -u`, **not** the `--user-unit`
-    /// that [`Self::logs_argv`] uses. That is the Python's, and the
+    /// that [`Self::logs_argv`] uses, and the
     /// difference is real: `--user -u` reads the unit's own systemd
     /// records — "control process exited", "failed with result" — which
     /// is what a unit that never started has to show. `--user-unit`
@@ -2187,7 +2183,7 @@ impl<'a> VmBackend<'a> {
 
 /// The env names [`VmBackend::resolve_source_secrets`] will have taken.
 ///
-/// The Python's `_resolve_source_secrets` is one function with one
+/// Source resolution has one
 /// `seen` set spanning both halves, and the split into
 /// [`VmBackend::resolve_source_secrets`] and
 /// [`VmBackend::bridge_store_secrets`] would lose that. It adds a name
@@ -2205,7 +2201,7 @@ pub fn source_secret_env_names(config: &Config) -> BTreeSet<String> {
 /// What a secret-bridging pass wants to say.
 ///
 /// `agentcage-cli`'s command bodies print; the backend returns. Kept in
-/// two lists rather than one because the Python writes the successes to
+/// two lists rather than one because the successes go to
 /// stdout and the failures to stderr, and a caller that merged them
 /// would send warnings into a pipe that is being parsed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2217,7 +2213,7 @@ pub struct Bridged {
 }
 
 impl Bridged {
-    /// Print what the Python printed, where it printed it.
+    /// Print each line on the stream it belongs to.
     ///
     /// Successes to stdout and failures to stderr, in that order rather
     /// than interleaved: the two streams are separate pipes by the time
@@ -2296,9 +2292,8 @@ fn bash_c(script: &str) -> Vec<String> {
 
 /// `["sh", "-c", script]` — what the two guest *readers* use.
 ///
-/// Not `bash`: the probes only need POSIX test and `cat`, and the
-/// Python spells them `sh`. The difference is pinned by
-/// `test_vm_backend.py`, which dispatches on `cmd[0]`.
+/// Not `bash`: the probes only need POSIX test and `cat`, so they run
+/// under `sh`.
 fn sh_c(script: &str) -> Vec<String> {
     vec!["sh".to_owned(), "-c".to_owned(), script.to_owned()]
 }

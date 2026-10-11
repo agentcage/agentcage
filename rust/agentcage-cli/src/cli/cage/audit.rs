@@ -226,10 +226,10 @@ pub(crate) fn normalize_since(since: &str) -> String {
 /// Two parses of the same bytes, and the second one is not redundant.
 /// `extract_audit_json` decides what *is* an audit entry, and it parses
 /// with `serde_json`, whose object is a `BTreeMap` — so re-emitting from
-/// it sorts the keys, where Python's `json.dumps(entry.raw)` keeps the
-/// order the proxy wrote them in. The second parse goes through
-/// `har::json`, which preserves insertion order, so `--json` reproduces
-/// the Python byte for byte.
+/// it sorts the keys, where `--json` has always kept the order the
+/// proxy wrote them in. The second parse goes through `har::json`,
+/// which preserves insertion order, so `--json` stays byte-identical
+/// to the pinned output.
 ///
 /// The substring it re-parses is the line from its first `{` on, which
 /// is where both of `extract_audit_json`'s accepted shapes put the
@@ -254,11 +254,12 @@ fn parse_line(line: &str) -> Option<(AuditEntry, String)> {
     Some((entry, ordered))
 }
 
-/// `json.dumps(entry.raw)` — the whole decoded line, re-emitted.
+/// The whole decoded line, re-emitted.
 ///
 /// Through `har::json::dumps` rather than `serde_json::to_string`,
-/// because Python's default separators carry a space (`{"a": 1, "b": 2}`)
-/// and `serde_json`'s do not. The float formatting is Python's too.
+/// because the pinned output carries a space after each separator
+/// (`{"a": 1, "b": 2}`) and `serde_json`'s does not. The float
+/// formatting is `har::json`'s too.
 ///
 /// The fallback of [`parse_line`], where it also explains the key order.
 fn json_line(raw: &serde_json::Value) -> String {

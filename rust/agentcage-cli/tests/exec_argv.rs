@@ -99,7 +99,7 @@ fn as_root_and_interactive_are_the_only_two_variables() {
         ["podman", "exec", "-u", "0:0", "-it", "acme-cage", "sh"]
     );
     // `-it` sits between the `-u` spec and the container name, which is
-    // the Python's order and the only one `--env` flags can follow.
+    // the pinned order and the only one `--env` flags can follow.
     assert_eq!(
         backend.exec_argv("acme", "egress", &argv(&["sh"]), true, false),
         [
@@ -186,8 +186,8 @@ fn an_unreadable_or_unfilled_config_yields_nothing() {
     // No cage at all.
     assert!(current_placeholders(&paths, "ghost").is_empty());
 
-    // A rule whose placeholder was never minted. The Python's `and`
-    // chain treats an empty string as absent, so this is contract, not
+    // A rule whose placeholder was never minted. An empty
+    // string counts as absent, so this is contract, not
     // defensiveness.
     store(
         &paths,
@@ -197,7 +197,7 @@ fn an_unreadable_or_unfilled_config_yields_nothing() {
     assert!(current_placeholders(&paths, "half").is_empty());
 
     // `secret_injection:` written as a bare list rather than a mapping
-    // with `rules:` — the older spelling, which the Python still reads.
+    // with `rules:` — the older spelling, which is still read.
     store(
         &paths,
         "bare",

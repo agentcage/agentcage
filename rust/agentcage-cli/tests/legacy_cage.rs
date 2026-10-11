@@ -28,15 +28,14 @@
 //!   are running under other names, so a gate here would be replaced
 //!   by a *wrong answer*, which is worse.
 //!
-//! A third exemption exists that the Python file does not cover, and
+//! A third exemption exists, and
 //! it is the same reasoning one step further: `cage prune` walks past
 //! legacy cages silently, because it acts on "not running" — see
 //! `cli/cage/lifecycle.rs`.
 //!
 //! # Why this shells out
 //!
-//! The Python patches `agentcage.cli.state` and asserts on
-//! `CliRunner`'s captured output. There is no equivalent seam here —
+//! There is no in-process seam for this —
 //! `Ctx::system()` is built inside the dispatch — so the state is
 //! staged on disk under a throwaway `HOME` and the binary is run for
 //! real. That is a stronger test of the same claim: it proves the gate
@@ -254,7 +253,7 @@ fn list_is_exempt_and_annotates_instead() {
 }
 
 /// A v0.22 cage in the same table takes the normal status path. The
-/// Python's regression guard, and the reason the annotation cannot be
+/// regression guard, and the reason the annotation cannot be
 /// unconditional.
 #[test]
 fn a_current_cage_in_the_table_is_unaffected() {
@@ -319,8 +318,8 @@ fn v022_and_everything_after_it_passes() {
 /// A `metadata.json` that exists and will not parse is the one case
 /// that is *not* the migration message.
 ///
-/// The Python raises `JSONDecodeError` out of the command and prints a
-/// traceback. Neither the traceback nor "migrate away from the v0.21
+/// Earlier releases let the decode error escape as a traceback.
+/// Neither the traceback nor "migrate away from the v0.21
 /// layout" is true of a cage whose metadata simply got corrupted, so
 /// this reports the file and exits 1 — `preflight::EXIT_NO_SUCH_CAGE`.
 #[test]

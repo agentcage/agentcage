@@ -125,10 +125,9 @@ pub(crate) fn read_domain_config(raw: &Value) -> (String, Vec<String>, Vec<Strin
     (mode, strings("list"), passthrough)
 }
 
-/// `str(value)` for the scalars a `domains:` list can hold.
+/// The text of a scalar a `domains:` list can hold.
 ///
-/// Python interpolates whatever is in the list straight into its
-/// messages, so a `domains.allow` entry written as a bare number is
+/// Whatever is in the list is interpolated straight into messages, so a `domains.allow` entry written as a bare number is
 /// printed as a number rather than dropped. Nothing downstream accepts
 /// one — `valid_domain` rejects it — but `domain list` still has to
 /// show the operator what is in their file.
@@ -146,10 +145,9 @@ pub(crate) fn scalar_str(value: &Value) -> String {
 ///
 /// `load_raw_config` already folds a falsy document to `{}`, so the
 /// only way this is not a mapping is a `cage.yaml` whose top level is a
-/// list or a scalar. The Python would raise `TypeError` deep inside
-/// `_ensure_domain_section`; replacing it with an empty mapping reaches
-/// the same place through a message the operator can act on, and the
-/// state corpus has no such file for the difference to be visible in.
+/// list or a scalar. Replacing it with an empty mapping reaches a
+/// message the operator can act on (earlier releases crashed with a
+/// `TypeError` here).
 fn top_mut(raw: &mut Value) -> &mut Mapping {
     if raw.as_mapping().is_none() {
         *raw = Value::Mapping(Mapping::new());
@@ -157,20 +155,21 @@ fn top_mut(raw: &mut Value) -> &mut Mapping {
     raw.as_mapping_mut().expect("just made one")
 }
 
-/// `cli._ensure_domain_section` — a `domains:` block with an `allow`
-/// or `block` key, migrating the legacy `mode` + `list` pair.
+/// A `domains:` block with an `allow` or `block` key, migrating the
+/// legacy `mode` + `list` pair.
 ///
-/// The migration is in-place and key order matters: Python pops `mode`
-/// and `list` and *then* assigns `allow`, so the new key lands at the
-/// end of the block. `save_raw_config` emits with `sort_keys=False`, so
-/// that order is what the operator sees after the write.
+/// The migration is in-place and key order matters: `mode` and `list`
+/// are removed and *then* `allow` is assigned, so the new key lands at
+/// the end of the block, as it did in earlier releases.
+/// `save_raw_config` keeps key order, so that order is what the
+/// operator sees after the write.
 pub(crate) fn ensure_domain_section(raw: &mut Value) {
     let top = top_mut(raw);
     let needs_default = match top.get("domains") {
         None => true,
         // `raw["domains"]` present but not a mapping (`domains:` with
-        // nothing under it is the common way to get here). The Python
-        // raises; a fresh block is the same outcome minus the crash.
+        // nothing under it is the common way to get here). A fresh
+        // block replaces it (earlier releases crashed here).
         Some(value) => value.as_mapping().is_none(),
     };
     if needs_default {
@@ -234,8 +233,7 @@ pub(crate) fn is_blocklist_mode(raw: &Value) -> bool {
         .is_some_and(|dom| dom.get("block").is_some() && dom.get("allow").is_none())
 }
 
-/// The active list, mutable. Creates it when absent, as the Python's
-/// `dom.setdefault(list_key, [])` does.
+/// The active list, mutable. Creates it when absent.
 pub(crate) fn list_mut<'a>(raw: &'a mut Value, key: &str) -> &'a mut Sequence {
     let top = top_mut(raw);
     let dom = top
@@ -257,7 +255,7 @@ pub(crate) fn list_mut<'a>(raw: &'a mut Value, key: &str) -> &'a mut Sequence {
 /// The list at `domains.<key>`, mutable, **only when it is already
 /// there**.
 ///
-/// `dom.get("allow") or []` in the Python: a blocklist-mode cage has no
+/// Read-only and never creating: a blocklist-mode cage has no
 /// `allow` key, and the prune steps that walk it must not create one.
 /// [`list_mut`] is the `setdefault` version, for the paths that are
 /// about to append.
@@ -274,8 +272,8 @@ pub(crate) fn existing_list_mut<'a>(raw: &'a mut Value, key: &str) -> Option<&'a
 ///
 /// # Errors
 ///
-/// The Python's own `ValueError` message, which `domain add` prints
-/// after `error: invalid --expires-in: `.
+/// A message `domain add` prints after `error: invalid --expires-in: `;
+/// its text is pinned.
 pub(crate) fn parse_duration(duration: &str) -> Result<i64, String> {
     let s = duration.trim().to_lowercase();
     if s.is_empty() {
@@ -303,8 +301,6 @@ pub(crate) fn parse_duration(duration: &str) -> Result<i64, String> {
     {
         return Ok(value);
     }
-    // `f"invalid duration {duration!r}: ..."` — Python's `repr` of a
-    // plain string is single-quoted.
     Err(format!(
         "invalid duration {}: use a number with a unit suffix \
          (e.g. 30s, 10m, 1h, 2d) or a bare number of seconds",
@@ -312,16 +308,12 @@ pub(crate) fn parse_duration(duration: &str) -> Result<i64, String> {
     ))
 }
 
-/// `str.isdigit()`, narrowed to ASCII.
-///
-/// Python's accepts superscripts and other Unicode digit characters,
-/// which `int()` then rejects — so the pair behaves as this does, and
-/// the difference is only in which of the two error paths is taken.
+/// Non-empty and all ASCII digits.
 fn is_ascii_digits(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// `cli._expires_at_from_now`.
+/// The ISO-8601 UTC timestamp `seconds` from now.
 pub(crate) fn expires_at_from_now(seconds: i64) -> String {
     DateTime::now_utc()
         .checked_sub_seconds(-seconds)
@@ -329,7 +321,7 @@ pub(crate) fn expires_at_from_now(seconds: i64) -> String {
         .isoformat()
 }
 
-/// `datetime.now(timezone.utc).isoformat()`.
+/// The current time as an ISO-8601 UTC timestamp.
 pub(crate) fn now_iso() -> String {
     DateTime::now_utc().isoformat()
 }
@@ -532,9 +524,7 @@ pub(crate) fn update_dns_quadlet(
             ctx.runner.run(&podman_argv.captured())
         };
 
-    // A podman that cannot be run at all is the Python's
-    // `subprocess.run` raising, which propagates. Here it is the same
-    // refusal the non-zero exit takes, because the allowlist has
+    // A podman that cannot be run at all gets the same refusal the non-zero exit takes, because the allowlist has
     // already been rewritten and leaving it unvalidated is the one
     // outcome this check exists to prevent.
     let outcome = runtime_exec(&[
@@ -629,9 +619,7 @@ pub(crate) fn list(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         .expect("required by the parser")
         .clone();
     // The implicit `grants sync`. A non-success answer is the v0.22
-    // refusal, which aborts the command in the Python too — its
-    // `SystemExit(2)` is a `BaseException` and escapes the reconcile's
-    // per-tick `except Exception`.
+    // refusal, which aborts the command.
     let reconciled = crate::cli::cage::grants::reconcile(ctx, &name, true);
     if reconciled != ExitCode::SUCCESS {
         return reconciled;
@@ -664,7 +652,7 @@ fn list_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         println!("{domain}{tags}");
     }
     // Passthrough-only domains: in `passthrough` but not in the main
-    // list. Compared against the *unsorted* list, as the Python does —
+    // list. Compared against the *unsorted* list —
     // the comparison is by membership, so the order is immaterial, but
     // the values are the raw ones either way.
     passthrough.sort();
@@ -824,9 +812,9 @@ fn rm_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     ensure_domain_section(&mut raw);
     let key = list_key(&raw);
 
-    // Exact-match removal, deliberately: `domain rm` is `list.remove(x)`
-    // in the Python, so `rm FOO.COM` against a stored `foo.com` is a
-    // refusal rather than a silent case-folded hit. Reproduced because
+    // Exact-match removal, deliberately: `domain rm` removes the exact
+    // string, so `rm FOO.COM` against a stored `foo.com` is a
+    // refusal rather than a silent case-folded hit. Kept because
     // the message is what tells the operator the entry is spelled
     // differently from what they typed.
     let (_, entries, pt_entries) = read_domain_config(&raw);
@@ -907,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn durations_parse_the_way_python_parses_them() {
+    fn durations_parse_with_unit_suffixes() {
         assert_eq!(parse_duration("30s"), Ok(30));
         assert_eq!(parse_duration("10m"), Ok(600));
         assert_eq!(parse_duration("1h"), Ok(3600));
@@ -920,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_duration_carries_pythons_own_message() {
+    fn a_bad_duration_carries_the_pinned_message() {
         assert_eq!(parse_duration(""), Err("empty duration".to_owned()));
         assert_eq!(parse_duration("   "), Err("empty duration".to_owned()));
         for bad in ["1w", "-5", "h", "1.5h", "abc", "1 h", "+3"] {
@@ -964,8 +952,8 @@ mod tests {
             yaml::dump(&raw).unwrap(),
             "name: acme\ndomains:\n  allow: []\n"
         );
-        // And `domains:` with nothing under it, which the Python
-        // crashes on with a `TypeError`.
+        // And `domains:` with nothing under it, which earlier releases
+        // crashed on with a `TypeError`.
         let mut raw = doc("domains:\n");
         ensure_domain_section(&mut raw);
         assert_eq!(list_key(&raw), "allow");

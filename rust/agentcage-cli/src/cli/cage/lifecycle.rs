@@ -205,12 +205,11 @@ fn show_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         // the failure mode this backend keeps producing: podman does
         // not error, it answers *nothing found*, so every secret was
         // reported missing on a cage that had all of them. Observed
-        // against a real cage — `Secrets: 0/3 (3 missing)` where the
-        // Python said `3/3`.
+        // against a real cage — `Secrets: 0/3 (3 missing)` where earlier
+        // releases said `3/3`.
         //
         // The source here is the one `secret list` uses, which is what
-        // makes the two agree; `cli.py:2473` branches the same way and
-        // for the same stated reason.
+        // makes the two agree.
         let present: Vec<String> = if crate::cli::secret::apple::is_apple_container(&config) {
             crate::cli::secret::apple::secret_names(ctx, &config, name)
         } else {
@@ -462,14 +461,11 @@ pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `services.destroy_cage` — stop, destroy, forget.
+/// Stop, destroy, forget.
 ///
-/// The Python falls back to probing each backend when the stored config
-/// cannot be loaded, because on macOS the default `ContainerBackend`
-/// calls `podman`, which is not installed. Only one backend is ported,
-/// so the fallback here is simply "use it anyway": its `has_resources`
-/// is a filesystem check and its podman calls already tolerate a podman
-/// that cannot be run.
+/// When the stored config cannot be loaded the fallback is simply the
+/// container backend: its `has_resources` is a filesystem check and
+/// its podman calls already tolerate a podman that cannot be run.
 fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<String> {
     let backend = ctx.backend_of(name);
     let known = ctx.paths.deployment_exists(name);
@@ -526,7 +522,7 @@ fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<St
 /// * **Running.** Zero of the cage's services up.
 ///
 /// The teardown itself is `destroy`'s, run with its narration
-/// suppressed: the Python passes no `echo` here, so a ten-cage prune
+/// suppressed, so a ten-cage prune
 /// prints ten `Removing <name>...` lines rather than thirty. A failure
 /// on one cage warns and continues — a prune that stops at the first
 /// stuck cage leaves the rest of the list uncollected.

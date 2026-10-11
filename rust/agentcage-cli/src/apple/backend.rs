@@ -51,10 +51,6 @@ use super::run_argv::{CageInputs, EgressPaths, cage_argv, egress_argv};
 
 /// How long to wait for the egress supervisor's readiness marker, and
 /// how often to look.
-///
-/// Module constants for the same reason the Python makes them class
-/// attributes: a test has to be able to drive them to ~0 without
-/// subclassing.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// See [`READY_TIMEOUT`].
 const READY_POLL: Duration = Duration::from_millis(100);
@@ -140,8 +136,7 @@ impl<'a> AppleBackend<'a> {
     /// The container name for a service: `cage` is the cage itself,
     /// `egress` is the sibling.
     ///
-    /// An unrecognized service is treated as `cage`, which is the
-    /// Python's fall-through — it keeps `cage verify` and `cage status`
+    /// An unrecognized service is treated as `cage` — it keeps `cage verify` and `cage status`
     /// working when they iterate a service list this backend did not
     /// produce.
     fn target(name: &str, service: &str) -> String {
@@ -196,7 +191,7 @@ impl<'a> AppleBackend<'a> {
     ///
     /// The signature carries `config_host_path`, `patches_host_dir`,
     /// `used_octets` and `network_octet` to match the other backends
-    /// and ignores all four, as the Python does: Apple networks are
+    /// and ignores all four: Apple networks are
     /// per-cage with an auto-allocated subnet, so there is no shared
     /// `10.89.x` pool to coordinate against.
     ///
@@ -204,7 +199,7 @@ impl<'a> AppleBackend<'a> {
     ///
     /// [`BackendError::Config`] when `container.volumes` carries an
     /// `np` option it cannot compose with. That is a refusal rather
-    /// than a warning in the Python too, and it happens before
+    /// than a warning, and it happens before
     /// anything else, so a bad spec fails the deploy instead of being
     /// quietly dropped.
     pub fn generate_units(
@@ -954,8 +949,8 @@ impl AppleBackend<'_> {
     /// The container backend removes its `<name>.*` podman secrets in
     /// `destroy_resources`, and `cage destroy` tells the operator so —
     /// "Scoped secrets will also be removed." On this backend that was
-    /// a false promise: the Python takes `keep_secrets` and marks it
-    /// unused, so a destroyed cage left its values in the macOS
+    /// a false promise in earlier releases, which ignored
+    /// `keep_secrets`: a destroyed cage left its values in the macOS
     /// keychain under `agentcage / <cage>.<KEY>`, with nothing left on
     /// disk to say they were ever there. Observed on a real destroy.
     ///
@@ -1008,12 +1003,12 @@ impl AppleBackend<'_> {
             .collect()
     }
 
-    /// `_wipe_staged_secrets` — remove the cleartext once the egress
+    /// Remove the cleartext once the egress
     /// has it.
     ///
     /// Best-effort per file: a secret that cannot be removed is worth
     /// neither failing the start nor a warning the operator cannot act
-    /// on, which is the Python's `except OSError: pass`.
+    /// on.
     fn wipe_staged_secrets(&self, name: &str) {
         let dir = self.paths.apple_secrets_dir(name);
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1025,12 +1020,12 @@ impl AppleBackend<'_> {
     }
 }
 
-/// `os.chmod`, best-effort.
+/// `chmod`, best-effort.
 ///
 /// Every caller here is setting a mode the guest needs rather than one
 /// the host enforces, and a filesystem that will not take it (an
 /// exported share, a `noexec` mount) is not a reason to fail a start
-/// that may still work. The Python does not check either.
+/// that may still work.
 fn set_mode(path: &Path, mode: u32) {
     #[cfg(unix)]
     {
@@ -1129,7 +1124,7 @@ impl AppleBackend<'_> {
             secrets: agentcage_core::config::SecretsConfig {
                 backend,
                 // systemd-creds-only and never read on this backend;
-                // `auto` is what the Python's own shim passes.
+                // `auto` is what earlier releases passed here too.
                 scope: "auto".to_owned(),
                 allow_plaintext: meta.truthy("secrets_allow_plaintext"),
             },
@@ -1213,7 +1208,7 @@ impl AppleBackend<'_> {
 /// `<dir>/<env>`, 0600.
 ///
 /// The mode is set after the write rather than at create time, which
-/// leaves a window the Python has too. It is narrow and the directory
+/// leaves a window. It is narrow and the directory
 /// above is already 0700, so the file is unreachable by anyone else
 /// throughout.
 fn write_secret(dir: &Path, env: &str, value: &str) {
@@ -1591,10 +1586,9 @@ impl AppleBackend<'_> {
         if !quiet {
             output::echo(&format!("Building shared egress image {image}..."));
         }
-        // The Python's build context is the installed package's own
-        // `data/` directory; a single binary has none, so the embedded
-        // tree is materialized into a cache directory instead
-        // (docs/history/rust-port-plan.md section 2.1). The Containerfile expects
+        // A single binary has no `data/` directory on disk, so the
+        // embedded tree is materialized into a cache directory and
+        // used as the build context. The Containerfile expects
         // that directory as the context so its
         // `COPY containers/supervisor-egress.sh` resolves.
         let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
@@ -1865,9 +1859,8 @@ impl agentcage_exec::tools::podman::ImageInspector for AppleImages<'_> {
 
     fn image_inspect(&self, reference: &str) -> Result<serde_json::Value, ExecError> {
         // `Ok(None)` is an image that is not there. The caller turns an
-        // `Err` into the identity `"unavailable"`, which is exactly
-        // what `_image_identity(None)` answers in the Python, so the
-        // two spellings agree on the recorded value.
+        // `Err` into the identity `"unavailable"`, the same value a
+        // missing image records.
         AppleContainer::new(self.runner)
             .image_inspect(reference)?
             .ok_or_else(|| ExecError::not_found(reference))

@@ -1,50 +1,32 @@
-//! The port of `tests/test_legacy_watcher.py`, plus what it does not say.
+//! The legacy grants-watcher cleanup, on every host.
 //!
-//! # Which Python test this is
+//! (The v0.21 legacy-cage detector at the CLI entry point is a different
+//! piece of migration code; it is tested with the commands whose entry
+//! it guards, in `legacy_cage.rs`.)
 //!
-//! docs/history/rust-port-plan.md's Track D table names
-//! `tests/test_v021_legacy_cage.py` as D16's acceptance check. That file
-//! tests a *different* piece of migration code: the v0.21 legacy-cage
-//! detector at the CLI entry point (`cage stop` on a v0.21 cage exits 2
-//! with a migration message; `cage destroy` and `cage list` are exempt).
-//! It never imports `legacy_watcher`, and it is a `CliRunner` test of a
-//! command tree that D5-D7 own.
+//! # What is pinned
 //!
-//! The file that actually covers `legacy_watcher.py` is
-//! `tests/test_legacy_watcher.py`, four tests. This is the port of that
-//! one. The detector belongs with the commands whose entry it guards.
+//! * a clean system shells out to nothing
+//!   ([`a_clean_system_shells_out_to_nothing`]);
+//! * Linux disables the unit, removes it, then reloads
+//!   ([`linux_disables_the_unit_then_removes_it`]);
+//! * macOS boots the job out and removes the plist
+//!   ([`macos_boots_the_job_out_and_removes_the_plist`]);
+//! * an unreachable VM is a warning, not a failure
+//!   ([`an_unreachable_vm_is_a_warning_not_a_failure`]).
 //!
-//! # What is carried across
+//! Two choices make these stronger than the obvious version:
 //!
-//! All four Python tests and every assertion in them:
-//!
-//! | `test_legacy_watcher.py` | here |
-//! | :-- | :-- |
-//! | `test_noop_when_nothing_installed` — `ran == []` | [`a_clean_system_shells_out_to_nothing`] |
-//! | `test_linux_removes_unit_and_disables` — `disable`+`--now`+unit is argv[-1]; a `daemon-reload` call; the unit path was unlinked | [`linux_disables_the_unit_then_removes_it`] |
-//! | `test_darwin_bootout_and_unlink` — a `launchctl` call carrying the label; the plist path was unlinked | [`macos_boots_the_job_out_and_removes_the_plist`] |
-//! | `test_vm_branch_swallow_errors` — an unreachable VM does not raise | [`an_unreachable_vm_is_a_warning_not_a_failure`] |
-//!
-//! Two of the four are stronger here than in the Python, for reasons
-//! that are about the test rather than the code:
-//!
-//! * The Python's assertions are `any(... for c in calls)` over a list
-//!   of argv, because `monkeypatch`ing `subprocess.run` gives you a pile
-//!   of calls and no ordering contract. [`FakeRunner::assert_argv`] pins
-//!   the *whole sequence*, which is what makes
-//!   [`linux_disables_the_unit_then_removes_it`] able to say
+//! * [`FakeRunner::assert_argv`] pins the *whole sequence*, which is
+//!   what makes [`linux_disables_the_unit_then_removes_it`] able to say
 //!   `daemon-reload` came second rather than merely that it happened.
-//! * `test_linux_removes_unit_and_disables` and
-//!   `test_darwin_bootout_and_unlink` each open with `if sys.platform
-//!   [!]= "darwin": return`, so on any one machine two of the four tests
-//!   are silently skipped — and CI is Linux, so the macOS branch has
-//!   never run anywhere. [`Host`] is a parameter here, and both run
-//!   everywhere.
+//! * [`Host`] is a parameter, so the Linux and macOS branches both run
+//!   everywhere — CI is Linux, and a platform-gated test would leave the
+//!   macOS branch never run anywhere.
 //!
-//! The Python's `monkeypatch.setattr(Path, "is_file", ...)` /
-//! `(Path, "unlink", ...)` is not reproduced: a real directory under
-//! `$TMPDIR` is both simpler and a stronger claim, because it proves the
-//! file is *gone* rather than that a patched method was called with it.
+//! Files are not patched: a real directory under `$TMPDIR` is both
+//! simpler and a stronger claim, because it proves the file is *gone*
+//! rather than that a patched method was called with it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -190,21 +172,21 @@ fn guest_script(cage: &str) -> String {
     )
 }
 
-// ── the four Python tests ────────────────────────────────────
+// ── the four core cases ──────────────────────────────────────
 
-/// `test_noop_when_nothing_installed`, both hosts.
+/// Nothing installed, both hosts.
 ///
 /// > Post-rework cages have no artifacts: every path is a no-op, never
 /// > raises, and never shells out to systemctl/launchctl.
 ///
-/// The Python asserts `ran == []` and its comment claims "darwin/linux
-/// branch bails before bootout/disable". Only half of that is true:
+/// The obvious claim is that both branches bail before
+/// bootout/disable. Only half of that is true:
 /// `_remove_macos_watcher` runs `launchctl bootout` *before* it looks at
 /// the plist, so on a Mac this test would see one call. It passes
 /// because CI is Linux and the darwin branch is unreachable there.
 ///
 /// Both halves are asserted here, separately and honestly. The Linux
-/// half is the Python's claim. The macOS half is the real behaviour, and
+/// half is the obvious claim. The macOS half is the real behaviour, and
 /// [`the_unconditional_bootout_is_deliberate`] says why it is kept.
 #[test]
 fn a_clean_system_shells_out_to_nothing() {
@@ -246,12 +228,11 @@ fn a_clean_macos_system_still_boots_the_job_out() {
     ]]);
 }
 
-/// `test_linux_removes_unit_and_disables`.
+/// Linux removes the unit and disables it.
 ///
-/// Its three assertions — a `disable` call carrying `--now` with the
-/// unit last, a `daemon-reload` call, and the unit path unlinked — plus
-/// the ordering the Python cannot see (`any(...)` over an unordered
-/// pile): disable first, reload second, and the unlink between them.
+/// A `disable` call carrying `--now` with the unit last, a
+/// `daemon-reload` call, and the unit path unlinked — plus the
+/// ordering: disable first, reload second, and the unlink between them.
 #[test]
 fn linux_disables_the_unit_then_removes_it() {
     let dir = TempDir::new("linux");
@@ -295,10 +276,10 @@ fn linux_disables_the_unit_then_removes_it() {
     );
 }
 
-/// `test_darwin_bootout_and_unlink`.
+/// macOS boots the job out and unlinks the plist.
 ///
-/// `bootouts and any("io.agentcage.oldcage.grants" in ...)` plus
-/// `plist in removed`, tightened to the full argv — including the
+/// A `launchctl bootout` carrying the label and the plist removed,
+/// pinned as the full argv — including the
 /// `gui/<uid>` domain, which is the part that decides whether the
 /// bootout reaches anything at all.
 #[test]
@@ -329,13 +310,11 @@ fn macos_boots_the_job_out_and_removes_the_plist() {
     assert!(!fake.argv(0).contains(&"unload".to_string()));
 }
 
-/// `test_vm_branch_swallow_errors`.
+/// The VM branch swallows errors.
 ///
 /// > An unreachable VM must not raise out of cleanup.
 ///
-/// The Python gets there by patching `_remove_vm_watcher` to a no-op,
-/// which means the branch it is named for never executes. Here the
-/// branch runs for real against a `limactl` that is not installed, which
+/// The branch runs for real against a `limactl` that is not installed, which
 /// is what an unreachable VM looks like from this side, and the warning
 /// text is pinned.
 #[test]
@@ -358,9 +337,9 @@ fn an_unreachable_vm_is_a_warning_not_a_failure() {
     );
 }
 
-// ── what the Python file does not cover ──────────────────────
+// ── the edges ────────────────────────────────────────────────
 
-/// The in-guest removal itself, which no Python test reaches.
+/// The in-guest removal itself.
 ///
 /// The one-liner is pinned verbatim because its three steps are the same
 /// ordering argument as the host-side branch, spelled in `sh`, and
@@ -514,8 +493,7 @@ fn the_unconditional_bootout_is_deliberate() {
 /// A **partially-removed** legacy cage: the file is still there, but
 /// systemd has already forgotten the unit, so `disable --now` fails.
 ///
-/// The Python's `check=False` and this code's discarded result both say
-/// the same thing — a non-zero `disable` is a clean system, not an
+/// The discarded result says it — a non-zero `disable` is a clean system, not an
 /// error. The file still goes and the reload still happens, because
 /// otherwise a half-finished earlier run would strand the artifact
 /// forever.
@@ -553,8 +531,7 @@ fn a_disable_that_fails_does_not_stop_the_removal() {
 
 /// **No systemd at all**, on a host that still has the unit file.
 ///
-/// The Python raises `FileNotFoundError` here — `check=False` does not
-/// suppress it, only a non-zero exit. The file is removed anyway,
+/// Earlier releases crashed here. The file is removed anyway,
 /// because nothing can be holding a reference to it and leaving it
 /// re-arms the crash loop if systemd ever appears.
 #[test]
@@ -686,8 +663,7 @@ fn the_only_two_paths_it_can_build() {
 /// A symlink planted at the unit path costs its target nothing.
 ///
 /// `is_file` follows the link, so the entry is recognised; `remove_file`
-/// does not, so only the link goes. Same as `Path.is_file()` +
-/// `Path.unlink()` in the Python, asserted rather than assumed — this is
+/// does not, so only the link goes. Asserted rather than assumed — this is
 /// the module that deletes things.
 #[test]
 fn a_symlinked_unit_removes_the_link_not_the_target() {
@@ -735,7 +711,7 @@ fn an_unknown_home_removes_nothing() {
 /// A unit file that cannot be unlinked warns and stops — it does not go
 /// on to `daemon-reload` a directory that has not changed.
 ///
-/// `legacy_watcher.py`'s `except OSError: print(...); return`.
+/// An unlink failure is a warning and an early return.
 #[test]
 fn an_unremovable_unit_warns_and_skips_the_reload() {
     let dir = TempDir::new("readonly");

@@ -1,34 +1,33 @@
-//! `cage backup` and `cage restore` — `cli.py:3349` and `cli.py:3467`.
+//! `cage backup` and `cage restore`.
 //!
 //! # The shape of a backup
 //!
 //! A gzipped tar with one top-level directory, `agentcage-backup/`,
-//! holding a `manifest.json` and up to four subdirectories. PR A7
-//! committed one that the *Python* produced, and PR D2 pinned its
-//! contract by reading it through the system `tar`
-//! (`agentcage-state/tests/state_compat.rs:1418`): twelve members, the
-//! whole manifest, the bare secret values, and an archived `cage.yaml`
-//! equal by parsed value to the one in the state tree. Restoring that
-//! exact tarball is this PR's acceptance check, and
-//! [`tests::the_python_made_backup_restores_onto_the_state_fixtures`]
-//! is where it happens.
+//! holding a `manifest.json` and up to four subdirectories. The state
+//! fixtures carry one that an earlier release produced, and
+//! `agentcage-state/tests/state_compat.rs` pins its contract by reading
+//! it through the system `tar`: twelve members, the whole manifest, the
+//! bare secret values, and an archived `cage.yaml` equal by parsed value
+//! to the one in the state tree. Backups taken by earlier releases have
+//! to keep restoring, and
+//! [`tests::an_earlier_release_backup_restores_onto_the_state_fixtures`]
+//! is where that is checked.
 //!
 //! The container format itself — deterministic writing, traversal-safe
-//! reading, and what the Python does about `../../.bashrc` — is
-//! [`agentcage_cli::archive`], which is where the tar and gzip crates
-//! this PR added are used.
+//! reading, and what happens to a `../../.bashrc` member — is
+//! [`agentcage_cli::archive`].
 //!
 //! # What is restored, and in what order
 //!
-//! The order is the Python's, and it is observable:
+//! The order has been the same since earlier releases, and it is
+//! observable:
 //!
 //! 0. **Extraction and the build-context preflight**, before anything
 //!    destructive. `--force` destroys the existing cage and clears its
 //!    state dir, so every refusal that could happen after that point
 //!    has to happen before it — otherwise a tarball that cannot rebuild
 //!    the cage leaves the host with neither the old cage nor a restored
-//!    one, and with orphaned `<target>.KEY` secrets. This is the
-//!    ordering `cli.py:3535` calls out in a comment of its own. The
+//!    one, and with orphaned `<target>.KEY` secrets. The
 //!    volume checks are part of it: [`volumes_to_import`], and
 //!    [`clone_volume_collisions`], which refuses a `--name` clone that
 //!    would mount volumes it does not own.
@@ -64,14 +63,11 @@
 //! empty, and `capture.jsonl`/`audit.jsonl` both come out of the
 //! per-cage logs dir the egress microVM bind-mounts.
 //!
-//! [`backup_apple`] and [`restore_apple`] are
-//! `_cage_backup_apple_container` (`cli.py:3400`) and
-//! `_cage_restore_apple_container` (`cli.py:3505`). Everything the two
-//! shapes genuinely share — staging the config, the build-context
-//! preflight, reinstalling the build context, rewriting `name:` for a
-//! clone — is the same code here, where the Python duplicates it. That
-//! matters most for the step-0 ordering above: it is one place rather
-//! than two.
+//! Everything the two shapes genuinely share with [`backup_apple`] and
+//! [`restore_apple`] — staging the config, the build-context preflight,
+//! reinstalling the build context, rewriting `name:` for a clone — is
+//! the same code, not a copy. That matters most for the step-0 ordering
+//! above: it is one place rather than two.
 //!
 //! # vm
 //!
@@ -146,18 +142,19 @@ const BACKUP_EXCLUDE: &[&str] = &[
 
 /// The config files restore has always known how to reinstall by name.
 /// Anything else in the dir is build context — the Containerfile and
-/// what it `COPY`s. `cli.py:510`.
+/// what it `COPY`s.
 const BACKUP_MANAGED_CONFIG: &[&str] = &["cage.yaml", "metadata.json", "proxy-config.yaml"];
 
 /// Build noise that must never be copied into a backup: caches, VCS
-/// metadata, dependency trees, soft-deleted leftovers.
-/// `shutil.ignore_patterns` at `cli.py:479`, spelled out.
+/// metadata, dependency trees, soft-deleted leftovers. The same set
+/// earlier releases left out, so a backup's member list does not change
+/// across the upgrade.
 ///
-/// Applied at the top level of the state dir as well as inside it. The
-/// Python's `copytree` only reaches the directories it walks, so a
-/// *top-level* `__pycache__/` or `Containerfile.deleted.<ts>` would be
-/// copied wholesale; `_copy_cage_state_dir` applies the same filter to
-/// the first level by hand and so does [`stage_backup_config`].
+/// Applied at the top level of the state dir as well as inside it: a
+/// filter that only ran on the directories a tree copy walks would copy
+/// a *top-level* `__pycache__/` or `Containerfile.deleted.<ts>`
+/// wholesale, so [`stage_backup_config`] applies it to the first level
+/// by hand.
 fn is_build_noise(name: &str) -> bool {
     name == "__pycache__"
         || name == ".git"
@@ -184,9 +181,8 @@ pub(crate) fn backup(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "one body, matching `cli.py:3355`. The archive is assembled \
-              in the order the Python's staging directory is filled, and \
-              each section's decisions feed the manifest at the end — \
+    reason = "one body. The archive is assembled in the order the \
+              staging directory is filled, and each section's decisions feed the manifest at the end — \
               splitting it would mean passing the member list and five \
               flags through helpers that mean nothing apart from this \
               sequence. Same reasoning as `create.rs`."
@@ -211,13 +207,10 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             eprintln!("error: {error}");
             ExitCode::from(EXIT_FAILURE)
         })?;
-    // `_is_apple_container(cfg)` — `cli.py:3652`, which is a one-line
-    // read of `cfg.isolation` (`cli.py:68`) and not a backend probe.
-    // Dispatched on the string here for the same reason: the apple
-    // branch needs no backend handle at all. The only thing the Python
-    // constructs an `AppleContainerBackend` for in `_cage_backup_
-    // apple_container` is `logs_dir(name)`, which in the port is a
-    // pure [`Paths`] accessor. `domain.rs` and `cage/logs.rs` branch
+    // Dispatched on `config.isolation`, not a backend probe: the apple
+    // branch needs no backend handle at all. The only thing it would
+    // want one for is the cage's logs dir, which is a pure [`Paths`]
+    // accessor. `domain.rs` and `cage/logs.rs` branch
     // the same way and reach for `as_apple()` only where there is
     // actually a backend call to make — which, for backup, there is not.
     if config.isolation == APPLE_CONTAINER {
@@ -342,8 +335,8 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ExitCode::from(EXIT_FAILURE)
     })?;
     let mut volume_names: Vec<String> = Vec::new();
-    // Container-only, and the guard is the Python's (`cli.py:3826`),
-    // not a port decision. Its consequence is worth stating plainly
+    // Container-only, as it has been since earlier releases. Its
+    // consequence is worth stating plainly
     // because nothing prints it: **a vm cage's named volumes are not
     // backed up.** They live in the guest's podman, `VmPodman` has no
     // volume verbs, and the tarball comes out with an empty `volumes/`
@@ -386,8 +379,8 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 
     // ── Manifest ────────────────────────────────────────
     //
-    // Key order is the Python's `dict` literal order, which is what
-    // `json.dumps` writes and what a human diffing two backups sees.
+    // Key order is the one earlier releases wrote, and what a human
+    // diffing two backups sees.
     let manifest = Json::Object(vec![
         ("format_version".to_owned(), Json::Int(FORMAT_VERSION)),
         (
@@ -546,7 +539,7 @@ fn backup_apple(
 
     // ── Manifest ────────────────────────────────────────
     //
-    // Key order is the Python `dict` literal's at `cli.py:3476`, which
+    // Key order is the one earlier releases wrote for this shape, which
     // is *not* the container manifest's: `has_audit` is wedged in after
     // `has_capture`. A human diffing two backups sees this order, so it
     // is kept rather than normalized against the other branch.
@@ -779,11 +772,11 @@ fn backup_containerfile(dir: &Path) -> String {
 }
 
 /// Resolve `containerfile` inside `dir`, or `None` if it is not carried
-/// there. `cli.py:636`. Returns the path *relative to `dir`*.
+/// there. Returns the path *relative to `dir`*.
 ///
 /// Both escaping shapes are refused rather than joined. Rust's
-/// `Path::join` discards `dir` entirely when the argument is absolute —
-/// the same trap as Python's `Path.__truediv__` — and `..` segments
+/// `Path::join` discards `dir` entirely when the argument is absolute,
+/// and `..` segments
 /// climb out, so a naive join reports a file that exists only on the
 /// host as one the backup carries. That is the difference between
 /// `build_context_included: true` and a restore that can actually build.
@@ -796,9 +789,9 @@ fn carried_containerfile(dir: &Path, containerfile: &str) -> Option<PathBuf> {
         match component {
             std::path::Component::Normal(part) => relative.push(part),
             std::path::Component::CurDir => {}
-            // `a/../Containerfile` is accepted by the Python, which
-            // resolves before it checks; only a climb that actually
-            // leaves `dir` is refused.
+            // `a/../Containerfile` is accepted (it resolves inside
+            // `dir`, and earlier releases accepted it); only a climb
+            // that actually leaves `dir` is refused.
             std::path::Component::ParentDir => {
                 if !relative.pop() {
                     return None;
@@ -819,10 +812,8 @@ fn carried_containerfile(dir: &Path, containerfile: &str) -> Option<PathBuf> {
 
 /// What `cage restore` reads out of `manifest.json`.
 ///
-/// Every field is optional in the same way the Python's `.get(...)`
-/// calls make it optional, except `cage_name`, which `cli.py:3505`
-/// subscripts directly — a manifest without one is a `KeyError` there
-/// and a named refusal here.
+/// Every field is optional, as it has always been, except `cage_name`:
+/// a manifest without one is a named refusal.
 #[derive(Debug)]
 struct Manifest {
     format_version: i64,
@@ -898,11 +889,10 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 
     // ── Read manifest ───────────────────────────────────
     //
-    // One divergence, and it is an improvement: a tarball that is not a
-    // gzip stream at all raises an uncaught `tarfile.ReadError` in the
-    // Python and prints a traceback. Here every unreadable archive —
-    // not gzip, truncated, no manifest, malformed manifest — lands on
-    // the same one-line refusal `cli.py:3485` writes for the last two.
+    // Every unreadable archive — not gzip, truncated, no manifest,
+    // malformed manifest — lands on the same one-line refusal. (Earlier
+    // releases printed a traceback for a tarball that was not a gzip
+    // stream at all.)
     let manifest = match archive::read_member(&tarball, &format!("{ROOT}/manifest.json")) {
         Ok(Some(bytes)) => Manifest::parse(&String::from_utf8_lossy(&bytes)),
         Ok(None) => None,
@@ -975,17 +965,15 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
-    // `cli.py:3786` branches on the *manifest's* `isolation`, not on
-    // the archived `cage.yaml`'s and not on anything installed on this
-    // host: a restore onto a clean machine has no stored config to
-    // read, and the manifest is what says which shape the tarball is.
+    // Branches on the *manifest's* `isolation`, not on the archived
+    // `cage.yaml`'s and not on anything installed on this host: a
+    // restore onto a clean machine has no stored config to read, and
+    // the manifest is what says which shape the tarball is.
     //
     // The branch is here, after extraction and the preflight, rather
-    // than at the top where the Python's is. `_cage_restore_apple_
-    // container` repeats all four of those steps verbatim
-    // (`cli.py:3531`-`3543`) — including the comment about why they
-    // come before the `--force` destroy — and the one thing that must
-    // not exist in two copies is that ordering.
+    // than at the top: both shapes need all four of those steps before
+    // the `--force` destroy, and the one thing that must not exist in
+    // two copies is that ordering.
     if manifest.isolation == APPLE_CONTAINER {
         return restore_apple(
             ctx,
@@ -1049,12 +1037,10 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     // backend means a Mac: every `secret create` fails, so the values
     // are dropped. Measured on one — each one warns and the summary
     // says `Restored 0 secrets.`, so it is visible rather than silent,
-    // but the cage still comes back without its secrets.
-    // `backends/vm.py` names the same hazard at its
-    // `_resolve_source_secrets` call. Not fixed here, because the fix
+    // but the cage still comes back without its secrets. Not fixed here, because the fix
     // is a re-ordering — stage into the guest after the deploy — and it
     // belongs with the backend rather than with this command. Pinned by
-    // `a_vm_restore_uses_the_host_store_like_the_python_does`.
+    // `a_vm_restore_uses_the_host_store`.
     let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
 
     restore_secrets(&podman, &manifest, &target, &backup_dir);
@@ -1194,20 +1180,17 @@ fn restore_apple(
         // The backend of the cage that is *here*, not of the tarball:
         // restoring an apple-container backup over a cage that is
         // currently a container one has to stop and destroy it with
-        // podman, or its units and network outlive it. `cli.py:3550`
-        // loads the stored config for exactly that, and falls back to
-        // the **apple** backend when it cannot be loaded — not to the
-        // container one `Ctx::backend_of` defaults to, because in this
-        // branch the tarball is the only evidence of what the cage is.
+        // podman, or its units and network outlive it. The stored config
+        // is loaded for exactly that, falling back to the **apple**
+        // backend when it cannot be loaded — not to the container one
+        // `Ctx::backend_of` defaults to, because in this branch the
+        // tarball is the only evidence of what the cage is.
         //
-        // One divergence: the Python's `except Exception` also wraps
-        // the `stop`/`destroy_resources` calls, so a backend that
-        // *throws* gets retried against the apple one. Here a failed
-        // destroy is a warning and the restore continues, which is what
-        // the container path above does and what `cage destroy` itself
-        // does — a second attempt through a backend that was already
-        // ruled out cannot succeed where the first failed, and the
-        // state dir is removed either way on the next line.
+        // A failed destroy is a warning and the restore continues, which
+        // is what the container path above does and what `cage destroy`
+        // itself does — a second attempt through a backend that was
+        // already ruled out cannot succeed where the first failed, and
+        // the state dir is removed either way on the next line.
         let isolation = ctx
             .paths
             .load_deployment_config(target, &agentcage_cli::hostenv::RealHost)
@@ -1286,12 +1269,11 @@ fn restore_apple(
         })?;
 
     // Not `build_and_deploy`: that is the container/vm path, with host
-    // podman, quadlets and an octet allocator. `cli.py:3628` drives
-    // this backend's own build and start directly and says so in a
-    // comment, so this does too.
+    // podman, quadlets and an octet allocator. This drives the apple
+    // backend's own build and start directly.
     //
-    // The backend is the archive's, unconditionally, as the Python's
-    // `AppleContainerBackend()` is — not `backend_for(&config.isolation)`.
+    // The backend is the archive's, unconditionally — not
+    // `backend_for(&config.isolation)`.
     // A hand-edited tarball whose manifest says `apple-container` and
     // whose `cage.yaml` says something else would otherwise dispatch
     // on the document and land on a backend that cannot have produced
@@ -1304,10 +1286,9 @@ fn restore_apple(
     apple
         .build_artifacts(&config, target, false, false, false)
         .map_err(|error| report_backend_error(&error))?;
-    // Called once. The Python calls `generate_units` twice and throws
-    // the first result away (`cli.py:3629`-`3632`), which is harmless
-    // but double-prints the `container.volumes` warnings the renderer
-    // emits. One call, one set of warnings.
+    // Called once, so the `container.volumes` warnings the renderer
+    // emits are printed once. (Earlier releases called it twice and
+    // printed them twice.)
     let units = apple
         .generate_units(&config, target)
         .map_err(|error| report_backend_error(&error))?;
@@ -1333,7 +1314,7 @@ fn report_backend_error(error: &BackendError) -> ExitCode {
 /// Put the archived secret values back into the podman store, or tell
 /// the operator which ones they have to set by hand.
 ///
-/// Best-effort, as the Python is: a store that cannot be written is a
+/// Best-effort: a store that cannot be written is a
 /// warning, because the config has already been extracted and the
 /// operator can set the secrets afterwards. A `return Err` here would
 /// leave the cage half-restored with nothing said about it.
@@ -1399,9 +1380,9 @@ fn restore_secrets(
 /// `new_name` is `Some` only for a clone: the `name:` field inside the
 /// document has to agree with the directory it is stored under, or
 /// every later command addresses the wrong cage. The rewrite goes
-/// through the YAML loader and emitter, exactly as `cli.py:3578` does,
-/// which means it **drops comments** — a cost the Python already pays
-/// and the one place a restore is not byte-faithful.
+/// through the YAML loader and emitter, as it always has, which means
+/// it **drops comments** — the one place a restore is not
+/// byte-faithful.
 fn restore_config(
     ctx: &Ctx,
     target: &str,
@@ -1517,9 +1498,8 @@ fn check_restore_build_context(manifest: &Manifest, config_src: &Path) -> Result
         );
         return Err(ExitCode::from(EXIT_FAILURE));
     }
-    // `True`/`False`, not Rust's `false`: the operator reading this is
-    // being told what to look for in `manifest.json`, which is JSON
-    // written by a Python `json.dumps` in every backup taken so far.
+    // `True`/`False`, the spelling this message has had since earlier
+    // releases. (`manifest.json` itself holds JSON `true`/`false`.)
     let flag = if manifest.build_context_included {
         "True"
     } else {
@@ -2057,10 +2037,10 @@ fn require_known_backend(config: &Config, command: &str) -> Result<(), ExitCode>
     Err(ExitCode::from(EXIT_FAILURE))
 }
 
-/// `datetime.datetime.now().strftime("%Y%m%d-%H%M%S")`, in UTC.
+/// The current time as `%Y%m%d-%H%M%S`, in UTC.
 ///
-/// The one deliberate divergence in this PR, and it is confined to a
-/// *default filename*: the Python uses local time and there is no
+/// UTC rather than local time (which earlier releases used), and the
+/// difference is confined to a *default filename*: there is no
 /// timezone database in this binary — `agentcage-core`'s `DateTime` is
 /// forty lines of civil-calendar arithmetic written for `--since`, not
 /// a date library, and adding one for a filename would be a poor trade.
@@ -2134,19 +2114,18 @@ mod tests {
         fs::read_to_string(fixture_root().join(relative)).unwrap()
     }
 
-    /// **The acceptance check.** PR A7 drove the *Python's own*
-    /// `cage backup --include-secrets` to produce
-    /// `backup/acme-agent-backup.tar.gz`; PR D2 pinned its member list
-    /// and manifest and said outright that reading it was this PR's
-    /// job. So: restore that exact archive and assert the tree it
-    /// leaves behind against the state fixtures the same generator
-    /// produced.
+    /// **The compatibility check.** The fixture's
+    /// `backup/acme-agent-backup.tar.gz` was produced by an earlier
+    /// release's `cage backup --include-secrets`, and
+    /// `state_compat.rs` pins its member list and manifest. Restore
+    /// that exact archive and assert the tree it leaves behind against
+    /// the state fixtures the same release produced.
     ///
     /// The deploy half is not exercised — it needs podman, a kernel and
     /// a network, which is what **e2e phase 5** is for. What is
     /// exercised is everything that decides what lands on disk.
     #[test]
-    fn the_python_made_backup_restores_onto_the_state_fixtures() {
+    fn an_earlier_release_backup_restores_onto_the_state_fixtures() {
         let dir = TestDir::new("restore-fixture");
         plant_ca(&dir);
         let fake = FakeRunner::new();
@@ -2205,7 +2184,7 @@ mod tests {
         );
 
         // ── The derived files are *regenerated*, and they come out
-        //    equal to what the Python generator wrote.
+        //    equal to what the earlier release's generator wrote.
         assert!(yaml::eq_with_key_order(
             &yaml::load(&fs::read_to_string(ctx.paths.proxy_config_path(RICH)).unwrap()).unwrap(),
             &yaml::load(&fixture_state(&format!(
@@ -3955,8 +3934,8 @@ secret_injection:
         assert!(fake.calls().is_empty(), "{:?}", fake.argv_sequence());
     }
 
-    /// The shape, against the three differences the Python's docstring
-    /// enumerates: no `secrets/` and no `volumes/` member, an `audit/`
+    /// The shape, against the three differences from the container
+    /// shape: no `secrets/` and no `volumes/` member, an `audit/`
     /// one the container path never emits, and a manifest whose
     /// `named_volumes` is empty and whose `secret_keys` are the
     /// injection rules' env names.
@@ -4015,7 +3994,7 @@ secret_injection:
         assert!(text.contains("\"has_secrets\": true"), "{text}");
         assert!(text.contains("\"named_volumes\": []"), "{text}");
         assert!(text.contains("\"secrets_included\": false"), "{text}");
-        // Key order is the Python dict literal's, which puts `has_audit`
+        // Key order is the one earlier releases wrote, which puts `has_audit`
         // between `has_capture` and `named_volumes`.
         assert!(
             text.find("\"has_capture\"") < text.find("\"has_audit\""),
@@ -4410,7 +4389,7 @@ secret_injection:
     }
 
     /// A `vm` cage whose guest is **stopped** falls back to host
-    /// podman, which is what the Python does and is the honest answer:
+    /// podman, as earlier releases did, and that is the honest answer:
     /// the guest's store does not exist while the guest is down, so
     /// there is nothing to ask.
     ///
@@ -4481,7 +4460,7 @@ secret_injection:
     /// does — would write into a guest that does not exist. If this
     /// test fails, a router crept in here.
     #[test]
-    fn a_vm_restore_uses_the_host_store_like_the_python_does() {
+    fn a_vm_restore_uses_the_host_store() {
         let dir = TestDir::new("vm-restore-host-store");
         let fake = FakeRunner::new();
         fake.assume_installed();
@@ -4516,10 +4495,9 @@ secret_injection:
     /// **The union rule, which is half of the stale-value bug.**
     ///
     /// The other half — preferring the at-rest *value* over the runtime
-    /// copy — is asserted end to end on the Python side, because it
-    /// needs a store whose `runtime_decrypts()` is false, and the only
-    /// non-apple one is the keychain, whose resolution is
-    /// platform-dependent.
+    /// copy — is not asserted here, because it needs a store whose
+    /// `runtime_decrypts()` is false, and the only non-apple one is the
+    /// keychain, whose resolution is platform-dependent.
     #[test]
     fn at_rest_keys_are_added_without_disturbing_the_runtime_order() {
         // The case that used to lose a secret: set, never deployed.

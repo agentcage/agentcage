@@ -135,10 +135,9 @@ fn with_aliases(sub: Command) -> Command {
 
 /// The 20 subcommands, alphabetically.
 ///
-/// Not in `cli.py`'s declaration order: click sorts its command listing
-/// and clap prints declaration order, so the sort has to happen here or
-/// `agentcage cage --help` comes out in a different sequence from the
-/// Python's.
+/// Alphabetical because the recorded help lists them that way and clap
+/// prints declaration order, so the sort has to happen here or
+/// `agentcage cage --help` comes out in a different sequence.
 fn subcommands() -> Vec<Command> {
     vec![
         query::audit(),

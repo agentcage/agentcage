@@ -1,8 +1,8 @@
-//! `fingerprint.scaffold_context_version`'s directory walk, against the
-//! Python.
+//! `scaffold_context_version`'s directory walk, against a recorded
+//! digest.
 //!
-//! PR C4 ported the digest; the walk that feeds it is I/O and belongs to
-//! Track D. The ephemeral `run` flow is what makes it reachable in
+//! The digest lives in core; the walk that feeds it is I/O and lives
+//! here. The ephemeral `run` flow is what makes it reachable in
 //! anger: a scaffold cage's build context is staged into the cage's
 //! state directory, and `cage update`'s no-op decision then hashes that
 //! directory — so if the walk prunes the wrong thing, either every
@@ -12,14 +12,9 @@
 //!
 //! A7's state fixtures do **not** include a cage with a staged scaffold
 //! context, so there is no golden input to read. The tree below is built
-//! here and its expected hash was produced by running the Python
-//! directly over the identical tree:
-//!
-//! ```text
-//! $ uv run python -c "from agentcage.fingerprint import \
-//!     scaffold_context_version; print(scaffold_context_version(root, 'Containerfile'))"
-//! 0069d3bdd2beef2b5c3c29922b6ad70de01e4b039582d5a85bcf3dc489248dc2
-//! ```
+//! here and its expected hash was produced by an earlier release over
+//! the identical tree. Fingerprints those releases stored embed this
+//! digest, so it must not drift.
 //!
 //! The tree is chosen to exercise every branch the walk has: nested
 //! directories, each of the seven state artifacts at the top level, and
@@ -33,8 +28,8 @@ use std::path::Path;
 
 use agentcage_cli::deploy::scaffold_context_version;
 
-/// What the Python prints for the tree [`build`] creates.
-const PYTHON_DIGEST: &str = "0069d3bdd2beef2b5c3c29922b6ad70de01e4b039582d5a85bcf3dc489248dc2";
+/// The recorded digest of the tree [`build`] creates.
+const RECORDED_DIGEST: &str = "0069d3bdd2beef2b5c3c29922b6ad70de01e4b039582d5a85bcf3dc489248dc2";
 
 fn write(root: &Path, relative: &str, text: &str) {
     let path = root.join(relative);
@@ -63,13 +58,13 @@ fn build(root: &Path) {
 }
 
 #[test]
-fn the_walk_hashes_what_the_python_hashes() {
+fn the_walk_hashes_the_recorded_digest() {
     let dir = agentcage_state::TestDir::new("scaffold-context");
     let root = dir.path().join("root");
     build(&root);
     assert_eq!(
         scaffold_context_version(&root, "Containerfile"),
-        PYTHON_DIGEST
+        RECORDED_DIGEST
     );
 }
 
@@ -81,7 +76,7 @@ fn the_walk_hashes_what_the_python_hashes() {
 /// which is why pointing a throwaway state dir at the tree's
 /// Containerfile produces the same digest as walking the tree.
 #[test]
-fn the_three_special_answers_are_the_pythons() {
+fn the_three_special_answers_are_pinned() {
     let dir = agentcage_state::TestDir::new("scaffold-context-sentinels");
     let root = dir.path().join("root");
     build(&root);
@@ -96,7 +91,7 @@ fn the_three_special_answers_are_the_pythons() {
             Path::new("/does/not/matter"),
             &root.join("Containerfile").display().to_string()
         ),
-        PYTHON_DIGEST
+        RECORDED_DIGEST
     );
 }
 

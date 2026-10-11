@@ -110,13 +110,12 @@ pub(crate) fn audit() -> Command {
             )
             .short('n')
             .value_parser(clap::value_parser!(i64))
-            // The same divergence D13 fixed on `cage har`: click's
-            // `default=100` is an unbounded `int`, so `-n -3` parses
-            // there and simply does not limit anything (`cli.py` tests
-            // `max_entries > 0`), while clap reads a leading `-` as
-            // another flag and reports a usage error. Both `-n`s have
-            // to say this or the two commands disagree about a command
-            // line the Python accepts for either.
+            // Unbounded, as on `cage har`: `-n -3` has always been
+            // accepted and simply does not limit anything (only
+            // `max_entries > 0` limits), while clap would read a leading
+            // `-` as another flag and report a usage error. Both `-n`s
+            // have to say this or the two commands disagree about the
+            // same command line.
             .allow_negative_numbers(true)
             .default_value("100"),
         )
@@ -206,12 +205,11 @@ pub(crate) fn har() -> Command {
             )
             .short('n')
             .value_parser(clap::value_parser!(i64))
-            // click's `default=0` is an `int` parameter with no bound,
-            // so `-n -3` is accepted there and simply does not limit
-            // anything (`cli.py` tests `max_entries > 0`). clap treats a
-            // leading `-` as another flag unless told otherwise, so
-            // without this `agentcage cage har x -n -3` would be a usage
-            // error against a command line the Python runs.
+            // An integer with no bound: `-n -3` has always been accepted
+            // and simply does not limit anything (only `max_entries > 0`
+            // limits). clap treats a leading `-` as another flag unless
+            // told otherwise, so without this `agentcage cage har x -n -3`
+            // would be a usage error.
             .allow_negative_numbers(true)
             .default_value("0"),
         )
@@ -317,12 +315,11 @@ pub(crate) fn logs() -> Command {
             .short('n')
             .alias("tail")
             .value_parser(clap::value_parser!(i64))
-            // Unbounded in click exactly as `audit`'s and `har`'s are.
-            // Nothing downstream rejects a negative here — the value is
+            // Unbounded exactly as `audit`'s and `har`'s are. Nothing
+            // downstream rejects a negative here — the value is
             // stringified straight into journalctl's own `-n` — so
-            // without this the Rust turns a command line the Python
-            // forwards into a usage error before journalctl ever sees
-            // it, and the operator gets clap's complaint instead of
+            // without this clap would turn an accepted command line into
+            // a usage error before journalctl ever sees it, and the operator gets clap's complaint instead of
             // journalctl's.
             .allow_negative_numbers(true)
             .default_value("50"),
@@ -436,20 +433,18 @@ mod tests {
         assert!(parse(&["cage", "har", "myapp", "--json-lines"]).json_lines);
     }
 
-    /// `-n -3` is a command line the Python runs — and does not limit
-    /// anything, because `cli.py` tests `max_entries > 0`. clap would
+    /// `-n -3` is an accepted command line — and does not limit
+    /// anything, because only `max_entries > 0` limits. clap would
     /// read `-3` as a flag without `allow_negative_numbers`.
     #[test]
     fn a_negative_max_entries_parses_rather_than_erroring() {
         assert_eq!(parse(&["cage", "har", "myapp", "-n", "-3"]).max_entries, -3);
     }
 
-    /// The same divergence, on the other two `-n`s. `cage audit` and
-    /// `cage logs` declare the option with the same unbounded click
-    /// `int` that `cage har` does, so the same command line has to
-    /// reach the same place — D13 fixed one of the three and left the
-    /// other two reporting a clap usage error against input the Python
-    /// accepts.
+    /// The same, on the other two `-n`s. `cage audit` and `cage logs`
+    /// declare the option with the same unbounded integer that
+    /// `cage har` does, so the same command line has to reach the same
+    /// place.
     #[test]
     fn the_other_two_n_options_take_a_negative_too() {
         let audit = leaf_matches(&["cage", "audit", "myapp", "-n", "-3"]);

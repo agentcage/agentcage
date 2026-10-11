@@ -1,8 +1,7 @@
 //! `resolve_store` -- which backend a given `cage.yaml` gets, and where
 //! it refuses.
 //!
-//! The Python half is `tests/test_secret_store.py`; every case there is
-//! here, plus the three that surprised the port and are asserted so the
+//! Three cases here surprised the port and are asserted so the
 //! next reader does not have to rediscover them:
 //!
 //! * an explicit `source: systemd-creds:` builds the store **without

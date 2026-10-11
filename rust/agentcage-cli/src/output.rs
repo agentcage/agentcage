@@ -1,15 +1,16 @@
-//! Styled terminal output — the port of `src/agentcage/output.py`.
+//! Styled terminal output.
 //!
 //! Everything a user sees goes through here: the box-drawing banner, the
 //! green tick, the red cross, the dim label column, the 44-column rule
 //! and the braille spinner. It is eight helpers and a thread, and it is
-//! the CLI's entire visible identity, so the port is held to the bytes
+//! the CLI's entire visible identity, so it is held to the bytes
 //! rather than to the idea — see `tests/fixtures/output/README.md`.
 //!
 //! # The colour rule, in full
 //!
-//! The Python builds every line with `click.style` and prints it with
-//! `click.echo`, and the two do different jobs:
+//! Earlier releases built every line with `click.style` and printed it
+//! with `click.echo`, and the recorded output follows from how the two
+//! split the job:
 //!
 //! * `click.style` **always** emits the SGR escapes. It looks at
 //!   nothing.
@@ -36,7 +37,7 @@
 //! Hence the split below: `*_text` functions build the styled string,
 //! [`echo`] and [`echo_err`] decide what survives. A caller that needs
 //! the string (the `--help` banner, PR D5) takes the first half; a
-//! caller that prints takes the Python-named wrapper.
+//! caller that prints takes the wrapper.
 //!
 //! # No colour crate
 //!
@@ -44,7 +45,7 @@
 //! match click's regex exactly. `anstream`/`owo-colors` would each bring
 //! their own idea of when to colour — environment variables agentcage
 //! does not read, a global override it does not have — and the job here
-//! is byte-identical behaviour with the Python, not good colour policy.
+//! is byte-identical output with earlier releases, not good colour policy.
 
 use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -126,7 +127,7 @@ fn utf8_len(first: u8) -> usize {
     }
 }
 
-/// Pad on the right to `width` *characters*, like Python's `str.ljust`.
+/// Pad on the right to `width` *characters*.
 ///
 /// Characters, not bytes: `info("Größe", …)` pads to the same column as
 /// `info("Grosse", …)`, and the banner's box closes at the same place
@@ -145,8 +146,8 @@ fn ljust(text: &str, width: usize) -> String {
 
 /// The width floor of the banner box and the exact width of the rule.
 ///
-/// The two are the same number in the Python and that is not a
-/// coincidence, so they are the same constant here.
+/// The two are the same number and that is not a
+/// coincidence, so they are one constant.
 const RULE_WIDTH: usize = 44;
 
 /// The `╭─╮` banner, styled, with a trailing blank line.
@@ -323,8 +324,7 @@ struct Inner {
     msg: String,
     /// Whether stderr was a terminal when the spinner started.
     ///
-    /// Sampled once, like the Python samples `sys.stderr.isatty()` on
-    /// every call — the answer cannot change mid-session, and sampling
+    /// Sampled once — the answer cannot change mid-session, and sampling
     /// once means `pause`/`resume`/drop cannot disagree with `start`
     /// about whether a thread exists.
     tty: bool,
@@ -411,9 +411,8 @@ impl Drop for Resume {
 /// The currently-active spinner, for [`pause_active_spinner`].
 ///
 /// A `Weak`, not an `Arc`: the module-level handle must not keep a
-/// spinner alive past its owner's scope. The Python's global has the
-/// same intent — its `__exit__` clears `_active` only if it still points
-/// at itself — and a `Weak` gets there without the check, because a
+/// spinner alive past its owner's scope. A `Weak` means the handle never
+/// needs clearing on the owner's exit, because a
 /// dropped spinner's handle simply stops upgrading.
 static ACTIVE: OnceLock<Mutex<Weak<Inner>>> = OnceLock::new();
 
@@ -426,9 +425,8 @@ fn active() -> &'static Mutex<Weak<Inner>> {
 /// Falls back to a static `…` prefix when stderr is not a terminal — one
 /// line, no thread, no animation, which is what CI logs contain.
 ///
-/// Dropping it stops the thread and erases the line. That is the
-/// `__exit__` of the Python context manager, and it runs on the panic
-/// path too, which is the whole reason the release profile keeps
+/// Dropping it stops the thread and erases the line. That runs on the
+/// panic path too, which is the whole reason the release profile keeps
 /// unwinding panics (see the root `Cargo.toml`).
 #[derive(Debug)]
 pub struct Spinner {
@@ -534,7 +532,7 @@ mod tests {
     // ── the spinner, against tests/fixtures/output/spinner.json ──
 
     /// Drive a spinner into a capture buffer, exactly as the fixture
-    /// generator drives the Python one: a fixed number of frames per
+    /// was recorded: a fixed number of frames per
     /// thread instead of a timer, and every thread joined before the
     /// bytes are read.
     fn capture_sink(buf: &Arc<Mutex<String>>) -> Sink {
@@ -580,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn frames_match_the_python() {
+    fn frames_match_the_fixture() {
         let doc = spinner_fixture();
         assert_eq!(doc["frames"].as_str().expect("frames"), SPINNER_FRAMES);
         assert!((doc["frame_interval_seconds"].as_f64().expect("interval") - 0.08).abs() < 1e-9);

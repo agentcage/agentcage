@@ -1,9 +1,8 @@
 //! Remove the legacy host-side grants-watcher supervision from a cage.
 //!
-//! The port of `src/agentcage/legacy_watcher.py` (docs/history/rust-port-plan.md
-//! Track D, PR D16). This is migration code, and the reason it exists is
-//! not recoverable from reading it, so the Python's reasoning is carried
-//! here verbatim in substance:
+//! This is migration code, and the reason it exists is not recoverable
+//! from reading it, so the original reasoning is carried here verbatim
+//! in substance:
 //!
 //! > The egress-local DNS-apply rework deleted the host-side grants
 //! > watcher — the systemd user unit on Linux hosts, the launchd plist
@@ -29,39 +28,37 @@
 //!   handed back, never raised, because a stale watcher must not block a
 //!   cage destroy/update.
 //!
-//! # What the Rust changes, and why
+//! # What changed from earlier releases, and why
 //!
-//! Four deliberate divergences from the Python. Each one is a bug the
-//! port is in a position to fix rather than reproduce.
+//! Four deliberate fixes to how earlier releases did this cleanup.
 //!
-//! 1. **The cage name is validated before it is used.** The Python
-//!    interpolates `name` straight into a filesystem path *and* into a
-//!    `sh -c` string sent to the guest. The name arrives from a legacy
+//! 1. **The cage name is validated before it is used.** Earlier
+//!    releases interpolated `name` straight into a filesystem path *and*
+//!    into a `sh -c` string sent to the guest. The name arrives from a legacy
 //!    cage's persisted metadata — written by a version of agentcage
 //!    whose validator is not this one's — so a `name` of `../../x` walks
 //!    out of `~/.config/systemd/user`, and a name containing `;` runs
 //!    arbitrary commands inside the VM. [`is_removable_name`] gates
-//!    everything on `config.py`'s own `^[a-z0-9][a-z0-9-]{0,62}$`, so
+//!    everything on the config's own `^[a-z0-9][a-z0-9-]{0,62}$`, so
 //!    the only paths this module can construct are ones it fully
 //!    determines. See [`LegacyWatcher::remove`].
-//! 2. **A Linux host with no systemd no longer crashes.** The Python
-//!    calls `subprocess.run(["systemctl", ...])` unguarded;
-//!    `FileNotFoundError` is *not* suppressed by `check=False`, so on a
+//! 2. **A Linux host with no systemd no longer crashes.** Earlier
+//!    releases ran `systemctl` unguarded, so on a
 //!    systemd-less Linux host that still has the unit file — a restored
-//!    home directory, a distro migration — the cleanup raises out of
+//!    home directory, a distro migration — the cleanup failed out of
 //!    `cage destroy`. Here the `systemctl` calls are skipped (via
 //!    [`agentcage_exec::CommandRunner::which`], the same guard
-//!    `systemd.py` uses everywhere else) and the stale file is still
+//!    used everywhere else) and the stale file is still
 //!    removed: with no systemd there is nothing holding a reference to
 //!    it, and leaving it behind re-arms the crash loop the day systemd
 //!    is installed.
-//! 3. **`systemctl` gets the `runuser` prefix.** `systemd.py`'s note
-//!    says the legacy helper "shells out directly for `disable --now`"
+//! 3. **`systemctl` gets the `runuser` prefix.** The legacy helper
+//!    shelled out directly for `disable --now`
 //!    because [`Systemctl::disable_unit`] cannot express `--now` — not
 //!    because the elevation prefix is unwanted. Under `sudo`, a bare
 //!    `systemctl --user` talks to *root's* user instance, where the
-//!    cage's units are not, so the Python's `disable --now` silently
-//!    does nothing before the file is deleted and systemd is left
+//!    cage's units are not, so that `disable --now` silently
+//!    did nothing before the file was deleted and systemd was left
 //!    holding the reference. [`Elevation`] fixes that.
 //! 4. **`launchctl` missing is a no-op, not an error.** Same shape as
 //!    (2), for the same reason.
@@ -72,8 +69,8 @@
 //! --now` **before** the unit file is unlinked, `daemon-reload`
 //! **after**. Reversed, systemd still holds a reference to a unit whose
 //! fragment has vanished — `disable` can no longer find it to remove the
-//! `WantedBy=` symlink, and a running instance keeps running. The
-//! Python's early `return` on a failed unlink is carried too: there is
+//! `WantedBy=` symlink, and a running instance keeps running. A failed
+//! unlink also returns early: there is
 //! no point reloading the generator view when nothing changed.
 //!
 //! And the macOS asymmetry: `launchctl bootout` runs *unconditionally*,
@@ -98,8 +95,7 @@ use agentcage_exec::{Command, CommandRunner};
 /// Explicit rather than read from `cfg!(target_os)` at the point of use,
 /// for the reason [`agentcage_exec::FakeRunner::stub_missing`] exists:
 /// CI has no macOS runner, and a branch that cannot be reached from a
-/// Linux test runner is a branch that is not tested. `sys.platform ==
-/// "darwin"` in the Python.
+/// Linux test runner is a branch that is not tested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Host {
     /// A Linux host: a systemd user unit.
@@ -120,7 +116,7 @@ impl Host {
     }
 }
 
-/// `config.py:1604`'s cage-name rule: `^[a-z0-9][a-z0-9-]{0,62}$`.
+/// The config's cage-name rule: `^[a-z0-9][a-z0-9-]{0,62}$`.
 ///
 /// Hand-written rather than a regex because it is three conditions and
 /// the crate has no regex dependency; the important part is that it is
@@ -172,8 +168,8 @@ impl<'a> LegacyWatcher<'a> {
         Self {
             runner,
             host: Host::detect(),
-            // `os.path.expanduser("~")`. The `pwd` fallback the Python
-            // gets for free is deliberately *not* reproduced: see
+            // `$HOME`, with deliberately *no* fallback to the password
+            // database: see
             // [`LegacyWatcher::remove`] for why an unknown home is
             // refused rather than guessed.
             home: std::env::var_os("HOME").map(PathBuf::from),
@@ -226,8 +222,8 @@ impl<'a> LegacyWatcher<'a> {
     ///
     /// `legacy_watcher._grants_service_path`. `None` when the name is
     /// not one this module is willing to build a path from, or when
-    /// `$HOME` is unknown — the two cases where the Python would
-    /// construct a path it should not.
+    /// `$HOME` is unknown — the two cases where earlier releases would
+    /// construct a path they should not.
     #[must_use]
     pub fn grants_service_path(&self, name: &str) -> Option<PathBuf> {
         if !is_removable_name(name) {
@@ -280,8 +276,8 @@ impl<'a> LegacyWatcher<'a> {
     /// signature here, not a discipline the callers have to keep.
     ///
     /// An unusable name or an unknown `$HOME` stops everything, host-
-    /// local *and* in-guest. Both are cases where the Python would go on
-    /// to act on a path it did not fully determine — a relative
+    /// local *and* in-guest. Both are cases where earlier releases went
+    /// on to act on a path they did not fully determine — a relative
     /// `.config/systemd/user/x-grants.service` resolved against whatever
     /// the cwd happens to be, or a `rm -f` in the guest whose argument
     /// the cage name got to choose.
@@ -401,7 +397,7 @@ impl<'a> LegacyWatcher<'a> {
         match instance.is_running() {
             Ok(true) => {}
             // Not running: nothing to stop, and the guest filesystem is
-            // not reachable to clean. Same silent no-op as the Python.
+            // not reachable to clean. A silent no-op.
             Ok(false) => return,
             Err(e) => {
                 warnings.push(Self::vm_warning(name, &e.to_string()));
@@ -429,7 +425,7 @@ impl<'a> LegacyWatcher<'a> {
         }
     }
 
-    /// The Python's in-VM warning, verbatim.
+    /// The in-VM warning, worded as it always has been.
     fn vm_warning(name: &str, detail: &str) -> String {
         format!(
             "could not clean the in-VM legacy grants watcher for '{name}' \
@@ -440,8 +436,8 @@ impl<'a> LegacyWatcher<'a> {
 
 /// `Path.is_file()`: follows symlinks, and a broken link is not a file.
 ///
-/// Note what the *removal* then does with a symlink: `fs::remove_file`,
-/// like Python's `Path.unlink`, unlinks the name and never follows it.
+/// Note what the *removal* then does with a symlink: `fs::remove_file`
+/// unlinks the name and never follows it.
 /// So a symlink planted at the unit path costs its target nothing — only
 /// the link in `~/.config/systemd/user` goes, which is the entry this
 /// module is here to remove.
@@ -451,9 +447,8 @@ fn is_file(path: &Path) -> bool {
 
 /// Remove the legacy watcher artifacts for `name`, printing warnings.
 ///
-/// The shape `cage destroy` and `cage update` call:
-/// `legacy_watcher.remove_legacy_grants_watcher(cfg.name, cfg.isolation)`
-/// in `cli.py:1189` and `cli.py:1424`.
+/// The shape `cage destroy` and `cage update` call, with the cage's name
+/// and isolation.
 pub fn remove_legacy_grants_watcher(runner: &dyn CommandRunner, name: &str, isolation: &str) {
     for warning in LegacyWatcher::new(runner).remove(name, isolation) {
         eprintln!("warn: {warning}");

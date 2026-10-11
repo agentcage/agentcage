@@ -177,8 +177,8 @@ fn no_error_message_carries_a_value() {
     no_canary("keychain error Debug", &format!("{err:?}"));
     assert!(err.to_string().starts_with("keychain add failed:"));
 
-    // A `cmd:` source that fails. Its stderr *is* interpolated -- the
-    // Python does it and the port keeps it -- so the canary here is in
+    // A `cmd:` source that fails. Its stderr *is* interpolated, as it
+    // always has been, so the canary here is in
     // the command's output, which is not a value agentcage resolved.
     let fake = FakeRunner::new();
     fake.push(Reply::failed(2, "pass: no such entry"));

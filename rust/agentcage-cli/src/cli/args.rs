@@ -14,10 +14,9 @@
 //!
 //! # The deliberate departures from clap's defaults
 //!
-//! * **No `-h`.** click declares `--help` alone. Adding a short form
-//!   would be a kindness, but it would also be a flag the Python CLI
-//!   rejects, and the point of this PR is that the two parse the same
-//!   command lines.
+//! * **No `-h`.** Only `--help`, as in earlier releases. Adding a short
+//!   form would be a kindness, but it would also change which command
+//!   lines parse, and the recorded surface pins that.
 //! * **`--help` is [`ArgAction::HelpLong`].** click prints a command's
 //!   whole docstring for `--help` and only its first line in the parent's
 //!   command listing. clap splits those two jobs across `about` and

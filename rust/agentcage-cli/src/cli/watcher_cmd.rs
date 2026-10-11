@@ -19,8 +19,7 @@
 //!
 //! Collapsing those two would make an unreachable VM report an
 //! all-clear, which for a command whose entire job is surfacing
-//! suspicious traffic is the worst possible direction to fail in. The
-//! Python's comment on `_load_watcher_output` says exactly this, and
+//! suspicious traffic is the worst possible direction to fail in.
 //! `pull_watcher_output`'s exit-42 sentinel exists to keep the two
 //! apart over `limactl shell`.
 
@@ -133,9 +132,9 @@ pub(crate) fn findings(ctx: &Ctx, matches: &ArgMatches) -> std::process::ExitCod
 
     if as_json {
         for entry in &entries {
-            // Through `har::json::dumps`, not `serde_json`: Python's
-            // default separators carry a space after each comma and
-            // `serde_json`'s do not, and `cage audit --json` already
+            // Through `har::json::dumps`, not `serde_json`: the pinned
+            // output carries a space after each comma and
+            // `serde_json`'s does not, and `cage audit --json` already
             // goes through the same door for the same reason.
             println!("{}", json::dumps(entry, DumpOptions::default()));
         }
@@ -264,9 +263,9 @@ pub(crate) fn status(ctx: &Ctx, matches: &ArgMatches) -> std::process::ExitCode 
     std::process::ExitCode::SUCCESS
 }
 
-// ── the formatting Python gets from f-strings ────────────────
+// ── number and text formatting ───────────────────────────────
 
-/// `str(d.get(key, ""))` — a missing key and a null are both `""`.
+/// A field as text — a missing key and a null are both `""`.
 fn field(entry: &Json, key: &str) -> String {
     match entry.get(key) {
         None | Some(Json::Null) => String::new(),
@@ -275,7 +274,7 @@ fn field(entry: &Json, key: &str) -> String {
     }
 }
 
-/// `str(x)[:n]` — by characters, as Python slices a `str`.
+/// The first `limit` characters (not bytes).
 fn truncate(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
@@ -289,7 +288,7 @@ fn general(value: f64) -> String {
     }
 }
 
-/// `f"{n:,}"` — thousands separators.
+/// Thousands separators.
 fn thousands(value: i64) -> String {
     let negative = value < 0;
     let digits = value.unsigned_abs().to_string();
@@ -303,13 +302,13 @@ fn thousands(value: i64) -> String {
     if negative { format!("-{out}") } else { out }
 }
 
-/// `f"{b / (1024 * 1024):.1f} MB"`.
+/// Bytes as `<n>.<d> MB`, where MB is 1024 * 1024 bytes.
 #[allow(clippy::cast_precision_loss)]
 fn megabytes(bytes: i64) -> String {
     format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
-/// `st.get(key, 0)` for the three integer counters.
+/// One of the three integer counters, `0` when absent.
 fn number(state: &Json, key: &str) -> String {
     state
         .get(key)
@@ -326,13 +325,14 @@ fn as_i64(value: &Json) -> Option<i64> {
     }
 }
 
-/// `if st.get(key)` — Python truthiness.
+/// Whether a field is set: absent, null, `false`, `0`, `""`, `[]` and
+/// `{}` are all unset.
 fn truthy(state: &Json, key: &str) -> bool {
     match state.get(key) {
         None | Some(Json::Null | Json::Bool(false)) => false,
         // `BigInt` is grouped with `true` deliberately: an integer too
-        // large for `i64` is never zero, and Python's unbounded `int`
-        // makes it truthy like any other non-zero number.
+        // large for `i64` is never zero, so it is set like any other
+        // non-zero number.
         Some(Json::Bool(true) | Json::BigInt(_)) => true,
         Some(Json::Int(n)) => *n != 0,
         Some(Json::Float(f)) => *f != 0.0,
@@ -359,7 +359,7 @@ mod tests {
     /// `f"{value:g}"`: the config coerces these to float, so a plain
     /// `interval_seconds: 300` must print `300s`, not `300.0s`.
     #[test]
-    fn general_drops_a_trailing_zero_like_python() {
+    fn general_drops_a_trailing_zero() {
         assert_eq!(general(300.0), "300");
         assert_eq!(general(7200.0), "7200");
         assert_eq!(general(0.5), "0.5");
@@ -369,7 +369,7 @@ mod tests {
     /// `f"{n:,}"`, on the boundaries where a hand-rolled grouper goes
     /// wrong.
     #[test]
-    fn thousands_groups_like_python() {
+    fn thousands_groups_by_three() {
         assert_eq!(thousands(0), "0");
         assert_eq!(thousands(7), "7");
         assert_eq!(thousands(999), "999");
@@ -379,10 +379,9 @@ mod tests {
         assert_eq!(thousands(-12345), "-12,345");
     }
 
-    /// `f"{b / (1024 * 1024):.1f} MB"` — MiB, despite the label, which
-    /// is the Python's arithmetic and not a typo to fix.
+    /// MiB, despite the label: the pinned arithmetic, not a typo to fix.
     #[test]
-    fn megabytes_matches_pythons_arithmetic() {
+    fn megabytes_uses_mebibytes() {
         assert_eq!(megabytes(0), "0.0 MB");
         assert_eq!(megabytes(9_437_184), "9.0 MB");
         assert_eq!(megabytes(52_428_800), "50.0 MB");
@@ -398,8 +397,8 @@ mod tests {
         assert_eq!(truncate("héllo-wörld", 5), "héllo");
     }
 
-    /// `if st.get("last_scan_failed")` is Python truthiness, so `0`,
-    /// `""` and `[]` are all false and the `[FAILED]` flag stays off.
+    /// `last_scan_failed` is a set/unset check, so `0`, `""` and `[]` are
+    /// all unset and the `[FAILED]` flag stays off.
     #[test]
     fn truthiness_treats_empty_values_as_false() {
         let state = json::parse(
