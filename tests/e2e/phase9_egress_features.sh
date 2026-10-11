@@ -481,8 +481,15 @@ fi
 
 # ── 9.19–9.20: WebSocket ─────────────────────────────────────────────
 e2e_timer_start
-OUT=$(probe ws ws://httpbin.org/ws "e2e-ws-hello")
-REPLY=$(jget reply <<<"$OUT")
+# The Policy API tests just above rewrite the egress config and grants;
+# the first upgrade can land on a reload in progress, so give it three
+# attempts. A real WebSocket regression fails all three.
+for _attempt in 1 2 3; do
+  OUT=$(probe ws ws://httpbin.org/ws "e2e-ws-hello")
+  REPLY=$(jget reply <<<"$OUT")
+  [ "$(jget echo <<<"$REPLY")" = "e2e-ws-hello" ] && break
+  sleep 2
+done
 if [ "$(jget echo <<<"$REPLY")" = "e2e-ws-hello" ] &&
    [ "$(jget sha256 <<<"$REPLY")" = "$(sha256 "e2e-ws-hello")" ]; then
   e2e_pass "9.19" "WebSocket: message round trip"
