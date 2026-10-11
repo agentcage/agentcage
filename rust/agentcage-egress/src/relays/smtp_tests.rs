@@ -541,3 +541,98 @@ fn credentials_must_resolve() {
         "unsupported relay credential source: 'cmd:pass show'"
     );
 }
+
+/// A cage that hangs up in the middle of `DATA` sent no message: nothing
+/// is delivered, the send slot is given back, and the abort is audited.
+/// (The replaced implementation delivered the truncated body.)
+#[tokio::test]
+async fn a_message_cut_off_mid_data_is_not_delivered() {
+    let rec = Arc::new(Mutex::new(Recorder::default()));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let up_port = listener.local_addr().unwrap().port();
+    let r2 = rec.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            let (s, _) = listener.accept().await.unwrap();
+            tokio::spawn(serve_upstream(s, Json::Object(Vec::new()), r2.clone()));
+        }
+    });
+    let cfg = SmtpConfig::parse(&entry(
+        &json::parse(r#"{"send_rate_limit": "1/hour"}"#).unwrap(),
+        up_port,
+    ))
+    .unwrap();
+    let sink = Arc::new(MemorySink::default());
+    let relay = SmtpRelay::with_credentials(
+        cfg,
+        USER.into(),
+        PASS.into(),
+        sink.clone(),
+        &RelaySettings::default(),
+    )
+    .unwrap();
+    relay.start().await.unwrap();
+    let port = relay.local_addr().await.unwrap().port();
+
+    let (r, mut w) = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap()
+        .into_split();
+    let mut r = Reader::new(r);
+    let _ = read_response(&mut r).await;
+    for cmd in [
+        &b"EHLO x\r\n"[..],
+        b"MAIL FROM:<agent@example.com>\r\n",
+        b"RCPT TO:<friend@example.com>\r\n",
+        b"DATA\r\n",
+    ] {
+        w.write_all(cmd).await.unwrap();
+        let _ = read_response(&mut r).await;
+    }
+    w.write_all(b"Subject: half\r\n\r\nthe first half\r\n.")
+        .await
+        .unwrap();
+    drop((r, w));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The slot came back: a full message on a new session still goes out.
+    let (r, mut w) = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap()
+        .into_split();
+    let mut r = Reader::new(r);
+    let _ = read_response(&mut r).await;
+    for cmd in [
+        &b"EHLO x\r\n"[..],
+        b"MAIL FROM:<agent@example.com>\r\n",
+        b"RCPT TO:<friend@example.com>\r\n",
+        b"DATA\r\n",
+    ] {
+        w.write_all(cmd).await.unwrap();
+        let _ = read_response(&mut r).await;
+    }
+    w.write_all(b"Subject: whole\r\n\r\nall of it\r\n.\r\n")
+        .await
+        .unwrap();
+    let done = read_response(&mut r).await;
+    relay.stop().await;
+    task.abort();
+
+    assert_eq!(
+        json::to_string(&done),
+        r#"["250 2.0.0 ok (upstream 250 2.0.0 queued as ABC123)\r\n"]"#
+    );
+    let transactions = rec.lock().unwrap().transactions.clone();
+    assert_eq!(transactions.len(), 1, "{transactions:?}");
+    assert_eq!(
+        transactions[0].get("data"),
+        Some(&Json::string("Subject: whole\r\n\r\nall of it\r\n"))
+    );
+    let audit: Vec<String> = sink.entries().iter().map(json::to_string).collect();
+    assert_eq!(
+        audit,
+        [
+            r#"{"kind": "smtp_data_aborted", "relay": "test-smtp", "decision": "blocked", "reason": "cage disconnected before end of data", "sender": "agent@example.com", "recipients": ["friend@example.com"], "size": 34}"#
+        ]
+    );
+}
