@@ -32,16 +32,25 @@ pub mod config;
 pub mod digest;
 pub mod prompt;
 pub(crate) mod pyval;
+pub mod runner;
 pub mod sample;
+pub mod scan;
 pub mod tail;
 
 #[cfg(test)]
 mod corpus;
+#[cfg(test)]
+mod scenario;
 
 pub use config::WatcherConfig;
 pub use digest::{DigestInput, build_digest, dedup_samples, est_tokens, fit_to_budget};
 pub use prompt::{is_never_revoke, normalise_finding, review_tool, system_prompt};
+pub use runner::{LoopHandle, WatcherManager};
 pub use sample::{excerpt_body, redact_headers, sample_capture};
+pub use scan::{
+    AgentSpec, CallerFactory, GrantStore, RefsHandle, RingSource, RuntimeRefs, TickOutcome,
+    Watcher, WatcherDeps, WatcherPaths,
+};
 pub use tail::{CaptureTail, TailLimits, TailRead};
 
 /// The per-scan random generator. Seeded once per scan from OS entropy.
