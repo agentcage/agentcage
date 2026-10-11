@@ -306,7 +306,7 @@ impl<'a> SecretHost<'a> {
             other => {
                 return Err(SecretError::value(format!(
                     "invalid secrets.scope: {}",
-                    agentcage_core::python::repr_str(other)
+                    agentcage_core::value_fmt::quote_text(other)
                 )));
             }
         }

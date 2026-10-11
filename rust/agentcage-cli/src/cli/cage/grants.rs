@@ -424,7 +424,7 @@ fn promote_inner(ctx: &Ctx, name: &str, domain: &str) -> Result<(), ExitCode> {
     if !valid_domain(&canonical_name, LabelPolicy::StrictDotted) {
         eprintln!(
             "error: invalid domain: {}",
-            agentcage_core::python::repr_str(domain)
+            agentcage_core::value_fmt::quote_text(domain)
         );
         return Err(ExitCode::from(EXIT_FAILURE));
     }

@@ -663,12 +663,12 @@ fn parse_iso_offset(b: &[u8]) -> Option<i64> {
 /// Wider than Rust's `char::is_whitespace`: Python also counts the four
 /// ASCII separator controls (U+001C–U+001F). Journald has been known to
 /// pass control bytes through, so the difference is not purely theoretical.
-fn is_py_space(c: char) -> bool {
+fn is_strip_space(c: char) -> bool {
     c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}')
 }
 
-fn py_strip(s: &str) -> &str {
-    s.trim_matches(is_py_space)
+fn strip_space(s: &str) -> &str {
+    s.trim_matches(is_strip_space)
 }
 
 /// Strip a VM-mode log prefix, if present.
@@ -695,7 +695,7 @@ fn strip_vm_prefix(line: &str) -> Option<&str> {
     if after.contains('\n') {
         return None;
     }
-    Some(py_strip(after))
+    Some(strip_space(after))
 }
 
 /// Extract an audit JSON dict from a raw journalctl line.
@@ -713,7 +713,7 @@ fn strip_vm_prefix(line: &str) -> Option<&str> {
 /// still qualifies on its own, so nothing it accepted is lost.
 #[must_use]
 pub fn extract_audit_json(line: &str) -> Option<Value> {
-    let line = py_strip(line);
+    let line = strip_space(line);
     if line.is_empty() {
         return None;
     }

@@ -19,7 +19,7 @@
 
 use super::ConfigError;
 use super::types::KNOWN_TRANSFORMS;
-use crate::python::repr_str;
+use crate::value_fmt::quote_text;
 
 type Checked = Result<(), ConfigError>;
 
@@ -62,7 +62,7 @@ pub fn validate_env_name(env_name: &str) -> Checked {
     }
     Err(ConfigError::value(format!(
         "invalid env name: {}. Must match [A-Za-z_][A-Za-z0-9_]*",
-        repr_str(env_name)
+        quote_text(env_name)
     )))
 }
 
@@ -135,7 +135,7 @@ pub fn validate_enum(field: &str, value: &str, valid: &[&str]) -> Checked {
     }
     Err(ConfigError::value(format!(
         "invalid {field}: {}. Valid: {}",
-        repr_str(value),
+        quote_text(value),
         valid.join(", ")
     )))
 }

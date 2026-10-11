@@ -32,7 +32,7 @@ use super::{
 };
 use crate::audit::AuditSink;
 use crate::config::{Mapping, Value};
-use agentcage_core::python::repr_str;
+use agentcage_core::value_fmt::quote_text;
 
 const LOGGER: &str = "agentcage.relays.imap";
 
@@ -438,7 +438,7 @@ fn server_reading(name: &str) -> String {
 /// Split `data` on runs of ASCII whitespace and parentheses
 /// (`re.split(rb"[\s()]+", data)`), keeping empty edge fields.
 fn split_ws_parens(data: &[u8]) -> Vec<&[u8]> {
-    let sep = |b: u8| super::is_py_space(b) || b == b'(' || b == b')';
+    let sep = |b: u8| super::is_ascii_strip_space(b) || b == b'(' || b == b')';
     let mut out = Vec::new();
     let mut start = 0;
     let mut i = 0;
@@ -603,7 +603,7 @@ fn decode_mailbox(raw: &[u8]) -> Option<String> {
 pub fn extract_mailbox(args: &[u8]) -> Option<String> {
     let start = args
         .iter()
-        .position(|&b| !super::is_py_space(b))
+        .position(|&b| !super::is_ascii_strip_space(b))
         .unwrap_or(args.len());
     let mut s = &args[start..];
     while let Some(rest) = s.strip_suffix(b"\r").or_else(|| s.strip_suffix(b"\n")) {
@@ -647,9 +647,9 @@ pub fn extract_mailbox(args: &[u8]) -> Option<String> {
 pub(crate) fn mapping_or_empty(value: Option<&Value>) -> Result<Option<&Mapping>, String> {
     match value {
         Some(Value::Mapping(m)) => Ok(Some(m)),
-        Some(v) if agentcage_core::yaml::python_bool(v) => Err(format!(
+        Some(v) if agentcage_core::yaml::is_truthy(v) => Err(format!(
             "'{}' object has no attribute 'get'",
-            agentcage_core::python::type_name(v)
+            agentcage_core::value_fmt::kind_name(v)
         )),
         _ => Ok(None),
     }
@@ -660,17 +660,23 @@ fn mget<'a>(m: Option<&'a Mapping>, key: &str) -> Option<&'a Value> {
 }
 
 /// `list(value or [])`, each item as `str(item)`.
-pub(crate) fn py_list(value: Option<&Value>) -> Result<Vec<String>, String> {
-    let Some(v) = value.filter(|v| agentcage_core::yaml::python_bool(v)) else {
+pub(crate) fn coerce_str_list(value: Option<&Value>) -> Result<Vec<String>, String> {
+    let Some(v) = value.filter(|v| agentcage_core::yaml::is_truthy(v)) else {
         return Ok(Vec::new());
     };
     match v {
-        Value::Sequence(items) => Ok(items.iter().map(agentcage_core::python::str_of).collect()),
+        Value::Sequence(items) => Ok(items
+            .iter()
+            .map(agentcage_core::value_fmt::coerce_to_string)
+            .collect()),
         Value::String(text) => Ok(text.chars().map(String::from).collect()),
-        Value::Mapping(m) => Ok(m.keys().map(agentcage_core::python::str_of).collect()),
+        Value::Mapping(m) => Ok(m
+            .keys()
+            .map(agentcage_core::value_fmt::coerce_to_string)
+            .collect()),
         other => Err(format!(
             "'{}' object is not iterable",
-            agentcage_core::python::type_name(other)
+            agentcage_core::value_fmt::kind_name(other)
         )),
     }
 }
@@ -696,13 +702,13 @@ pub(crate) struct ImapConfig {
 pub(crate) fn parse_upstream(entry: &Mapping) -> Result<Upstream, String> {
     let up = mapping_or_empty(entry.get("upstream"))?;
     let port = match mget(up, "port") {
-        Some(v) if agentcage_core::yaml::python_bool(v) => super::py_int(v)?,
+        Some(v) if agentcage_core::yaml::is_truthy(v) => super::coerce_int(v)?,
         _ => 0,
     };
     Ok(Upstream {
         host: super::str_or(mget(up, "host"), ""),
         port: u16::try_from(port).unwrap_or(0),
-        tls: mget(up, "tls").is_none_or(agentcage_core::yaml::python_bool),
+        tls: mget(up, "tls").is_none_or(agentcage_core::yaml::is_truthy),
         ca_pem: super::str_or(mget(up, "ca_pem"), ""),
         tls_servername: super::str_or(mget(up, "tls_servername"), ""),
     })
@@ -714,7 +720,7 @@ pub(crate) fn entry_mapping(entry: &Value) -> Result<&Mapping, String> {
         Value::Mapping(m) => Ok(m),
         other => Err(format!(
             "'{}' object has no attribute 'get'",
-            agentcage_core::python::type_name(other)
+            agentcage_core::value_fmt::kind_name(other)
         )),
     }
 }
@@ -725,22 +731,22 @@ impl ImapConfig {
         let upstream = parse_upstream(entry)?;
         let auth = mapping_or_empty(entry.get("auth"))?;
         let policy = mapping_or_empty(entry.get("policy"))?;
-        let readonly = mget(policy, "readonly").is_some_and(agentcage_core::yaml::python_bool);
+        let readonly = mget(policy, "readonly").is_some_and(agentcage_core::yaml::is_truthy);
         // write_mode is the expressive form; readonly the older boolean.
         // An explicit write_mode wins.
         let mut mode = super::str_or(mget(policy, "write_mode"), "")
-            .trim_matches(super::is_py_str_space)
+            .trim_matches(super::is_strip_space)
             .to_lowercase();
         if mode.is_empty() {
             if readonly { "none" } else { "full" }.clone_into(&mut mode);
         }
-        let folder_allowlist = py_list(mget(policy, "folder_allowlist"))?;
-        let folder_denylist = py_list(mget(policy, "folder_denylist"))?;
+        let folder_allowlist = coerce_str_list(mget(policy, "folder_allowlist"))?;
+        let folder_denylist = coerce_str_list(mget(policy, "folder_denylist"))?;
         let conn_rate_limit = super::str_or(mget(policy, "conn_rate_limit"), "30/min");
         // Per-read idle timeout, 30 minutes by default so RFC 2177 IDLE
         // heartbeats (every ~29 minutes) don't trip it; 0 disables it.
         let idle = match mget(policy, "idle_timeout_seconds") {
-            Some(v) => super::py_int(v)?,
+            Some(v) => super::coerce_int(v)?,
             None => 1800,
         };
         Ok(Self {
@@ -824,14 +830,14 @@ impl ImapRelay {
             return Err(format!(
                 "imap relay {}: credentials not resolved (user_source={}, password_source={})",
                 cfg.name,
-                repr_str(&cfg.user_source),
-                repr_str(&cfg.password_source)
+                quote_text(&cfg.user_source),
+                quote_text(&cfg.password_source)
             ));
         }
         let (max, window) = super::parse_rate_limit(&cfg.conn_rate_limit).ok_or_else(|| {
             format!(
                 "invalid conn_rate_limit: {}",
-                repr_str(&cfg.conn_rate_limit)
+                quote_text(&cfg.conn_rate_limit)
             )
         })?;
         let folder_lists = !cfg.folder_allowlist.is_empty() || !cfg.folder_denylist.is_empty();
@@ -1837,7 +1843,7 @@ impl Inner {
 fn trim_ascii_end(data: &[u8]) -> &[u8] {
     let end = data
         .iter()
-        .rposition(|&b| !super::is_py_space(b))
+        .rposition(|&b| !super::is_ascii_strip_space(b))
         .map_or(0, |i| i + 1);
     &data[..end]
 }
@@ -1860,7 +1866,7 @@ fn capture_capabilities(line: &[u8], caps: &mut Vec<String>) {
         }
         return;
     }
-    let stripped = text.trim_start_matches(super::is_py_str_space);
+    let stripped = text.trim_start_matches(super::is_strip_space);
     if stripped.to_ascii_uppercase().starts_with("* CAPABILITY ") {
         let payload = stripped["* CAPABILITY ".len()..].replace(['\r', '\n'], " ");
         let tokens = split_str_ws(&payload);

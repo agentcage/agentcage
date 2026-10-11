@@ -121,7 +121,7 @@ fn every_agents_invalid_case_matches_verbatim() {
         match validate_agents(&config) {
             Ok(_) => deferred += 1,
             Err(error) => {
-                let produced = format!("{}\n", error.as_python_traceback_line());
+                let produced = format!("{}\n", error.as_error_line());
                 if produced == expected {
                     matched.push(case);
                 } else if SHADOWED_BY_C2.contains(&case.as_str()) {

@@ -44,7 +44,7 @@ use crate::audit::AuditSink;
 use crate::config::Value;
 use crate::inspect::Inspector;
 use crate::json::Json;
-use agentcage_core::python::{repr_str, type_name};
+use agentcage_core::value_fmt::{kind_name, quote_text};
 
 /// The settings a running relay takes from every config reload without
 /// restarting: whether allowed traffic is logged, and the inspector
@@ -161,13 +161,13 @@ impl RateLimiter {
 
 /// `bytes.isspace()` for one byte: Python's ASCII whitespace set, which
 /// has the vertical tab `u8::is_ascii_whitespace` leaves out.
-pub(crate) fn is_py_space(b: u8) -> bool {
+pub(crate) fn is_ascii_strip_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0b' | b'\x0c')
 }
 
 /// `str.isspace()` for one char: Unicode whitespace plus the four ASCII
 /// separators (`\x1c`–`\x1f`) Python counts and Rust does not.
-pub(crate) fn is_py_str_space(c: char) -> bool {
+pub(crate) fn is_strip_space(c: char) -> bool {
     c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
 }
 
@@ -179,7 +179,7 @@ pub(crate) fn split_ws_ranges(data: &[u8], maxsplit: Option<usize>) -> Vec<(usiz
     let mut i = 0;
     let n = data.len();
     loop {
-        while i < n && is_py_space(data[i]) {
+        while i < n && is_ascii_strip_space(data[i]) {
             i += 1;
         }
         if i >= n {
@@ -190,7 +190,7 @@ pub(crate) fn split_ws_ranges(data: &[u8], maxsplit: Option<usize>) -> Vec<(usiz
             break;
         }
         let start = i;
-        while i < n && !is_py_space(data[i]) {
+        while i < n && !is_ascii_strip_space(data[i]) {
             i += 1;
         }
         out.push((start, i));
@@ -208,7 +208,7 @@ pub(crate) fn split_ws(data: &[u8], maxsplit: Option<usize>) -> Vec<&[u8]> {
 
 /// `text.split()` on a `str`.
 pub(crate) fn split_str_ws(text: &str) -> Vec<&str> {
-    text.split(is_py_str_space)
+    text.split(is_strip_space)
         .filter(|t| !t.is_empty())
         .collect()
 }
@@ -226,7 +226,7 @@ pub(crate) fn ascii_lossy(data: &[u8]) -> String {
         .collect()
 }
 
-/// `repr(data)` of a Python `bytes`, for log lines.
+/// `display_value(data)` of a Python `bytes`, for log lines.
 pub(crate) fn bytes_repr(data: &[u8]) -> String {
     let quote = if data.contains(&b'\'') && !data.contains(&b'"') {
         '"'
@@ -256,7 +256,7 @@ pub(crate) fn bytes_repr(data: &[u8]) -> String {
 }
 
 /// Python's `int(value)` on a YAML value, with its error messages.
-pub(crate) fn py_int(value: &Value) -> Result<i64, String> {
+pub(crate) fn coerce_int(value: &Value) -> Result<i64, String> {
     match value {
         Value::Bool(b) => Ok(i64::from(*b)),
         Value::Number(n) => n
@@ -268,19 +268,23 @@ pub(crate) fn py_int(value: &Value) -> Result<i64, String> {
                     .map(|f| f.trunc() as i64)
             })
             .ok_or_else(|| "cannot convert float NaN or infinity to integer".to_owned()),
-        Value::String(text) => py_int_text(text)
-            .ok_or_else(|| format!("invalid literal for int() with base 10: {}", repr_str(text))),
+        Value::String(text) => parse_int_literal(text).ok_or_else(|| {
+            format!(
+                "invalid literal for int() with base 10: {}",
+                quote_text(text)
+            )
+        }),
         other => Err(format!(
             "int() argument must be a string, a bytes-like object or a real number, not '{}'",
-            type_name(other)
+            kind_name(other)
         )),
     }
 }
 
 /// `int(text)` for a base-10 literal: surrounding whitespace, a sign,
 /// and single underscores between digits.
-pub(crate) fn py_int_text(text: &str) -> Option<i64> {
-    let t = text.trim_matches(is_py_str_space);
+pub(crate) fn parse_int_literal(text: &str) -> Option<i64> {
+    let t = text.trim_matches(is_strip_space);
     let (neg, digits) = match t.as_bytes().first()? {
         b'-' => (true, &t[1..]),
         b'+' => (false, &t[1..]),
@@ -301,7 +305,9 @@ pub(crate) fn py_int_text(text: &str) -> Option<i64> {
 /// `str(mapping.get(key) or default)`.
 pub(crate) fn str_or(value: Option<&Value>, default: &str) -> String {
     match value {
-        Some(v) if agentcage_core::yaml::python_bool(v) => agentcage_core::python::str_of(v),
+        Some(v) if agentcage_core::yaml::is_truthy(v) => {
+            agentcage_core::value_fmt::coerce_to_string(v)
+        }
         _ => default.to_owned(),
     }
 }
@@ -309,8 +315,12 @@ pub(crate) fn str_or(value: Option<&Value>, default: &str) -> String {
 /// Resolve one relay credential source, with the replaced
 /// implementation's error text (`repr` quoting, not Rust's).
 pub(crate) fn resolve_credential(source: &str) -> Result<String, String> {
-    crate::secret_lookup::resolve_credential(source)
-        .map_err(|_| format!("unsupported relay credential source: {}", repr_str(source)))
+    crate::secret_lookup::resolve_credential(source).map_err(|_| {
+        format!(
+            "unsupported relay credential source: {}",
+            quote_text(source)
+        )
+    })
 }
 
 // ── Buffered reads with Python `StreamReader` semantics ─
@@ -631,7 +641,7 @@ pub(crate) struct Listener {
 pub(crate) fn parse_listen(listen: &str) -> Result<(String, u16), String> {
     let (host, port) = listen.rsplit_once(':').unwrap_or(("", listen));
     if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("invalid listen address: {}", repr_str(listen)));
+        return Err(format!("invalid listen address: {}", quote_text(listen)));
     }
     let port: u16 = port
         .parse()
@@ -771,10 +781,10 @@ mod tests {
     }
 
     #[test]
-    fn python_int() {
-        assert_eq!(py_int_text(" 1_000 "), Some(1000));
-        assert_eq!(py_int_text("1__0"), None);
-        assert_eq!(py_int_text("-3"), Some(-3));
+    fn int_literal_parsing() {
+        assert_eq!(parse_int_literal(" 1_000 "), Some(1000));
+        assert_eq!(parse_int_literal("1__0"), None);
+        assert_eq!(parse_int_literal("-3"), Some(-3));
         assert_eq!(bytes_repr(b"a'\r\n\x00"), "b\"a'\\r\\n\\x00\"");
     }
 

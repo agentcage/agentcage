@@ -308,7 +308,7 @@ pub(crate) fn parse_duration(duration: &str) -> Result<i64, String> {
     Err(format!(
         "invalid duration {}: use a number with a unit suffix \
          (e.g. 30s, 10m, 1h, 2d) or a bare number of seconds",
-        agentcage_core::python::repr_str(duration)
+        agentcage_core::value_fmt::quote_text(duration)
     ))
 }
 
@@ -734,7 +734,7 @@ fn add_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         if !valid_domain(&canonical(domain), LabelPolicy::AllowSingleLabel) {
             eprintln!(
                 "error: invalid domain: {}",
-                agentcage_core::python::repr_str(domain)
+                agentcage_core::value_fmt::quote_text(domain)
             );
             return Err(ExitCode::from(EXIT_FAILURE));
         }

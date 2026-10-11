@@ -271,7 +271,7 @@ fn err(message: impl Into<String>) -> TransformError {
 }
 
 /// `str(value)` for the scalars a config can hold.
-fn py_str(value: &Value) -> String {
+fn coerce_to_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Bool(true) => "True".into(),
@@ -315,7 +315,7 @@ impl GoogleJwtBearer {
         // `list(config.get("scopes") or [])`: a string is a list of its
         // characters there, kept for parity.
         let scopes: Vec<String> = match config.get("scopes") {
-            Some(Value::Sequence(items)) => items.iter().map(py_str).collect(),
+            Some(Value::Sequence(items)) => items.iter().map(coerce_to_string).collect(),
             Some(Value::String(s)) => s.chars().map(String::from).collect(),
             _ => Vec::new(),
         };
@@ -325,7 +325,7 @@ impl GoogleJwtBearer {
             ));
         }
         let audience = match config.get("audience") {
-            Some(v) if crate::config::truthy(v) => py_str(v),
+            Some(v) if crate::config::truthy(v) => coerce_to_string(v),
             _ => DEFAULT_AUDIENCE.to_owned(),
         };
         validate_audience(&audience)?;

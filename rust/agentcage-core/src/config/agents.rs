@@ -126,7 +126,7 @@ fn validate_decider(config: &Config) -> Checked<()> {
         return Err(ConfigError::value(format!(
             "agents.decider.host {} must be a dotted hostname (e.g. 'agentcage.local'), \
              not an IP literal or single label",
-            crate::python::repr_str(&decider.host)
+            crate::value_fmt::quote_text(&decider.host)
         )));
     }
     let all_named: BTreeSet<String> = config
@@ -141,7 +141,7 @@ fn validate_decider(config: &Config) -> Checked<()> {
         return Err(ConfigError::value(format!(
             "agents.decider.host {} must not appear in domains.allow/block/passthrough — \
              the control host is a synthetic, non-forwardable endpoint",
-            crate::python::repr_str(&decider.host)
+            crate::value_fmt::quote_text(&decider.host)
         )));
     }
 
@@ -324,7 +324,7 @@ fn validate_llm_client(
     if !VALID_AGENT_PROVIDERS.contains(&client.provider.as_str()) {
         return Err(ConfigError::value(format!(
             "{label}.provider must be 'anthropic', 'openai', or 'openrouter' (got {})",
-            crate::python::repr_str(&client.provider)
+            crate::value_fmt::quote_text(&client.provider)
         )));
     }
     if client.model.is_empty() {
@@ -339,7 +339,7 @@ fn validate_llm_client(
         let (scheme, hostname) = urlsplit(&client.base_url);
         if scheme != "https" || hostname.is_empty() {
             return Err(ConfigError::value(
-                base_url_template.replace("{}", &crate::python::repr_str(&client.base_url)),
+                base_url_template.replace("{}", &crate::value_fmt::quote_text(&client.base_url)),
             ));
         }
     }
@@ -429,7 +429,7 @@ pub fn require_api_key_shape<'a>(api_key: &'a str, label: &str) -> Checked<(&'a 
         return Err(ConfigError::value(format!(
             "{label}.api_key must use the 'source:NAME' scheme (e.g. 'env:NAME' or \
              'systemd-creds:NAME') — got {}",
-            crate::python::repr_str(api_key)
+            crate::value_fmt::quote_text(api_key)
         )));
     }
     Ok((scheme, argument))

@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::pyconf::{self, Num};
+use super::config_values::{self, Num};
 use super::{Action, Context, Inspector, Severity, Verdict};
 use crate::config::Value;
 use crate::json::Json;
@@ -68,13 +68,17 @@ impl ContentTypeInspector {
     ///
     /// A key holds a value of the wrong type.
     pub fn from_config(section: &Value) -> Result<Self, String> {
-        let map = pyconf::section(section, NAME)?;
+        let map = config_values::section(section, NAME)?;
         Ok(Self {
-            entropy_ceiling: pyconf::num(map, "entropy_ceiling", Num::float(6.5), NAME)?,
-            detect_base64: pyconf::flag(map, "detect_base64", true),
-            base64_min_len: pyconf::num(map, "base64_min_len", Num::int(256), NAME)?,
-            action: action_of(&pyconf::string(map, "action", "block", NAME)?),
-            host_exempt_content_types: pyconf::host_lists(map, "host_exempt_content_types", NAME)?,
+            entropy_ceiling: config_values::num(map, "entropy_ceiling", Num::float(6.5), NAME)?,
+            detect_base64: config_values::flag(map, "detect_base64", true),
+            base64_min_len: config_values::num(map, "base64_min_len", Num::int(256), NAME)?,
+            action: action_of(&config_values::string(map, "action", "block", NAME)?),
+            host_exempt_content_types: config_values::host_lists(
+                map,
+                "host_exempt_content_types",
+                NAME,
+            )?,
         })
     }
 }
@@ -92,7 +96,8 @@ impl Inspector for ContentTypeInspector {
         }
         let host = ctx.host.to_lowercase();
         for (h, prefixes) in &self.host_exempt_content_types {
-            if pyconf::host_matches(&host, h) && prefixes.iter().any(|p| ct.starts_with(p.as_str()))
+            if config_values::host_matches(&host, h)
+                && prefixes.iter().any(|p| ct.starts_with(p.as_str()))
             {
                 return None;
             }

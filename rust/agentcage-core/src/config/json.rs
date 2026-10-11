@@ -477,7 +477,7 @@ fn json_key(key: &Value) -> String {
         Value::Bool(true) => "true".to_owned(),
         Value::Bool(false) => "false".to_owned(),
         Value::String(text) => text.clone(),
-        other => crate::python::str_of(other),
+        other => crate::value_fmt::coerce_to_string(other),
     }
 }
 

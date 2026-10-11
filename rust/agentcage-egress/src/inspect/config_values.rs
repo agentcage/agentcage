@@ -9,7 +9,7 @@
 //! string's characters as if they were list items. Refusing at configure
 //! time keeps a bad reload fail-closed (D1): the last good chain stays.
 
-use agentcage_core::python::{str_of, type_name};
+use agentcage_core::value_fmt::{coerce_to_string, kind_name};
 
 use crate::config::{Mapping, Value, truthy};
 use crate::json::Json;
@@ -26,7 +26,7 @@ pub(crate) fn section<'a>(value: &'a Value, inspector: &str) -> Result<&'a Mappi
         Value::Mapping(m) => Ok(m),
         other => Err(format!(
             "{inspector} inspector config must be a mapping (got {})",
-            type_name(other)
+            kind_name(other)
         )),
     }
 }
@@ -72,7 +72,7 @@ impl Num {
             // prints as `True`/`False`.
             Value::Bool(b) => Some(Self {
                 value: f64::from(u8::from(*b)),
-                text: str_of(value),
+                text: coerce_to_string(value),
                 json: Json::Bool(*b),
             }),
             Value::Number(n) => Some(match n.as_i64() {
@@ -110,7 +110,7 @@ pub(crate) fn num(map: &Mapping, key: &str, default: Num, inspector: &str) -> Re
     match map.get(key) {
         None => Ok(default),
         Some(v) => Num::from_value(v)
-            .ok_or_else(|| format!("{inspector}.{key} must be a number (got {})", type_name(v))),
+            .ok_or_else(|| format!("{inspector}.{key} must be a number (got {})", kind_name(v))),
     }
 }
 
@@ -136,7 +136,7 @@ pub(crate) fn string(
         Some(Value::String(s)) => Ok(s.clone()),
         Some(v) => Err(format!(
             "{inspector}.{key} must be a string (got {})",
-            type_name(v)
+            kind_name(v)
         )),
     }
 }
@@ -151,7 +151,7 @@ pub(crate) fn str_items(value: &Value, what: &str) -> Result<Vec<String>, String
     let Value::Sequence(items) = value else {
         return Err(format!(
             "{what} must be a list of strings (got {})",
-            type_name(value)
+            kind_name(value)
         ));
     };
     items
@@ -160,7 +160,7 @@ pub(crate) fn str_items(value: &Value, what: &str) -> Result<Vec<String>, String
             Value::String(s) => Ok(s.clone()),
             other => Err(format!(
                 "{what} entries must be strings (got {})",
-                type_name(other)
+                kind_name(other)
             )),
         })
         .collect()
@@ -192,7 +192,7 @@ pub(crate) fn host_lists(
         Some(v) => {
             return Err(format!(
                 "{inspector}.{key} must be a mapping (got {})",
-                type_name(v)
+                kind_name(v)
             ));
         }
     };
@@ -217,13 +217,13 @@ pub(crate) fn host_matches(host: &str, h: &str) -> bool {
 /// Python's `str.isspace()` for one character, which is also what `\s`
 /// matches in a `str` pattern. Unicode `White_Space` plus the four
 /// C0 information separators (U+001C–U+001F) Python counts too.
-pub(crate) fn py_isspace(c: char) -> bool {
+pub(crate) fn is_strip_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
 /// `s.strip()`.
-pub(crate) fn py_strip(s: &str) -> &str {
-    s.trim_matches(py_isspace)
+pub(crate) fn strip_space(s: &str) -> &str {
+    s.trim_matches(is_strip_space)
 }
 
 #[cfg(test)]

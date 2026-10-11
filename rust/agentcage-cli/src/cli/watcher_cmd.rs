@@ -401,7 +401,7 @@ mod tests {
     /// `if st.get("last_scan_failed")` is Python truthiness, so `0`,
     /// `""` and `[]` are all false and the `[FAILED]` flag stays off.
     #[test]
-    fn truthiness_is_pythons() {
+    fn truthiness_treats_empty_values_as_false() {
         let state = json::parse(
             r#"{"t": true, "f": false, "zero": 0, "one": 1, "empty": "",
                 "text": "x", "list": [], "items": [1], "nil": null,

@@ -133,7 +133,7 @@ pub fn mget<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
 /// Python `bool(value)`.
 #[must_use]
 pub fn truthy(value: &Value) -> bool {
-    agentcage_core::yaml::python_bool(value)
+    agentcage_core::yaml::is_truthy(value)
 }
 
 /// A string value, or `None` for anything else (no coercion).

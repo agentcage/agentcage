@@ -130,7 +130,7 @@ impl fmt::Display for NonPersistentVolumeError {
             f,
             "volume {}: the np option cannot be combined with {}; only rw,np \
              is supported",
-            py_repr(&self.spec),
+            quote_path(&self.spec),
             self.unsupported.join(", ")
         )
     }
@@ -650,9 +650,9 @@ pub fn normpath(path: &str) -> String {
 /// accident is not a trade worth making, so such a character is emitted
 /// literally here. It is a divergence in an error string only; no parsing
 /// decision depends on this function. If it ever matters, the fix is a shared
-/// `py_repr` alongside the rest of `config.py`'s message formatting rather
+/// `quote_path` alongside the rest of `config.py`'s message formatting rather
 /// than a second copy here.
-fn py_repr(value: &str) -> String {
+fn quote_path(value: &str) -> String {
     let quote = if value.contains('\'') && !value.contains('"') {
         '"'
     } else {
@@ -767,17 +767,17 @@ mod tests {
 
     #[test]
     fn repr_switches_quotes_like_python() {
-        assert_eq!(py_repr("/a:/b"), "'/a:/b'");
-        assert_eq!(py_repr("it's"), "\"it's\"");
-        assert_eq!(py_repr("say \"hi\""), "'say \"hi\"'");
-        assert_eq!(py_repr("both ' and \""), "'both \\' and \"'");
-        assert_eq!(py_repr("tab\there"), "'tab\\there'");
-        assert_eq!(py_repr("a\u{7f}b"), "'a\\x7fb'");
+        assert_eq!(quote_path("/a:/b"), "'/a:/b'");
+        assert_eq!(quote_path("it's"), "\"it's\"");
+        assert_eq!(quote_path("say \"hi\""), "'say \"hi\"'");
+        assert_eq!(quote_path("both ' and \""), "'both \\' and \"'");
+        assert_eq!(quote_path("tab\there"), "'tab\\there'");
+        assert_eq!(quote_path("a\u{7f}b"), "'a\\x7fb'");
         // The far end of Latin-1's non-printables: NBSP and the soft hyphen.
-        assert_eq!(py_repr("a\u{a0}b"), "'a\\xa0b'");
-        assert_eq!(py_repr("a\u{ad}b"), "'a\\xadb'");
+        assert_eq!(quote_path("a\u{a0}b"), "'a\\xa0b'");
+        assert_eq!(quote_path("a\u{ad}b"), "'a\\xadb'");
         // …and the first printable past them stays literal.
-        assert_eq!(py_repr("a\u{a1}b"), "'a\u{a1}b'");
+        assert_eq!(quote_path("a\u{a1}b"), "'a\u{a1}b'");
     }
 
     #[test]

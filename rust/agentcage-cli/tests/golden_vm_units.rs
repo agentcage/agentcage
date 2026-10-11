@@ -354,7 +354,7 @@ fn every_case_reproduces_its_units() {
                     continue;
                 }
                 Err(agentcage_cli::backend::BackendError::Config(error)) => {
-                    format!("{}\n", error.as_python_traceback_line())
+                    format!("{}\n", error.as_error_line())
                 }
                 Err(other) => {
                     wrong.push(format!("{}: wrong error type: {other}", case.name));

@@ -11,13 +11,13 @@ use indexmap::IndexMap;
 use serde::Serialize;
 
 use crate::config::{Config, ConfigError};
-use crate::python::repr_str;
 use crate::quadlets::{
     CageNetworkAddrs, b64, cage_network_addrs, certs_volume, effective_port_policy,
     podman_storage_volume, public_certs_volume, reserved_volume_entry, templates,
     vm_local_cage_env_dir, vm_local_dns_allowlist_path, vm_local_grants_dir,
     vm_local_inspectors_dir, vm_local_placeholders_env_path, vm_local_proxy_config_path,
 };
+use crate::value_fmt::quote_text;
 use crate::volume_mounts::{
     self, MountTarget, TMPFS_COPYUP_OPTIONS, enclosing_mount, is_non_persistent_volume,
     mask_copyup_entries, mask_mountpoint_dirs, split_volume_spec, tmpfs_spec_options,
@@ -521,7 +521,7 @@ pub fn generate_quadlets(
         if host_path.contains('$') {
             out.warnings.push(format!(
                 "warning: skipping volume {} (unresolved variable)",
-                repr_str(&host_path)
+                quote_text(&host_path)
             ));
             continue;
         }
@@ -539,9 +539,9 @@ pub fn generate_quadlets(
         if !(real.starts_with(&format!("{home}/")) || real == home) {
             return Err(ConfigError::value(format!(
                 "volume host path {} resolves to {} which is outside the home directory ({})",
-                repr_str(&host_path),
-                repr_str(&real),
-                repr_str(&home)
+                quote_text(&host_path),
+                quote_text(&real),
+                quote_text(&home)
             )));
         }
 
@@ -561,7 +561,7 @@ pub fn generate_quadlets(
             };
             out.warnings.push(format!(
                 "warning: skipping volume {} ({detail})",
-                repr_str(&host_path)
+                quote_text(&host_path)
             ));
             continue;
         }
@@ -588,7 +588,7 @@ pub fn generate_quadlets(
             if target.is_empty() {
                 out.warnings.push(format!(
                     "warning: skipping volume {} with the np flag (invalid volume spec)",
-                    repr_str(&expanded)
+                    quote_text(&expanded)
                 ));
                 continue;
             }
@@ -613,7 +613,7 @@ pub fn generate_quadlets(
             let Some(overlay) = non_persistent_overlay_mount(&expanded, deploy, index) else {
                 out.warnings.push(format!(
                     "warning: skipping volume {} with the np flag (invalid volume spec)",
-                    repr_str(&expanded)
+                    quote_text(&expanded)
                 ));
                 continue;
             };
@@ -666,7 +666,7 @@ pub fn generate_quadlets(
         if has_newline {
             out.warnings.push(format!(
                 "warning: skipping tmpfs mask cleanup for {} (path contains a newline)",
-                repr_str(&group.host_source)
+                quote_text(&group.host_source)
             ));
             continue;
         }
@@ -874,14 +874,14 @@ pub fn generate_quadlets(
             return Err(ConfigError::value(format!(
                 "container port 8080 conflicts with the egress forward proxy (port spec: {}). \
                  Use a different container port.",
-                repr_str(port_spec)
+                quote_text(port_spec)
             )));
         }
         if container_port == "8443" {
             return Err(ConfigError::value(format!(
                 "container port 8443 conflicts with the egress transparent proxy (port spec: \
                  {}). Use a different container port.",
-                repr_str(port_spec)
+                quote_text(port_spec)
             )));
         }
         inbound_forwards.push(InboundForward {

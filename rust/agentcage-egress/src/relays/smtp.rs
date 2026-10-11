@@ -38,7 +38,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
-use super::imap::{entry_mapping, mapping_or_empty, parse_upstream, py_list};
+use super::imap::{coerce_str_list, entry_mapping, mapping_or_empty, parse_upstream};
 use super::{
     Line, Listener, RateLimiter, Reader, RelaySettings, SessionError, Upstream, audit, bytes_repr,
     relay_log, s,
@@ -47,7 +47,7 @@ use crate::audit::AuditSink;
 use crate::config::{Mapping, Value};
 use crate::inspect::{Action, Context, Inspector, Phase, Verdict, run_chain, shannon_entropy};
 use crate::json::Json;
-use agentcage_core::python::{repr_str, type_name};
+use agentcage_core::value_fmt::{kind_name, quote_text};
 
 const LOGGER: &str = "agentcage.relays.smtp";
 
@@ -78,7 +78,7 @@ pub(crate) struct SmtpConfig {
 
 /// `[s.lower() for s in (value or [])]`.
 fn lowered(value: Option<&Value>) -> Result<Vec<String>, String> {
-    let Some(v) = value.filter(|v| agentcage_core::yaml::python_bool(v)) else {
+    let Some(v) = value.filter(|v| agentcage_core::yaml::is_truthy(v)) else {
         return Ok(Vec::new());
     };
     let items: Vec<&Value> = match v {
@@ -87,7 +87,7 @@ fn lowered(value: Option<&Value>) -> Result<Vec<String>, String> {
         Value::String(text) => {
             return Ok(text.chars().map(|c| c.to_lowercase().collect()).collect());
         }
-        other => return Err(format!("'{}' object is not iterable", type_name(other))),
+        other => return Err(format!("'{}' object is not iterable", kind_name(other))),
     };
     items
         .into_iter()
@@ -95,7 +95,7 @@ fn lowered(value: Option<&Value>) -> Result<Vec<String>, String> {
             Value::String(text) => Ok(text.to_lowercase()),
             other => Err(format!(
                 "'{}' object has no attribute 'lower'",
-                type_name(other)
+                kind_name(other)
             )),
         })
         .collect()
@@ -127,7 +127,7 @@ impl SmtpConfig {
         let recipient_addresses = lowered(rget("addresses"))?;
         let recipient_domains = lowered(rget("domains"))?;
         let int_or = |key: &str, default: i64| match pget(key) {
-            Some(v) => super::py_int(v),
+            Some(v) => super::coerce_int(v),
             None => Ok(default),
         };
         let max_message_bytes = int_or("max_message_bytes", 5_242_880)?;
@@ -140,7 +140,7 @@ impl SmtpConfig {
         let idle_timeout_seconds = int_or("idle_timeout_seconds", 300)?;
         let bypass = if policy.is_some_and(|p| p.contains_key("bypass_inspectors_for_allowlisted"))
         {
-            py_list(pget("bypass_inspectors_for_allowlisted"))?
+            coerce_str_list(pget("bypass_inspectors_for_allowlisted"))?
         } else {
             DEFAULT_BYPASS.iter().map(|s| (*s).to_owned()).collect()
         };
@@ -177,16 +177,12 @@ pub fn extract_address(arg: &str) -> Option<String> {
         match rest.find('>') {
             Some(0) => from = open + 1,
             Some(close) => {
-                return Some(
-                    rest[..close]
-                        .trim_matches(super::is_py_str_space)
-                        .to_owned(),
-                );
+                return Some(rest[..close].trim_matches(super::is_strip_space).to_owned());
             }
             None => break,
         }
     }
-    let s = arg.trim_matches(super::is_py_str_space);
+    let s = arg.trim_matches(super::is_strip_space);
     (!s.is_empty() && s.contains('@')).then(|| s.to_owned())
 }
 
@@ -275,7 +271,7 @@ pub fn message_headers(body: &[u8]) -> (String, Vec<(String, String)>) {
                     .split(';')
                     .next()
                     .unwrap_or("")
-                    .trim_matches(super::is_py_str_space)
+                    .trim_matches(super::is_strip_space)
                     .to_lowercase();
                 if ctype.matches('/').count() == 1 {
                     ctype
@@ -445,14 +441,14 @@ impl SmtpRelay {
             return Err(format!(
                 "smtp relay {}: credentials not resolved (user_source={}, password_source={})",
                 cfg.name,
-                repr_str(&cfg.user_source),
-                repr_str(&cfg.password_source)
+                quote_text(&cfg.user_source),
+                quote_text(&cfg.password_source)
             ));
         }
         let limiter = |spec: &str| {
             super::parse_rate_limit(spec)
                 .map(|(max, window)| RateLimiter::new(max, window))
-                .ok_or_else(|| format!("invalid rate spec: {}", repr_str(spec)))
+                .ok_or_else(|| format!("invalid rate spec: {}", quote_text(spec)))
         };
         let conn_limiter = limiter(&cfg.conn_rate_limit)?;
         let send_limiter = limiter(&cfg.send_rate_limit)?;
@@ -748,7 +744,7 @@ impl Inner {
                         continue;
                     }
                     let sender =
-                        extract_address(char_slice(&arg, 5).trim_matches(super::is_py_str_space));
+                        extract_address(char_slice(&arg, 5).trim_matches(super::is_strip_space));
                     if let Some(reason) = self.sender_decision(sender.as_deref()) {
                         write_line(w, format!("550 {reason}").as_bytes()).await?;
                         continue;
@@ -788,7 +784,7 @@ impl Inner {
                         continue;
                     }
                     let rcpt =
-                        extract_address(char_slice(&arg, 3).trim_matches(super::is_py_str_space));
+                        extract_address(char_slice(&arg, 3).trim_matches(super::is_strip_space));
                     if let Some(reason) = self.recipient_decision(rcpt.as_deref()) {
                         write_line(w, format!("550 5.7.1 {reason}").as_bytes()).await?;
                         continue;
@@ -1280,7 +1276,7 @@ impl UpstreamSmtp {
             }
             let code = std::str::from_utf8(&line[..line.len().min(3)])
                 .ok()
-                .and_then(super::py_int_text)
+                .and_then(super::parse_int_literal)
                 .ok_or_else(|| format!("malformed upstream response: {}", bytes_repr(&line)))?;
             let sep = line.get(3).copied();
             let text = String::from_utf8_lossy(line.get(4..).unwrap_or(&[])).into_owned();

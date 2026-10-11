@@ -35,14 +35,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use agentcage_core::config::{HostProbe, injection_rules};
-use agentcage_core::python::{repr_str, str_of};
 use agentcage_core::quadlets::effective_dns_allowlist;
+use agentcage_core::value_fmt::{coerce_to_string, quote_text};
 use agentcage_core::yaml::{self, Mapping, Value};
 
 use crate::deployment::AgentSchema;
 use crate::error::{Result, StateError};
+use crate::path_expand::{expanduser, expandvars};
 use crate::paths::Paths;
-use crate::pyfs::{expanduser, expandvars};
 
 /// `state._PROXY_KEYS` — the keys the egress reads.
 ///
@@ -166,18 +166,20 @@ impl Paths {
             let Value::Mapping(relay) = relay else {
                 continue;
             };
-            let label = relay.get("name").map_or_else(|| "?".to_owned(), str_of);
+            let label = relay
+                .get("name")
+                .map_or_else(|| "?".to_owned(), coerce_to_string);
             let Some(Value::Mapping(upstream)) = relay.get_mut("upstream") else {
                 continue;
             };
             // `upstream.pop("ca_file", "")` — removed whether or not it
             // held anything, so the host path never reaches the proxy.
             let ca_file = upstream.shift_remove("ca_file").unwrap_or(Value::Null);
-            if !yaml::python_bool(&ca_file) {
+            if !yaml::is_truthy(&ca_file) {
                 continue;
             }
-            let path = expanduser(&expandvars(&str_of(&ca_file)), self.home());
-            let display = repr_str(&path.to_string_lossy());
+            let path = expanduser(&expandvars(&coerce_to_string(&ca_file)), self.home());
+            let display = quote_text(&path.to_string_lossy());
             let pem = fs::read_to_string(&path).map_err(|error| {
                 StateError::value(format!(
                     "protocol_relays[{label}].upstream.ca_file: \
@@ -224,12 +226,12 @@ impl Paths {
                 continue;
             };
             // `if env and placeholder` — both have to be truthy.
-            if !yaml::python_bool(env) || !yaml::python_bool(placeholder) {
+            if !yaml::is_truthy(env) || !yaml::is_truthy(placeholder) {
                 continue;
             }
-            text.push_str(&str_of(env));
+            text.push_str(&coerce_to_string(env));
             text.push('=');
-            text.push_str(&str_of(placeholder));
+            text.push_str(&coerce_to_string(placeholder));
             text.push('\n');
         }
         let path = self.placeholders_env_path(name);

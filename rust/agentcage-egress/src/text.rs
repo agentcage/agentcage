@@ -419,7 +419,7 @@ pub fn decode_text(content_type: &str, content: &[u8]) -> String {
 
 /// Python `str.isspace` for one character: the Unicode `White_Space`
 /// characters plus the four ASCII separators U+001C-U+001F.
-pub(crate) fn py_is_space(c: char) -> bool {
+pub(crate) fn is_strip_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
@@ -438,7 +438,10 @@ fn parse_content_type(value: &str) -> Option<ContentType> {
     let mut out: Vec<(String, String)> = Vec::new();
     for clause in params.into_iter().flat_map(|p| p.split(';')) {
         if let Some((k, v)) = clause.split_once('=') {
-            let (k, v) = (k.trim_matches(py_is_space), v.trim_matches(py_is_space));
+            let (k, v) = (
+                k.trim_matches(is_strip_space),
+                v.trim_matches(is_strip_space),
+            );
             match out.iter_mut().find(|(name, _)| name == k) {
                 Some(slot) => v.clone_into(&mut slot.1),
                 None => out.push((k.to_owned(), v.to_owned())),

@@ -80,7 +80,7 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         eprintln!(
             "error: name must be 1-63 lowercase alphanumeric characters or \
              hyphens, starting with a letter or digit (got: {})",
-            agentcage_core::python::repr_str(&name)
+            agentcage_core::value_fmt::quote_text(&name)
         );
         return ExitCode::from(EXIT_FAILURE);
     }
@@ -89,7 +89,7 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     if dest.exists() && !matches.get_flag("force") {
         eprintln!(
             "error: scaffold {} already exists at {}\n  Use --force to overwrite.",
-            agentcage_core::python::repr_str(&name),
+            agentcage_core::value_fmt::quote_text(&name),
             dest.display()
         );
         return ExitCode::from(EXIT_FAILURE);
@@ -100,7 +100,7 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
             let available = scaffolds.list();
             eprintln!(
                 "error: scaffold {} not found (available: {})",
-                agentcage_core::python::repr_str(from),
+                agentcage_core::value_fmt::quote_text(from),
                 if available.is_empty() {
                     "none".to_owned()
                 } else {
@@ -114,8 +114,8 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         }
         println!(
             "Created scaffold {} from {}",
-            agentcage_core::python::repr_str(&name),
-            agentcage_core::python::repr_str(from)
+            agentcage_core::value_fmt::quote_text(&name),
+            agentcage_core::value_fmt::quote_text(from)
         );
     } else {
         let starter = scaffolds.templates_dir().join("scaffold-starter");
@@ -124,7 +124,7 @@ pub(crate) fn create_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         }
         println!(
             "Created scaffold {}",
-            agentcage_core::python::repr_str(&name)
+            agentcage_core::value_fmt::quote_text(&name)
         );
     }
 
@@ -227,7 +227,7 @@ pub(crate) fn edit_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         eprintln!(
             "error: {} is a built-in scaffold and cannot be edited directly.\n  \
              Fork it first: agentcage scaffold create my-{name} --from {name}",
-            agentcage_core::python::repr_str(&name)
+            agentcage_core::value_fmt::quote_text(&name)
         );
         return ExitCode::from(EXIT_FAILURE);
     }
@@ -284,14 +284,14 @@ pub(crate) fn delete_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     if scaffolds.is_builtin(&name) && !target.join("cage.yaml.j2").exists() {
         eprintln!(
             "error: {} is a built-in scaffold and cannot be deleted.",
-            agentcage_core::python::repr_str(&name)
+            agentcage_core::value_fmt::quote_text(&name)
         );
         return ExitCode::from(EXIT_FAILURE);
     }
     if !target.exists() {
         eprintln!(
             "error: no user scaffold {} at {}",
-            agentcage_core::python::repr_str(&name),
+            agentcage_core::value_fmt::quote_text(&name),
             target.display()
         );
         return ExitCode::from(EXIT_FAILURE);
@@ -299,7 +299,7 @@ pub(crate) fn delete_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     if !matches.get_flag("yes")
         && !confirm(&format!(
             "Delete scaffold {} at {}?",
-            agentcage_core::python::repr_str(&name),
+            agentcage_core::value_fmt::quote_text(&name),
             target.display()
         ))
     {
@@ -312,7 +312,7 @@ pub(crate) fn delete_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     }
     println!(
         "Deleted scaffold {}",
-        agentcage_core::python::repr_str(&name)
+        agentcage_core::value_fmt::quote_text(&name)
     );
     ExitCode::SUCCESS
 }
@@ -339,7 +339,7 @@ pub(crate) fn export_main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     }
     println!(
         "Exported {} to {}",
-        agentcage_core::python::repr_str(&name),
+        agentcage_core::value_fmt::quote_text(&name),
         dest.display()
     );
     ExitCode::SUCCESS
@@ -360,7 +360,7 @@ fn named(matches: &ArgMatches, id: &str) -> String {
 fn not_found(name: &str) -> ExitCode {
     eprintln!(
         "error: scaffold {} not found",
-        agentcage_core::python::repr_str(name)
+        agentcage_core::value_fmt::quote_text(name)
     );
     ExitCode::from(EXIT_FAILURE)
 }

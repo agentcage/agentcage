@@ -7,9 +7,9 @@
 //! that made the Python raise is a [`ConfigError`]: the whole block is
 //! refused and, on a reload, the running settings are kept.
 
-use agentcage_core::python::str_of as py_str;
+use agentcage_core::value_fmt::coerce_to_string;
 
-use super::pyfmt::{int_literal, strip, truncate_chars};
+use super::coerce::{int_literal, strip, truncate_chars};
 use crate::config::{Config, Mapping, Value, truthy};
 
 /// The default control host.
@@ -88,14 +88,19 @@ fn get<'a>(m: Option<&'a Mapping>, key: &str) -> Option<&'a Value> {
 /// `str(value or "")`.
 fn str_or_empty(value: Option<&Value>) -> String {
     match value {
-        Some(v) if truthy(v) => py_str(v),
+        Some(v) if truthy(v) => coerce_to_string(v),
         _ => String::new(),
     }
 }
 
 /// `float(value)`.
 fn to_float(value: &Value, what: &str) -> Result<f64, ConfigError> {
-    let bad = || ConfigError(format!("{what} is not a number: {}", py_str(value)));
+    let bad = || {
+        ConfigError(format!(
+            "{what} is not a number: {}",
+            coerce_to_string(value)
+        ))
+    };
     match value {
         Value::Number(n) => n.as_f64().ok_or_else(bad),
         Value::Bool(b) => Ok(f64::from(u8::from(*b))),
@@ -106,7 +111,12 @@ fn to_float(value: &Value, what: &str) -> Result<f64, ConfigError> {
 
 /// `int(value)`, as an `i64`.
 fn to_int(value: &Value, what: &str) -> Result<i64, ConfigError> {
-    let bad = || ConfigError(format!("{what} is not an integer: {}", py_str(value)));
+    let bad = || {
+        ConfigError(format!(
+            "{what} is not an integer: {}",
+            coerce_to_string(value)
+        ))
+    };
     match value {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -169,7 +179,7 @@ impl Settings {
         let passthrough = passthrough(config)?;
 
         let host = match get(cfg, "host") {
-            Some(v) if truthy(v) => py_str(v),
+            Some(v) if truthy(v) => coerce_to_string(v),
             _ => DEFAULT_CONTROL_HOST.to_owned(),
         }
         .to_lowercase()
@@ -198,7 +208,7 @@ impl Settings {
                 eprintln!(
                     "agentcage: agents.decider.context is not a string in the proxy config \
                      (got {}) — ignoring it",
-                    agentcage_core::python::type_name(other)
+                    agentcage_core::value_fmt::kind_name(other)
                 );
                 String::new()
             }

@@ -144,7 +144,7 @@ impl ConfigError {
 
     /// The Python exception class name, for the corpus's `error.txt`.
     #[must_use]
-    pub fn python_type(&self) -> &'static str {
+    pub fn error_class(&self) -> &'static str {
         match self {
             Self::Value(_) => "ValueError",
             Self::Runtime(_) => "RuntimeError",
@@ -161,8 +161,8 @@ impl ConfigError {
 
     /// `"<ExceptionType>: <message>"` — the corpus's recorded form.
     #[must_use]
-    pub fn as_python_traceback_line(&self) -> String {
-        format!("{}: {}", self.python_type(), self.message())
+    pub fn as_error_line(&self) -> String {
+        format!("{}: {}", self.error_class(), self.message())
     }
 }
 
@@ -247,11 +247,11 @@ mod tests {
     fn the_error_renders_like_the_corpus_records_it() {
         let error = ConfigError::value("'name' is required in config");
         assert_eq!(
-            error.as_python_traceback_line(),
+            error.as_error_line(),
             "ValueError: 'name' is required in config"
         );
         assert_eq!(
-            ConfigError::runtime("no DNS").as_python_traceback_line(),
+            ConfigError::runtime("no DNS").as_error_line(),
             "RuntimeError: no DNS"
         );
         // Display is the message alone, so a caller that wants to print

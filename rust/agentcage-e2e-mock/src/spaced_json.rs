@@ -1,10 +1,11 @@
-//! JSON spelled the way `json.dumps` spells it with default arguments.
+//! Spaced, ASCII-only JSON: the form the e2e phase scripts grep for.
 //!
 //! `{"tool": "decide", "domain": "example.net"}`: a space after every `:`
 //! and `,`, and every non-ASCII character escaped as `\uXXXX` (lowercase
 //! hex, surrogate pairs above the BMP). The phase scripts grep the mocks'
 //! logs for fixed substrings such as `"tool": "decide"`, so the spacing is
-//! part of the contract.
+//! part of the contract. (This is also the form `json.dumps` produces with
+//! default arguments, which is where the scripts' expectations come from.)
 //!
 //! Keys come out in the order the value serializes them: declaration
 //! order for the derived structs the mocks answer with, sorted for a
@@ -15,25 +16,25 @@ use std::io;
 use serde::Serialize;
 use serde_json::ser::Formatter;
 
-/// Serialize `value` in `json.dumps` form.
+/// Serialize `value` in the spaced, ASCII-only form.
 ///
 /// # Panics
 /// When `value`'s `Serialize` impl fails, which the mocks' plain structs
 /// and `serde_json::Value`s never do; and never for the output, which the
 /// formatter keeps ASCII.
 #[must_use]
-pub fn dumps<T: Serialize + ?Sized>(value: &T) -> String {
+pub fn to_string<T: Serialize + ?Sized>(value: &T) -> String {
     let mut out = Vec::new();
-    let mut ser = serde_json::Serializer::with_formatter(&mut out, PyFormatter);
+    let mut ser = serde_json::Serializer::with_formatter(&mut out, SpacedFormatter);
     value
         .serialize(&mut ser)
         .expect("serializing a Value into memory cannot fail");
     String::from_utf8(out).expect("the formatter writes ASCII only")
 }
 
-struct PyFormatter;
+struct SpacedFormatter;
 
-impl Formatter for PyFormatter {
+impl Formatter for SpacedFormatter {
     fn begin_array_value<W: ?Sized + io::Write>(
         &mut self,
         writer: &mut W,
@@ -68,8 +69,8 @@ impl Formatter for PyFormatter {
         fragment: &str,
     ) -> io::Result<()> {
         // serde_json has already escaped quotes, backslashes and control
-        // characters exactly as json.dumps does; what is left is
-        // ensure_ascii.
+        // characters the way this form wants; what is left is the
+        // ASCII-only escaping.
         let mut units = [0u16; 2];
         for ch in fragment.chars() {
             if ch.is_ascii() {
@@ -86,7 +87,7 @@ impl Formatter for PyFormatter {
 
 #[cfg(test)]
 mod tests {
-    use super::dumps;
+    use super::to_string;
     use serde::Serialize;
     use serde_json::json;
 
@@ -99,10 +100,11 @@ mod tests {
     }
 
     #[test]
-    fn spacing_order_and_escapes_match_json_dumps() {
-        // Expected strings are what CPython's json.dumps prints.
+    fn spacing_order_and_escapes() {
+        // Expected strings are what `json.dumps` prints with default
+        // arguments, the reference the phase scripts were written against.
         assert_eq!(
-            dumps(&Ordered {
+            to_string(&Ordered {
                 to: vec!["<a>", "<b>"],
                 n: 1,
                 e: vec![],
@@ -112,11 +114,11 @@ mod tests {
         );
         // A Map's keys come out sorted.
         assert_eq!(
-            dumps(&json!({"b": true, "a": null})),
+            to_string(&json!({"b": true, "a": null})),
             r#"{"a": null, "b": true}"#
         );
         assert_eq!(
-            dumps(&json!({"s": "caf\u{e9} \u{1F600} \"q\" \\ \n\t\u{1}\u{7f}"})),
+            to_string(&json!({"s": "caf\u{e9} \u{1F600} \"q\" \\ \n\t\u{1}\u{7f}"})),
             // `|` stands for a backslash before each `u` escape.
             r#"{"s": "caf|u00e9 |ud83d|ude00 \"q\" \\ \n\t|u0001"#
                 .replace('|', &char::from(0x5c).to_string())

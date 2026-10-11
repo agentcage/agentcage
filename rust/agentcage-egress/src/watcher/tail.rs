@@ -30,8 +30,8 @@ use agentcage_core::har::datetime::DateTime;
 use crate::json::{self, Json};
 
 use super::ScanRng;
+use super::coerce;
 use super::config::CAP_READ_CHUNK;
-use super::pyval;
 use super::sample::sample_capture;
 
 /// How far the tail may fall behind before it skips to the live end: a
@@ -294,10 +294,10 @@ fn cutoff(now: DateTime, window_seconds: f64) -> Option<DateTime> {
 /// A reset scan keeps an entry only when its `ts` parses (naive read as
 /// UTC) and is not before the cutoff.
 fn in_window(entry: &Json, cutoff: Option<DateTime>) -> bool {
-    let Some(ts) = pyval::truthy(entry.get("ts")) else {
+    let Some(ts) = coerce::truthy(entry.get("ts")) else {
         return false;
     };
-    let Some(dt) = DateTime::from_isoformat(&pyval::py_str(ts)) else {
+    let Some(dt) = DateTime::from_isoformat(&coerce::coerce_to_string(ts)) else {
         return false;
     };
     match cutoff {

@@ -43,8 +43,8 @@
 use serde::Serialize;
 
 use crate::config::{Config, ConfigError};
-use crate::python::repr_str;
 use crate::quadlets::{QuadletHost, expanduser, expandvars, templates};
+use crate::value_fmt::quote_text;
 use crate::volume_mounts::{
     is_non_persistent_volume, validate_non_persistent_volume, volume_options,
 };
@@ -134,12 +134,12 @@ struct ProvisionContext<'a> {
 /// spec containing an underscore is rejected by config validation long
 /// before it reaches this function, so the divergence is unreachable
 /// through the CLI.
-fn python_int(text: &str) -> Result<i64, ConfigError> {
+fn parse_int_literal(text: &str) -> Result<i64, ConfigError> {
     let trimmed = text.trim_matches(|c: char| c.is_ascii_whitespace());
     trimmed.parse::<i64>().map_err(|_| {
         ConfigError::value(format!(
             "invalid literal for int() with base 10: {}",
-            repr_str(text)
+            quote_text(text)
         ))
     })
 }
@@ -162,14 +162,14 @@ pub fn parse_port_forwards(ports: &[String]) -> Result<Vec<PortForward>, ConfigE
             _ => {
                 return Err(ConfigError::value(format!(
                     "Invalid port spec {}: expected HOST:GUEST or BIND:HOST:GUEST",
-                    repr_str(spec)
+                    quote_text(spec)
                 )));
             }
         };
         out.push(PortForward {
             host_bind: host_bind.to_owned(),
-            host_port: python_int(host_port)?,
-            guest_port: python_int(guest_port)?,
+            host_port: parse_int_literal(host_port)?,
+            guest_port: parse_int_literal(guest_port)?,
         });
     }
     Ok(out)
@@ -229,7 +229,7 @@ pub fn extra_mounts_for_volumes(
                 return Err(ConfigError::value(format!(
                     "volume host path {} resolves under ~/{blocked} which must \
                      not be exposed to the VM",
-                    repr_str(host_part)
+                    quote_text(host_part)
                 )));
             }
         }
@@ -242,7 +242,7 @@ pub fn extra_mounts_for_volumes(
         if host_path.contains('$') || !host.exists(&host_path) {
             warnings.push(format!(
                 "warning: not mounting {} into the VM (host path does not exist)",
-                repr_str(host_part)
+                quote_text(host_part)
             ));
             continue;
         }

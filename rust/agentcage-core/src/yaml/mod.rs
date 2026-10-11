@@ -77,7 +77,7 @@
 //! validators reject with a message; they are listed so a later reader
 //! can see they were weighed rather than missed.
 //!
-//! [`python_bool`] is the other half of that story: `config.py` coerces
+//! [`is_truthy`] is the other half of that story: `config.py` coerces
 //! with `bool(x)`, and reproducing *that* faithfully is why the quoted
 //! `'no'` has to stay a string.
 //!
@@ -306,7 +306,7 @@ pub fn eq_with_key_order(left: &Value, right: &Value) -> bool {
 /// `:1320`) are a different check: those reject a string outright, so
 /// they want `matches!(value, Value::Bool(_))` and not this.
 #[must_use]
-pub fn python_bool(value: &Value) -> bool {
+pub fn is_truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(flag) => *flag,
@@ -322,7 +322,7 @@ pub fn python_bool(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, dump, eq_with_key_order, is_yaml_1_1_ambiguous, load, python_bool};
+    use super::{Value, dump, eq_with_key_order, is_truthy, is_yaml_1_1_ambiguous, load};
 
     #[test]
     fn empty_document_is_null_like_pyyaml() {
@@ -375,10 +375,10 @@ mod tests {
         );
 
         // And the coercion `config.py` actually applies.
-        assert!(!python_bool(&load("tls: no\n").expect("load")["tls"]));
-        assert!(python_bool(&load("tls: 'no'\n").expect("load")["tls"]));
-        assert!(!python_bool(&load("tls: false\n").expect("load")["tls"]));
-        assert!(python_bool(&load("tls: \"false\"\n").expect("load")["tls"]));
+        assert!(!is_truthy(&load("tls: no\n").expect("load")["tls"]));
+        assert!(is_truthy(&load("tls: 'no'\n").expect("load")["tls"]));
+        assert!(!is_truthy(&load("tls: false\n").expect("load")["tls"]));
+        assert!(is_truthy(&load("tls: \"false\"\n").expect("load")["tls"]));
     }
 
     #[test]

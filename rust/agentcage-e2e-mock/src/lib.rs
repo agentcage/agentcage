@@ -15,15 +15,15 @@
 //!
 //! Every response is fixed: the phase scripts assert on them byte for
 //! byte or field by field, so a change here is a change to the suite.
-//! JSON goes through [`pyjson`], whose spacing the scripts grep for.
+//! JSON goes through [`spaced_json`], whose spacing the scripts grep for.
 
 pub mod http;
 pub mod httpbin;
 pub mod imap;
 pub mod llm;
 pub mod log;
-pub mod pyjson;
 pub mod smtp;
+pub mod spaced_json;
 pub mod tls;
 pub mod ws;
 

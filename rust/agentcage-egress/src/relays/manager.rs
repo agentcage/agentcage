@@ -63,7 +63,7 @@ impl Relay {
         let rtype = match entry {
             Value::Mapping(m) => m
                 .get("type")
-                .map(agentcage_core::python::str_of)
+                .map(agentcage_core::value_fmt::coerce_to_string)
                 .unwrap_or_default(),
             _ => String::new(),
         };
@@ -164,7 +164,7 @@ fn to_json(value: &Value) -> Json {
         Value::Sequence(items) => Json::Array(items.iter().map(to_json).collect()),
         Value::Mapping(m) => Json::Object(
             m.iter()
-                .map(|(k, v)| (agentcage_core::python::str_of(k), to_json(v)))
+                .map(|(k, v)| (agentcage_core::value_fmt::coerce_to_string(k), to_json(v)))
                 .collect(),
         ),
     }
@@ -176,10 +176,13 @@ fn name_key(name: &Value) -> Result<String, String> {
     match name {
         Value::Sequence(_) | Value::Mapping(_) => Err(format!(
             "unhashable type: '{}'",
-            agentcage_core::python::type_name(name)
+            agentcage_core::value_fmt::kind_name(name)
         )),
         Value::String(text) => Ok(format!("s:{text}")),
-        other => Ok(format!("r:{}", agentcage_core::python::repr(other))),
+        other => Ok(format!(
+            "r:{}",
+            agentcage_core::value_fmt::display_value(other)
+        )),
     }
 }
 
@@ -271,7 +274,7 @@ impl RelayManager {
                 if seen.contains(&key) {
                     return Err(format!(
                         "duplicate relay name {}",
-                        agentcage_core::python::repr(&name_value)
+                        agentcage_core::value_fmt::display_value(&name_value)
                     ));
                 }
                 Ok(key)
@@ -283,7 +286,7 @@ impl RelayManager {
                         warning,
                         LOGGER,
                         "relay {} invalid config: {e}",
-                        agentcage_core::python::str_of(&name_value)
+                        agentcage_core::value_fmt::coerce_to_string(&name_value)
                     );
                     self.emit("relay_config_invalid", &name, &e);
                     continue;
@@ -311,7 +314,7 @@ impl RelayManager {
                         warning,
                         LOGGER,
                         "relay {} init failed: {e}",
-                        agentcage_core::python::str_of(&name_value)
+                        agentcage_core::value_fmt::coerce_to_string(&name_value)
                     );
                     self.emit("relay_init_failed", &name, &e);
                     continue;

@@ -514,7 +514,7 @@ pub fn status_error_message(status: u16, body: &[u8], api_key: &str) -> String {
         replace_bytes(body, api_key.as_bytes(), b"[redacted]")
     };
     let cut = &body[..body.len().min(200)];
-    format!("llm http {status}: {}", python_bytes_repr(cut))
+    format!("llm http {status}: {}", bytes_literal(cut))
 }
 
 /// The part of an [`LlmError`] message the caged agent may see.
@@ -554,7 +554,7 @@ fn replace_bytes(haystack: &[u8], needle: &[u8], with: &[u8]) -> Vec<u8> {
 /// CPython's `repr(bytes)`: `b'…'`, switching to double quotes when the
 /// bytes hold a `'` and no `"`.
 #[must_use]
-pub fn python_bytes_repr(bytes: &[u8]) -> String {
+pub fn bytes_literal(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let quote = if bytes.contains(&b'\'') && !bytes.contains(&b'"') {
         b'"'

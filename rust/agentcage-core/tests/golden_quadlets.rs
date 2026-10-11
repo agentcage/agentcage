@@ -650,7 +650,7 @@ fn a_volume_outside_the_home_directory_is_refused() {
     .expect("the config itself is valid");
     let error = render_case(&sandbox, &config).expect_err("outside the home directory");
     assert_eq!(
-        format!("{}\n", scrubber.text(&error.as_python_traceback_line())),
+        format!("{}\n", scrubber.text(&error.as_error_line())),
         expected
     );
 }

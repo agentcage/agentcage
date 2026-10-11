@@ -63,7 +63,12 @@ pub(super) fn yaml_to_json(value: &Value) -> Json {
 fn mapping_to_json(m: &Mapping) -> Json {
     Json::Object(
         m.iter()
-            .map(|(k, v)| (agentcage_core::python::str_of(k), yaml_to_json(v)))
+            .map(|(k, v)| {
+                (
+                    agentcage_core::value_fmt::coerce_to_string(k),
+                    yaml_to_json(v),
+                )
+            })
             .collect(),
     )
 }
@@ -283,7 +288,7 @@ fn whitespace_step(op: &str) -> Json {
     let chars = (0..=0x10_FFFF_u32).filter_map(char::from_u32);
     let picked: Vec<Json> = match op {
         "isspace" => chars
-            .filter(|&c| super::pyconf::py_isspace(c))
+            .filter(|&c| super::config_values::is_strip_space(c))
             .map(|c| Json::Int(i64::from(u32::from(c))))
             .collect(),
         "re_s" => chars

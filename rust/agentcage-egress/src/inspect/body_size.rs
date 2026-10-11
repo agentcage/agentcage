@@ -6,9 +6,9 @@
 //! can be larger or smaller than the global (or 0, which disables the
 //! check for that host).
 
-use agentcage_core::python::type_name;
+use agentcage_core::value_fmt::kind_name;
 
-use super::pyconf::{self, Num};
+use super::config_values::{self, Num};
 use super::{Action, Context, Inspector, Severity, Verdict};
 use crate::config::Value;
 use crate::json::Json;
@@ -33,8 +33,8 @@ impl BodySizeInspector {
     /// The section is not a mapping, `max_bytes` is not a number, or a
     /// `host_max_bytes` value is not something `int()` accepts.
     pub fn from_config(section: &Value) -> Result<Self, String> {
-        let map = pyconf::section(section, NAME)?;
-        let max_bytes = pyconf::num(map, "max_bytes", Num::int(0), NAME)?;
+        let map = config_values::section(section, NAME)?;
+        let max_bytes = config_values::num(map, "max_bytes", Num::int(0), NAME)?;
         let mut host_max_bytes: indexmap::IndexMap<String, Num> = indexmap::IndexMap::new();
         match map.get("host_max_bytes") {
             None => {}
@@ -43,10 +43,10 @@ impl BodySizeInspector {
                     let Value::String(h) = h else {
                         return Err(format!("{NAME}.host_max_bytes keys must be host names"));
                     };
-                    let limit = pyconf::int_like(v).ok_or_else(|| {
+                    let limit = config_values::int_like(v).ok_or_else(|| {
                         format!(
                             "{NAME}.host_max_bytes.{h} must be an integer (got {})",
-                            type_name(v)
+                            kind_name(v)
                         )
                     })?;
                     host_max_bytes.insert(h.to_lowercase(), Num::int(limit));
@@ -55,7 +55,7 @@ impl BodySizeInspector {
             Some(v) => {
                 return Err(format!(
                     "{NAME}.host_max_bytes must be a mapping (got {})",
-                    type_name(v)
+                    kind_name(v)
                 ));
             }
         }
@@ -76,7 +76,7 @@ impl BodySizeInspector {
             // Length in code points, as `len(h)`; strictly longer wins,
             // so the first of two equal-length matches stays.
             let len = h.chars().count();
-            if pyconf::host_matches(&host, h) && best_len.is_none_or(|b| len > b) {
+            if config_values::host_matches(&host, h) && best_len.is_none_or(|b| len > b) {
                 best_len = Some(len);
                 best = limit;
             }

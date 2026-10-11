@@ -12,12 +12,12 @@
 
 pub mod body_size;
 pub mod chain;
+mod config_values;
 pub mod content_type;
 #[cfg(test)]
 mod corpus;
 pub mod domain;
 pub mod entropy;
-mod pyconf;
 pub mod secrets;
 
 use crate::json::Json;

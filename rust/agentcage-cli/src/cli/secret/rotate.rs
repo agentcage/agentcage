@@ -49,8 +49,8 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         .enumerate()
         .filter_map(|(index, rule)| {
             let env = rule.as_mapping()?.get("env")?;
-            agentcage_core::yaml::python_bool(env)
-                .then(|| (index, agentcage_core::python::str_of(env)))
+            agentcage_core::yaml::is_truthy(env)
+                .then(|| (index, agentcage_core::value_fmt::coerce_to_string(env)))
         })
         .collect();
 
@@ -92,11 +92,11 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             };
             let env = rule
                 .get("env")
-                .map_or_else(String::new, agentcage_core::python::str_of);
+                .map_or_else(String::new, agentcage_core::value_fmt::coerce_to_string);
             let old = rule
                 .get("placeholder")
                 .filter(|value| !matches!(value, Value::Null))
-                .map_or_else(String::new, agentcage_core::python::str_of);
+                .map_or_else(String::new, agentcage_core::value_fmt::coerce_to_string);
             let new = agentcage_state::mint_placeholder(&env);
             rule.insert(
                 Value::String("placeholder".to_owned()),

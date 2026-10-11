@@ -212,7 +212,7 @@ impl WatcherManager {
         if !matches!(block, Value::Mapping(_)) {
             (self.warn)(&format!(
                 "agentcage: watcher config is not a mapping (got {}) — watcher disabled",
-                agentcage_core::python::type_name(&block)
+                agentcage_core::value_fmt::kind_name(&block)
             ));
             block = Value::Mapping(crate::config::Mapping::new());
         }
@@ -235,7 +235,7 @@ impl WatcherManager {
         let watcher = Watcher::new(parsed, deps.clone(), refs).with_warn(Arc::clone(&self.warn));
         (self.warn)(&format!(
             "agentcage: traffic watcher enabled (interval={}s, provider={})",
-            super::pyval::float_str(watcher.config().interval_seconds),
+            super::coerce::float_str(watcher.config().interval_seconds),
             watcher.config().provider
         ));
         let refs = watcher.refs_handle();

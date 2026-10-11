@@ -116,7 +116,7 @@ impl Paths {
             source,
         })?;
         // `yaml.safe_load(f) or {}` — a falsy document becomes `{}`.
-        let raw = if yaml::python_bool(&raw) {
+        let raw = if yaml::is_truthy(&raw) {
             raw
         } else {
             Value::Mapping(yaml::Mapping::new())

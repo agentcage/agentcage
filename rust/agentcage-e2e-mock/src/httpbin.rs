@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::http::{self, Head};
-use crate::pyjson;
+use crate::spaced_json;
 
 /// The port the harness binds (inside the egress's network namespace,
 /// where the egress quadlet has lowered `ip_unprivileged_port_start`).
@@ -62,7 +62,7 @@ pub fn handle(stream: TcpStream) -> io::Result<()> {
     http::read_body(&mut reader, &request)?;
     match request.method.as_str() {
         "GET" | "POST" | "PUT" => {
-            let body = pyjson::dumps(&Answer {
+            let body = spaced_json::to_string(&Answer {
                 ok: true,
                 path: &request.target,
                 method: &request.method,

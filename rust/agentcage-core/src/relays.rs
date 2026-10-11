@@ -46,7 +46,7 @@
 //!
 //! - `entry.get("name", "")` followed by `if not (name and ...)` is
 //!   *Python truthiness* over the raw YAML value, so `name: 0` is
-//!   missing and `name: 123` is present. [`crate::yaml::python_bool`].
+//!   missing and `name: 123` is present. [`crate::yaml::is_truthy`].
 //! - `int(port)` truncates a float and swallows its own exception into
 //!   `port = 0`, so `993.7` is a valid port and `0.5` is not.
 //! - `bool(tls)` makes the *string* `"false"` truthy, so
@@ -74,8 +74,8 @@
 use std::borrow::Cow;
 
 use crate::config::ConfigError;
-use crate::python::{repr, str_of, type_name};
-use crate::yaml::{Mapping, Value, python_bool};
+use crate::value_fmt::{coerce_to_string, display_value, kind_name};
+use crate::yaml::{Mapping, Value, is_truthy};
 
 /// `KNOWN_RELAY_TYPES` — the protocols a relay can speak.
 ///
@@ -150,7 +150,7 @@ pub fn validate_relay_entry(
     let Value::Mapping(entry) = entry else {
         return Err(ConfigError::value(format!(
             "protocol_relays entry must be a mapping (got {})",
-            type_name(entry)
+            kind_name(entry)
         )));
     };
 
@@ -163,24 +163,24 @@ pub fn validate_relay_entry(
     let name = entry.get("name").unwrap_or(&empty);
     let rtype = entry.get("type").unwrap_or(&empty);
     let listen = entry.get("listen").unwrap_or(&empty);
-    if !(python_bool(name) && python_bool(rtype) && python_bool(listen)) {
+    if !(is_truthy(name) && is_truthy(rtype) && is_truthy(listen)) {
         return Err(ConfigError::value(format!(
             "protocol_relays entry requires name/type/listen (got name={}, type={}, listen={})",
-            repr(name),
-            repr(rtype),
-            repr(listen)
+            display_value(name),
+            display_value(rtype),
+            display_value(listen)
         )));
     }
 
     // `validate_relay_type(rtype)` is handed the raw value, and its
     // message interpolates it with `str()` inside literal quotes
-    // rather than with `repr()`. So a `type: 123` reads `'123'`.
-    validate_relay_type(&str_of(rtype))?;
+    // rather than with `display_value()`. So a `type: 123` reads `'123'`.
+    validate_relay_type(&coerce_to_string(rtype))?;
 
     // Every path from here names the relay — `protocol_relays[mail]` —
     // because a config with three relays has to say which one. `str()`
-    // again, not `repr()`: no quotes around the name.
-    let at = format!("protocol_relays[{}]", str_of(name));
+    // again, not `display_value()`: no quotes around the name.
+    let at = format!("protocol_relays[{}]", coerce_to_string(name));
 
     // ── upstream ────────────────────────────────────────
     let upstream = falsy_to_empty_mapping(entry.get("upstream"), &format!("{at}.upstream"))?;
@@ -192,12 +192,12 @@ pub fn validate_relay_entry(
         // A falsy host is the empty string, type unexamined: `host: 0`
         // and `host: []` both mean "absent" and get the
         // requires-host-and-port message, not a type complaint.
-        Some(value) if python_bool(value) => match value {
+        Some(value) if is_truthy(value) => match value {
             Value::String(text) => text.clone(),
             other => {
                 return Err(ConfigError::value(format!(
                     "{at}.upstream.host must be a string (got {})",
-                    type_name(other)
+                    kind_name(other)
                 )));
             }
         },
@@ -228,8 +228,8 @@ pub fn validate_relay_entry(
     // `bool(upstream.get("tls", True))`, not `is True`: the string
     // `"false"` is truthy, so `tls: "false"` leaves TLS ON. Wrong, and
     // wrong in the safe direction, so it is reproduced. See
-    // `crate::yaml::python_bool`.
-    let tls = upstream.get("tls").is_none_or(python_bool);
+    // `crate::yaml::is_truthy`.
+    let tls = upstream.get("tls").is_none_or(is_truthy);
     let ca_file = falsy_to_empty_string(
         upstream.get("ca_file"),
         &format!("{at}.upstream.ca_file must be a path string"),
@@ -290,10 +290,10 @@ pub fn validate_relay_entry(
     // to `{}` through `or {}` before the type is ever examined, so
     // only a *truthy* non-mapping is an error.
     match entry.get("policy") {
-        Some(value) if python_bool(value) && !matches!(value, Value::Mapping(_)) => {
+        Some(value) if is_truthy(value) && !matches!(value, Value::Mapping(_)) => {
             return Err(ConfigError::value(format!(
                 "{at}.policy must be a mapping (got {})",
-                type_name(value)
+                kind_name(value)
             )));
         }
         _ => {}
@@ -315,24 +315,20 @@ pub fn validate_relay_entry(
                 return Err(ConfigError::value(format!(
                     "{at}.policy.write_mode must be one of {} (got {})",
                     WRITE_MODES.join(", "),
-                    repr(mode)
+                    display_value(mode)
                 )));
             };
             // readonly is the older spelling of the same thing. Both set and
             // disagreeing is ambiguous, and guessing which the operator meant
             // is exactly the wrong call for a policy that gates writes.
             if let Some(readonly) = policy.get("readonly") {
-                let implied = if python_bool(readonly) {
-                    "none"
-                } else {
-                    "full"
-                };
+                let implied = if is_truthy(readonly) { "none" } else { "full" };
                 if implied != lowered {
                     return Err(ConfigError::value(format!(
                         "{at}.policy sets readonly={} and write_mode={}, which contradict. \
                          Use write_mode alone.",
-                        repr(readonly),
-                        repr(mode)
+                        display_value(readonly),
+                        display_value(mode)
                     )));
                 }
             }
@@ -343,7 +339,7 @@ pub fn validate_relay_entry(
                 Some(other) => {
                     return Err(ConfigError::value(format!(
                         "{at}.policy.{key} must be a list (got {})",
-                        type_name(other)
+                        kind_name(other)
                     )));
                 }
             }
@@ -355,13 +351,13 @@ pub fn validate_relay_entry(
         // reported success.
         for key in RATE_KEYS {
             match policy.get(key) {
-                Some(value) if python_bool(value) => {
+                Some(value) if is_truthy(value) => {
                     let valid = matches!(value, Value::String(text) if is_rate_limit(text));
                     if !valid {
                         return Err(ConfigError::value(format!(
                             "{at}.policy.{key} must be a rate like '30/min': a count, '/', \
                              then a unit of sec, s, min, m, hour or h (got {})",
-                            repr(value)
+                            display_value(value)
                         )));
                     }
                 }
@@ -375,7 +371,7 @@ pub fn validate_relay_entry(
     if let Some(validate_source) = source_validator.as_mut() {
         for key in ["user_source", "password_source"] {
             match auth.get(key) {
-                Some(value) if python_bool(value) => validate_source(&str_of(value))?,
+                Some(value) if is_truthy(value) => validate_source(&coerce_to_string(value))?,
                 _ => {}
             }
         }
@@ -453,7 +449,7 @@ pub fn validate_relay_credential_source(source: &str, path: &str) -> Result<(), 
         return Err(ConfigError::value(format!(
             "{path} must use the 'source:NAME' scheme (e.g. 'env:NAME' or \
              'systemd-creds:NAME') — got {}",
-            crate::python::repr_str(source)
+            crate::value_fmt::quote_text(source)
         )));
     }
     if scheme == "cmd" {
@@ -485,7 +481,7 @@ fn falsy_to_empty_mapping<'a>(
     at: &str,
 ) -> Result<Cow<'a, Mapping>, ConfigError> {
     match value {
-        Some(value) if python_bool(value) => match value {
+        Some(value) if is_truthy(value) => match value {
             Value::Mapping(mapping) => Ok(Cow::Borrowed(mapping)),
             _ => Err(ConfigError::value(format!("{at} must be a mapping"))),
         },
@@ -501,11 +497,11 @@ fn falsy_to_empty_mapping<'a>(
 /// testing truthiness *before* the type.
 fn falsy_to_empty_string(value: Option<&Value>, sentence: &str) -> Result<String, ConfigError> {
     match value {
-        Some(value) if python_bool(value) => match value {
+        Some(value) if is_truthy(value) => match value {
             Value::String(text) => Ok(text.clone()),
             other => Err(ConfigError::value(format!(
                 "{sentence} (got {})",
-                type_name(other)
+                kind_name(other)
             ))),
         },
         _ => Ok(String::new()),
@@ -537,7 +533,7 @@ fn mapping_or_skip(value: Option<&Value>) -> Option<&Mapping> {
 /// (`ok-port-float-truncates`, `err-port-float-sub-one`).
 fn coerce_port(value: Option<&Value>) -> i64 {
     // `or 0` first: a falsy port is 0 and never reaches `int()`.
-    let Some(value) = value.filter(|value| python_bool(value)) else {
+    let Some(value) = value.filter(|value| is_truthy(value)) else {
         return 0;
     };
     match value {
@@ -572,7 +568,7 @@ fn coerce_port(value: Option<&Value>) -> i64 {
         // CPython's `int(str)`: surrounding whitespace, an optional
         // sign, decimal digits with underscores *between* digits.
         // Anything else is the ValueError that becomes 0.
-        Value::String(text) => parse_python_int(text).unwrap_or(0),
+        Value::String(text) => parse_int_literal(text).unwrap_or(0),
         // `int(list)` / `int(dict)` is a TypeError -> 0.
         _ => 0,
     }
@@ -583,7 +579,7 @@ fn coerce_port(value: Option<&Value>) -> i64 {
 /// Shares its rules with `config::parse`'s copy and is written out
 /// again here rather than shared, so this module stays as
 /// self-contained as the Python one it mirrors.
-fn parse_python_int(text: &str) -> Option<i64> {
+fn parse_int_literal(text: &str) -> Option<i64> {
     let trimmed = text.trim();
     if trimmed.is_empty()
         || trimmed.contains("__")
@@ -713,7 +709,7 @@ mod tests {
     }
 
     /// A non-string `type:` reaches the message as `str()`, not
-    /// `repr()` — the quotes in `'{name}'` are literal.
+    /// `display_value()` — the quotes in `'{name}'` are literal.
     ///
     /// No fixture case covers this: the fixture's `type` values are all
     /// strings.

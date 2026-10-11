@@ -33,7 +33,7 @@
 //! | [`grants`] | `load_grants`, `save_grants`, `append_policy_audit` | the Policy-API overlay and its audit trail |
 //! | [`pending_secrets`] | — | the *format* of `pending_secrets.json` and `secret_keys.json`; the stores are D3's |
 //! | [`systemd`] | `systemd.py`, `install_units` | which directory a unit file belongs in, and the reload after |
-//! | [`pyfs`] | `os.path.expanduser` / `expandvars` | the two path functions with a leave-it-alone branch |
+//! | [`path_expand`] | `os.path.expanduser` / `expandvars` | the two path functions with a leave-it-alone branch |
 //!
 //! Most of the API is methods on [`Paths`], one per Python free
 //! function and with the same name, so `state.load_raw_config(name)`
@@ -70,10 +70,10 @@ pub mod derived;
 pub mod error;
 pub mod grants;
 pub mod metadata;
+pub mod path_expand;
 pub mod paths;
 pub mod pending_secrets;
 pub mod plugins;
-pub mod pyfs;
 pub mod systemd;
 pub mod testdir;
 

@@ -378,7 +378,7 @@ fn the_structural_invalid_cases_match_verbatim() {
         match load("cage.yaml", &read(&input_path), &host) {
             Ok(_) => deferred.push(case),
             Err(error) => {
-                let produced = format!("{}\n", error.as_python_traceback_line());
+                let produced = format!("{}\n", error.as_error_line());
                 if produced == expected {
                     matched.push(case);
                 } else if KNOWN_DIVERGENT.contains(&case.as_str()) {

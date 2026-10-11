@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn truthiness_is_pythons() {
+    fn truthiness_treats_empty_values_as_false() {
         let m = meta(
             r#"{"t": true, "f": false, "zero": 0, "one": 1,
                          "empty": "", "text": "x", "list": [], "items": [1]}"#,

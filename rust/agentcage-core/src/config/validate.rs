@@ -63,15 +63,15 @@
 //! still win, because the parser reaches them before the `ports:`
 //! section — so the boundary that moved is exactly one wide.
 //!
-//! `tests/golden_validate.rs`'s `error_precedence_matches_python` maps
+//! `tests/golden_validate.rs`'s `error_precedence_matches_the_corpus` maps
 //! it: twenty pairs, every expectation taken from running the same
 //! document through `config.py` on CPython 3.13.0, five of which are the
 //! divergence and fifteen of which are not.
 
 use std::collections::BTreeSet;
 
-use crate::python::{repr, repr_str};
 use crate::quadlets::{reserved_volume, reserved_volume_entry};
+use crate::value_fmt::{display_value, quote_text};
 use crate::volume_mounts::{
     self, MountTarget, TMPFS_COPYUP_OPTIONS, is_non_persistent_volume, mask_copyup_entries,
     split_volume_spec, tmpfs_wants_copyup, validate_non_persistent_volume,
@@ -84,7 +84,7 @@ use super::types::{
     BUILTIN_INSPECTOR_NAMES, CAPTURE_MIN_ACTION_ALIASES, Config, EGRESS_RESERVED_PORTS,
     PLACEHOLDER_PREFIX, VALID_CAPTURE_MIN_ACTIONS, VALID_LIFECYCLES, VALID_LOG_LEVELS,
 };
-use crate::yaml::{Value, python_bool};
+use crate::yaml::{Value, is_truthy};
 
 type Validated<T> = Result<T, ConfigError>;
 
@@ -171,7 +171,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         return Err(ConfigError::value(format!(
             "'name' must be 1-63 lowercase alphanumeric characters or hyphens, \
              starting with a letter or digit (got: {})",
-            repr_str(&config.name)
+            quote_text(&config.name)
         )));
     }
     if config.container.image.is_empty() {
@@ -185,7 +185,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     if !matches_image_reference(&config.container.image) {
         return Err(ConfigError::value(format!(
             "invalid container image reference: {}",
-            repr_str(&config.container.image)
+            quote_text(&config.container.image)
         )));
     }
 
@@ -200,7 +200,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
             return Err(ConfigError::value(format!(
                 "container.named_volumes: {} is reserved for agentcage ({reason}); \
                  a cage must not mount it",
-                repr_str(name)
+                quote_text(name)
             )));
         }
     }
@@ -218,14 +218,14 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     ) {
         return Err(ConfigError::value(format!(
             "isolation must be 'container', 'vm', or 'apple-container' (got: {})",
-            repr_str(&config.isolation)
+            quote_text(&config.isolation)
         )));
     }
     if !VALID_LIFECYCLES.contains(&config.lifecycle.as_str()) {
         return Err(ConfigError::value(format!(
             "lifecycle must be one of {} (got: {})",
             python_tuple(&VALID_LIFECYCLES),
-            repr_str(&config.lifecycle)
+            quote_text(&config.lifecycle)
         )));
     }
     if config.isolation == "container" && host.system() == "Darwin" {
@@ -262,7 +262,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         return Err(ConfigError::value(format!(
             "logging.level must be one of {} (got: {})",
             python_tuple(&VALID_LOG_LEVELS),
-            repr_str(&config.logging.level)
+            quote_text(&config.logging.level)
         )));
     }
     for (service, value) in [
@@ -274,7 +274,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
             return Err(ConfigError::value(format!(
                 "logging.{service} must be one of {} or empty (got: {})",
                 python_tuple(&VALID_LOG_LEVELS),
-                repr_str(value)
+                quote_text(value)
             )));
         }
     }
@@ -291,7 +291,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         return Err(ConfigError::value(format!(
             "capture.min_action must be one of {} (got: {})",
             python_tuple(&VALID_CAPTURE_MIN_ACTIONS),
-            repr_str(min_action)
+            quote_text(min_action)
         )));
     }
 
@@ -308,22 +308,22 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
                 return Err(ConfigError::value(format!(
                     "invalid port spec {}: expected HOST_PORT:CONTAINER_PORT or \
                      BIND:HOST_PORT:CONTAINER_PORT",
-                    repr_str(spec)
+                    quote_text(spec)
                 )));
             }
         };
         for number in numbers {
-            let Some(port) = python_int(number) else {
+            let Some(port) = parse_int_literal(number) else {
                 return Err(ConfigError::value(format!(
                     "invalid port number {} in port spec {}",
-                    repr_str(number),
-                    repr_str(spec)
+                    quote_text(number),
+                    quote_text(spec)
                 )));
             };
             if !(1..=65535).contains(&port) {
                 return Err(ConfigError::value(format!(
                     "port {port} out of range (1-65535) in port spec {}",
-                    repr_str(spec)
+                    quote_text(spec)
                 )));
             }
         }
@@ -377,7 +377,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         if port_text.is_empty() {
             continue;
         }
-        let Some(port) = python_int(port_text) else {
+        let Some(port) = parse_int_literal(port_text) else {
             continue;
         };
         if inspected.contains(&port) {
@@ -387,8 +387,8 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
                  the REDIRECT would intercept connections meant for the \
                  relay. Move it to ports.tcp.passthrough if the cage also \
                  talks to an external service on this port",
-                repr_str(&relay.name),
-                repr_str(&relay.listen)
+                quote_text(&relay.name),
+                quote_text(&relay.listen)
             )));
         }
     }
@@ -403,7 +403,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
             2 => parts[1],
             _ => continue,
         };
-        let Some(port) = python_int(container_port) else {
+        let Some(port) = parse_int_literal(container_port) else {
             continue;
         };
         if inspected.contains(&port) {
@@ -412,7 +412,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
                  container.ports inbound forward {}; the \
                  REDIRECT would intercept connections meant for the \
                  cage's reverse-mode listener",
-                repr_str(spec)
+                quote_text(spec)
             )));
         }
     }
@@ -462,7 +462,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     if !offenders.is_empty() {
         let rendered: Vec<String> = offenders
             .iter()
-            .map(|entry| repr_str(entry.as_str()))
+            .map(|entry| quote_text(entry.as_str()))
             .collect();
         return Err(ConfigError::value(format!(
             "invalid domain syntax: {} — expected a plain lowercase hostname \
@@ -559,7 +559,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
                  form — omit `placeholder:` to auto-generate an entropic \
                  token, or run `agentcage secret rotate-placeholders` to \
                  mint one",
-                repr_str(&rule.env),
+                quote_text(&rule.env),
                 rule.placeholder
             ));
         }
@@ -984,8 +984,8 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
             warnings.push(format!(
                 "secret_injection[{}].transform ={}: not in KNOWN_TRANSFORMS — the \
                  apple-container addon will skip the rule at startup. See issue #120.",
-                repr_str(&rule.env),
-                repr_str(&rule.transform)
+                quote_text(&rule.env),
+                quote_text(&rule.transform)
             ));
         }
     }
@@ -1005,7 +1005,7 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     //
     // `name` is `entry.get("name", "")`, so a missing key is the empty
     // string and `{name!r}` renders it `''`. A non-string name is not
-    // in the built-in set either, and [`python::repr`] renders it the
+    // in the built-in set either, and [`value_fmt::display_value`] renders it the
     // way Python's `!r` would — `5`, not `'5'`.
     //
     // `config.inspectors` is already filtered to mappings at parse
@@ -1014,14 +1014,14 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     let empty = Value::String(String::new());
     for (index, entry) in config.inspectors.iter().enumerate() {
         let name = entry.get("name").unwrap_or(&empty);
-        if entry.get("path").is_some_and(python_bool) {
+        if entry.get("path").is_some_and(is_truthy) {
             continue;
         }
-        if python_bool(name) && !is_builtin_inspector(name) {
+        if is_truthy(name) && !is_builtin_inspector(name) {
             warnings.push(format!(
                 "inspectors[{index}] {}: not a known built-in inspector — the in-cage \
                  addon will skip this entry. Valid names: {}.",
-                repr(name),
+                display_value(name),
                 sorted_builtin_inspector_names().join(", ")
             ));
         }
@@ -1064,14 +1064,14 @@ fn tmpfs_options(entry: &str) -> Vec<&str> {
 
 // ── Python-shaped helpers ────────────────────────────────
 
-/// `repr()` of a Python tuple of strings.
+/// `display_value()` of a Python tuple of strings.
 ///
 /// `lifecycle` and `logging.level` interpolate their valid-value tuple
 /// with `{}`, which for a tuple is its `repr` — `('service',
 /// 'interactive', 'ephemeral')`, trailing comma and all if it ever holds
 /// one element.
 fn python_tuple(values: &[&str]) -> String {
-    let rendered: Vec<String> = values.iter().map(|value| repr_str(value)).collect();
+    let rendered: Vec<String> = values.iter().map(|value| quote_text(value)).collect();
     if rendered.len() == 1 {
         format!("({},)", rendered[0])
     } else {
@@ -1149,10 +1149,10 @@ fn matches_image_reference(image: &str) -> bool {
 /// (PEP 515). It does **not** accept an empty string, a bare sign, a
 /// leading or trailing underscore, or two in a row.
 ///
-/// Whitespace is Python's, not Rust's — see `domain::is_python_space`
+/// Whitespace is Python's, not Rust's — see `domain::is_strip_space`
 /// for why those differ.
-fn python_int(text: &str) -> Option<i64> {
-    let trimmed = text.trim_matches(super::domain::is_python_space);
+fn parse_int_literal(text: &str) -> Option<i64> {
+    let trimmed = text.trim_matches(super::domain::is_strip_space);
     let (negative, digits) = match trimmed.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, trimmed.strip_prefix('+').unwrap_or(trimmed)),
@@ -1187,8 +1187,8 @@ fn python_int(text: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FixedValidationHost, matches_image_reference, matches_name, python_int, python_tuple,
-        validate,
+        FixedValidationHost, matches_image_reference, matches_name, parse_int_literal,
+        python_tuple, validate,
     };
     use crate::config::types::Config;
 
@@ -1279,14 +1279,14 @@ mod tests {
 
     #[test]
     fn python_int_is_more_forgiving_than_parse() {
-        assert_eq!(python_int(" 80 "), Some(80));
-        assert_eq!(python_int("+80"), Some(80));
-        assert_eq!(python_int("1_000"), Some(1000));
-        assert_eq!(python_int("http"), None);
-        assert_eq!(python_int("_80"), None);
-        assert_eq!(python_int("80_"), None);
-        assert_eq!(python_int("8__0"), None);
-        assert_eq!(python_int(""), None);
+        assert_eq!(parse_int_literal(" 80 "), Some(80));
+        assert_eq!(parse_int_literal("+80"), Some(80));
+        assert_eq!(parse_int_literal("1_000"), Some(1000));
+        assert_eq!(parse_int_literal("http"), None);
+        assert_eq!(parse_int_literal("_80"), None);
+        assert_eq!(parse_int_literal("80_"), None);
+        assert_eq!(parse_int_literal("8__0"), None);
+        assert_eq!(parse_int_literal(""), None);
     }
 
     #[test]

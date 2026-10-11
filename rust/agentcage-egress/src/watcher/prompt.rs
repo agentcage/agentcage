@@ -6,7 +6,7 @@
 use crate::json::{self, Json};
 use crate::llm::ToolSpec;
 
-use super::pyval;
+use super::coerce;
 
 /// The model-facing severity vocabulary. The host's audit ladder ranks it
 /// alongside the inspector one, so `cage audit --severity warning` sees a
@@ -250,12 +250,12 @@ pub fn review_tool() -> ToolSpec {
 /// Coerce a model finding into the recorded shape, bounded.
 #[must_use]
 pub fn normalise_finding(f: &Json) -> Json {
-    let mut severity = pyval::str_or(f.get("severity"), "low").to_lowercase();
+    let mut severity = coerce::str_or(f.get("severity"), "low").to_lowercase();
     if !SEVERITIES.contains(&severity.as_str()) {
         "low".clone_into(&mut severity);
     }
     let field = |key: &str, default: &str, cap: usize| {
-        Json::Str(pyval::prefix(&pyval::str_or(f.get(key), default), cap))
+        Json::Str(coerce::prefix(&coerce::str_or(f.get(key), default), cap))
     };
     json::object([
         ("severity", Json::Str(severity)),

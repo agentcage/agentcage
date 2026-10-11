@@ -92,8 +92,8 @@
 //! `2024-01-02` are likewise numbers or dates there and strings here.
 //!
 //! So a numeric field that receives a string cannot simply be parsed:
-//! `"0755"` parses as 755, and 755 is not 493. So [`py_int`] and
-//! [`py_float`] refuse a string in a radix the two readers spell
+//! `"0755"` parses as 755, and 755 is not 493. So [`coerce_int`] and
+//! [`coerce_float`] refuse a string in a radix the two readers spell
 //! differently — see [`reject_ambiguous`], which is narrow on purpose:
 //! `1:30` and `2024-01-02` fail to parse anyway, and `1_000` is 1000 to
 //! both. Only the radix prefixes parse *successfully* into a number
@@ -115,7 +115,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-use crate::python::{repr, str_of, type_name};
+use crate::value_fmt::{coerce_to_string, display_value, kind_name};
 use crate::yaml::{self, Mapping, Value};
 
 use super::secret::{
@@ -186,7 +186,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // `raw.get("isolation") or default_isolation()` — an absent, null
     // or empty value all take the host probe.
     let isolation = match raw.get("isolation") {
-        Some(value) if yaml::python_bool(value) => scalar_string(value, "isolation")?,
+        Some(value) if yaml::is_truthy(value) => scalar_string(value, "isolation")?,
         _ => host.default_isolation(),
     };
     let mut config = Config {
@@ -207,9 +207,9 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // Prefer the explicit `vm:` key, fall back to `firecracker:` for
     // the same migration.
     let vm_raw = match raw.get("vm") {
-        Some(value) if yaml::python_bool(value) => mapping_of(value, "vm")?,
+        Some(value) if yaml::is_truthy(value) => mapping_of(value, "vm")?,
         _ => match raw.get("firecracker") {
-            Some(value) if yaml::python_bool(value) => mapping_of(value, "firecracker")?,
+            Some(value) if yaml::is_truthy(value) => mapping_of(value, "firecracker")?,
             _ => Cow::Owned(Mapping::new()),
         },
     };
@@ -258,7 +258,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // asks for the container's default capability set.
     container.drop_capabilities = match c.get("drop_capabilities") {
         None => vec!["ALL".to_owned()],
-        Some(value) if !yaml::python_bool(value) => Vec::new(),
+        Some(value) if !yaml::is_truthy(value) => Vec::new(),
         Some(Value::Sequence(items)) => items
             .iter()
             .map(|item| scalar_string(item, "container.drop_capabilities"))
@@ -318,7 +318,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // Accepts a list, or `{"rules": [...]}`.
     let injection_raw = raw.get("secret_injection");
     let rules: Cow<'_, [Value]> = match injection_raw {
-        Some(value) if yaml::python_bool(value) => match value {
+        Some(value) if yaml::is_truthy(value) => match value {
             Value::Mapping(mapping) => {
                 Cow::Owned(value_list(mapping.get("rules"), "secret_injection.rules")?)
             }
@@ -327,7 +327,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
                 return Err(ConfigError::value(format!(
                     "secret_injection must be a list of rules or a mapping with a 'rules' \
                      key (got {})",
-                    type_name(other)
+                    kind_name(other)
                 )));
             }
         },
@@ -342,7 +342,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         let Some(env_value) = entry.get("env") else {
             continue;
         };
-        if !yaml::python_bool(env_value) {
+        if !yaml::is_truthy(env_value) {
             continue;
         }
         let env = scalar_string(env_value, "secret_injection[].env")?;
@@ -350,7 +350,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         // `ExecStartPre` shell command later, so the POSIX-identifier
         // charset is the injection boundary -- see `secret`'s docs. The
         // empty-name arm of `validate_env_name` is unreachable from
-        // here: the `python_bool` guard above already skipped the rule.
+        // here: the `is_truthy` guard above already skipped the rule.
         validate_env_name(&env)?;
         let source = raw_string(entry.get("source"), "", "secret_injection[].source")?;
         validate_source(&source)?;
@@ -380,7 +380,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
                 "secret_injection[].inject_headers",
             )?
             .iter()
-            .map(|header| str_of(header).trim().to_owned())
+            .map(|header| coerce_to_string(header).trim().to_owned())
             .collect(),
         });
     }
@@ -449,7 +449,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         // `(got X)` suffix; matched exactly so the message does not
         // change when C3 takes the rest of that validator over.
         let upstream_raw = match entry.get("upstream") {
-            Some(value) if yaml::python_bool(value) => match value {
+            Some(value) if yaml::is_truthy(value) => match value {
                 Value::Mapping(mapping) => Cow::Borrowed(mapping),
                 _ => {
                     return Err(ConfigError::value(format!(
@@ -475,7 +475,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         };
 
         let auth_raw = match entry.get("auth") {
-            Some(value) if yaml::python_bool(value) => match value {
+            Some(value) if yaml::is_truthy(value) => match value {
                 Value::Mapping(mapping) => Cow::Borrowed(mapping),
                 _ => return Err(ConfigError::value(format!("{at}.auth must be a mapping"))),
             },
@@ -706,7 +706,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // reaching it can make it fail, which is why it is not evaluated
     // for a config that names its own.
     config.dns_servers = match raw.get("dns_servers") {
-        Some(value) if yaml::python_bool(value) => string_list(Some(value), "dns_servers")?,
+        Some(value) if yaml::is_truthy(value) => string_list(Some(value), "dns_servers")?,
         _ => host.dns_servers()?,
     };
 
@@ -767,8 +767,11 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     match domains_raw.get("expires") {
         Some(Value::Mapping(mapping)) => {
             for (key, value) in mapping {
-                if yaml::python_bool(key) && yaml::python_bool(value) {
-                    expires.insert(normalize_domain(&str_of(key)), str_of(value));
+                if yaml::is_truthy(key) && yaml::is_truthy(value) {
+                    expires.insert(
+                        normalize_domain(&coerce_to_string(key)),
+                        coerce_to_string(value),
+                    );
                 }
             }
         }
@@ -781,8 +784,11 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
                 else {
                     continue;
                 };
-                if yaml::python_bool(domain) && yaml::python_bool(at) {
-                    expires.insert(normalize_domain(&str_of(domain)), str_of(at));
+                if yaml::is_truthy(domain) && yaml::is_truthy(at) {
+                    expires.insert(
+                        normalize_domain(&coerce_to_string(domain)),
+                        coerce_to_string(at),
+                    );
                 }
             }
         }
@@ -832,7 +838,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         )?,
         unknown_keys: capture_raw
             .keys()
-            .map(str_of)
+            .map(coerce_to_string)
             .filter(|key| !CAPTURE_KEYS.contains(&key.as_str()))
             .collect(),
     };
@@ -870,7 +876,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
                 .iter()
                 .map(|item| scalar_string(item, "exec_aliases"))
                 .collect::<Parsed<Vec<String>>>()?;
-            config.exec_aliases.insert(str_of(key), argv);
+            config.exec_aliases.insert(coerce_to_string(key), argv);
         }
     }
 
@@ -911,7 +917,7 @@ pub fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
     let agents = agent_mapping(raw.get("agents"), "agents")?;
     let mut unknown: Vec<String> = agents
         .keys()
-        .map(str_of)
+        .map(coerce_to_string)
         .filter(|key| key != "decider" && key != "watcher")
         .collect();
     if !unknown.is_empty() {
@@ -972,7 +978,7 @@ pub fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
 /// [`ConfigError::Value`], as [`validate_agents_raw`] does, plus
 /// `"config must be a mapping"` for a truthy non-mapping document.
 pub fn validate_agents_document(document: &Value) -> Parsed<()> {
-    if !yaml::python_bool(document) {
+    if !yaml::is_truthy(document) {
         // `or {}` — nothing to check.
         return Ok(());
     }
@@ -1007,11 +1013,11 @@ fn llm_client(
         model: or_string(block.get("model"), "", label)?,
         api_key: or_string(block.get("api_key"), "", label)?,
         timeout_seconds: match present(block.get("timeout_seconds")) {
-            Some(value) => py_float(value).map_err(wrap)?,
+            Some(value) => coerce_float(value).map_err(wrap)?,
             None => default_timeout,
         },
         max_tokens: match present(block.get("max_tokens")) {
-            Some(value) => py_int(value).map_err(wrap)?,
+            Some(value) => coerce_int(value).map_err(wrap)?,
             None => 8192,
         },
         base_url: or_string(block.get("base_url"), "", label)?,
@@ -1068,7 +1074,7 @@ fn agent_context(value: Option<&Value>, path: &str) -> Parsed<String> {
         Some(Value::String(text)) => Ok(text.clone()),
         Some(other) => Err(ConfigError::value(format!(
             "{path} must be a string (got {})",
-            type_name(other)
+            kind_name(other)
         ))),
     }
 }
@@ -1081,10 +1087,10 @@ fn agent_context(value: Option<&Value>, path: &str) -> Parsed<String> {
 fn watcher_number(block: &Mapping, key: &str, default: f64) -> Parsed<f64> {
     match present(block.get(key)) {
         None => Ok(default),
-        Some(value) => py_float(value).map_err(|_| {
+        Some(value) => coerce_float(value).map_err(|_| {
             ConfigError::value(format!(
                 "agents.watcher.{key} must be a number (got {})",
-                repr(value)
+                display_value(value)
             ))
         }),
     }
@@ -1095,12 +1101,12 @@ fn watcher_number(block: &Mapping, key: &str, default: f64) -> Parsed<f64> {
 /// The `ports:` block, with its four structural guards.
 fn parse_ports(raw: &Mapping) -> Parsed<PortsConfig> {
     let ports_raw = match raw.get("ports") {
-        Some(value) if yaml::python_bool(value) => match value {
+        Some(value) if yaml::is_truthy(value) => match value {
             Value::Mapping(mapping) => Cow::Borrowed(mapping),
             other => {
                 return Err(ConfigError::value(format!(
                     "ports must be a mapping with 'tcp', 'udp', and/or 'icmp' keys (got: {})",
-                    repr(other)
+                    display_value(other)
                 )));
             }
         },
@@ -1140,7 +1146,7 @@ fn parse_ports(raw: &Mapping) -> Parsed<PortsConfig> {
         let Value::Bool(flag) = value else {
             return Err(ConfigError::value(format!(
                 "ports.icmp.allow must be a boolean (got: {})",
-                repr(value)
+                display_value(value)
             )));
         };
         ports.icmp = IcmpPortsConfig { allow: *flag };
@@ -1156,11 +1162,11 @@ fn protocol_section(
     template: impl Fn() -> &'static str,
 ) -> Parsed<Cow<'_, Mapping>> {
     match value {
-        Some(value) if yaml::python_bool(value) => match value {
+        Some(value) if yaml::is_truthy(value) => match value {
             Value::Mapping(mapping) => Ok(Cow::Borrowed(mapping)),
             other => Err(ConfigError::value(template().replacen(
                 "{}",
-                &repr(other),
+                &display_value(other),
                 1,
             ))),
         },
@@ -1179,12 +1185,12 @@ fn protocol_section(
 /// first, where `config.py` reports the name.
 fn port_list(value: Option<&Value>, path: &str) -> Parsed<Vec<i64>> {
     let items = match value {
-        Some(value) if yaml::python_bool(value) => match value {
+        Some(value) if yaml::is_truthy(value) => match value {
             Value::Sequence(items) => items,
             other => {
                 return Err(ConfigError::value(format!(
                     "{path} must be a list of integers (got: {})",
-                    repr(other)
+                    display_value(other)
                 )));
             }
         },
@@ -1203,12 +1209,12 @@ fn port_list(value: Option<&Value>, path: &str) -> Parsed<Vec<i64>> {
                 .ok_or_else(|| {
                     ConfigError::value(format!(
                         "{path} entries must be integers (got: {})",
-                        repr(item)
+                        display_value(item)
                     ))
                 }),
             other => Err(ConfigError::value(format!(
                 "{path} entries must be integers (got: {})",
-                repr(other)
+                display_value(other)
             ))),
         })
         .collect()
@@ -1227,13 +1233,13 @@ fn present(value: Option<&Value>) -> Option<&Value> {
 
 /// `bool(x)` on an optional key; an absent key is `False`.
 fn truthy(value: Option<&Value>) -> bool {
-    value.is_some_and(yaml::python_bool)
+    value.is_some_and(yaml::is_truthy)
 }
 
 /// `raw.get(key) or {}` — a section that a falsy value empties.
 fn section<'a>(value: Option<&'a Value>, path: &str) -> Parsed<Cow<'a, Mapping>> {
     match value {
-        Some(value) if yaml::python_bool(value) => mapping_of(value, path),
+        Some(value) if yaml::is_truthy(value) => mapping_of(value, path),
         _ => Ok(Cow::Owned(Mapping::new())),
     }
 }
@@ -1252,7 +1258,7 @@ fn agent_mapping<'a>(value: Option<&'a Value>, path: &str) -> Parsed<Cow<'a, Map
         Some(Value::Mapping(mapping)) => Ok(Cow::Borrowed(mapping)),
         Some(other) => Err(ConfigError::value(format!(
             "{path} must be a mapping (got {})",
-            type_name(other)
+            kind_name(other)
         ))),
     }
 }
@@ -1263,7 +1269,7 @@ fn mapping_of<'a>(value: &'a Value, path: &str) -> Parsed<Cow<'a, Mapping>> {
         Value::Mapping(mapping) => Ok(Cow::Borrowed(mapping)),
         other => Err(ConfigError::value(format!(
             "{path} must be a mapping (got {})",
-            type_name(other)
+            kind_name(other)
         ))),
     }
 }
@@ -1271,11 +1277,11 @@ fn mapping_of<'a>(value: &'a Value, path: &str) -> Parsed<Cow<'a, Mapping>> {
 /// `list(x or [])`, keeping the items raw.
 fn value_list(value: Option<&Value>, path: &str) -> Parsed<Vec<Value>> {
     match value {
-        Some(value) if yaml::python_bool(value) => match value {
+        Some(value) if yaml::is_truthy(value) => match value {
             Value::Sequence(items) => Ok(items.clone()),
             other => Err(ConfigError::value(format!(
                 "{path} must be a list (got {})",
-                type_name(other)
+                kind_name(other)
             ))),
         },
         _ => Ok(Vec::new()),
@@ -1295,7 +1301,7 @@ fn string_map(value: Option<&Value>, path: &str) -> Parsed<OrderedMap<String>> {
     let mapping = section(value, path)?;
     mapping
         .iter()
-        .map(|(key, entry)| Ok((str_of(key), scalar_string(entry, path)?)))
+        .map(|(key, entry)| Ok((coerce_to_string(key), scalar_string(entry, path)?)))
         .collect()
 }
 
@@ -1306,10 +1312,10 @@ fn string_map(value: Option<&Value>, path: &str) -> Parsed<OrderedMap<String>> {
 fn scalar_string(value: &Value, path: &str) -> Parsed<String> {
     match value {
         Value::Null => Ok(String::new()),
-        Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(str_of(value)),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(coerce_to_string(value)),
         other => Err(ConfigError::value(format!(
             "{path} must be a string (got {})",
-            type_name(other)
+            kind_name(other)
         ))),
     }
 }
@@ -1334,14 +1340,14 @@ fn raw_string(value: Option<&Value>, default: &str, path: &str) -> Parsed<String
 fn str_field(value: Option<&Value>, default: &str) -> String {
     match value {
         None => default.to_owned(),
-        Some(value) => str_of(value),
+        Some(value) => coerce_to_string(value),
     }
 }
 
 /// `str(x.get(key) or default)` — any falsy value takes the default.
 fn or_string(value: Option<&Value>, default: &str, path: &str) -> Parsed<String> {
     match value {
-        Some(value) if yaml::python_bool(value) => scalar_string(value, path),
+        Some(value) if yaml::is_truthy(value) => scalar_string(value, path),
         _ => Ok(default.to_owned()),
     }
 }
@@ -1356,7 +1362,7 @@ fn string_or_empty(value: Option<&Value>, path: &str) -> Parsed<String> {
 fn bool_field(value: Option<&Value>, default: bool) -> bool {
     match value {
         None => default,
-        Some(value) => yaml::python_bool(value),
+        Some(value) => yaml::is_truthy(value),
     }
 }
 
@@ -1388,7 +1394,7 @@ fn int_field(value: Option<&Value>, default: i64, path: &str) -> Parsed<i64> {
 
 /// `int(x)`, with the path in the message.
 fn int_value(value: &Value, path: &str) -> Parsed<i64> {
-    py_int(value).map_err(|error| ConfigError::value(format!("{path}: {error}")))
+    coerce_int(value).map_err(|error| ConfigError::value(format!("{path}: {error}")))
 }
 
 /// `x.get(key, default) or 0` over an integer — a falsy value is 0,
@@ -1396,7 +1402,7 @@ fn int_value(value: &Value, path: &str) -> Parsed<i64> {
 fn or_int(value: Option<&Value>, default: i64, path: &str) -> Parsed<i64> {
     match value {
         None => Ok(default),
-        Some(value) if !yaml::python_bool(value) => Ok(0),
+        Some(value) if !yaml::is_truthy(value) => Ok(0),
         Some(value) => int_value(value, path),
     }
 }
@@ -1406,7 +1412,7 @@ fn present_float(value: Option<&Value>, default: f64, path: &str) -> Parsed<f64>
     match present(value) {
         None => Ok(default),
         Some(value) => {
-            py_float(value).map_err(|error| ConfigError::value(format!("{path}: {error}")))
+            coerce_float(value).map_err(|error| ConfigError::value(format!("{path}: {error}")))
         }
     }
 }
@@ -1416,7 +1422,7 @@ fn present_int(value: Option<&Value>, default: i64, path: &str) -> Parsed<i64> {
     match present(value) {
         None => Ok(default),
         Some(value) => {
-            py_int(value).map_err(|error| ConfigError::value(format!("{path}: {error}")))
+            coerce_int(value).map_err(|error| ConfigError::value(format!("{path}: {error}")))
         }
     }
 }
@@ -1449,7 +1455,7 @@ fn strip_secrets(container: &mut ContainerConfig, names: &BTreeSet<String>) {
 /// The text matters: `_llm_client` wraps it as
 /// `agents.decider: invalid LLM client value (<text>)`, and the corpus
 /// records that string.
-fn py_int(value: &Value) -> Result<i64, String> {
+fn coerce_int(value: &Value) -> Result<i64, String> {
     match value {
         Value::Bool(flag) => Ok(i64::from(*flag)),
         Value::Number(number) => {
@@ -1471,18 +1477,18 @@ fn py_int(value: &Value) -> Result<i64, String> {
         }
         Value::String(text) => {
             reject_ambiguous(text)?;
-            parse_python_int(text)
+            parse_int_literal(text)
                 .ok_or_else(|| format!("invalid literal for int() with base 10: '{text}'"))
         }
         other => Err(format!(
             "int() argument must be a string, a bytes-like object or a real number, not '{}'",
-            type_name(other)
+            kind_name(other)
         )),
     }
 }
 
 /// `float(value)`, returning CPython's own exception text on failure.
-fn py_float(value: &Value) -> Result<f64, String> {
+fn coerce_float(value: &Value) -> Result<f64, String> {
     match value {
         Value::Bool(flag) => Ok(if *flag { 1.0 } else { 0.0 }),
         Value::Number(number) => Ok(number.as_f64().unwrap_or(f64::NAN)),
@@ -1495,7 +1501,7 @@ fn py_float(value: &Value) -> Result<f64, String> {
         }
         other => Err(format!(
             "float() argument must be a string or a real number, not '{}'",
-            type_name(other)
+            kind_name(other)
         )),
     }
 }
@@ -1544,7 +1550,7 @@ fn reject_ambiguous(text: &str) -> Result<(), String> {
 
 /// CPython's `int(str)`: optional sign, decimal digits, underscores
 /// between digits, surrounding whitespace allowed.
-fn parse_python_int(text: &str) -> Option<i64> {
+fn parse_int_literal(text: &str) -> Option<i64> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
@@ -1625,7 +1631,7 @@ mod tests {
         assert_eq!(config.dns_servers, ["1.1.1.1"]);
         // And it *is* reached when the key is absent.
         let error = load("<test>", "name: c\n", &broken).expect_err("probe fails");
-        assert_eq!(error.python_type(), "RuntimeError");
+        assert_eq!(error.error_class(), "RuntimeError");
     }
 
     #[test]

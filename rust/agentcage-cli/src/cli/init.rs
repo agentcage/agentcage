@@ -109,7 +109,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         eprintln!(
             "error: name must be 1-63 lowercase alphanumeric characters or \
              hyphens, starting with a letter or digit (got: {})",
-            agentcage_core::python::repr_str(name)
+            agentcage_core::value_fmt::quote_text(name)
         );
         return Err(ExitCode::from(EXIT_FAILURE));
     }
@@ -120,7 +120,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         if !available.contains(scaffold) {
             eprintln!(
                 "error: unknown scaffold {} (available: {})",
-                agentcage_core::python::repr_str(scaffold),
+                agentcage_core::value_fmt::quote_text(scaffold),
                 if available.is_empty() {
                     "none".to_owned()
                 } else {
@@ -205,7 +205,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
                  build these instead — the cage would not be the image its name \
                  claims. Move them aside, or pass --force to overwrite them.",
                 dest_dir.display(),
-                agentcage_core::python::repr_str(scaffold),
+                agentcage_core::value_fmt::quote_text(scaffold),
                 conflicts.iter().cloned().collect::<Vec<_>>().join(", ")
             );
             return Err(ExitCode::from(EXIT_FAILURE));

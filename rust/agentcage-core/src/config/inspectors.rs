@@ -46,8 +46,8 @@
 //! the migration pointer), a missing or built-in name, and two entries
 //! sharing a name or a file name.
 
-use crate::python::repr_str;
-use crate::yaml::{Value, python_bool};
+use crate::value_fmt::quote_text;
+use crate::yaml::{Value, is_truthy};
 
 use super::ConfigError;
 use super::types::{BUILTIN_INSPECTOR_NAMES, Config};
@@ -92,12 +92,12 @@ pub fn plugin_refs(config: &Config) -> Vec<PluginRef> {
         .iter()
         .enumerate()
         .filter_map(|(index, entry)| {
-            let path = entry.get("path").filter(|p| python_bool(p))?.as_str()?;
+            let path = entry.get("path").filter(|p| is_truthy(p))?.as_str()?;
             Some(PluginRef {
                 index,
                 name: entry
                     .get("name")
-                    .map(crate::python::str_of)
+                    .map(crate::value_fmt::coerce_to_string)
                     .unwrap_or_default(),
                 path: path.to_owned(),
             })
@@ -113,14 +113,14 @@ pub fn plugin_refs(config: &Config) -> Vec<PluginRef> {
 pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
     let mut seen: Vec<(usize, String, String)> = Vec::new();
     for (index, entry) in config.inspectors.iter().enumerate() {
-        let Some(path) = entry.get("path").filter(|p| python_bool(p)) else {
+        let Some(path) = entry.get("path").filter(|p| is_truthy(p)) else {
             continue;
         };
         let name = entry
             .get("name")
-            .map(crate::python::str_of)
+            .map(crate::value_fmt::coerce_to_string)
             .unwrap_or_default();
-        let label = format!("inspectors[{index}] {}", repr_str(&name));
+        let label = format!("inspectors[{index}] {}", quote_text(&name));
         let Value::String(path) = path else {
             return Err(ConfigError::value(format!(
                 "{label}: path must be a string"
@@ -131,7 +131,7 @@ pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
                 "{label}: custom Python inspectors (path: {}) are no longer supported. \
                  Build the inspector as a WebAssembly component (.wasm) with the \
                  agentcage-inspector-sdk crate; see {CUSTOM_INSPECTORS_GUIDE}.",
-                repr_str(path)
+                quote_text(path)
             )));
         }
         let file = plugin_file_name(path);
@@ -144,13 +144,13 @@ pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
             return Err(ConfigError::value(format!(
                 "{label}: path must name a WebAssembly component file ending in .wasm \
                  (got: {})",
-                repr_str(path)
+                quote_text(path)
             )));
         }
         if name.is_empty() {
             return Err(ConfigError::value(format!(
                 "inspectors[{index}]: a custom inspector (path: {}) needs a name",
-                repr_str(path)
+                quote_text(path)
             )));
         }
         if BUILTIN_INSPECTOR_NAMES.contains(&name.as_str()) {
@@ -169,7 +169,7 @@ pub fn validate_plugins(config: &Config) -> Result<(), ConfigError> {
                 return Err(ConfigError::value(format!(
                     "{label}: the file name {} is already used by inspectors[{other}] \
                      (plugins are staged into the egress by file name)",
-                    repr_str(file)
+                    quote_text(file)
                 )));
             }
         }
@@ -200,12 +200,12 @@ pub fn inspector_warnings(config: &Config) -> Vec<String> {
         // `path: null` is not a custom inspector.
         let name = entry
             .get("name")
-            .map(crate::python::str_of)
+            .map(crate::value_fmt::coerce_to_string)
             .unwrap_or_default();
         // A `path:` entry is a custom inspector: staged and mounted on
         // this backend like on the others, and refused by
         // `validate_plugins` if it cannot be.
-        let has_path = entry.get("path").is_some_and(python_bool);
+        let has_path = entry.get("path").is_some_and(is_truthy);
 
         if !has_path && !name.is_empty() && !BUILTIN_INSPECTOR_NAMES.contains(&name.as_str()) {
             let mut valid: Vec<&str> = BUILTIN_INSPECTOR_NAMES.to_vec();
@@ -213,7 +213,7 @@ pub fn inspector_warnings(config: &Config) -> Vec<String> {
             warnings.push(format!(
                 "inspectors[{index}] {}: not a known built-in inspector — the in-cage \
                  addon will skip this entry. Valid names: {}.",
-                repr_str(&name),
+                quote_text(&name),
                 valid.join(", ")
             ));
         }

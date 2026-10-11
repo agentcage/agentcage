@@ -321,9 +321,7 @@ fn is_apple_container(
     let raw = paths
         .load_raw_config(name, AgentSchema::Skip)
         .map_err(|error| error.to_string())?;
-    let declared = raw
-        .get("isolation")
-        .filter(|value| yaml::python_bool(value));
+    let declared = raw.get("isolation").filter(|value| yaml::is_truthy(value));
     Ok(match declared {
         Some(value) => value.as_str() == Some("apple-container"),
         None => crate::hostenv::default_isolation(runner) == "apple-container",

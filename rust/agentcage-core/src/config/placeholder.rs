@@ -48,7 +48,7 @@
 
 use std::collections::HashMap;
 
-use crate::python::str_of;
+use crate::value_fmt::coerce_to_string;
 use crate::yaml::Value;
 
 use super::types::PLACEHOLDER_PREFIX;
@@ -124,24 +124,21 @@ pub fn fill_raw_placeholders(
         let Some(env) = rule.get("env").cloned() else {
             continue;
         };
-        if !crate::yaml::python_bool(&env) {
+        if !crate::yaml::is_truthy(&env) {
             continue;
         }
         // `or entry.get("placeholder")` — an existing truthy placeholder
         // is left alone.
-        if rule
-            .get("placeholder")
-            .is_some_and(crate::yaml::python_bool)
-        {
+        if rule.get("placeholder").is_some_and(crate::yaml::is_truthy) {
             continue;
         }
         // `prev.get(env) or generate_placeholder(env)`: a carried-over
         // token only wins when it is truthy.
         let filled = match carried.get(&env) {
-            Some(token) if crate::yaml::python_bool(token) => token.clone(),
+            Some(token) if crate::yaml::is_truthy(token) => token.clone(),
             // `"%s%s:%s" % (...)` stringifies a non-string env the way
             // `str()` would, so a numeric `env: 1` behaves identically.
-            _ => Value::String(mint(&str_of(&env))),
+            _ => Value::String(mint(&coerce_to_string(&env))),
         };
         rule.insert(Value::String("placeholder".to_owned()), filled);
         changed = true;

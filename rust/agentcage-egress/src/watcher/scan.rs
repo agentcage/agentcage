@@ -21,10 +21,10 @@ use crate::json::{self, Json};
 use crate::llm::{ToolCall, ToolCaller};
 
 use super::ScanRng;
+use super::coerce;
 use super::config::WatcherConfig;
 use super::digest::{DigestInput, build_digest, est_tokens};
 use super::prompt::{self, COMPLIANCE_RETRY};
-use super::pyval;
 use super::tail::{CaptureTail, TailLimits, TailRead};
 
 /// Per-tick ring drain bound: the digest aggregates everything drained,
@@ -448,7 +448,7 @@ impl Watcher {
         let (refs, secret) = self.refs();
         let policy_events: Vec<Json> = entries
             .iter()
-            .filter(|e| pyval::str_get(e, "kind", "").starts_with("policy_"))
+            .filter(|e| coerce::str_get(e, "kind", "").starts_with("policy_"))
             .cloned()
             .collect();
         let granted = match (&refs.domains, &refs.grants) {
@@ -496,7 +496,7 @@ impl Watcher {
     /// Evasion fingerprints strong enough to stand alone, recorded without
     /// waiting for the model.
     fn record_indicator_findings(&mut self, digest: &Json) {
-        let ind = pyval::obj(digest.get("evasion_indicators"));
+        let ind = coerce::obj(digest.get("evasion_indicators"));
         let binary = match ind.get("binary_request_bodies_to_granted_hosts") {
             Some(Json::Int(n)) => *n,
             _ => 0,
@@ -579,14 +579,14 @@ impl Watcher {
             self.record_finding(&prompt::normalise_finding(f));
         }
         for r in &verdict.baseline_recommendations {
-            let Some(domain) = pyval::truthy(r.get("domain")) else {
+            let Some(domain) = coerce::truthy(r.get("domain")) else {
                 continue;
             };
-            let domain = pyval::py_str(domain);
+            let domain = coerce::coerce_to_string(domain);
             self.record_finding(&finding(
                 "medium",
                 &format!("baseline removal recommended: {domain}"),
-                &pyval::prefix(&pyval::str_get(r, "reason", ""), 1000),
+                &coerce::prefix(&coerce::str_get(r, "reason", ""), 1000),
                 "operator decision required — apply with `agentcage domain rm` (the egress \
                  never edits the baseline)",
                 Some(&domain),
@@ -618,7 +618,7 @@ impl Watcher {
         if base.is_empty() {
             self.warn(&format!(
                 "agentcage: unknown watcher agent provider {} — scans are skipped",
-                agentcage_core::python::repr_str(&cfg.provider)
+                agentcage_core::value_fmt::quote_text(&cfg.provider)
             ));
             return None;
         }
@@ -685,7 +685,7 @@ impl Watcher {
             ("decision", Json::string("flagged")),
             ("method", Json::string("")),
             ("direction", Json::string("")),
-            ("host", Json::Str(pyval::str_or(f.get("domain"), ""))),
+            ("host", Json::Str(coerce::str_or(f.get("domain"), ""))),
             ("url", Json::string("")),
             ("path", Json::string("")),
             ("port", Json::Int(0)),
@@ -705,7 +705,7 @@ impl Watcher {
                     ("severity", field("severity", "info")),
                     (
                         "reason",
-                        Json::Str(pyval::prefix(&pyval::str_get(f, "title", ""), 200)),
+                        Json::Str(coerce::prefix(&coerce::str_get(f, "title", ""), 200)),
                     ),
                 ])]),
             ),
@@ -732,14 +732,14 @@ impl Watcher {
         recommendation: &str,
     ) {
         for r in removals {
-            let Some(domain) = pyval::truthy(r.get("domain")) else {
+            let Some(domain) = coerce::truthy(r.get("domain")) else {
                 continue;
             };
-            let domain = pyval::py_str(domain);
+            let domain = coerce::coerce_to_string(domain);
             self.record_finding(&finding(
                 severity,
                 &title(&domain),
-                &pyval::prefix(&pyval::str_get(r, "reason", ""), 1000),
+                &coerce::prefix(&coerce::str_get(r, "reason", ""), 1000),
                 recommendation,
                 Some(&domain),
             ));
@@ -799,11 +799,11 @@ impl Watcher {
         };
         let mut revoked = Vec::new();
         for r in removals {
-            let domain = pyval::str_or(r.get("domain"), "")
+            let domain = coerce::str_or(r.get("domain"), "")
                 .to_lowercase()
                 .trim_end_matches('.')
                 .to_owned();
-            let reason = pyval::prefix(&pyval::str_or(r.get("reason"), ""), 1000);
+            let reason = coerce::prefix(&coerce::str_or(r.get("reason"), ""), 1000);
             if domain.is_empty()
                 || !valid_domain(&domain, LabelPolicy::StrictDotted)
                 || prompt::is_never_revoke(&domain)

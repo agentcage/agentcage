@@ -941,7 +941,7 @@ mod tests {
     /// `default(18789, true)` fallback, the derived network addresses —
     /// is the renderer's own output.
     #[test]
-    fn every_scaffold_renders_byte_identically_to_the_python() {
+    fn every_scaffold_renders_byte_identically_to_its_fixture() {
         let scaffolds = builtin_only();
         let names = scaffolds.list();
         assert!(!names.is_empty(), "no scaffolds found");

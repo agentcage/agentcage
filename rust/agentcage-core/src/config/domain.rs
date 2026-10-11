@@ -101,7 +101,7 @@ pub enum LabelPolicy {
 pub fn valid_domain(domain: &str, policy: LabelPolicy) -> bool {
     // `if not isinstance(domain, str) or any(c.isspace() for c in domain)`.
     // The isinstance half is the type system's job here.
-    if domain.chars().any(is_python_space) {
+    if domain.chars().any(is_strip_space) {
         return false;
     }
 
@@ -245,7 +245,7 @@ fn is_label(label: &str) -> bool {
 /// which omits the C0 separators `U+001C`–`U+001F`. Those are exactly
 /// the kind of character a domain-injection attempt would carry.
 #[must_use]
-pub fn is_python_space(character: char) -> bool {
+pub fn is_strip_space(character: char) -> bool {
     matches!(
         character as u32,
         0x09..=0x0d

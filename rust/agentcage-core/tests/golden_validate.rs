@@ -153,7 +153,7 @@ fn the_invalid_cases_match_verbatim() {
         match pipeline("cage.yaml", &read(&input_path), &hosts) {
             Ok(_) => deferred.push(case),
             Err(error) => {
-                let produced = format!("{}\n", error.as_python_traceback_line());
+                let produced = format!("{}\n", error.as_error_line());
                 if produced == expected {
                     matched.push(case);
                 } else if KNOWN_DIVERGENT.contains(&case.as_str()) {
@@ -512,7 +512,7 @@ const WARNINGS_DEFERRED: &[&str] = &[];
 // it would put the cases somewhere other than the explanation of them.
 #[allow(clippy::too_many_lines)]
 #[test]
-fn error_precedence_matches_python() {
+fn error_precedence_matches_the_corpus() {
     struct Precedence {
         id: &'static str,
         yaml: &'static str,
@@ -688,7 +688,7 @@ fn error_precedence_matches_python() {
     for case in &cases {
         let expected = case.rust.unwrap_or(case.python);
         let produced = match pipeline("cage.yaml", case.yaml, &hosts) {
-            Err(error) => error.as_python_traceback_line(),
+            Err(error) => error.as_error_line(),
             Ok(_) => "accepted the config".to_owned(),
         };
         if produced != expected {

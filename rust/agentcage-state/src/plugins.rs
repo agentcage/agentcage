@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use agentcage_core::config::{Config, PluginRef, plugin_refs};
-use agentcage_core::python::repr_str;
+use agentcage_core::value_fmt::quote_text;
 
 use crate::error::{Result, StateError};
 use crate::paths::Paths;
@@ -82,8 +82,8 @@ impl Paths {
                      run `agentcage cage update -c <cage.yaml>` so it can be copied \
                      from the directory the cage.yaml is in",
                     plugin.index,
-                    repr_str(&plugin.name),
-                    repr_str(plugin.file_name())
+                    quote_text(&plugin.name),
+                    quote_text(plugin.file_name())
                 )));
             }
         }
@@ -128,8 +128,8 @@ fn resolve_source(plugin: &PluginRef, source_dir: &Path) -> Result<PathBuf> {
     Err(StateError::value(format!(
         "inspectors[{}] {}: plugin file {} {problem}",
         plugin.index,
-        repr_str(&plugin.name),
-        repr_str(&source.display().to_string())
+        quote_text(&plugin.name),
+        quote_text(&source.display().to_string())
     )))
 }
 

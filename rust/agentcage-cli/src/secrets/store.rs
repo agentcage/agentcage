@@ -51,7 +51,7 @@ use std::path::{Path, PathBuf};
 
 use agentcage_core::config::types::Config;
 use agentcage_core::har::json::{DumpOptions, Json, dumps, parse};
-use agentcage_core::python::repr_str;
+use agentcage_core::value_fmt::quote_text;
 use agentcage_exec::tools::podman::Podman;
 use agentcage_exec::tools::security::{
     KeychainTarget, PasswordChannel, SHIPPED_PASSWORD_CHANNEL, Security,
@@ -202,7 +202,7 @@ pub trait SecretStore: fmt::Debug {
         let _ = (cage, state_dir);
         Err(SecretError::store(format!(
             "backend {} does not support name listing",
-            repr_str(self.name())
+            quote_text(self.name())
         )))
     }
 
@@ -216,7 +216,7 @@ pub trait SecretStore: fmt::Debug {
         let _ = (cage, key, state_dir);
         Err(SecretError::store(format!(
             "backend {} does not support value retrieval",
-            repr_str(self.name())
+            quote_text(self.name())
         )))
     }
 }

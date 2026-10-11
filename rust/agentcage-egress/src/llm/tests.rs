@@ -265,11 +265,11 @@ fn the_key_never_appears_in_debug_output() {
 #[test]
 fn bytes_repr_matches_cpython() {
     // Right-hand sides measured with CPython 3.12 `repr(bytes)`.
-    assert_eq!(python_bytes_repr(b""), "b''");
-    assert_eq!(python_bytes_repr(b"it's"), "b\"it's\"");
-    assert_eq!(python_bytes_repr(b"a'b\"c"), "b'a\\'b\"c'");
+    assert_eq!(bytes_literal(b""), "b''");
+    assert_eq!(bytes_literal(b"it's"), "b\"it's\"");
+    assert_eq!(bytes_literal(b"a'b\"c"), "b'a\\'b\"c'");
     assert_eq!(
-        python_bytes_repr(b"\t\n\r\\\x00\x7f\xff~"),
+        bytes_literal(b"\t\n\r\\\x00\x7f\xff~"),
         "b'\\t\\n\\r\\\\\\x00\\x7f\\xff~'"
     );
 }

@@ -118,7 +118,7 @@ impl Paths {
             .filter(|mapping| {
                 mapping
                     .get("domain")
-                    .is_some_and(agentcage_core::yaml::python_bool)
+                    .is_some_and(agentcage_core::yaml::is_truthy)
             })
             .collect()
     }

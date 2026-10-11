@@ -187,7 +187,9 @@ pub(crate) fn publishable(granted: &[(String, Mapping)], now_iso: &str) -> Vec<S
                 return false;
             }
             let exp = match entry.get("expires_at") {
-                Some(v) if crate::config::truthy(v) => agentcage_core::python::str_of(v),
+                Some(v) if crate::config::truthy(v) => {
+                    agentcage_core::value_fmt::coerce_to_string(v)
+                }
                 _ => String::new(),
             };
             exp.is_empty() || exp.as_str() > now_iso

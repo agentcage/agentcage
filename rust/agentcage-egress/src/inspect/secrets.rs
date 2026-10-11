@@ -15,11 +15,11 @@
 
 use std::sync::{Arc, LazyLock};
 
-use agentcage_core::python::type_name;
+use agentcage_core::value_fmt::kind_name;
 use indexmap::IndexMap;
 use regex::Regex;
 
-use super::pyconf;
+use super::config_values;
 use super::{Action, Context, Inspector, Severity, Verdict};
 use crate::config::{Mapping, Value, truthy};
 use crate::json::Json;
@@ -191,7 +191,7 @@ fn is_binary_body_content_type(content_type: &str) -> bool {
         return false;
     }
     let ct = content_type.split(';').next().unwrap_or_default();
-    let ct = pyconf::py_strip(ct).to_lowercase();
+    let ct = config_values::strip_space(ct).to_lowercase();
     BINARY_BODY_CONTENT_TYPE_PREFIXES
         .iter()
         .any(|p| ct.starts_with(p))
@@ -227,8 +227,8 @@ impl SecretsInspector {
     /// patterns, but lookaround and backreferences are refused (a reload
     /// that adds one fails closed rather than scanning without it).
     pub fn from_config(section: &Value) -> Result<Self, String> {
-        let map = pyconf::section(section, NAME)?;
-        let enabled = pyconf::flag(map, "enabled", true);
+        let map = config_values::section(section, NAME)?;
+        let enabled = config_values::flag(map, "enabled", true);
         let action_explicit = map.contains_key("action");
         let action = match map.get("action") {
             Some(Value::String(s)) if s == "block" => Action::Block,
@@ -252,11 +252,11 @@ impl SecretsInspector {
                 Some(v) => {
                     return Err(format!(
                         "{NAME}.extra_patterns must be a list (got {})",
-                        type_name(v)
+                        kind_name(v)
                     ));
                 }
             }
-            if pyconf::flag(map, "builtin_allow_to_domains", true) {
+            if config_values::flag(map, "builtin_allow_to_domains", true) {
                 for (name, domains) in BUILTIN_ALLOW_TO_DOMAINS {
                     allow.insert(
                         name.to_owned(),
@@ -274,8 +274,10 @@ impl SecretsInspector {
                                 "{NAME}.allow_to_domains keys must be pattern names"
                             ));
                         };
-                        let domains =
-                            pyconf::str_items(domains, &format!("{NAME}.allow_to_domains.{name}"))?;
+                        let domains = config_values::str_items(
+                            domains,
+                            &format!("{NAME}.allow_to_domains.{name}"),
+                        )?;
                         allow.insert(
                             name.clone(),
                             domains.iter().map(|d| d.to_lowercase()).collect(),
@@ -285,7 +287,7 @@ impl SecretsInspector {
                 Some(v) => {
                     return Err(format!(
                         "{NAME}.allow_to_domains must be a mapping (got {})",
-                        type_name(v)
+                        kind_name(v)
                     ));
                 }
             }
@@ -334,7 +336,9 @@ impl SecretsInspector {
         self.allow_to_domains
             .iter()
             .find(|(n, _)| n == name)
-            .is_some_and(|(_, domains)| domains.iter().any(|d| pyconf::host_matches(host, d)))
+            .is_some_and(|(_, domains)| {
+                domains.iter().any(|d| config_values::host_matches(host, d))
+            })
     }
 }
 
@@ -344,7 +348,7 @@ fn extra_pattern(p: &Value) -> Result<Option<(String, Matcher)>, String> {
     let Value::Mapping(p) = p else {
         return Err(format!(
             "{NAME}.extra_patterns entries must be mappings (got {})",
-            type_name(p)
+            kind_name(p)
         ));
     };
     let field = |p: &Mapping, key: &str| -> Result<String, String> {
@@ -352,7 +356,7 @@ fn extra_pattern(p: &Value) -> Result<Option<(String, Matcher)>, String> {
             Some(Value::String(s)) => Ok(s.clone()),
             Some(v) => Err(format!(
                 "{NAME}.extra_patterns[].{key} must be a string (got {})",
-                type_name(v)
+                kind_name(v)
             )),
             None => Err(format!("{NAME}.extra_patterns[] entry has no {key:?}")),
         }
@@ -362,7 +366,7 @@ fn extra_pattern(p: &Value) -> Result<Option<(String, Matcher)>, String> {
             let Value::String(env) = env else {
                 return Err(format!(
                     "{NAME}.extra_patterns[].env must be a string (got {})",
-                    type_name(env)
+                    kind_name(env)
                 ));
             };
             // The process env, as the replaced implementation read it

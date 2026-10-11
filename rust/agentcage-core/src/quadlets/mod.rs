@@ -335,8 +335,8 @@ pub fn reserved_volume_entry(entry: &str, source: &str) -> Option<String> {
     Some(format!(
         "container.volumes entry {}: {} is reserved for agentcage ({reason}); \
          a cage must not mount it",
-        crate::python::repr_str(entry),
-        crate::python::repr_str(source)
+        crate::value_fmt::quote_text(entry),
+        crate::value_fmt::quote_text(source)
     ))
 }
 
@@ -646,7 +646,7 @@ mod tests {
         let used = (1..=254).collect::<std::collections::BTreeSet<u32>>();
         let error = cage_network_addrs("test", Some(&used), None).expect_err("no slots");
         assert_eq!(
-            error.as_python_traceback_line(),
+            error.as_error_line(),
             "RuntimeError: All 254 subnet slots are in use — cannot allocate a new cage network"
         );
     }
