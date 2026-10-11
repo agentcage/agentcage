@@ -11,11 +11,13 @@
 //! same [`Inspector`] trait.
 
 pub mod body_size;
+pub mod chain;
 pub mod content_type;
 #[cfg(test)]
 mod corpus;
 pub mod domain;
 pub mod entropy;
+mod pyconf;
 pub mod secrets;
 
 use crate::json::Json;

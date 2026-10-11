@@ -47,6 +47,12 @@ getrandom = "0.3"
 # drawn from the OS.
 rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "os_rng"] }
 
+# The secrets inspector's patterns and the content-type inspector's
+# base64 scan. Pure Rust, linear time on any input, so a hostile body
+# cannot make a scan blow up (the patterns need no backtracking; the
+# one lookaround pattern is hand-coded).
+regex = "1"
+
 [dev-dependencies]
 # Test-only: the host's own grants-overlay reader and writer, so an
 # interop test proves the egress and `cage grants` agree on the shared
