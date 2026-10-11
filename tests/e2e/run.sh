@@ -4,7 +4,7 @@
 # Usage:
 #   bash tests/e2e/run.sh                    # run all phases
 #   bash tests/e2e/run.sh 1 2 3 4            # run specific phases
-#   bash tests/e2e/run.sh container          # phases 1-6 (Linux only, see #317)
+#   bash tests/e2e/run.sh container          # phases 1-6 and 9 (Linux only, see #317)
 #   bash tests/e2e/run.sh vm                 # phase 7 only
 #   E2E_PORT_BASE=19100 bash tests/e2e/run.sh  # custom port base
 
@@ -22,15 +22,15 @@ export AGENTCAGE="${AGENTCAGE:-agentcage}"
 # ── parse args ───────────────────────────────────────────────────────
 PHASES=()
 if [ $# -eq 0 ]; then
-  PHASES=(1 2 3 4 5 6 7 8)
+  PHASES=(1 2 3 4 5 6 7 8 9)
 else
   for arg in "$@"; do
     case "$arg" in
-      container) PHASES+=(1 2 3 4 5 6) ;;
+      container) PHASES+=(1 2 3 4 5 6 9) ;;
       vm)        PHASES+=(7) ;;
       openclaw)  PHASES+=(8) ;;
-      all)       PHASES=(1 2 3 4 5 6 7 8) ;;
-      [1-8])     PHASES+=("$arg") ;;
+      all)       PHASES=(1 2 3 4 5 6 7 8 9) ;;
+      [1-9])     PHASES+=("$arg") ;;
       -h|--help)
         echo "Usage: $0 [PHASE...] [container|vm|openclaw|all]"
         echo ""
@@ -43,19 +43,24 @@ else
         echo "  6  Security hardening & edge cases"
         echo "  7  VM mode (requires Lima + KVM)"
         echo "  8  OpenClaw scaffold regression canary (pulls openclaw:latest)"
+        echo "  9  Egress features: relays, Policy API, WebSocket, passthrough"
         echo ""
         echo "Shortcuts:"
-        echo "  container   Phases 1-6 (Linux host only)"
+        echo "  container   Phases 1-6 and 9 (Linux host only)"
         echo "  vm          Phase 7 only"
         echo "  openclaw    Phase 8 only"
-        echo "  all         Phases 1-8 (default)"
+        echo "  all         Phases 1-9 (default)"
         echo ""
-        echo "Note: phases 1-6 and 8 require rootless podman and therefore a"
+        echo "Note: phases 1-6, 8 and 9 require rootless podman and therefore a"
         echo "      Linux host. On macOS use 'vm' or tests/e2e/phase_apple.sh."
         echo ""
         echo "Environment:"
         echo "  E2E_PORT_BASE    Port base for test cages (default: 19080)"
         echo "  AGENTCAGE        CLI binary under test (default: agentcage)"
+        echo "  E2E_MOCK_BIN     agentcage-e2e-mock binary (default: built with cargo into"
+        echo "                   target/<arch>-unknown-linux-musl/release/)"
+        echo "  E2E_MOCK_IMAGE   image the mock runs in (default: tests/e2e/mock-image.ref)"
+        echo "  E2E_INSPECTOR_WASM  header-policy inspector component for 6.12 (else skipped)"
         exit 0
         ;;
       *)
@@ -67,8 +72,8 @@ else
 fi
 
 # ── host guard: container phases are Linux-only (issue #317) ─────────
-# Phases 1-6 and 8 are "container phases": they drive rootless podman
-# directly (start_mock, the mock container, `podman images`) and their
+# Phases 1-6, 8 and 9 are "container phases": they drive rootless podman
+# directly (start_mock, the mock container, `podman exec`) and their
 # configs pin no `isolation:` key.
 #
 # On macOS that combination silently runs the WRONG backend:
@@ -77,7 +82,7 @@ fi
 #   * `default_isolation()` resolves an unpinned config to
 #     apple-container (macOS 26+ Apple Silicon) or vm (anything else).
 # `cage create` then builds the egress image into the apple-container
-# image store while start_mock looks for it via `podman images` — a
+# store while start_mock looks for the egress container via podman — a
 # different, empty store — and the phase dies somewhere unrelated.
 #
 # Refuse up front with the real constraint instead. Deliberately scoped:
@@ -87,7 +92,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
   BLOCKED=()
   for p in "${PHASES[@]}"; do
     case "$p" in
-      1|2|3|4|5|6|8) BLOCKED+=("$p") ;;
+      1|2|3|4|5|6|8|9) BLOCKED+=("$p") ;;
     esac
   done
   if [ ${#BLOCKED[@]} -gt 0 ]; then
@@ -112,6 +117,25 @@ echo "agentcage E2E test suite"
 echo "========================"
 echo ""
 
+# The container phases run the agentcage-e2e-mock binary beside each
+# cage's egress (lib.sh start_mock). Resolve it — building it if need be —
+# once, here, rather than in every phase: phases 3, 5, 6 and 9 run in
+# parallel, and the path is then simply inherited.
+NEEDS_MOCK=false
+for p in "${PHASES[@]}"; do
+  case "$p" in
+    1|2|3|4|5|6|9) NEEDS_MOCK=true ;;
+  esac
+done
+if [ "$NEEDS_MOCK" = true ]; then
+  # shellcheck disable=SC2016 # $1 is expanded by the inner shell
+  if ! E2E_MOCK_BIN=$(bash -c 'source "$1" && e2e_mock_bin' _ "$SCRIPT_DIR/lib.sh"); then
+    echo "ERROR: the e2e mock binary is unavailable (see above)." >&2
+    exit 1
+  fi
+  export E2E_MOCK_BIN
+fi
+
 # Check for stale e2e cages
 STALE=$("$AGENTCAGE" cage list 2>/dev/null | grep -E "^e2e-" | awk '{print $1}' || true)
 if [ -n "$STALE" ]; then
@@ -125,8 +149,8 @@ fi
 cleanup_all() {
   echo ""
   echo "Final cleanup..."
-  for name in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened e2e-vm e2e-openclaw; do
-    podman rm -f "${name}-mock" >/dev/null 2>&1 || true
+  for name in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened e2e-vm e2e-openclaw e2e-egress; do
+    podman rm -f -t 0 "${name}-mock" "${name}-svc" >/dev/null 2>&1 || true
     "$AGENTCAGE" cage destroy "$name" -y >/dev/null 2>&1 || true
   done
   # Phase 8 uses user-named volumes that aren't cleaned by cage destroy
@@ -146,6 +170,7 @@ PHASE_SCRIPTS=(
   [6]="phase6_hardening.sh"
   [7]="phase7_vm.sh"
   [8]="phase8_openclaw.sh"
+  [9]="phase9_egress_features.sh"
 )
 
 TOTAL_PASS=0
@@ -249,7 +274,7 @@ tally_bg_phase() {
 HAS_PHASE() { for p in "${PHASES[@]}"; do [ "$p" = "$1" ] && return 0; done; return 1; }
 
 # Phases 1, 2, 4 share the "basic" cage — must run sequentially.
-# Phases 3, 5, 6 create their own cages — can run in parallel.
+# Phases 3, 5, 6, 9 create their own cages — can run in parallel.
 # Phase 7 (VM) runs last, after container phases complete.
 
 # ── sequential chain: 1 → 2 → 4 (shared "basic" cage) ────────────
@@ -285,7 +310,7 @@ if [ "$SUITE_FAILED" = true ]; then
   echo "Sequential chain failed — skipping remaining phases."
 fi
 
-# ── launch independent phases (3, 5, 6) in parallel ─────────────
+# ── launch independent phases (3, 5, 6, 9) in parallel ──────────
 # These create their own cages on unique ports, so no contention.
 # Run after the sequential chain to avoid Podman resource contention
 # with the basic cage operations (domain add/rm, stop/start).
@@ -293,7 +318,7 @@ fi
 BG_PIDS=()
 BG_PHASES=()
 
-for phase in 3 5 6; do
+for phase in 3 5 6 9; do
   HAS_PHASE "$phase" || continue
   if [ "$SUITE_FAILED" = false ]; then
     run_phase "$phase" &

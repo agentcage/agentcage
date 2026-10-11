@@ -1,0 +1,5 @@
+GET /p?q=1 HTTP/1.1
+Host: a.test
+X-B: 1
+x-b: 2
+

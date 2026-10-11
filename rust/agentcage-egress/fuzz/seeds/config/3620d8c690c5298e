@@ -1,0 +1,22 @@
+secret_injection:
+  rules:
+    - name: KEY
+      placeholder: "{{KEY}}"
+      inject_to: [api.example.com]
+  redact_to: [example.com]
+domains:
+  mode: allowlist
+  list: [api.example.com]
+  passthrough: [bank.example.com]
+rate_limit: {requests_per_second: 5, burst: 10}
+inspectors:
+  - name: domain
+  - name: secrets
+protocol_relays:
+  - name: mail
+    protocol: imap
+    listen: 127.0.0.1:1143
+    upstream: {host: imap.example.com, port: 993, tls: true}
+    credentials: {user: env:IMAP_USER, password: env:IMAP_PASS}
+agents:
+  decider: {enabled: true}

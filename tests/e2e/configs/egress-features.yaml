@@ -1,0 +1,93 @@
+# Phase 9: the egress features the other phases leave untouched —
+# protocol relays, the Policy API with a decider (and the traffic watcher)
+# answered by a stub LLM, WebSockets, passthrough domains, the block body.
+#
+# Every upstream is a mock in the egress's network namespace, both run
+# from the agentcage-e2e-mock binary (rust/agentcage-e2e-mock):
+# `httpbin` (httpbin.org and the granted names, WebSocket echo on /ws) and
+# `services` (IMAP, SMTP, LLM stub, passthrough TLS).
+name: e2e-egress
+secrets:
+  allow_plaintext: true
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${AGENT_DIR}:/app:ro"
+    - "${E2E_PROBE_DIR}:/probe:ro"
+  ports:
+    - "127.0.0.1:${E2E_PORT_EGRESS}:3000"
+  env:
+    AGENT_DEMO: "false"
+domains:
+  allow:
+    - httpbin.org
+  passthrough:
+    - pt.e2e.test
+secret_injection:
+  # Injected into WebSocket messages to httpbin.org (inject_body: the
+  # placeholder travels in the message payload, not a header).
+  - env: WS_TOKEN
+    inject_to:
+      - httpbin.org
+    inject_body: true
+logging:
+  # smtp_data / imap_command "allowed" records only exist with this on.
+  allowed_requests: true
+capture:
+  # The traffic watcher reads the capture.
+  enable_har: true
+egress:
+  # 1.5 GiB: past the 1 GiB default, so the supervisor starts the egress
+  # under a 2.5 GiB address-space limit instead of 2 GiB (9.24).
+  body_budget_bytes: 1610612736
+agents:
+  decider:
+    enable: true
+    provider: anthropic
+    model: e2e-stub
+    api_key: env:E2E_LLM_KEY
+    # The host only accepts https:// here; the phase points the deployed
+    # egress config at the plain-HTTP stub after create (see the phase).
+    base_url: https://llm.e2e.invalid
+    rate_limit:
+      requests_per_second: 0
+  watcher:
+    enable: true
+    provider: anthropic
+    model: e2e-stub
+    api_key: env:E2E_LLM_KEY
+    base_url: https://llm.e2e.invalid
+    interval_seconds: 60
+    auto_revoke: false
+protocol_relays:
+  - name: mail-read
+    type: imap
+    listen: "0.0.0.0:2143"
+    upstream:
+      host: 127.0.0.1
+      port: 3143
+      tls: false
+    auth:
+      user_source: env:E2E_MAIL_USER
+      password_source: env:E2E_MAIL_PASSWORD
+    policy:
+      write_mode: organise
+      folder_denylist: [Trash]
+  - name: mail-send
+    type: smtp
+    listen: "0.0.0.0:2025"
+    upstream:
+      host: 127.0.0.1
+      port: 3025
+      tls: false
+    auth:
+      user_source: env:E2E_MAIL_USER
+      password_source: env:E2E_MAIL_PASSWORD
+    policy:
+      sender_allowlist: [agent@example.com]
+      recipient_allowlist:
+        domains: [example.com]
+      # Keep the secrets inspector on for allowlisted recipients too, so a
+      # message carrying a credential is blocked.
+      bypass_inspectors_for_allowlisted: []

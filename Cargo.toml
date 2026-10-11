@@ -1,10 +1,10 @@
 # agentcage Rust workspace.
 #
-# The Rust port of the host CLI lives under `rust/`; the Python tree it
-# replaces stays where it is under `src/agentcage/`. The manifest sits at
-# the repo root so `cargo build`, `cargo test` and `cargo clippy` work
-# from the root the same way `uv run pytest` does, and so `target/` has
-# one home instead of one per crate.
+# The crates live under `rust/`; the trees the binary embeds (image
+# build contexts, templates, scaffolds) under `src/agentcage/`. The
+# manifest sits at the repo root so `cargo build`, `cargo test` and
+# `cargo clippy` work from the root, and so `target/` has one home
+# instead of one per crate.
 #
 # See docs/history/rust-port-plan.md section 5, Phase 0 and the
 # Track B table for why this exists.
@@ -18,7 +18,26 @@ members = [
     "rust/agentcage-state",
     "rust/agentcage-cli",
     "rust/agentcage-egress",
+    "rust/agentcage-egress-embed",
+    # Repository maintenance tasks (`cargo xtask`); never shipped.
+    "rust/xtask",
+    # Mock upstreams for tests/e2e (a static musl binary the harness runs
+    # beside each cage's egress) and the harness's own tests.
+    "rust/agentcage-e2e-mock",
+
+    "rust/agentcage-inspector-sdk",
+    # Example custom inspectors (WebAssembly components). Members so they
+    # share the lockfile and are built and linted natively by
+    # `cargo test --workspace`; the egress tests build them for
+    # wasm32-wasip2 when that target is installed.
+    "examples/inspectors/header-policy",
+    "examples/inspectors/dlp-regex",
+    "rust/agentcage-egress/tests/fixtures/misbehaving-inspector",
+    "rust/agentcage-egress/tests/fixtures/legacy-inspector",
 ]
+# The egress fuzz targets are their own workspace: they build only on
+# nightly (cargo-fuzz), so stable `--workspace` commands must not see them.
+exclude = ["rust/agentcage-egress/fuzz"]
 
 # ── Shared package metadata ──────────────────────────────────
 #
@@ -29,9 +48,8 @@ members = [
 # tooling look for it.
 #
 # So the number is duplicated and the duplication is *guarded*:
-# scripts/check-version.sh already exists to notice exactly this kind of
-# drift for pyproject.toml and the CHANGELOG, and it now checks this
-# field too. Keep VERSION as the thing you edit; this follows.
+# scripts/check-version.sh exists to notice exactly this kind of drift
+# (against the CHANGELOG too). Keep VERSION as the thing you edit; this follows.
 [workspace.package]
 version = "0.50.1"
 edition = "2024"
@@ -95,3 +113,76 @@ strip = "symbols"
 # This is a decision worth revisiting once the Track C/D code exists, but
 # it has to be made now rather than inherited, because whether Drop can be
 # relied on changes how that code gets written.
+
+# ── The egress is the exception ──────────────────────────────
+#
+# The egress is the one binary here whose hot path is compute: every byte
+# an agent sends or receives is decrypted, parsed, scanned and re-encrypted
+# in it. So it and the crates its per-request path spends its time in are
+# built for speed, while everything else (the CLI, and the egress's cold
+# parts: config parsing, the wasm compiler, the CLI parser) keeps `z`.
+#
+# Per-package overrides rather than a separate profile, so `cargo build
+# --release -p agentcage-egress` keeps producing the shipped artifact in
+# `target/<triple>/release/`, where CI, the publish workflow and the embed
+# crate's build script look for it. Under LTO a function keeps the size
+# attributes of the crate it was compiled in, so the list matters even
+# though everything is optimized together at link time. The CLI shares
+# only flate2/miniz_oxide/memchr/crc32fast/sha2 from it, which barely
+# move its size.
+[profile.release.package.agentcage-egress]
+opt-level = 3
+# TLS, both sides of every connection.
+[profile.release.package.rustls]
+opt-level = 3
+[profile.release.package.ring]
+opt-level = 3
+[profile.release.package.tokio-rustls]
+opt-level = 3
+[profile.release.package.rustls-webpki]
+opt-level = 3
+# The runtime and the HTTP/1 and HTTP/2 codecs.
+[profile.release.package.tokio]
+opt-level = 3
+[profile.release.package.bytes]
+opt-level = 3
+[profile.release.package.h2]
+opt-level = 3
+[profile.release.package.http]
+opt-level = 3
+[profile.release.package.httparse]
+opt-level = 3
+[profile.release.package.hashbrown]
+opt-level = 3
+[profile.release.package.indexmap]
+opt-level = 3
+[profile.release.package.tungstenite]
+opt-level = 3
+# Body scanning and secret injection/redaction.
+[profile.release.package.memchr]
+opt-level = 3
+[profile.release.package.aho-corasick]
+opt-level = 3
+[profile.release.package.regex]
+opt-level = 3
+[profile.release.package.regex-automata]
+opt-level = 3
+[profile.release.package.encoding_rs]
+opt-level = 3
+[profile.release.package.base64]
+opt-level = 3
+# Content-encoding of inspected bodies.
+[profile.release.package.flate2]
+opt-level = 3
+[profile.release.package.miniz_oxide]
+opt-level = 3
+[profile.release.package.crc32fast]
+opt-level = 3
+[profile.release.package.adler2]
+opt-level = 3
+[profile.release.package.brotli-decompressor]
+opt-level = 3
+[profile.release.package.ruzstd]
+opt-level = 3
+[profile.release.package.sha2]
+opt-level = 3

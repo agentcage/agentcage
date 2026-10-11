@@ -1,0 +1,12 @@
+POST /c HTTP/1.1
+Host: a
+Transfer-Encoding: chunked
+
+4;x=y
+Wiki
+5
+pedia
+0
+Trailer: t
+
+rest

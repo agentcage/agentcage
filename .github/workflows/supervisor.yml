@@ -10,7 +10,7 @@ name: Apple-container supervisor
 #   cage-init.sh: sets default route via egress, capsh-drops to uid 1000
 #                 BEFORE exec'ing the workload. Bugs here either crash the
 #                 cage at boot or weaken the privilege drop.
-#   supervisor-egress.sh: orchestrates dnsmasq + mitmproxy + iptables in
+#   supervisor-egress.sh: orchestrates dnsmasq + agentcage-egress + iptables in
 #                 the egress microVM/container. Bugs here weaken the
 #                 allowlist + secret-injection enforcement.
 #

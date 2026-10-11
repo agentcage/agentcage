@@ -5,7 +5,7 @@
 //
 // AGENT_DEMO=false disables the startup demo cycle (used by E2E tests
 // to avoid resolving httpbin.org before /etc/hosts on the proxy is
-// patched to the local mock IP — that race poisons mitmproxy's
+// patched to the local mock IP — that race poisons the egress proxy's
 // connection pool with the real upstream IP).
 
 const http = require("http");

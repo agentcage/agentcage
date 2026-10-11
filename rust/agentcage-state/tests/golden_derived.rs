@@ -13,7 +13,7 @@
 //! That gap matters for this PR (Track D, D6) because `cage create`
 //! writes all three before the egress ever starts, and two of them are
 //! read by code on the *other* side of the trust boundary:
-//! `proxy-config.yaml` by the mitmproxy addon and `placeholders.env` by
+//! `proxy-config.yaml` by the egress proxy and `placeholders.env` by
 //! the cage quadlet's `EnvironmentFile=`. A drift here is not a failed
 //! command, it is a cage that comes up with the wrong policy.
 

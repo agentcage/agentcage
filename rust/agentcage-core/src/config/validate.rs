@@ -192,7 +192,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // ── Volumes agentcage owns ──────────────────────────
     //
     // Not a `config.py` check: it came with the per-cage CA guarantee
-    // (`EGRESS-PORT-PLAN.md` D11). A cage mounting `agentcage-certs-*`
+    // (`docs/history/egress-port-plan.md` D11). A cage mounting `agentcage-certs-*`
     // reads a CA private key, so every name agentcage creates volumes
     // under is refused here, on every backend.
     for name in config.container.named_volumes.keys() {
@@ -335,10 +335,10 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // reserved-port and collision checks below apply only to the
     // *inspected* TCP set (tcp.allow - tcp.passthrough): those ports
     // become nat:PREROUTING REDIRECT rules, which collide with
-    // mitmdump's own listeners and with in-process listeners (relays,
-    // reverse-mode mitmdump for inbound forwards). Passthrough ports
+    // the egress's own listeners and with in-process listeners (relays,
+    // the egress's reverse listeners for inbound forwards). Passthrough ports
     // never get a REDIRECT, so they do not conflict. UDP entries never
-    // get one either — mitmdump cannot audit UDP — so the reserved-port
+    // get one either — the egress cannot audit UDP — so the reserved-port
     // checks do not apply to them.
     //
     // The `entries must be integers` half of `_check_port_entry` is not
@@ -394,7 +394,7 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     }
 
     // Against container.ports inbound forwards — the proxy runs
-    // reverse-mode mitmdump listeners on those ports, and PREROUTING
+    // reverse listeners on those ports, and PREROUTING
     // REDIRECT fires before INPUT.
     for spec in &config.container.ports {
         let parts: Vec<&str> = spec.split(':').collect();
@@ -428,10 +428,9 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // `domains.expires` KEYS. All of these flow verbatim into the same
     // dnsmasq `server=/` rendering chain: allow/block directly via
     // `state.save_dns_allowlist`, passthrough via quadlets'
-    // `_effective_dns_allowlist` and the addon's `_apply_passthrough`
-    // (both `re.escape` the entry into a mitmproxy `--ignore-hosts`
-    // regex AND merge it into the DNS allowlist so the bypassed host
-    // still resolves), and `expires` keys are domains too (`load_config`
+    // `_effective_dns_allowlist` and the egress's passthrough rule
+    // (the entry is matched against SNI/Host AND merged into the DNS
+    // allowlist so the bypassed host still resolves), and `expires` keys are domains too (`load_config`
     // has already lowercased them and stripped a trailing dot). A string
     // containing a newline or a slash in any of these would inject extra
     // directives or break the regex.
@@ -621,6 +620,13 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         }
     }
 
+    // ── custom inspectors ───────────────────────────────
+    //
+    // Not a `config.py` check: plugins became WebAssembly components
+    // with the Rust egress (`docs/history/egress-port-plan.md` D2), and a `path:` the
+    // host cannot stage, or the egress cannot load, is refused here.
+    super::inspectors::validate_plugins(config)?;
+
     // ── protocol_relays credential schemes ──────────────
     //
     // Parse time already refused an unknown scheme (`vault:`); this is
@@ -670,7 +676,41 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // looking healthy.
     warnings.extend(super::agents::validate_agents(config)?);
 
+    warnings.extend(egress_memory_warning(config));
+
     Ok(warnings)
+}
+
+/// A warning when an `egress:` section sets a body budget the egress's
+/// machine cannot hold. The address-space limit follows the budget (see
+/// [`super::egress`]), but resident memory is the guest's: on `vm` the
+/// egress shares the Lima guest (`vm.mem_mb`) with the cage, and on
+/// apple-container it has a 512 MiB microVM of its own. Only an explicit
+/// section draws it: the defaults predate the knob.
+fn egress_memory_warning(config: &Config) -> Option<String> {
+    let egress = &config.egress;
+    if *egress == super::egress::EgressConfig::default() {
+        return None;
+    }
+    let (memory, what) = match config.isolation.as_str() {
+        "vm" => (
+            u64::try_from(config.vm.mem_mb).unwrap_or(0) << 20,
+            format!("the VM's vm.mem_mb ({} MiB)", config.vm.mem_mb),
+        ),
+        "apple-container" => (
+            super::egress::APPLE_EGRESS_MEMORY_BYTES,
+            "the apple-container egress microVM's 512 MiB".to_owned(),
+        ),
+        _ => return None,
+    };
+    (egress.body_budget_bytes > memory / 2).then(|| {
+        format!(
+            "egress.body_budget_bytes ({} MiB) is more than half of {what}: \
+             a burst of large bodies could exhaust the egress's memory before \
+             the budget refuses one",
+            egress.body_budget_bytes >> 20
+        )
+    })
 }
 
 // ── ports ────────────────────────────────────────────────
@@ -751,7 +791,7 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
         (
             // Inbound published ports. On the container and vm backends
             // these become egress `PublishPort=` entries plus
-            // reverse-mode mitmdump listeners. Apple's runtime has no
+            // egress reverse listeners. Apple's runtime has no
             // host-port-publishing equivalent — it uses VMNET_SHARED_MODE
             // NAT and reaches containers by their vmnet-assigned IP — so
             // the entry is silently dropped.
@@ -956,10 +996,12 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     // Built-in inspectors run end to end on apple-container and are
     // accepted in silence. The two that are not:
     //
-    //   * an entry with `path:` — a custom Python file — is not staged
-    //     into the wrapper image, so the in-cage addon skips it;
     //   * an unrecognised built-in name, so a typo does not no-op
     //     silently.
+    //
+    // An entry with `path:` is a custom inspector, staged on this
+    // backend like on the others (and refused by `validate_plugins` if
+    // it cannot be), so it draws no warning.
     //
     // `name` is `entry.get("name", "")`, so a missing key is the empty
     // string and `{name!r}` renders it `''`. A non-string name is not
@@ -973,14 +1015,9 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     for (index, entry) in config.inspectors.iter().enumerate() {
         let name = entry.get("name").unwrap_or(&empty);
         if entry.get("path").is_some_and(python_bool) {
-            warnings.push(format!(
-                "inspectors[{index}] {}: custom Python file inspectors (path: ...) are \
-                 not yet staged into the apple-container wrapper image — the in-cage \
-                 addon will skip this entry. Use a built-in inspector or stay on the \
-                 container backend.",
-                repr(name)
-            ));
-        } else if python_bool(name) && !is_builtin_inspector(name) {
+            continue;
+        }
+        if python_bool(name) && !is_builtin_inspector(name) {
             warnings.push(format!(
                 "inspectors[{index}] {}: not a known built-in inspector — the in-cage \
                  addon will skip this entry. Valid names: {}.",
@@ -1205,6 +1242,42 @@ mod tests {
     }
 
     #[test]
+    fn an_egress_budget_the_guest_cannot_hold_draws_a_warning() {
+        use super::super::egress::EgressConfig;
+        let with = |isolation: &str, budget: u64| {
+            let mut config = Config {
+                isolation: isolation.to_owned(),
+                ..Config::default()
+            };
+            config.egress = EgressConfig {
+                max_body_bytes: 1 << 20,
+                body_budget_bytes: budget,
+            };
+            super::egress_memory_warning(&config)
+        };
+        let apple = with("apple-container", 384 << 20).expect("a warning");
+        assert!(
+            apple.starts_with(
+                "egress.body_budget_bytes (384 MiB) is more than half of the \
+                 apple-container egress microVM's 512 MiB"
+            ),
+            "{apple}"
+        );
+        assert_eq!(with("apple-container", 128 << 20), None);
+        // vm.mem_mb defaults to 4096.
+        assert!(with("vm", 3 << 30).is_some());
+        assert_eq!(with("vm", 1 << 30), None);
+        // The container backend sets no memory limit on the egress.
+        assert_eq!(with("container", 32 << 30), None);
+        // The defaults predate the knob and never warn.
+        let config = Config {
+            isolation: "apple-container".to_owned(),
+            ..Config::default()
+        };
+        assert_eq!(super::egress_memory_warning(&config), None);
+    }
+
+    #[test]
     fn python_int_is_more_forgiving_than_parse() {
         assert_eq!(python_int(" 80 "), Some(80));
         assert_eq!(python_int("+80"), Some(80));
@@ -1335,7 +1408,7 @@ mod tests {
 
     /// A cage never mounts a volume agentcage made for a cage — above
     /// all `agentcage-certs-<cage>`, which holds that cage's CA private
-    /// key (`EGRESS-PORT-PLAN.md` D11). On every backend: validation is
+    /// key (`docs/history/egress-port-plan.md` D11). On every backend: validation is
     /// shared, so `vm` and `apple-container` refuse it too.
     #[test]
     fn a_named_volume_in_agentcages_namespace_is_refused() {

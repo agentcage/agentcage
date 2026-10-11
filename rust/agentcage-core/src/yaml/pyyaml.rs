@@ -43,8 +43,8 @@
 //!
 //! The transcription is not trusted on its own. `tests/fixtures/
 //! yaml_1_1_scalars.json` carries a corpus that exercises every branch
-//! and its near misses, and `yaml_pyyaml_crossing.rs` feeds each entry to
-//! a real `yaml.safe_load` and asserts this module agreed.
+//! and its near misses, recorded from a real `yaml.safe_load` (PyYAML
+//! 6.0.3); `yaml_hazard_fixture.rs` asserts this module agrees with it.
 //!
 //! # Deliberate omissions
 //!

@@ -210,6 +210,12 @@ impl Scrubber {
             (format!("{work}/run"), "{{XDG_RUNTIME_DIR}}"),
             (work, "{{WORK}}"),
             (repo_root().display().to_string(), "{{REPO}}"),
+            // The egress image tag carries a hash over the egress binary,
+            // which a development build may or may not embed.
+            (
+                agentcage_cli::egress_image::tag(FROZEN_VERSION),
+                "{{EGRESS_TAG}}",
+            ),
         ];
         rules.sort_by_key(|(raw, _)| std::cmp::Reverse(raw.len()));
         Self { rules }

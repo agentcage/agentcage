@@ -8,10 +8,8 @@
 //! (`IndexMap`'s equality ignores order), which is why
 //! `yaml::eq_with_key_order` exists and is what this asserts.
 //!
-//! This is a Rust→Rust round trip and it is honest about what that is
-//! worth: it proves order and structure survive, and it cannot prove
-//! anything about the YAML 1.1 divergence. `yaml_pyyaml_crossing.rs`
-//! runs the same corpus of files past real PyYAML.
+//! It proves order and structure survive. The YAML 1.1 hazards are
+//! `yaml_hazard_fixture.rs`'s job.
 
 mod common;
 

@@ -69,8 +69,8 @@ use agentcage_core::lima::{LimaFacts, generate_lima_config};
 use agentcage_core::quadlets::{
     GenerateOptions, Quadlets, b64, b64_bytes, generate_quadlets, shlex_quote,
     vm_local_cage_env_dir, vm_local_config_dir, vm_local_dns_allowlist_path, vm_local_grants_dir,
-    vm_local_grants_file, vm_local_placeholders_env_path, vm_local_proxy_config_path,
-    vm_local_watcher_dir,
+    vm_local_grants_file, vm_local_inspectors_dir, vm_local_placeholders_env_path,
+    vm_local_proxy_config_path, vm_local_watcher_dir,
 };
 use agentcage_core::yaml::{self, Mapping, Value};
 use agentcage_exec::tools::limactl::{LimaInstance, VmPodman};
@@ -127,7 +127,7 @@ const VM_USER_SESSION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// active before the cage is refused.
 ///
 /// A deadline rather than an iteration count, so the interval below can
-/// be tightened without shrinking the ceiling: mitmproxy is usually
+/// be tightened without shrinking the ceiling: the egress is usually
 /// ready in 2–6s, and a sub-second poll takes that off the median.
 const PROXY_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -372,6 +372,7 @@ impl<'a> VmBackend<'a> {
         let store_secrets = self.guest_store_view(store_name, deploy_name);
 
         let state = self.paths.quadlet_state_paths();
+        let egress_tag = crate::egress_image::tag(self.version);
         let quadlets = generate_quadlets(
             &effective,
             &GenerateOptions {
@@ -386,6 +387,7 @@ impl<'a> VmBackend<'a> {
                 store_secrets: store_secrets.as_ref(),
                 state: &state,
                 version: self.version,
+                egress_tag: &egress_tag,
             },
             &host,
         )?;
@@ -508,7 +510,7 @@ impl<'a> VmBackend<'a> {
     /// The quadlets bind-mount the guest-local copy, not the host path
     /// under `~/.config/agentcage/cages/<name>/`. They have to: Lima's
     /// reverse-sshfs mount caches host writes, so dnsmasq's SIGHUP and
-    /// mitmproxy's mtime poll would re-read the same stale bytes
+    /// the egress's mtime poll would re-read the same stale bytes
     /// forever after a `domain add`. The host file stays the
     /// authoritative state — `cage backup` and the audit tooling read
     /// it — and this is an additional copy.
@@ -568,6 +570,35 @@ impl<'a> VmBackend<'a> {
             )?;
         }
         Ok(())
+    }
+
+    /// Mirror the cage's staged custom inspector plugins into the guest.
+    ///
+    /// The egress mounts the guest-local copy
+    /// ([`vm_local_inspectors_dir`]), not the host's
+    /// `~/.local/share/agentcage/<name>/inspectors/`: that one is reached
+    /// through Lima's reverse-sshfs mount, whose caching could serve a
+    /// rebuilt plugin's old bytes. The guest directory is replaced whole,
+    /// so a plugin dropped from the config is gone too. `limactl copy`
+    /// rather than the base64 pipeline [`Self::push_config_files`] uses,
+    /// because a component is easily larger than one argv string may be.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError`] from a guest command or the copy.
+    pub fn push_inspectors(&self, name: &str) -> Result<(), ExecError> {
+        // No plugins staged: nothing to mirror, and no guest round-trip.
+        // A stale guest copy left behind is harmless, because the egress
+        // unit mounts it only while the config names a plugin.
+        let source = self.paths.inspectors_dir(name);
+        if !source.is_dir() {
+            return Ok(());
+        }
+        let guest = self.abs_path(name, &vm_local_inspectors_dir(name))?;
+        let instance = self.instance(name);
+        instance.exec(&["rm", "-rf", &guest].map(str::to_string), true)?;
+        instance.exec(&["mkdir", "-p", &guest].map(str::to_string), true)?;
+        self.run_checked(&self.copy_build_context_argv(name, &source, &guest))
     }
 
     /// `vm.ensure_grants_dir` — create the guest-local overlay directory.
@@ -1125,7 +1156,7 @@ impl<'a> VmBackend<'a> {
 
     /// `VmBackend.audit_argv` — the egress unit's journal.
     ///
-    /// One `--user-unit` filter catches both producers: mitmproxy's
+    /// One `--user-unit` filter catches both producers: the egress's
     /// audit lines and dnsmasq's both flow through the egress
     /// container's stderr into conmon and then the journal.
     #[must_use]
@@ -1207,9 +1238,23 @@ impl<'a> VmBackend<'a> {
     pub fn egress_build_argv(&self, flags: &[String]) -> Vec<String> {
         build_argv(
             flags,
-            &format!("agentcage-egress:{}", self.version),
-            &format!("{VM_BUILD_DIR}/containers/Containerfile.egress"),
+            &self.egress_image(),
+            &format!(
+                "{VM_BUILD_DIR}/{}",
+                agentcage_assets::egress::CONTAINERFILE_REL
+            ),
             VM_BUILD_DIR,
+        )
+    }
+
+    /// The egress image, `agentcage-egress:<version>-<hash>`; see
+    /// [`ContainerBackend::egress_image`](crate::backend::ContainerBackend::egress_image),
+    /// whose tags these are.
+    #[must_use]
+    pub fn egress_image(&self) -> String {
+        format!(
+            "agentcage-egress:{}",
+            crate::egress_image::tag(self.version)
         )
     }
 
@@ -1401,7 +1446,7 @@ impl<'a> VmBackend<'a> {
     }
 
     /// Remove a CA left behind by an earlier cage of this name
-    /// (`EGRESS-PORT-PLAN.md` D11).
+    /// (`docs/history/egress-port-plan.md` D11).
     ///
     /// For `cage create`, `run` and `cage restore`, on a name that has
     /// no deployment. A vm cage's certs volumes live in the podman
@@ -1564,7 +1609,11 @@ impl<'a> VmBackend<'a> {
             return Ok(());
         }
 
+        // The binary is staged before anything is copied, so a host
+        // without one fails here rather than after the copy.
+        let tag = self.egress_image();
         let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
+        crate::egress_image::stage(&context)?;
 
         println!("Copying build context into VM...");
         let _ = instance.exec(&["rm", "-rf", VM_BUILD_DIR].map(str::to_string), false);
@@ -1592,11 +1641,7 @@ impl<'a> VmBackend<'a> {
         Self::wait_user_session_ready(&instance);
         drop(phase);
 
-        let tag = format!("agentcage-egress:{}", self.version);
-        println!(
-            "Building egress image inside VM (agentcage-egress:{})...",
-            self.version
-        );
+        println!("Building egress image inside VM ({tag})...");
         let phase = crate::timing::Phase::start("build.egress", Some(deploy_name));
         let built = Self::exec_build(
             &instance,
@@ -1739,7 +1784,8 @@ impl<'a> VmBackend<'a> {
         let phase = crate::timing::Phase::start("deploy.vm_local_config", Some(name));
         let mirrored = self
             .push_config_files(name)
-            .and_then(|()| self.ensure_grants_dir(name));
+            .and_then(|()| self.ensure_grants_dir(name))
+            .and_then(|()| self.push_inspectors(name));
         drop(phase);
         mirrored?;
 

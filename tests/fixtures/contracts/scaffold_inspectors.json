@@ -2,8 +2,8 @@
   "contract": "scaffold_inspectors",
   "summary": "The host renders cage.yaml; the egress addon reads it back and decides which inspectors to load. Split into the two halves that meet at the file: what the host renders, and what that config loads.",
   "implementations": {
-    "host": "agentcage.init.render_config -> the inspector-relevant keys of the rendered cage.yaml",
-    "proxy": "addon.Agentcage._load_inspectors over that config"
+    "host": "the scaffold renderer (rust/agentcage-cli/src/scaffold.rs) -> the inspector-relevant keys of the rendered cage.yaml",
+    "proxy": "the inspector chain built from that config (rust/agentcage-egress/src/inspect/chain.rs)"
   },
   "fields": {
     "scaffold": "the scaffold name, or null for the blank default",

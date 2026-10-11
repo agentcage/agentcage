@@ -1,0 +1,6 @@
+# cargo-fuzz output: the working corpus grows on every run and crashes
+# land in artifacts/; seeds/ and regressions/ are what is committed.
+target/
+corpus/
+artifacts/
+coverage/

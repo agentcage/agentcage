@@ -1,6 +1,6 @@
 # Codex Setup Guide
 
-[Codex](https://github.com/openai/codex) is OpenAI's CLI coding agent. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
+[Codex](https://github.com/openai/codex) is OpenAI's CLI coding agent. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by the agentcage egress proxy for domain filtering, secret leak detection, and payload analysis.
 
 For the full list of configuration options, see the [Configuration Reference](../../../../docs/reference/configuration.md).
 
@@ -71,7 +71,7 @@ agentcage cage list
 
 # View logs
 agentcage cage logs myagent           # cage container
-agentcage cage logs myagent -s proxy  # mitmproxy (traffic inspection)
+agentcage cage logs myagent -s egress  # egress proxy and DNS (traffic inspection)
 agentcage cage logs myagent -s dns    # DNS sidecar
 ```
 

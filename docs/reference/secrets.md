@@ -23,7 +23,7 @@ Instead, the agent container only ever holds cryptographically random decoy toke
      ├───────────────────────────────────────────┐
      │ Injected into Container                   │ Loaded into Egress Proxy
      ▼                                           ▼
-[ Workload Container ]                     [ Egress Proxy Addon ]
+[ Workload Container ]                     [ Egress Proxy ]      
   ANTHROPIC_API_KEY=agentcage:secret:…       Mapping: placeholder ↔ Real Secret
      │                                           │
      ▼ (Outbound HTTPS Request)                  ▼
@@ -82,13 +82,13 @@ agentcage defaults to **fail-closed** encryption. If `systemd-creds` or the macO
 
 ### Outbound Substitution
 When an outbound request leaves the cage:
-1. The proxy matches the destination domain against the declared `inject_to` rule in `cage.yaml`.
-2. If the domain matches, the proxy scans credential-bearing headers (`Authorization`, `x-api-key`, `x-token`, etc.).
-3. The placeholder is substituted with the real secret bytes on the wire.
-4. If `inject_body: true` is enabled, the proxy additionally scans and replaces placeholders inside JSON or form-encoded payloads.
+1. Before anything else, a request that carries a **real** secret value to a host outside that secret's `inject_to` is blocked (`403`), and a placeholder sent to such a host is flagged.
+2. The proxy matches the destination host against the rule's `inject_to` (each entry also covers its subdomains). An empty `inject_to` means the secret is never injected.
+3. If it matches, the placeholder is replaced in credential-bearing headers: a header whose name contains `auth`, `key` or `token` (`Authorization`, `x-api-key`, `x-auth-token`, …), any header listed in `inject_headers`, and inside `Authorization: Basic`.
+4. With `inject_body: true`, the proxy also replaces placeholders in the URL, in every header and in the body (JSON, form-encoded or anything else). A rewritten body is sent without `Content-Encoding` and with a corrected `Content-Length`.
 
 ### Inbound Reverse Redaction
-If the upstream API reflects the submitted credential (for example, in an error payload: `Invalid token: sk-ant-api03-...`), the proxy's inbound streaming filter intercepts the response body and headers. Any substring matching the real secret is immediately redacted back to its placeholder before the response enters the workload container.
+If the upstream API reflects the submitted credential (for example, in an error payload: `Invalid token: sk-ant-api03-...`), the proxy redacts it in the response headers and body before the response reaches the workload: every occurrence of the real value becomes its placeholder, including percent-encoded, JSON-escaped and base64 forms, written back in the same encoding. Streamed responses (server-sent events, LLM token streams) are redacted as they stream, without being buffered. The same redaction applies to WebSocket messages, the capture file and every audit record, and to the tokens a `google-jwt-bearer` transform mints.
 
 ---
 
@@ -101,8 +101,8 @@ agentcage secret set my-agent ANTHROPIC_API_KEY
 ```
 
 1. The new secret value is stored encrypted on the host.
-2. The CLI signals the running proxy addon via an atomic file swap.
-3. The proxy reloads its in-memory substitution table instantly.
+2. The CLI stages the new value in the running egress's secrets directory, then touches the egress's config file. (An egress too old to have that directory mounted is restarted instead.)
+3. The egress notices the config change within a second and re-resolves every secret from the staged files. An empty staged file is a tombstone: the secret is treated as unset, without falling back to an older value.
 4. The workload container continues running without dropping active connections.
 
 ---

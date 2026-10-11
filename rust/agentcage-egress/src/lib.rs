@@ -18,7 +18,7 @@
 //! * the IMAP and SMTP protocol relays ([`relays`]);
 //! * custom inspectors, loaded as WebAssembly components ([`plugin`]).
 //!
-//! The behaviour is specified by `EGRESS-PORT-PLAN.md` §5 and pinned by the
+//! The behaviour is specified by `docs/history/egress-port-plan.md` §5 and pinned by the
 //! language-neutral corpora under `tests/fixtures/egress/`, which were
 //! recorded from the implementation this crate replaces.
 
@@ -28,9 +28,13 @@ pub mod capture;
 pub mod config;
 pub mod engine;
 pub mod flow;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz_api;
 pub mod inject;
 pub mod inspect;
 pub mod json;
+pub mod limits;
 pub mod llm;
 pub mod message;
 pub mod plugin;

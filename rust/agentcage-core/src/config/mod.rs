@@ -76,6 +76,7 @@
 
 pub mod agents;
 pub mod domain;
+pub mod egress;
 pub mod inspectors;
 pub mod json;
 pub mod parse;
@@ -88,8 +89,12 @@ pub use agents::{
     AGENT_MAX_TOKENS_FLOOR, VALID_AGENT_KEY_SCHEMES, VALID_AGENT_PROVIDERS, require_api_key_shape,
     validate_agent_api_key, validate_agent_max_tokens, validate_agents,
 };
-pub use domain::{LabelPolicy, encoded_private_ip, valid_domain};
-pub use inspectors::inspector_warnings;
+pub use domain::{LabelPolicy, encoded_private_ip, is_global_ip, valid_domain};
+pub use egress::EgressConfig;
+pub use inspectors::{
+    CUSTOM_INSPECTORS_GUIDE, PluginRef, inspector_warnings, plugin_file_name, plugin_refs,
+    validate_plugins,
+};
 pub use json::to_json;
 pub use parse::{load, validate_agents_document, validate_agents_raw};
 pub use placeholder::{

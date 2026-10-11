@@ -43,7 +43,7 @@ use agentcage_core::har::json::{self, DumpOptions, Json};
 /// How many `valid/` cases the corpus carries. Asserted rather than
 /// inferred, so a case that silently stops being visited fails here
 /// instead of quietly shrinking the coverage.
-const GOLDEN_CASES: usize = 128;
+const GOLDEN_CASES: usize = 130;
 
 /// How many cases carry a post-fill `resolved-config-filled.json`.
 ///
@@ -57,7 +57,7 @@ const GOLDEN_CASES: usize = 128;
 ///
 /// The generator now writes the post-fill object as a second file
 /// *where it differs*, and `fingerprint-inputs.json` names whichever
-/// one the fingerprint was actually computed over. All 128 cases are
+/// one the fingerprint was actually computed over. All 130 cases are
 /// byte-exact; this constant only guards against the second file
 /// silently disappearing.
 const POST_FILL_CASES: usize = 3;
@@ -162,6 +162,7 @@ fn corpus_fingerprint(case: &Path) -> Fingerprint {
         units: &units,
         image_digests: &image_digests,
         scaffold_version,
+        inspector_plugins: &BTreeMap::new(),
     })
     .unwrap_or_else(|error| panic!("{}: {error}", case.display()))
 }
@@ -238,6 +239,7 @@ fn the_deployed_cage_fingerprint_is_reproduced() {
         units: &units,
         image_digests: &image_digests,
         scaffold_version: &"deadbeef".repeat(8),
+        inspector_plugins: &BTreeMap::new(),
     })
     .expect("computes");
 

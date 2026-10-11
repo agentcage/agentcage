@@ -17,6 +17,11 @@ publish = false
 name = "agentcage-egress"
 path = "src/main.rs"
 
+[features]
+# The entry points of the fuzz targets under `fuzz/` (`crate::fuzz_api`):
+# test-only harness code, never part of a build that ships.
+fuzzing = []
+
 [dependencies]
 # The pure helpers the host already ported byte-for-byte from Python:
 # `valid_domain`, `encoded_private_ip`, the never-grant floor, the relay
@@ -29,7 +34,120 @@ agentcage-core = { path = "../agentcage-core" }
 serde_norway = "0.9.42"
 indexmap = "2"
 
+# Capture bodies and WebSocket frames that are not UTF-8 are stored as
+# standard base64 (`base64.b64encode` in the replaced implementation);
+# the relays use it for SMTP `AUTH PLAIN` and IMAP mailbox names.
+base64 = "0.22"
+
+# The outbound HTTPS client of the LLM decider, the watcher and the
+# google-jwt-bearer transform: small, blocking (run off the async
+# runtime), rustls with the ring provider and the
+# Mozilla roots from webpki-roots (plan D8). No OpenSSL, no cmake.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
+# OS randomness for the Policy API's request ids (`req_` + 24 hex);
+# already in the tree through ring.
+getrandom = "0.3"
+
+# The traffic watcher's per-scan randomness (excerpt windows, tie-breaks,
+# budget sampling, cadence jitter): a seeded StdRng per scan, the seed
+# drawn from the OS.
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "os_rng"] }
+
+# The secrets inspector's patterns and the content-type inspector's
+# base64 scan. Pure Rust, linear time on any input, so a hostile body
+# cannot make a scan blow up (the patterns need no backtracking; the
+# one lookaround pattern is hand-coded). Also secret redaction: the
+# per-secret encoded-form patterns (`regex::bytes`).
+regex = "1.13.1"
+
+# The substring scans that gate the redaction patterns (`memchr::memmem`).
+memchr = "2.8.3"
+
+# One multi-pattern scan for every secret form's literal, anchor and base64
+# cores, so a streamed body segment without any of them is relayed as it
+# came (already in the tree through regex).
+aho-corasick = "1.1.5"
+
+# Content-Encoding removal for inspection and redaction, all pure Rust:
+# gzip/deflate (miniz_oxide backend), the gzip trailer CRC, brotli and
+# zstd decoders.
+flate2 = "1.1.10"
+crc32fast = "1.5.2"
+brotli-decompressor = "6.0.1"
+ruzstd = "0.8.2"
+
+# The charset tables behind `get_text` for the legacy single-byte and
+# GB 18030 encodings.
+encoding_rs = "0.8.35"
+
+# RS256 signing for the `google-jwt-bearer` transform.
+ring = "0.17.14"
+
+# ── Per-cage CA ──────────────────────────────────────────────
+# CA generation and leaf minting; `x509-parser` reloads the CA from disk.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+# Certificate validity windows for rcgen.
+time = "0.3"
+# Random serials and the CA fingerprint (already in the tree through rustls).
+# Leaves are handed to the TLS stack as rustls `CertifiedKey`s; ring
+# provider only (no aws-lc / cmake).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+# ── Proxy core ───────────────────────────────────────────────
+# The async runtime every listener, connection and upstream runs on
+# (`signal` for an orderly stop that drains the relays; `process` only for
+# the curl scenario test).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync", "process", "signal"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# The upstream trust store (plan D8): the Mozilla bundle, compiled in.
+webpki-roots = "1"
+# The HTTP/1 head parser behind the order/case/duplicate-preserving codec (D10).
+httparse = "1"
+# HTTP/2 server and client framing, and the request/response types it speaks.
+h2 = "0.4"
+http = "1"
+bytes = "1"
+# WebSocket message relay over the upgraded connection.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Hot-reloadable transport settings without locking the hot path.
+arc-swap = "1"
+# Command-line parsing for `agentcage-egress run`, as the host CLI does it.
+clap = { version = "4", features = ["derive", "env"] }
+
+# Custom inspectors run as WebAssembly components (plan D2). Only the
+# runtime, the Cranelift compiler and the component model: no compile
+# cache, no WAT parser, no GC proposals, no async, no profiling, no
+# parallel compilation -- each of those is size or attack surface the
+# egress has no use for. wasmtime 49 needs rustc 1.96, above the
+# workspace's declared 1.85 floor; rust-toolchain.toml tracks stable.
+wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
+
+# Digest of a relay's resolved credentials, so a reload notices a
+# rotated secret without keeping another plaintext copy of it; compiled
+# inspector plugins are cached by the SHA-256 of their bytes.
+sha2 = "0.10.9"
+# IMAP folder lists compare names the way Python's `unicodedata.normalize`
+# and `str.casefold` do: NFC plus full Unicode case folding.
+unicode-normalization = "0.1.25"
+caseless = "0.2.2"
+
+# `SO_ORIGINAL_DST` for the transparent listener, and `getrlimit` for the
+# address-space limit the body budget must fit under, through a safe wrapper
+# (`unsafe_code` is forbidden workspace-wide).
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["socket", "net", "resource"] }
+
 [dev-dependencies]
+# Test-only: the host's own grants-overlay reader and writer, so an
+# interop test proves the egress and `cage grants` agree on the shared
+# `grants.yaml`. Never a runtime dependency (the egress image carries no
+# host code).
+agentcage-state = { path = "../agentcage-state" }
+
+# Test certificates for the relays' upstream TLS cases, minted in-process.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [lints]
 workspace = true

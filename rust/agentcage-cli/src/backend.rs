@@ -59,7 +59,7 @@ pub const SERVICE_NAMES: [&str; 2] = ["cage", "egress"];
 /// and certificate it generated on its first start — and
 /// `agentcage-public-certs-<name>` the public certificate the cage
 /// mounts. Both belong to one cage and neither outlives it
-/// (`EGRESS-PORT-PLAN.md` D11: a new CA per cage).
+/// (`docs/history/egress-port-plan.md` D11: a new CA per cage).
 #[must_use]
 pub fn ca_volumes(name: &str) -> [String; 2] {
     [certs_volume(name), public_certs_volume(name)]
@@ -101,6 +101,14 @@ impl std::fmt::Display for BackendError {
 }
 
 impl std::error::Error for BackendError {}
+
+/// The egress binary could not be staged, as the one-line deploy failure
+/// it is.
+impl From<crate::egress_image::StageError> for BackendError {
+    fn from(error: crate::egress_image::StageError) -> Self {
+        Self::Failed(error.to_string())
+    }
+}
 
 impl From<ExecError> for BackendError {
     fn from(error: ExecError) -> Self {
@@ -193,31 +201,36 @@ impl<'a> ContainerBackend<'a> {
     /// create/update path reads the same as the Python's.
     pub const fn ensure_ready(&self) {}
 
-    /// The egress image tag for this version.
+    /// The egress image, `agentcage-egress:<version>-<hash>`.
     #[must_use]
     pub fn egress_image(&self) -> String {
-        format!("agentcage-egress:{}", self.version)
+        format!(
+            "agentcage-egress:{}",
+            crate::egress_image::tag(self.version)
+        )
     }
 
     /// `build_artifacts` — build the static egress image.
     ///
     /// The user's own image is built and pulled by the create/update
-    /// path, not here; this is the sidecar that mitmproxy and dnsmasq
-    /// run in, and it is shared by every cage on the host.
+    /// path, not here; this is the sidecar that agentcage-egress and
+    /// dnsmasq run in, and it is shared by every cage on the host.
     ///
     /// # Errors
     ///
     /// [`BackendError::Assets`] if the embedded tree cannot be
-    /// extracted, [`BackendError::Exec`] if the build fails.
+    /// extracted, [`BackendError::Failed`] if this host carries no egress
+    /// binary, [`BackendError::Exec`] if the build fails.
     pub fn build_artifacts(
         &self,
         no_cache: bool,
         pull: bool,
         quiet: bool,
     ) -> Result<(), BackendError> {
-        let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
-        let containerfile = context.join("containers").join("Containerfile.egress");
         let tag = self.egress_image();
+        let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
+        crate::egress_image::stage(&context)?;
+        let containerfile = context.join(agentcage_assets::egress::CONTAINERFILE_REL);
         if !quiet {
             println!("Building egress image ({tag})...");
         }
@@ -274,6 +287,7 @@ impl<'a> ContainerBackend<'a> {
             .map(|names| names.into_iter().collect());
         let state = self.paths.quadlet_state_paths();
         let host = RealQuadletHost::new(self.paths.data_root());
+        let egress_tag = crate::egress_image::tag(self.version);
         let quadlets = generate_quadlets(
             config,
             &GenerateOptions {
@@ -286,6 +300,7 @@ impl<'a> ContainerBackend<'a> {
                 store_secrets: store_secrets.as_ref(),
                 state: &state,
                 version: self.version,
+                egress_tag: &egress_tag,
             },
             &host,
         )?;

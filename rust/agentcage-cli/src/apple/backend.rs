@@ -381,7 +381,7 @@ impl<'a> AppleBackend<'a> {
     }
 
     /// Remove a CA left behind by an earlier cage of this name
-    /// (`EGRESS-PORT-PLAN.md` D11).
+    /// (`docs/history/egress-port-plan.md` D11).
     ///
     /// For `cage create`, `run` and `cage restore`, on a name that has
     /// no deployment. The egress microVM keeps its CA in the per-cage
@@ -566,7 +566,7 @@ impl AppleBackend<'_> {
 
         // The per-cage state directories, created on demand. 1777 on
         // all three: virtiofs maps host ownership into the guest
-        // identity-wise, so uid 200 (mitmproxy) and 201 (dnsmasq) can
+        // identity-wise, so uid 200 (agentcage-egress) and 201 (dnsmasq) can
         // only write here if the host-side mode lets them. The sticky
         // bit stops cross-uid deletion. The legacy single-VM model used
         // the same trick and it is preserved verbatim.
@@ -653,6 +653,7 @@ impl AppleBackend<'_> {
 
         let secrets_dir = self.paths.apple_secrets_dir(name);
         let grants_dir = self.paths.grants_dir(name);
+        let inspectors_dir = self.paths.inspectors_dir(name);
         let grants_wanted = meta.truthy("decider_enabled")
             || meta.truthy("has_expiring_domains")
             || meta.truthy("watcher_enabled");
@@ -684,6 +685,7 @@ impl AppleBackend<'_> {
             // shadow the egress image's own empty directory.
             secrets: has_entries(&secrets_dir).then_some(secrets_dir.as_path()),
             grants: grants_wanted.then_some(grants_dir.as_path()),
+            inspectors: has_entries(&inspectors_dir).then_some(inspectors_dir.as_path()),
         };
         let argv = egress_argv(
             name,
@@ -1596,6 +1598,7 @@ impl AppleBackend<'_> {
         // that directory as the context so its
         // `COPY containers/supervisor-egress.sh` resolves.
         let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
+        crate::egress_image::stage(&context)?;
         let argv = super::image::egress_build_argv(
             &image,
             &context,
@@ -1745,8 +1748,8 @@ impl AppleBackend<'_> {
     /// 3. regenerate and SIGHUP the **cage-local** dnsmasq
     ///    ([`CAGE_RELOAD_SH`]) — the load-bearing one, since the
     ///    workload resolves through `127.0.0.1:53` inside the cage;
-    /// 4. nothing for `proxy-config.yaml`: the mitmproxy addon polls
-    ///    its mtime per request and hot-reloads itself.
+    /// 4. nothing for `proxy-config.yaml`: the egress polls its mtime
+    ///    every second and hot-reloads itself.
     ///
     /// # Errors
     ///

@@ -226,8 +226,8 @@ fn write_tree(root: &Path) -> io::Result<()> {
         // `OpenOptions::mode` is masked by the umask, so a contributor
         // with `umask 077` would otherwise get 0600 where the source
         // tree has 0644. Force the exact mode. Nothing in these three
-        // trees is a secret -- they are the proxy's own source, shipped
-        // in a public package -- so widening past the umask is the right
+        // trees is a secret -- they are build inputs and templates,
+        // shipped in a public binary -- so widening past the umask is the right
         // call here and would not be for anything under `cage-env/`.
         fs::set_permissions(&dest, fs::Permissions::from_mode(file.mode))?;
     }
@@ -405,8 +405,8 @@ mod tests {
         for dir in [
             extracted.clone(),
             extracted.join("data"),
-            extracted.join("data").join("proxy"),
-            extracted.join("data").join("proxy").join("inspectors"),
+            extracted.join("data").join("containers"),
+            extracted.join("scaffolds").join("openclaw"),
         ] {
             let mode = std::fs::metadata(&dir)
                 .expect("directory is stat-able")

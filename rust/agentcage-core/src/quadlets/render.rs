@@ -14,9 +14,9 @@ use crate::config::{Config, ConfigError};
 use crate::python::repr_str;
 use crate::quadlets::{
     CageNetworkAddrs, b64, cage_network_addrs, certs_volume, effective_port_policy,
-    passthrough_regex, podman_storage_volume, public_certs_volume, reserved_volume_entry,
-    templates, vm_local_cage_env_dir, vm_local_dns_allowlist_path, vm_local_grants_dir,
-    vm_local_placeholders_env_path, vm_local_proxy_config_path,
+    podman_storage_volume, public_certs_volume, reserved_volume_entry, templates,
+    vm_local_cage_env_dir, vm_local_dns_allowlist_path, vm_local_grants_dir,
+    vm_local_inspectors_dir, vm_local_placeholders_env_path, vm_local_proxy_config_path,
 };
 use crate::volume_mounts::{
     self, MountTarget, TMPFS_COPYUP_OPTIONS, enclosing_mount, is_non_persistent_volume,
@@ -220,6 +220,13 @@ impl StatePaths {
     pub fn grants_dir(&self, name: &str) -> String {
         format!("{}/{name}/grants", self.data_root)
     }
+
+    /// Where `cage create` / `cage update` stage the cage's custom
+    /// inspector plugins. Path only.
+    #[must_use]
+    pub fn inspectors_dir(&self, name: &str) -> String {
+        format!("{}/{name}/inspectors", self.data_root)
+    }
 }
 
 /// Everything `generate_quadlets` takes besides the config itself.
@@ -270,6 +277,11 @@ pub struct GenerateOptions<'a> {
     /// own [`VERSION`](crate::VERSION) in the port, except in the golden
     /// corpus, which pins it so a release does not churn the fixtures.
     pub version: &'a str,
+    /// The egress image's tag, `<version>-<content hash>`.
+    ///
+    /// Computed by the host, whose binary carries the egress image's build
+    /// inputs (the egress binary among them); the golden corpus pins it.
+    pub egress_tag: &'a str,
 }
 
 /// What a render produced.
@@ -347,6 +359,7 @@ struct EgressContext<'a> {
     #[serde(flatten)]
     addrs: &'a CageNetworkAddrs,
     agentcage_version: &'a str,
+    egress_image_tag: &'a str,
     patches_host_dir: &'a str,
     config_host_path: &'a str,
     dns_allowlist_enabled: bool,
@@ -364,7 +377,8 @@ struct EgressContext<'a> {
     capture_host_dir: &'a str,
     agents_volume_enabled: bool,
     grants_host_dir: &'a str,
-    passthrough_regex: &'a str,
+    inspectors_enabled: bool,
+    inspectors_host_dir: &'a str,
     rootless: bool,
     inspected_tcp_ports: &'a [i64],
     passthrough_tcp_ports: &'a [i64],
@@ -427,7 +441,7 @@ struct CageContext<'a> {
 /// [`ConfigError::Value`] for the operator-facing refusals the Python
 /// raises as `ValueError`: a volume host path that resolves outside the
 /// home directory, an `np` option that cannot compose, and a published
-/// port that collides with mitmproxy's own 8080/8443.
+/// port that collides with the egress's own 8080/8443.
 /// [`ConfigError::Runtime`] when every cage subnet is taken, when the VM
 /// file staging fails, or when a template fails to render — the last of
 /// which is a bug in this crate rather than in the operator's config.
@@ -895,8 +909,8 @@ pub fn generate_quadlets(
     // Volumes
     //
     // Two cert volumes, not one:
-    //   * agentcage-certs-<name>        — mitmproxy state dir (private
-    //     key, .p12 bundles, public cert). Mounted RW into the egress
+    //   * agentcage-certs-<name>        — the egress's private CA store
+    //     (key and cert). Mounted RW into the egress
     //     only.
     //   * agentcage-public-certs-<name> — published public cert only.
     //     Mounted RW into the egress (so supervisor-egress.sh Step E can
@@ -969,7 +983,7 @@ pub fn generate_quadlets(
     // VM backend: rewrite proxy-config.yaml mount source to a VM-local
     // path for the same reason as dns-allowlist.conf above — Lima's
     // reverse-sshfs caching would otherwise hide host-side rewrites from
-    // mitmproxy's mtime-poll hot-reload.
+    // the egress's mtime-poll hot-reload.
     let (proxy_config_path, grants_dir) = if config.isolation == "vm" {
         // Grants overlay: VM-local too. The addon writes it in-guest
         // (atomic rename, no sshfs cache) and the reconcile round-trips
@@ -992,6 +1006,21 @@ pub fn generate_quadlets(
         )
     };
 
+    // Custom inspector plugins, staged by `cage create` / `cage update`.
+    // Mounted only when the config references one, so a cage without
+    // plugins renders exactly the unit it always did. The vm backend
+    // mounts a guest-local copy (`push_inspectors`), for the reason the
+    // proxy config above is guest-local: Lima's reverse-sshfs caches
+    // host writes, and a rebuilt plugin must not be served stale.
+    let inspectors_enabled = !crate::config::plugin_refs(config).is_empty();
+    let inspectors_dir = if !inspectors_enabled {
+        String::new()
+    } else if config.isolation == "vm" {
+        vm_local_inspectors_dir(deploy)
+    } else {
+        options.state.inspectors_dir(deploy)
+    };
+
     let port_policy = effective_port_policy(config);
     out.files.insert(
         format!("{name}-egress.container"),
@@ -1001,6 +1030,7 @@ pub fn generate_quadlets(
                 name,
                 addrs: &addrs,
                 agentcage_version: options.version,
+                egress_image_tag: options.egress_tag,
                 patches_host_dir: options.patches_host_dir,
                 config_host_path: &proxy_config_path,
                 dns_allowlist_enabled: config.domains.mode == "allowlist",
@@ -1025,7 +1055,8 @@ pub fn generate_quadlets(
                     || config.agents.watcher.enable
                     || !config.domains.expires.is_empty(),
                 grants_host_dir: &grants_dir,
-                passthrough_regex: &passthrough_regex(&config.domains.passthrough),
+                inspectors_enabled,
+                inspectors_host_dir: &inspectors_dir,
                 rootless: options.rootless,
                 inspected_tcp_ports: &port_policy.inspected_tcp,
                 passthrough_tcp_ports: &port_policy.passthrough_tcp,
@@ -1576,6 +1607,7 @@ secret_injection:
                 store_secrets: Some(&store),
                 state: &state,
                 version: "9.9.9",
+                egress_tag: "9.9.9-0123456789ab",
             },
             &TestHost,
         )
@@ -1597,9 +1629,10 @@ secret_injection:
         let cage = &units.files["c-cage.container"];
         assert!(!cage.contains("DIRECT"), "{cage}");
 
-        // The version reaches both units, and the file set is the five
-        // the Python builds, in its order.
-        assert!(egress.contains("Image=localhost/agentcage-egress:9.9.9\n"));
+        // The tag names the image, the version is stamped into the unit,
+        // and the file set is the five the Python builds, in its order.
+        assert!(egress.contains("Image=localhost/agentcage-egress:9.9.9-0123456789ab\n"));
+        assert!(egress.contains("Environment=\"AGENTCAGE_VERSION=9.9.9\"\n"));
         assert_eq!(
             units.files.keys().cloned().collect::<Vec<_>>(),
             vec![
@@ -1644,6 +1677,7 @@ secret_injection:
                     store_secrets: None,
                     state: &state,
                     version: "9.9.9",
+                    egress_tag: "9.9.9-0123456789ab",
                 },
                 &TestHost,
             )
@@ -1770,6 +1804,7 @@ agents:
                 store_secrets: store,
                 state: &state,
                 version: "9.9.9",
+                egress_tag: "9.9.9-0123456789ab",
             },
             host,
         )
@@ -1841,7 +1876,57 @@ agents:
     /// A `container.volumes` source that becomes one of agentcage's own
     /// volume names only once `$VAR` is expanded is refused here, where
     /// validation — which reads the entry as written — cannot see it
-    /// (`EGRESS-PORT-PLAN.md` D11).
+    /// (`docs/history/egress-port-plan.md` D11).
+    /// Staged custom inspectors are mounted read-only at the egress's
+    /// plugin directory: from the data dir on container, from the
+    /// guest-local copy on vm, and not at all without a plugin.
+    #[test]
+    fn plugins_are_mounted_from_the_staged_directory() {
+        let egress = |isolation: &str, inspectors: &str| -> String {
+            let yaml = format!("name: c\nisolation: {isolation}\ninspectors:\n{inspectors}");
+            let config = crate::config::load(
+                "cage.yaml",
+                &yaml,
+                &crate::config::FixedHost {
+                    isolation: isolation.to_owned(),
+                    dns_servers: Ok(vec!["192.0.2.53".to_owned()]),
+                },
+            )
+            .expect("valid config");
+            let state = StatePaths {
+                config_root: "/cfg/agentcage".to_owned(),
+                data_root: "/data/agentcage".to_owned(),
+            };
+            let units = generate_quadlets(
+                &config,
+                &GenerateOptions {
+                    config_host_path: "/cfg/agentcage/cages/c/cage.yaml",
+                    patches_host_dir: "/data/patches",
+                    deploy_name: "c",
+                    rootless: true,
+                    used_octets: None,
+                    network_octet: None,
+                    store_secrets: None,
+                    state: &state,
+                    version: "9.9.9",
+                    egress_tag: "9.9.9-0123456789ab",
+                },
+                &TestHost,
+            )
+            .expect("renders");
+            units.files["c-egress.container"].clone()
+        };
+        let plugin = "- name: dlp\n  path: plugins/dlp.wasm\n";
+        assert!(
+            egress("container", plugin)
+                .contains("\nVolume=/data/agentcage/c/inspectors:/etc/agentcage/inspectors:ro,Z\n")
+        );
+        assert!(egress("vm", plugin).contains(
+            "\nVolume=%h/.config/agentcage-vm/cages/c/inspectors:/etc/agentcage/inspectors:ro,Z\n"
+        ));
+        assert!(!egress("container", "- name: entropy\n").contains("/etc/agentcage/inspectors"));
+    }
+
     #[test]
     fn a_volume_source_that_expands_to_a_reserved_name_is_refused() {
         let yaml = r"
@@ -1875,6 +1960,7 @@ dns_servers: [192.0.2.53]
                 store_secrets: None,
                 state: &state,
                 version: "9.9.9",
+                egress_tag: "9.9.9-0123456789ab",
             },
             &TestHost,
         )
@@ -2009,8 +2095,7 @@ dns_servers: [192.0.2.53]
     }
 
     /// A published container port on one of the egress's own listeners
-    /// is refused, and the message names the listener by what it is,
-    /// not by the engine that happens to run it today.
+    /// is refused, and the message names the listener by what it is.
     #[test]
     fn a_published_port_on_an_egress_listener_is_refused_by_role() {
         let state = StatePaths {
@@ -2043,6 +2128,7 @@ dns_servers: [192.0.2.53]
                     store_secrets: None,
                     state: &state,
                     version: "9.9.9",
+                    egress_tag: "9.9.9-0123456789ab",
                 },
                 &TestHost,
             )
@@ -2052,7 +2138,6 @@ dns_servers: [192.0.2.53]
                 error.contains(&format!("container port {port} conflicts with {role}")),
                 "{error}"
             );
-            assert!(!error.contains("mitm"), "{error}");
         }
     }
 }

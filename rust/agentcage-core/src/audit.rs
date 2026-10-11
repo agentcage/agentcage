@@ -384,6 +384,19 @@ impl Timestamp {
     /// and a trailing `.` with no digits.
     #[must_use]
     pub fn parse_iso(s: &str) -> Option<Self> {
+        Self::parse_iso_aware(s).map(|(ts, _)| ts)
+    }
+
+    /// [`Self::parse_iso`], also saying whether the text carried a UTC
+    /// offset (`Z` or `±HH…`), i.e. whether `fromisoformat` would have
+    /// returned an *aware* datetime.
+    ///
+    /// Callers that compare against an aware "now" need this: Python
+    /// raises `TypeError` comparing a naive datetime with an aware one,
+    /// and code that catches it (the egress domain inspector's expiry
+    /// check fails open on it) must not see a naive value read as UTC.
+    #[must_use]
+    pub fn parse_iso_aware(s: &str) -> Option<(Self, bool)> {
         let b = s.as_bytes();
         // `fromisoformat` is ASCII-only; bail before indexing bytes.
         if !s.is_ascii() {
@@ -391,19 +404,21 @@ impl Timestamp {
         }
         let (days, date_len) = parse_iso_date(b)?;
         if b.len() == date_len {
-            return Some(Self {
-                micros: days.checked_mul(86_400_000_000)?,
-            });
+            let micros = days.checked_mul(86_400_000_000)?;
+            return Some((Self { micros }, false));
         }
         // Any single character separates date from time — CPython does not
         // care whether it is `T`.
         let rest = &b[date_len + 1..];
         let (time_micros, offset_micros) = parse_iso_time(rest)?;
+        // `parse_iso_time` splits the offset at the first of these, so a
+        // successful parse with one present is an aware value.
+        let aware = rest.iter().any(|&c| c == b'Z' || c == b'+' || c == b'-');
         let micros = days
             .checked_mul(86_400_000_000)?
             .checked_add(time_micros)?
             .checked_sub(offset_micros)?;
-        Some(Self { micros })
+        Some((Self { micros }, aware))
     }
 }
 
@@ -1310,6 +1325,20 @@ mod tests {
     fn iso_parse_rejects_non_ascii_without_panicking() {
         assert_eq!(Timestamp::parse_iso("２０２４-01-01"), None);
         assert_eq!(Timestamp::parse_iso("2024-01-01Tñ0:00"), None);
+    }
+
+    /// Awareness follows the offset, not the separator or the date.
+    #[test]
+    fn iso_parse_reports_awareness() {
+        let aware = |s| Timestamp::parse_iso_aware(s).map(|(_, a)| a);
+        assert_eq!(aware("2024-01-01"), Some(false));
+        assert_eq!(aware("2024-W01-1"), Some(false));
+        assert_eq!(aware("2024-01-01T00:00:00"), Some(false));
+        assert_eq!(aware("2024-01-01-10:00"), Some(false));
+        assert_eq!(aware("2024-01-01T00:00:00Z"), Some(true));
+        assert_eq!(aware("2024-01-01T00:00:00+05:00"), Some(true));
+        assert_eq!(aware("2024-01-01 00:00-0500"), Some(true));
+        assert_eq!(aware("2024-01-01T00:00:00z"), None);
     }
 
     /// Line extraction beyond what the corpus fixture reaches.

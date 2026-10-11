@@ -36,11 +36,12 @@ If you are new to agentcage, we suggest reading in this order:
 
 | Document | Description |
 | :--- | :--- |
-| **[System Architecture](explain/architecture.md)** | Technical breakdown of the dual-container topology (`<name>-cage` and `<name>-egress`), private bridge networking, iptables redirection, DNS sinkholing, per-cage CA injection, and request lifecycles. |
+| **[System Architecture](explain/architecture.md)** | Technical breakdown of the dual-container topology (`<name>-cage` and `<name>-egress`), private bridge networking, iptables redirection, DNS sinkholing, the per-cage CA, and the egress proxy (`agentcage-egress`): its request pipeline, fail-closed error responses, response streaming and memory bounds. |
 | **[Isolation Backends](explain/isolation-backends.md)** | Deep comparative analysis of the three isolation engines: `container` (Linux rootless Podman + quadlets), `apple-container` (macOS 26+ native microVMs), and `vm` (Lima hardware virtualization). |
 | **[Security Model](explain/security-model.md)** | Comprehensive 8-layer defense-in-depth security model: threat assumptions, trust boundaries, capabilities dropping, read-only rootfs, pivot protection masks, and honest documentation of residual risks. |
 | **[Policy API & Dynamic Egress](explain/policy-api.md)** | How sandboxed agents introspect allowlists and request dynamic domain access at `https://agentcage.local`, the role of the autonomous LLM Decider Agent, token budgeting, and baseline synchronization. |
 | **[Traffic Watcher & Forensics](explain/traffic-watcher.md)** | Asynchronous background traffic auditing: how the Watcher agent detects exfiltration patterns and beaconing, autonomous grant revocation, structured audit trails, and dual-perspective HAR captures. |
+| **[Egress-local DNS Apply](explain/egress-local-dns-apply.md)** | Design note: how a runtime grant becomes resolvable inside the egress within a second, without a host-side watcher. |
 
 ### 3. Reference Manuals
 
@@ -50,6 +51,7 @@ If you are new to agentcage, we suggest reading in this order:
 | **[CLI Reference Manual](reference/cli.md)** | Complete manual of all CLI commands, subcommands, flags, options, and ergonomic top-level aliases (`run`, `exec`, `shell`, `ls`, `ps`, `logs`, `status`, `show`, `edit`, `rm`, `update`). |
 | **[Policy API Specification](reference/policy-api.md)** | Full HTTP/REST API specification for internal endpoints served on `https://agentcage.local` (`/v1/allowlist`, `/v1/allowlist/requests`, `/v1/allowlist/removals`), schemas, status codes, and security checks. |
 | **[Scaffolds Reference](reference/scaffolds.md)** | Catalog of pre-configured agent templates (`claude-code`, `codex`, `pi`, `openclaw`, `ubuntu`, `debian`, `arch`, `busybox`), scaffold resolution order, and authoring custom scaffolds. |
+| **[Protocol Relays Reference](reference/protocol-relays.md)** | Every `protocol_relays` key for the IMAP and SMTP relays, their defaults, credentials, upstream TLS and audit records. |
 | **[Secrets Management Reference](reference/secrets.md)** | Complete specification of secret lifecycles: encrypted storage backends (`systemd-creds` / Keychain), 128-bit entropic decoy tokens (`agentcage:secret:NAME:<hex>`), wire injection, and rotation. |
 
 ### 4. How-To Guides
@@ -57,10 +59,20 @@ If you are new to agentcage, we suggest reading in this order:
 | Recipe | Description |
 | :--- | :--- |
 | **[Run Agent Harnesses](how-to/run-agent-harnesses.md)** | Recipes and configuration examples for running popular coding harnesses inside agentcage: Anthropic Claude Code, OpenAI Codex, Pi.dev, OpenClaw, and custom LLM scripts. |
-| **[Manage Egress & Domains](how-to/manage-egress-and-domains.md)** | Practical management of domain allowlists, wildcards, time-limited grants (`--expires-in`), handling 403 errors and TEST-NET IPs, and reviewing or promoting dynamic Policy API grants. |
+| **[Manage Egress & Domains](how-to/manage-egress-and-domains.md)** | Practical management of domain allowlists and subdomain matching, time-limited grants (`--expires-in`), handling 403 errors and TEST-NET IPs, and reviewing or promoting dynamic Policy API grants. |
 | **[Troubleshooting & Diagnostics](how-to/troubleshooting.md)** | Diagnostic workflows for common operational problems: running `agentcage doctor`, interpreting audit logs, fixing DNS and certificate trust issues, terminal restoration, and permissions. |
 | **[Backup & Restore](how-to/backup-and-restore.md)** | Procedures for creating portable tarball backups of cage state, volumes, and configurations (`agentcage cage backup`), and restoring or cloning cages (`agentcage cage restore`). |
-| **[Custom Inspectors & Relays](how-to/custom-inspectors.md)** | Guide to authoring custom Python L7 traffic inspection filters (`Inspector` class) and configuring hardened protocol relays for non-HTTP services (such as IMAP and SMTP). |
+| **[Custom Inspectors & Relays](how-to/custom-inspectors.md)** | Writing custom inspectors as sandboxed WebAssembly components with the `agentcage-inspector-sdk` crate, and configuring hardened protocol relays for non-HTTP services (such as IMAP and SMTP). |
+
+### 5. History
+
+Records of how the project got here, kept for reference rather than as current documentation:
+
+| Record | Description |
+| :--- | :--- |
+| **[Rust port plan](history/rust-port-plan.md)** | The plan the host CLI's port from Python to Rust followed. |
+| **[Egress port plan](history/egress-port-plan.md)** | The plan and decisions behind the Rust egress proxy that replaced the previous Python-based one. |
+| **[2026-02 security review](history/audits/2026-02-security-review.md)** | The February 2026 security review, against the code of that time. |
 
 ---
 

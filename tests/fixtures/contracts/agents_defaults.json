@@ -3,7 +3,7 @@
   "summary": "The value each side assumes for a key an operator leaves out of an enabled agents block. The host copies the block into proxy-config.yaml as written, without filling defaults in, so an omitted key runs at the EGRESS default while the host validates, warns about and documents its own. The two must be the same value.",
   "implementations": {
     "host": "rust/agentcage-core/src/config/{parse,types}.rs",
-    "proxy": "src/agentcage/data/proxy/{policy_api,watcher}.py"
+    "proxy": "rust/agentcage-egress/src/{policy/mod.rs,watcher/config.rs}"
   },
   "fields": {
     "config": "(top level) the minimal agents block both sides are built from: each agent enabled with only its required LLM fields set",

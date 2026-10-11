@@ -1,15 +1,15 @@
 #!/bin/sh
 # agentcage-egress supervisor — runs under tini (PID 1) inside the
 # unified egress container. Mirrors stages 30-50 of the apple-container
-# supervisor (dnsmasq → wait → mitmproxy → wait), adapted for the
+# supervisor (dnsmasq → wait → egress proxy → wait), adapted for the
 # router-shaped FORWARD-chain iptables model instead of the in-netns
 # OUTPUT-chain model the apple-container uses.
 #
 # Strict ordering: each step must complete (or be ready) before the next
 # starts, so `touch /var/log/agentcage/ready` in step F means iptables is
-# applied AND dnsmasq is listening AND mitmproxy is listening AND
-# mitmproxy has produced its CA cert. PR 2's backend health-checks read
-# that marker before declaring the cage ready.
+# applied AND dnsmasq is listening AND agentcage-egress is listening AND
+# has produced its CA cert. The backends' health checks read that marker
+# before declaring the cage ready.
 #
 # POSIX sh, not bash — no `wait -n`, no arrays, no `[[ ]]`. Test with
 # `dash` if possible.
@@ -111,20 +111,20 @@ DNSMASQ_PID_FILE=/home/acdns/dnsmasq.pid
 # re-reads its main config. That file is therefore the single seam for live
 # DNS changes, and we always render it into /run (tmpfs, writable) instead of
 # pointing dnsmasq at the read-only bind mount — so the same path can be
-# regenerated in place when the addon publishes a new grant.
+# regenerated in place when the egress publishes a new grant.
 #
 # SERVERS_BASE    read-only operator baseline (bind-mounted, never mutated)
 # SERVERS_OUT     what dnsmasq actually reads
-# GRANTED_DOMAINS newline-delimited DOMAIN NAMES published by the addon
+# GRANTED_DOMAINS newline-delimited DOMAIN NAMES published by the egress
 #
-# The addon emits bare domain names, never `server=` directives: the upstream
+# The egress emits bare domain names, never `server=` directives: the upstream
 # for a granted zone is chosen HERE, from the same set the baseline uses. A
-# compromised addon can therefore name a zone but cannot choose where it is
+# compromised egress proxy can therefore name a zone but cannot choose where it is
 # forwarded — it cannot point a zone at a resolver it controls.
 SERVERS_BASE=/etc/agentcage/dns-allowlist.conf
 SERVERS_OUT=/run/agentcage/dns-allowlist.egress.conf
 GRANTED_DOMAINS=/home/acproxy/dns/granted
-# Explicit reload signal from the addon, rather than comparing mtimes:
+# Explicit reload signal from the egress, rather than comparing mtimes:
 # `-nt` is a bash/dash extension, not POSIX (shellcheck SC3013), and a
 # `stat` comparison would fork a process every second in a loop whose
 # whole appeal is that it costs nothing. `[ -f ]` is a shell builtin.
@@ -164,7 +164,7 @@ _render_servers_file() {
   if [ -s "$GRANTED_DOMAINS" ]; then
     _sf_ups="$_SF_GW ${AGENTCAGE_DNS_UPSTREAMS:-}"
     if [ -n "$(printf '%s' "$_sf_ups" | tr -d ' ')" ]; then
-      # Re-validate the domain syntax here even though the addon already
+      # Re-validate the domain syntax here even though the egress already
       # does: this file is the one thing a lower-privileged uid writes into
       # a root-rendered dnsmasq config, so it gets its own gate. Anything
       # that is not a plain lowercase dotted hostname is dropped silently.
@@ -201,8 +201,8 @@ if [ -n "${AGENTCAGE_DNS_LISTEN:-}" ]; then
 elif [ -n "${AGENTCAGE_REGULAR_BIND:-}" ]; then
   DNS_LISTEN_IP="${AGENTCAGE_REGULAR_BIND%:*}"
 else
-  # Smoke-test path: no env vars staged. Fall back to wildcard — works
-  # on the single-network smoke test where the container has only one
+  # No bind staged (a container started without the Quadlet's env).
+  # Fall back to wildcard — works when the container has only one
   # interface and dnsmasq's auto-detection is unambiguous.
   DNS_LISTEN_IP="0.0.0.0"
 fi
@@ -212,19 +212,17 @@ fi
 # internet (NOT an in-netns OUTPUT filter — that's the apple-container
 # shape, where the proxy/dns/cage workloads share a netns). Here, traffic
 # from the cage enters via eth0; we REDIRECT inspected tcp ports to the
-# local mitmproxy on :8443 and apply a default-DROP FORWARD policy.
+# local agentcage-egress on :8443 and apply a default-DROP FORWARD policy.
 #
 # Port policy:
-#   INSPECTED_TCP_PORTS  — REDIRECTed to :8443 (mitmproxy transparent mode)
-#   PASSTHROUGH_TCP_PORTS — FORWARD ACCEPT, never enters mitmproxy
+#   INSPECTED_TCP_PORTS  — REDIRECTed to :8443 (the egress's transparent listener)
+#   PASSTHROUGH_TCP_PORTS — FORWARD ACCEPT, never enters the egress proxy
 #   ALLOW_UDP_PORTS       — FORWARD ACCEPT for UDP
 # All three are sourced from the egress Quadlet's Environment= entries
 # (egress.container.j2), populated from cage.yaml's ``ports.tcp.allow``
-# / ``ports.tcp.passthrough`` / ``ports.udp.allow``. The smoke-test path
-# (test_egress_image.py — runs the container without a Quadlet) falls
-# back to "80 443" only when the env var is genuinely unset so the
-# default cage policy still surfaces when a tester drops the container
-# straight onto the cli without the Quadlet's full env block.
+# / ``ports.tcp.passthrough`` / ``ports.udp.allow``. A container started
+# without the Quadlet's env block falls back to "80 443" only when the
+# env var is genuinely unset, so the default cage policy still applies.
 # /etc/agentcage/iptables.env is still sourced as a tertiary override
 # for ad-hoc operator probes; unused in the regular Quadlet path.
 INSPECTED_TCP_PORTS="${INSPECTED_TCP_PORTS-80 443}"
@@ -232,8 +230,8 @@ PASSTHROUGH_TCP_PORTS="${PASSTHROUGH_TCP_PORTS-}"
 ALLOW_UDP_PORTS="${ALLOW_UDP_PORTS-}"
 # Outbound ICMP echo-request (`ping`) is OFF by default. Set ALLOW_ICMP=1
 # (from cage.yaml's ``ports.icmp.allow: true``) to install the FORWARD
-# accept rule. Unset → "0": a cage created before this knob, or the
-# smoke-test path with no env, gets the locked-down default.
+# accept rule. Unset → "0": a cage created before this knob, or a
+# container started with no env, gets the locked-down default.
 ALLOW_ICMP="${ALLOW_ICMP-0}"
 if [ -f /etc/agentcage/iptables.env ]; then
   # shellcheck disable=SC1091
@@ -249,10 +247,10 @@ for port in $INSPECTED_TCP_PORTS; do
   # HTTP got TCP RST from the egress because port 80 wasn't actually
   # listening. The legacy proxy.container.j2 also had no -i filter.
   # Without it, traffic arriving on the podman-net interface also
-  # matches — but that's not an exploitable path: mitmproxy in
-  # transparent mode reads SO_ORIGINAL_DST to know where to forward,
+  # matches — but that's not an exploitable path: the egress's
+  # transparent listener reads SO_ORIGINAL_DST to know where to forward,
   # and a non-REDIRECTed foreign connection would put the egress's own
-  # IP there, so mitmproxy would attempt to connect to itself. The
+  # IP there, so the egress would attempt to connect to itself. The
   # regular forward proxy on :8080 is independently scoped via
   # AGENTCAGE_REGULAR_BIND={ip_egress}:8080 (see Quadlet).
   iptables -t nat -A PREROUTING -p tcp --dport "$port" -j REDIRECT --to-ports 8443 \
@@ -289,7 +287,7 @@ done
 #
 # The egress is on two networks — the per-cage ``{name}-net`` (cage-
 # facing) AND the default ``podman`` network (host-facing for outbound).
-# Binding mitmproxy to ip_egress:8080 (see Quadlet AGENTCAGE_REGULAR_BIND)
+# Binding the egress to ip_egress:8080 (see Quadlet AGENTCAGE_REGULAR_BIND)
 # is sufficient to stop a foreign rootless container from reaching us
 # via our PODMAN-NETWORK IP, but not via our CAGE-NETWORK IP — the
 # host's bridge routing happily forwards packets between any two
@@ -445,7 +443,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # (Verified empirically in Lima: aardvark tracks the host live for a
   # running container, and the old "aardvark 502 race" did NOT reproduce
   # over 600+ queries under heavy create/destroy churn — that race was about
-  # aardvark winning resolv.conf ORDERING for mitmproxy's getaddrinfo, NOT
+  # aardvark winning resolv.conf ORDERING for the proxy's getaddrinfo, NOT
   # aardvark used as an explicit, allowlist-scoped dnsmasq upstream.)
   # We keep the baked dns_servers as a SECOND per-zone upstream and add
   # --all-servers so a degraded/absent gateway falls back instantly instead
@@ -460,8 +458,8 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # upstream in parallel and prefers a positive answer over a public
   # resolver's NXDOMAIN — which is what lets a split-horizon apex (one only a
   # specific upstream, e.g. a Tailscale-MagicDNS resolver, can answer) resolve
-  # even when a public dns_server is also configured for that zone. mitmproxy
-  # now resolves THROUGH this dnsmasq (the resolv.conf step below), so this
+  # even when a public dns_server is also configured for that zone. The egress
+  # proxy resolves THROUGH this dnsmasq (the resolv.conf step below), so this
   # correctness covers the egress's own getaddrinfo, not just the cage's.
   _all_servers="--all-servers"
   _SF_STYLE=prepend
@@ -478,17 +476,17 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
     log "warn: could not derive default-route gateway; forwarding allowlisted zones to the baked dns_servers only (DNS may go stale on host network change)"
   fi
   # ``--no-hosts``: dnsmasq must NOT honor /etc/hosts inside the egress
-  # container. mitmproxy lives in the same container as dnsmasq in the
-  # unified v0.22 shape, and the e2e harness patches /etc/hosts here so
-  # mitmproxy (via NSS in its getaddrinfo + keep_host_header=true)
-  # resolves the mocked upstream domain to the cage-net mock IP. If
+  # container. The egress proxy lives in the same container as dnsmasq
+  # in the unified v0.22 shape, and the e2e harness patches /etc/hosts
+  # here so the proxy (which resolves the request's Host/SNI itself, via
+  # getaddrinfo, /etc/hosts first) reaches the cage-net mock IP. If
   # dnsmasq also reads /etc/hosts, the cage's DNS query returns that
   # mock IP, the cage connects to the mock SAME-SUBNET-DIRECTLY, and
-  # the outbound flow bypasses mitmproxy entirely — no inspection, no
+  # the outbound flow bypasses the egress proxy entirely — no inspection, no
   # audit, no domain-allowlist enforcement. With ``--no-hosts``,
   # dnsmasq returns either the real upstream IP (allowed zones) or
   # 198.51.100.1 (sinkhole) and the cage's packet enters the egress's
-  # PREROUTING REDIRECT path into mitmproxy, where the per-request
+  # PREROUTING REDIRECT path into the egress proxy, where the per-request
   # /etc/hosts lookup happens. The LEGACY 3-service shape got this
   # split for free (dns sidecar and proxy were separate containers
   # with separate /etc/hosts files); v0.22 has to enforce it.
@@ -506,9 +504,9 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
         --servers-file="$_servers_file" \
         $_all_servers \
     &
-  # Point mitmproxy's OWN resolver (getaddrinfo via /etc/resolv.conf) at the
-  # egress's local dnsmasq — NOT a flat list of upstream nameservers.
-  # mitmproxy re-resolves the SNI/Host on the upstream connection (verified:
+  # Point the egress proxy's OWN resolver (getaddrinfo via /etc/resolv.conf)
+  # at the egress's local dnsmasq — NOT a flat list of upstream nameservers.
+  # The proxy re-resolves the SNI/Host on the upstream connection (verified:
   # breaking only this resolver 502s every allowlisted host), so its resolver
   # must (a) track the host and (b) resolve split-horizon names. dnsmasq does
   # both: it forwards each allowlisted apex to the default-route gateway
@@ -527,7 +525,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # could sort ahead of the split-horizon one), which broke MagicDNS-homed
   # cages outright. Routing through dnsmasq sidesteps all of it.
   #
-  # mitmproxy is in this same container, so it reaches dnsmasq on its own
+  # The proxy is in this same container, so it reaches dnsmasq on its own
   # cage-facing listen IP (DNS_LISTEN_IP); fall back to loopback when that is
   # the 0.0.0.0 wildcard. getaddrinfo still checks /etc/hosts FIRST, so the
   # e2e upstream mock is preserved. Needs the rw resolv bind
@@ -536,15 +534,14 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   [ "$_resolver_ip" = "0.0.0.0" ] && _resolver_ip="127.0.0.1"
   if { echo "nameserver $_resolver_ip"; \
        echo "options edns0"; } > /etc/resolv.conf 2>/dev/null; then
-    log "step B: mitmproxy resolver = local dnsmasq ($_resolver_ip) — host-tracking + split-horizon-safe via --all-servers"
+    log "step B: egress proxy resolver = local dnsmasq ($_resolver_ip) — host-tracking + split-horizon-safe via --all-servers"
   else
     log "warn: could not repoint /etc/resolv.conf at local dnsmasq ($_resolver_ip)"
   fi
 else
-  # Smoke-test path: no per-cage config staged yet. Start dnsmasq with a
-  # minimal inline default so the supervisor can still come up and the
-  # smoke test can exercise the listener readiness path.
-  log "step B: no /etc/agentcage/dnsmasq.conf — using inline smoke-test defaults"
+  # No allowlist staged (a cage whose `domains.mode` is not `allowlist`):
+  # start dnsmasq with a minimal inline default, forwarding nothing.
+  log "step B: no /etc/agentcage/dnsmasq.conf or dns-allowlist.conf — using inline defaults"
   prlimit --as=$((256 * 1024 * 1024)) -- \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
@@ -572,120 +569,108 @@ done
 ss -lnup 2>/dev/null | grep -q ':53 ' \
   || die "dnsmasq did not bind :53 within 30s" 31
 
-#-- Step D. Start mitmproxy (uid 200, CapBnd-stripped) ---------------------
-# Same CapBnd-drop flags as dnsmasq above — see step B for rationale.
-# Addon code is static and lives in the image at /opt/agentcage/addon.py
-# (with sibling packages inspectors/, transforms/, relays/, capture.py,
-# secret_injector.py — mitmproxy's script loader puts the addon's dir on
-# sys.path so they resolve relative to /opt/agentcage/). Per-cage config
-# (allowlist, secret_injection rules, capture settings) is at
+#-- Step D. Start the egress proxy (uid 200, CapBnd-stripped) -------------
+# Same CapBnd-drop flags as dnsmasq above — see step B for rationale —
+# plus --no-new-privs, which the proxy (no file caps to honour) can take.
+# The binary is static and lives in the image at
+# /opt/agentcage/agentcage-egress; per-cage config (allowlist,
+# secret_injection rules, capture settings) is at
 # /etc/agentcage/config.yaml via bind-mount.
 #
-# TODO(measurement): --as=2G for mitmproxy covers PyInstaller's ~700MB
-# mmap overhead plus runtime working set with headroom. Provisional —
-# tune after measurement in a follow-up PR.
-# Pre-create the mitmproxy-owned log files at 0640 owned by acproxy so
-# the cage workload (uid 1000, via virtiofs identity-mapping) cannot
-# read or forge audit entries / capture bodies / the proxy log. mitmproxy
-# opens these for append, which preserves the pre-set 0640 mode. proxy.log
-# is defense-in-depth for the legacy single-VM redirect path and any
-# future redirect of mitmproxy output. See _ensure_log above (#186).
+# `--as`: the address-space limit counts *reservations*, not resident
+# memory, and the egress reserves generously: every thread's stack (the
+# tokio workers plus its capped blocking pool, 2 MiB each), and every
+# fully buffered body up to the per-body cap (`egress.max_body_bytes`,
+# 256 MiB by default) with a decoded copy beside it while it is
+# inspected. The process-wide body budget (`egress.body_budget_bytes`,
+# 1 GiB by default) keeps the sum of buffered bodies inside this
+# envelope, so a burst of large uploads waits or is refused instead of
+# failing an allocation and taking down the cage's only path to the
+# network. The limit is 2 GiB, or the budget plus 1 GiB when an
+# operator raised the budget past that; the egress binary computes it
+# from the same config it is about to run (`address-space`), as the
+# unprivileged user, and anything but a plain number falls back to 2 GiB.
+#
+# Pre-create the egress-owned log files at 0640 owned by acproxy so the
+# cage workload (uid 1000, via virtiofs identity-mapping) cannot read or
+# forge audit entries / capture bodies / the proxy log. The egress opens
+# these for append, which preserves the pre-set 0640 mode. proxy.log is
+# defense-in-depth for any redirect of the egress's output. See
+# _ensure_log above (#186).
 _ensure_log /var/log/agentcage/audit.jsonl acproxy
 _ensure_log /var/log/agentcage/capture.jsonl acproxy
 _ensure_log /var/log/agentcage/proxy.log acproxy
-log "step D: starting mitmproxy (uid 200, CapBnd=0, prlimit --as=2G)"
-
 # The cage's private CA store: its own `<name>-certs` volume (on
-# apple-container, the per-cage certs dir), mounted here. mitmproxy
-# generates the CA into it on first start and reloads it afterwards;
-# `confdir` points it there instead of its default dot-directory under
-# $HOME, so the mount point carries a neutral name the next egress
-# engine keeps.
+# apple-container, the per-cage certs dir), mounted here. The egress
+# generates the CA into it on first start and reloads it afterwards; the
+# key never leaves it.
 CA_DIR=/home/acproxy/ca
+# The public half of the CA, written by the egress inside the private
+# store it owns: /home/acproxy/public-certs is root-owned (see
+# egress.container.j2) and uid 200 cannot write it. Step E publishes
+# this file to the cage.
+CA_PATH="$CA_DIR/agentcage-ca.pem"
+EGRESS_BIN=/opt/agentcage/agentcage-egress
+EGRESS_AS_BYTES=$(setpriv --reuid=acproxy --regid=acproxy --clear-groups \
+  --no-new-privs --bounding-set=-all --inh-caps=-all -- \
+  env AGENTCAGE_CONFIG=/etc/agentcage/config.yaml "$EGRESS_BIN" address-space) \
+  || EGRESS_AS_BYTES=""
+case "$EGRESS_AS_BYTES" in
+  ''|*[!0-9]*) EGRESS_AS_BYTES=$((2 * 1024 * 1024 * 1024)) ;;
+esac
+log "step D: starting agentcage-egress (uid 200, CapBnd=0, prlimit --as=$EGRESS_AS_BYTES)"
 
-# Build reverse-mode flags for inbound port forwards (legacy proxy's
-# `--mode reverse:http://<ip_cage>:<port>@0.0.0.0:<port>`). The backend
-# stages this via two env vars:
+# Reverse listeners for inbound port forwards: `<cage_ip>:<port>` is the
+# upstream, `0.0.0.0:<port>` the listen address. The backend stages them
+# via two env vars:
 #   AGENTCAGE_INBOUND_PORTS  — space-separated container ports
 #   AGENTCAGE_CAGE_IP        — cage container's IP on the cage-net
-# If unset, no reverse-mode flags are emitted (no inbound forwarding).
-EXTRA_MODES=""
+# If unset, no reverse listeners are opened (no inbound forwarding).
+REVERSE_FLAGS=""
 if [ -n "${AGENTCAGE_INBOUND_PORTS:-}" ] && [ -n "${AGENTCAGE_CAGE_IP:-}" ]; then
   for p in $AGENTCAGE_INBOUND_PORTS; do
-    EXTRA_MODES="$EXTRA_MODES --mode reverse:http://$AGENTCAGE_CAGE_IP:$p@0.0.0.0:$p"
+    REVERSE_FLAGS="$REVERSE_FLAGS --reverse $AGENTCAGE_CAGE_IP:$p@0.0.0.0:$p"
   done
   log "step D: inbound forwards: $AGENTCAGE_INBOUND_PORTS via cage=$AGENTCAGE_CAGE_IP"
 fi
 
-if [ -f /etc/agentcage/config.yaml ]; then
-  # shellcheck disable=SC2086  # EXTRA_MODES is intentionally word-split
-  # ``keep_host_header=true`` (legacy proxy.container.j2 mitmdump flag,
-  # dropped in the first v0.22 cut and restored here): mitmproxy uses
-  # the original Host header to determine the upstream URL instead of
-  # SO_ORIGINAL_DST. This is what lets the e2e harness redirect
-  # specific upstream domains (e.g. httpbin.org → mock IP) via the
-  # egress's /etc/hosts — without it, mitmproxy connects to whatever
-  # IP the cage's DNS already resolved to (the real httpbin.org if
-  # dnsmasq forwarded upstream), and the mock IP patch is invisible.
-  # Equivalent for real workloads where Host header == real DNS target.
-  prlimit --as=$((2 * 1024 * 1024 * 1024)) -- \
-    setpriv --reuid=acproxy --regid=acproxy --clear-groups \
-            --no-new-privs --bounding-set=-all --inh-caps=-all -- \
-    env HOME=/home/acproxy AGENTCAGE_CONFIG=/etc/agentcage/config.yaml \
-    mitmdump \
-      -s /opt/agentcage/addon.py \
-      --mode "regular@${AGENTCAGE_REGULAR_BIND:-:8080}" \
-      --mode transparent@8443 \
-      $EXTRA_MODES \
-      --set confdir="$CA_DIR" \
-      --set connection_strategy=lazy \
-      --set keep_host_header=true \
-    &
-else
-  # Smoke-test path: no config staged. Run mitmproxy WITHOUT the addon so
-  # the smoke test can exercise listener + CA generation without needing
-  # a valid AGENTCAGE_CONFIG file. Production never hits this path —
-  # backends always stage config.yaml.
-  log "step D: no /etc/agentcage/config.yaml — running without addon (smoke-test mode)"
-  prlimit --as=$((2 * 1024 * 1024 * 1024)) -- \
-    setpriv --reuid=acproxy --regid=acproxy --clear-groups \
-            --no-new-privs --bounding-set=-all --inh-caps=-all -- \
-    env HOME=/home/acproxy \
-    mitmdump \
-      --mode "regular@${AGENTCAGE_REGULAR_BIND:-:8080}" \
-      --mode transparent@8443 \
-      --set confdir="$CA_DIR" \
-      --set connection_strategy=lazy \
-      --set keep_host_header=true \
-    &
-fi
-MITMPROXY_PID=$!
+# shellcheck disable=SC2086  # REVERSE_FLAGS is intentionally word-split
+prlimit --as="$EGRESS_AS_BYTES" -- \
+  setpriv --reuid=acproxy --regid=acproxy --clear-groups \
+          --no-new-privs --bounding-set=-all --inh-caps=-all -- \
+  env HOME=/home/acproxy AGENTCAGE_CONFIG=/etc/agentcage/config.yaml \
+  "$EGRESS_BIN" run \
+    --regular "${AGENTCAGE_REGULAR_BIND:-0.0.0.0:8080}" \
+    --transparent 0.0.0.0:8443 \
+    $REVERSE_FLAGS \
+    --ca-dir "$CA_DIR" \
+    --public-cert "$CA_PATH" \
+  &
+PROXY_PID=$!
 
-#-- Step E. Wait for mitmproxy listening on :8443 + CA cert ----------------
+#-- Step E. Wait for the egress listening on :8443 + CA cert ---------------
 # Both conditions must hold: if we only check the port the supervisor
-# can finish before mitmproxy has written its CA, and PR 2's trust-store
-# install step would race. Conversely, the CA file appears slightly
+# can finish before the egress has written its CA, and the cage's
+# trust-store install step would race. Conversely, the CA file appears
 # before the listener accepts connections, so a CA-only check has a
 # false-positive window where the cage workload would get
 # "connection refused" from the REDIRECT target.
-log "step E: waiting for mitmproxy listener :8443 AND CA cert (max 30s)"
-# The file name is mitmproxy's own, inside the private store.
-CA_PATH="$CA_DIR/mitmproxy-ca-cert.pem"
+log "step E: waiting for agentcage-egress listener :8443 AND CA cert (max 30s)"
 i=0
 while [ "$i" -lt 30 ]; do
   if [ -s "$CA_PATH" ] && ss -lnt 2>/dev/null | grep -q ':8443 '; then
     break
   fi
-  if ! kill -0 "$MITMPROXY_PID" 2>/dev/null; then
-    die "mitmproxy exited before listener+CA ready" 50
+  if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+    die "agentcage-egress exited before listener+CA ready" 50
   fi
   sleep 1; i=$((i+1))
 done
 [ -s "$CA_PATH" ] \
-  || die "mitmproxy CA cert never appeared at $CA_PATH within 30s" 51
+  || die "agentcage-egress CA cert never appeared at $CA_PATH within 30s" 51
 ss -lnt 2>/dev/null | grep -q ':8443 ' \
-  || die "mitmproxy listener never came up on :8443 within 30s" 52
-log "step E: mitmproxy ready (CA at $CA_PATH, listening on :8443)"
+  || die "agentcage-egress listener never came up on :8443 within 30s" 52
+log "step E: agentcage-egress ready (CA at $CA_PATH, listening on :8443)"
 
 # Publish just the public cert to /home/acproxy/public-certs, which every
 # backend mounts read-only into the cage at /certs. The cage must NOT see
@@ -698,18 +683,14 @@ log "step E: mitmproxy ready (CA at $CA_PATH, listening on :8443)"
 #
 # `agentcage-ca.pem` is the contract: the cage's SSL_CERT_FILE /
 # NODE_EXTRA_CA_CERTS, `cage verify`, the cage unit's readiness probe,
-# nested containers.conf and the scaffolds all name it. It is written
-# LAST, so a consumer polling for it finds the alias already in place.
+# nested containers.conf and the scaffolds all name it.
 if [ -d /home/acproxy/public-certs ]; then
-  # Compatibility alias for images and configs that still copy the old
-  # name. Removed at the Rust egress cutover (EGRESS-PORT-PLAN.md D12).
-  install -m 0644 "$CA_PATH" /home/acproxy/public-certs/mitmproxy-ca-cert.pem
   install -m 0644 "$CA_PATH" /home/acproxy/public-certs/agentcage-ca.pem
   log "step E: published public cert to /home/acproxy/public-certs/"
 fi
 
 #-- Step F. Readiness marker -----------------------------------------------
-# Backends (PR 2) poll for this file to declare the cage ready. Must be
+# Backends poll for this file to declare the cage ready. Must be
 # the LAST thing the supervisor does before entering the monitor loop —
 # anything written before this point is part of the readiness contract.
 touch /var/log/agentcage/ready
@@ -722,7 +703,7 @@ log "step F: ready marker written; entering monitor loop"
 # iteration and we exit 1 — tini will then propagate the exit to the
 # container runtime.
 #
-# The loop also picks up policy-api grants. The addon (uid 200) cannot signal
+# The loop also picks up policy-api grants. The egress (uid 200) cannot signal
 # dnsmasq (uid 201) — it has no CAP_KILL — so it publishes the granted zone
 # list to $GRANTED_DOMAINS and we render + SIGHUP here, as root. This adds a
 # single builtin `[ -f ]` test to an iteration that already exists and already
@@ -733,7 +714,7 @@ log "step F: ready marker written; entering monitor loop"
 # The flag is cleared BEFORE rendering, so a grant decided while a render is
 # in flight re-creates it and gets its own pass rather than being swallowed.
 # A failed render puts it back, so the next iteration retries.
-while kill -0 "$DNSMASQ_PID" 2>/dev/null && kill -0 "$MITMPROXY_PID" 2>/dev/null; do
+while kill -0 "$DNSMASQ_PID" 2>/dev/null && kill -0 "$PROXY_PID" 2>/dev/null; do
   if [ -f "$GRANTS_RELOAD" ]; then
     rm -f "$GRANTS_RELOAD"
     if _render_servers_file; then

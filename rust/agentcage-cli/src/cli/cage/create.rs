@@ -109,6 +109,17 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
+    // Custom inspector plugins are copied out of the operator's tree
+    // now, while it is at hand; a missing file refuses the create before
+    // any deployment state exists.
+    ctx.paths
+        .stage_inspector_plugins(
+            &name,
+            &config,
+            config_path.parent().unwrap_or(Path::new(".")),
+        )
+        .map_err(|error| state_error(&error))?;
+
     // ── state ───────────────────────────────────────────
     ctx.paths
         .save_deployment(&name, &config_path)

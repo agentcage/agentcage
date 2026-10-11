@@ -1,0 +1,15 @@
+[package]
+name = "misbehaving-inspector"
+description = "Test fixture: a custom inspector that traps, loops, hoards memory or reaches for capabilities on demand."
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Built for wasm32-wasip2 by the egress plugin tests; `rlib` so the
+# workspace build compiles and lints it natively too.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+agentcage-inspector-sdk = { path = "../../../../agentcage-inspector-sdk" }

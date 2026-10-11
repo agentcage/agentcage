@@ -1,0 +1,115 @@
+# Fuzzing the egress's parsers of untrusted input (cargo-fuzz / libFuzzer).
+#
+# The targets live in rust/agentcage-egress/fuzz/ (a standalone, nightly-
+# only package); the harnesses are agentcage_egress::fuzz_api. Every PR
+# runs each target for a short, bounded time on top of the committed
+# seeds and regression inputs; a weekly run goes longer and keeps the
+# corpus it grows (in the Actions cache) for the next run. Any crash,
+# invariant failure, timeout or out-of-memory fails the job, and the input
+# that caused it is uploaded as an artifact: drop it into
+# fuzz/regressions/<target>/ with the fix, where `cargo test` replays it
+# on stable too.
+
+name: Fuzz
+
+on:
+  pull_request:
+    branches: [master]
+  schedule:
+    # Mondays, 04:23 UTC.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        required: false
+        default: "600"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # libFuzzer and the sanitizers need nightly. Pinned, so a broken nightly
+  # cannot turn every PR red; bump it deliberately.
+  NIGHTLY: nightly-2026-10-10
+  CARGO_FUZZ_VERSION: 0.13.2
+
+jobs:
+  fuzz:
+    name: fuzz targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: rust/agentcage-egress
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly and cargo-fuzz
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          cargo +"$NIGHTLY" --version
+          cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
+
+      - name: Cache cargo registry and the fuzz build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            rust/agentcage-egress/fuzz/target
+          key: >-
+            fuzz-build-${{ runner.os }}-${{ env.NIGHTLY }}-${{
+            hashFiles('rust/agentcage-egress/fuzz/Cargo.lock') }}
+          restore-keys: |
+            fuzz-build-${{ runner.os }}-${{ env.NIGHTLY }}-
+
+      # The corpus each run grows, carried to the next (a cache entry is
+      # immutable, so every run saves a new one and restores the newest).
+      - name: Restore the working corpus
+        uses: actions/cache@v4
+        with:
+          path: rust/agentcage-egress/fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Build the targets
+        run: cargo +"$NIGHTLY" fuzz build
+
+      - name: Run every target
+        env:
+          # PRs: a short smoke run per target. Scheduled: ten minutes each.
+          SECONDS_PER_TARGET: >-
+            ${{ github.event_name == 'pull_request' && '90'
+            || inputs.seconds || '600' }}
+        run: |
+          failed=()
+          for target in $(cargo +"$NIGHTLY" fuzz list); do
+            echo "::group::$target (${SECONDS_PER_TARGET}s)"
+            mkdir -p "fuzz/corpus/$target" "fuzz/seeds/$target" "fuzz/regressions/$target"
+            # -timeout: one input running 10 s is a hang, and a failure.
+            if ! cargo +"$NIGHTLY" fuzz run "$target" \
+                "fuzz/corpus/$target" "fuzz/seeds/$target" "fuzz/regressions/$target" -- \
+                -max_total_time="$SECONDS_PER_TARGET" \
+                -rss_limit_mb=2048 -timeout=10 -print_final_stats=1; then
+              failed+=("$target")
+            fi
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::fuzz targets failed: ${failed[*]}"
+            exit 1
+          fi
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: rust/agentcage-egress/fuzz/artifacts/
+          if-no-files-found: ignore

@@ -28,6 +28,9 @@ pub mod cage_podman;
 pub mod deploy;
 /// `agentcage doctor` — the host diagnostics (PR D15).
 pub mod doctor;
+/// The egress image's tag and the `agentcage-egress` binary staged into
+/// its build context.
+pub mod egress_image;
 /// `agentcage cage har` — the HAR export (PR D13).
 pub mod har;
 /// The host probes `agentcage-core` declares and does not implement.

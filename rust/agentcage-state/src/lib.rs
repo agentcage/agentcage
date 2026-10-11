@@ -72,6 +72,7 @@ pub mod grants;
 pub mod metadata;
 pub mod paths;
 pub mod pending_secrets;
+pub mod plugins;
 pub mod pyfs;
 pub mod systemd;
 pub mod testdir;

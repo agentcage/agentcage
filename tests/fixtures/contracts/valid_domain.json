@@ -2,8 +2,8 @@
   "contract": "valid_domain",
   "summary": "Is this string a syntactically valid lowercase DNS domain? The gate that stops an overlay string from being rendered into a dnsmasq directive, and the gate the addon applies to a runtime grant request.",
   "implementations": {
-    "host": "agentcage.config.valid_domain (src/agentcage/config.py)",
-    "proxy": "policy_api.PolicyApi._valid_domain (src/agentcage/data/proxy/policy_api.py)"
+    "host": "agentcage_core::config::valid_domain (rust/agentcage-core/src/config/domain.rs)",
+    "proxy": "the same function, reused by rust/agentcage-egress/src/policy/mod.rs"
   },
   "fields": {
     "input": "the candidate domain string",

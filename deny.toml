@@ -1,0 +1,98 @@
+# cargo-deny policy for the Rust workspace: `cargo deny check`.
+#
+# Run in CI by the `deny` job of .github/workflows/rust.yml. Four checks:
+# known vulnerabilities, licenses, banned / duplicate crates, and where
+# crates may come from. Every exception below carries a reason and a
+# date, so a stale one can be found and dropped.
+
+[graph]
+# The platforms a release is built for (publish.yml) plus the wasm
+# target the example inspectors compile to. Windows-only crates are
+# left out: nothing here ships for Windows, so their advisories and
+# licenses are not ours to answer for.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "wasm32-wasip2",
+]
+# Every optional dependency counts, enabled by default or not.
+all-features = true
+
+# ── Advisories ───────────────────────────────────────────────
+#
+# Against the RustSec database. A vulnerability fails the check; so does
+# an unmaintained crate anywhere in the tree (`workspace` would only look
+# at direct dependencies, and the egress's attack surface is mostly
+# transitive), and a yanked version in Cargo.lock.
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+# Each entry: the advisory id, why it does not apply or cannot be fixed
+# yet, and the date it was added.
+ignore = []
+
+# ── Licenses ─────────────────────────────────────────────────
+#
+# What the tree actually uses today, nothing speculative. A crate offered
+# under a choice of licenses passes when any one of them is listed, so
+# e.g. LGPL-2.1-or-later (r-efi, also MIT / Apache-2.0) is not needed
+# here. A new license showing up fails the check on purpose: someone
+# decides, rather than it arriving with a lockfile bump.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # wasmtime / cranelift.
+    "Apache-2.0 WITH LLVM-exception",
+    # alloc-no-stdlib / alloc-stdlib (under brotli-decompressor),
+    # encoding_rs (its data, with MIT / Apache-2.0 for the code), subtle.
+    "BSD-3-Clause",
+    # ring, rustls-webpki, untrusted.
+    "ISC",
+    # unicode-ident's data tables, alongside MIT / Apache-2.0.
+    "Unicode-3.0",
+    # foldhash (no alternative offered).
+    "Zlib",
+    # webpki-roots: the Mozilla root store's data license.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+# The workspace's own crates (MIT, unpublished) need no clarification.
+private = { ignore = true }
+
+# ── Bans ─────────────────────────────────────────────────────
+#
+# Two versions of one crate (wasmtime pulls a second `base64`, rcgen a
+# second `digest`, ...) cost build time and binary size but are not a
+# correctness or licensing problem, so they warn rather than fail.
+[bans]
+multiple-versions = "warn"
+# The only version-less requirements in the tree are the path
+# dependencies between the workspace's own crates, and cargo-deny counts
+# those as wildcards for any crate not marked `publish = false`. Every
+# crates.io dependency is pinned by the committed Cargo.lock (CI builds
+# `--locked`), so a wildcard check would add nothing but those.
+wildcards = "allow"
+highlight = "all"
+deny = [
+    # TLS is rustls with the ring provider (docs/history/egress-port-plan.md D8): no
+    # OpenSSL and no aws-lc (which needs cmake) may creep in.
+    { name = "openssl-sys" },
+    { name = "openssl" },
+    { name = "aws-lc-sys" },
+    { name = "aws-lc-rs" },
+]
+
+# ── Sources ──────────────────────────────────────────────────
+#
+# crates.io only: no git dependencies, no other registries.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

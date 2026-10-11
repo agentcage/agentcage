@@ -1,0 +1,37 @@
+[package]
+name = "agentcage-e2e-mock"
+description = "Mock upstreams for the agentcage end-to-end suite (tests/e2e)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Test infrastructure: run by tests/e2e/lib.sh inside a container that
+# shares a cage egress's network namespace. Never shipped.
+publish = false
+
+# Plain std threads and blocking sockets, no async runtime: each mock
+# serves a handful of connections per e2e run, and a thread per
+# connection keeps every protocol a straight-line read/answer loop.
+[dependencies]
+# The JSON bodies the mocks answer with and the stub LLM parses. NOT
+# `preserve_order`: features unify across the workspace, and
+# agentcage-core's golden output relies on serde_json's sorted `Map`.
+# Key order comes from derived structs instead (see `pyjson`).
+serde_json = "1"
+# Derived `Serialize` structs: fields serialize in declaration order.
+serde = { version = "1", features = ["derive"] }
+# The WebSocket echo's reply digest.
+sha2 = "0.10.9"
+# The WebSocket handshake's Sec-WebSocket-Accept (RFC 6455 section 4.2.2).
+sha1 = "0.11"
+base64 = "0.22"
+# The passthrough upstream: a TLS server with a certificate generated at
+# startup, so no private key is ever committed. Same TLS stack and
+# provider as the egress, so the musl build needs nothing new.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+
+[lints]
+workspace = true

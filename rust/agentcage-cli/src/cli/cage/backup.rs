@@ -1620,7 +1620,7 @@ fn copy_restored_entry(source: &Path, dest: &Path) {
 /// *after* the deploy, so a hand-made `agentcage-certs-<name>.tar`
 /// would have replaced the CA the restored cage's egress had just
 /// generated with one the archive's author chose
-/// (`EGRESS-PORT-PLAN.md` D11).
+/// (`docs/history/egress-port-plan.md` D11).
 ///
 /// * A manifest entry that is not a name podman accepts
 ///   ([`is_valid_volume_name`]) refuses the restore. podman would
@@ -2944,7 +2944,7 @@ container:
     }
 
     /// **A restore never seeds a cage with a CA from an archive**
-    /// (`EGRESS-PORT-PLAN.md` D11). `cage backup` never writes a volume
+    /// (`docs/history/egress-port-plan.md` D11). `cage backup` never writes a volume
     /// in agentcage's own namespace, so an archive that carries one —
     /// as a tar, or as a manifest entry — was made by hand, and an
     /// `agentcage-certs-<name>.tar` in it would replace the CA the
@@ -3226,6 +3226,9 @@ container:
     /// the deploy.
     #[test]
     fn a_started_restore_imports_after_the_deploy_with_the_cage_stopped() {
+        // The deploy builds the egress image, which needs a binary to
+        // stage; a development build embeds none.
+        agentcage_cli::egress_image::provide_binary_for_tests(b"stub egress");
         let dir = TestDir::new("restore-started-volumes");
         let fake = FakeRunner::new();
         fake.assume_installed();
@@ -4194,7 +4197,7 @@ secret_injection:
     /// A backup never carries a CA, and a restore never inherits one: a
     /// certs dir an earlier cage of the target name left behind is gone
     /// before the restored cage is started, so its egress generates a
-    /// new CA (`EGRESS-PORT-PLAN.md` D11).
+    /// new CA (`docs/history/egress-port-plan.md` D11).
     #[test]
     fn an_apple_restore_purges_a_leftover_ca() {
         let dir = TestDir::new("apple-restore-stale-ca");

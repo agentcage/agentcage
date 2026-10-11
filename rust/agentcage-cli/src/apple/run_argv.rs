@@ -89,6 +89,11 @@ pub struct EgressPaths<'a> {
     /// legacy-cleanup helper still reads it, so the source has to be
     /// that exact location.
     pub grants: Option<&'a Path>,
+    /// `inspectors_dir(name)` → `/etc/agentcage/inspectors:ro`, when
+    /// `cage create` / `cage update` staged custom inspector plugins
+    /// there. `None` for a cage without plugins, which then runs with the
+    /// argv it always had.
+    pub inspectors: Option<&'a Path>,
 }
 
 /// `start()` step 2 — the egress sibling's `container run` argv.
@@ -110,7 +115,7 @@ pub struct EgressPaths<'a> {
 /// The other sysctl `egress.container.j2` sets,
 /// `net.ipv4.ip_unprivileged_port_start=80`, is deliberately **not**
 /// carried: on the Quadlet path it exists only for the reverse-mode
-/// inbound forwards this backend never stages, and here mitmproxy binds
+/// inbound forwards this backend never stages, and here the egress binds
 /// `:8080` and `:8443`, both already unprivileged, while dnsmasq gets
 /// `:53` from its file capability plus the bounding-set entry above.
 #[must_use]
@@ -146,6 +151,10 @@ pub fn egress_argv(
     }
     argv.push("-e".to_owned());
     argv.push(format!("AGENTCAGE_VERSION={version}"));
+    // The CA subject's cage name (the Rust egress; the Python one
+    // ignores it).
+    argv.push("-e".to_owned());
+    argv.push(format!("AGENTCAGE_CAGE_NAME={name}"));
     // The upstreams for policy-api granted zones. Same env as
     // `egress.container.j2`; the baseline is empty under default-deny,
     // so the supervisor cannot scrape them out of it.
@@ -171,6 +180,13 @@ pub fn egress_argv(
         argv.push("--volume".to_owned());
         argv.push(format!("{}:/home/acproxy/secrets:ro", secrets.display()));
     }
+    if let Some(inspectors) = paths.inspectors {
+        argv.push("--volume".to_owned());
+        argv.push(format!(
+            "{}:/etc/agentcage/inspectors:ro",
+            inspectors.display()
+        ));
+    }
     if let Some(grants) = paths.grants {
         argv.push("--volume".to_owned());
         argv.push(format!("{}:/var/lib/agentcage", grants.display()));
@@ -187,7 +203,7 @@ pub fn egress_argv(
     ]);
     // The port policy `generate_units` persisted. `supervisor-egress.sh`
     // step A turns these into iptables rules: inspected TCP into a
-    // `nat:PREROUTING` REDIRECT to mitmproxy, passthrough TCP into a
+    // `nat:PREROUTING` REDIRECT to the egress, passthrough TCP into a
     // `FORWARD` ACCEPT that skips inspection, allowed UDP into a UDP
     // `FORWARD` ACCEPT.
     //
@@ -513,7 +529,18 @@ mod tests {
     use std::path::Path;
 
     use super::super::meta::Meta;
-    use super::{CageInputs, EgressPaths, cage_argv, egress_argv};
+    use super::{CageInputs, EGRESS_MEMORY, EgressPaths, cage_argv, egress_argv};
+
+    /// The config warnings compare `egress.body_budget_bytes` with the
+    /// egress microVM's memory; they keep their own copy of the number.
+    #[test]
+    fn the_egress_memory_matches_what_the_config_warnings_assume() {
+        assert_eq!(EGRESS_MEMORY, "512M");
+        assert_eq!(
+            agentcage_core::config::egress::APPLE_EGRESS_MEMORY_BYTES,
+            512 << 20
+        );
+    }
 
     /// The flag and its value, as a pair, for every `-e`/`--volume`
     /// style argument. Asserting on pairs rather than on a flat list is
@@ -537,7 +564,37 @@ mod tests {
             egress_config: Path::new("/s/egress-config"),
             secrets: None,
             grants: None,
+            inspectors: None,
         }
+    }
+
+    /// Staged plugins are mounted read-only where the egress looks for
+    /// them, and nothing is mounted for a cage without any.
+    #[test]
+    fn staged_plugins_are_mounted_read_only() {
+        let without = egress_argv("demo", "demo-net", "img", "1", &meta("{}"), &egress_paths());
+        assert!(
+            !without
+                .iter()
+                .any(|a| a.contains("/etc/agentcage/inspectors"))
+        );
+        let dir = Path::new("/d/demo/inspectors");
+        let with = egress_argv(
+            "demo",
+            "demo-net",
+            "img",
+            "1",
+            &meta("{}"),
+            &EgressPaths {
+                inspectors: Some(dir),
+                ..egress_paths()
+            },
+        );
+        let at = with
+            .iter()
+            .position(|a| a == "/d/demo/inspectors:/etc/agentcage/inspectors:ro")
+            .expect("mounted");
+        assert_eq!(with[at - 1], "--volume");
     }
 
     /// #407, which is the whole reason this backend works at all: the

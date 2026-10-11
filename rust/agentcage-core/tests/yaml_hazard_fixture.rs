@@ -1,14 +1,13 @@
-//! The YAML 1.1 ambiguity fixture, asserted without Python.
+//! The YAML 1.1 ambiguity fixture.
 //!
-//! This half is the fast one: it runs on every `cargo test`, needs no
-//! interpreter, and proves that `agentcage-core`'s transliteration of
-//! PyYAML's implicit-resolver table agrees with the corpus, and that the
-//! emitter quotes everything the corpus says is hazardous.
-//!
-//! It is **not** the test that proves the bug is fixed. A pure-Rust test
-//! cannot: the corruption happens when PyYAML reads what Rust wrote, and
-//! Rust reading what Rust wrote is fine either way. That proof is
-//! `yaml_pyyaml_crossing.rs`, which runs real `yaml.safe_load`.
+//! Proves that `agentcage-core`'s transliteration of PyYAML's
+//! implicit-resolver table agrees with the corpus (recorded from a real
+//! `yaml.safe_load`), and that the emitter quotes everything the corpus
+//! says is hazardous. The reader of what the host writes is
+//! [`yaml::load`] itself (in the egress, and in the next `cage`
+//! invocation), which resolves plain scalars under the same YAML 1.1
+//! rules, so the round trip below fails if the emitter ever writes a
+//! hazardous scalar plain.
 
 mod common;
 

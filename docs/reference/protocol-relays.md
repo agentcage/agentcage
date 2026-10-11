@@ -79,7 +79,7 @@ Point the cage's mail client at that address and port with no TLS and no passwor
 | `upstream.host` | required | The mail server's hostname, or an IP literal (with `tls_servername`, see below). |
 | `upstream.port` | required | `1`–`65535`. A quoted number is accepted, but a YAML boolean (`yes`, `no`, `on`, `off`) is not. |
 | `upstream.tls` | `true` | `true`: implicit TLS (IMAPS 993, SMTPS 465). `false`: plaintext, only for an upstream on a trusted local path. No STARTTLS: see [Upstream TLS](#upstream-tls). |
-| `upstream.ca_file` | none | A host path to a PEM certificate to trust in addition to the system store. See [Upstream TLS](#upstream-tls). |
+| `upstream.ca_file` | none | A host path to a PEM certificate to trust in addition to the Mozilla root store built into the egress. See [Upstream TLS](#upstream-tls). |
 | `upstream.ca_pem` | none | The same certificate inline, as a PEM string. Use `ca_file` or `ca_pem`, not both. |
 | `upstream.tls_servername` | none | The name to send in SNI and to check the certificate against, when it differs from `upstream.host`. |
 | `auth.user_source` | none | `env:NAME` or `systemd-creds:NAME`. See [Credentials](#credentials). |
@@ -111,7 +111,7 @@ Certificate verification and hostname checking are always on. There is no option
 
 - **`ca_file`** is read by the host on every `cage create`, `update` and `restart`, and placed into the egress config as `ca_pem`. A certificate that a local daemon regenerates is picked up by the next `cage restart`. `~` and `$VAR` are expanded. The file must contain a `-----BEGIN CERTIFICATE-----` block; if it is missing, unreadable or not PEM, the deploy fails.
 - **`ca_pem`** must contain a `-----BEGIN CERTIFICATE-----` block.
-- **Additive, not a pin.** Both add a certificate to the system CA store. A public CA that issues for the same name is still trusted.
+- **Additive, not a pin.** Both add a certificate to the Mozilla root store the egress verifies against (`webpki-roots`, compiled into the binary). A public CA that issues for the same name is still trusted.
 - **`tls_servername`** is for an upstream addressed by IP, such as a local bridge daemon on a container subnet. A certificate can rarely name that address, so give the name it does carry.
 - **Plaintext refuses them.** `ca_file`, `ca_pem` and `tls_servername` with `tls: false` are an error, since nothing would be verified. Note that YAML reads a bare `tls: no` as `false`, but the quoted string `"false"` is truthy and leaves TLS on.
 

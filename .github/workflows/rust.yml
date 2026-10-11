@@ -1,10 +1,5 @@
-# The host CLI's CI gate.
-#
-# Separate from test.yml on purpose. The egress proxy suite must not grow
-# a Rust dependency -- proxy work (data/proxy/** is Python) should stay a
-# pytest-only round trip, and the Rust job should not wait on a
-# three-version Python matrix. Neither job can fail the other; both are
-# required for a merge.
+# The workspace's CI gate: the host CLI, the egress, and the repository
+# invariants.
 #
 # The committed fixtures under tests/fixtures/ were recorded from the
 # Python CLI before it was removed; the Rust tests assert against them
@@ -34,6 +29,22 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # docs/history/rust-port-plan.md §2.4 and the egress cutover. A static
+  # scan with no build of the workspace beyond the xtask itself, so it
+  # fails in seconds rather than behind the full test run: Rust does not
+  # shell out to a Python interpreter, no shipped image installs one, no
+  # tracked file is Python, and no live file names the replaced egress
+  # (see rust/xtask/src/invariants.rs).
+  invariants:
+    name: repository invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: cargo xtask check-invariants
+        run: cargo xtask check-invariants
+
   rust:
     name: build, test, clippy, fmt
     runs-on: ubuntu-latest
@@ -78,28 +89,17 @@ jobs:
       - name: cargo build
         run: cargo build --workspace --locked
 
-      - name: cargo test
-        run: cargo test --workspace --locked
+      # The egress plugin tests build the example custom inspectors as
+      # WebAssembly components. Without the target they skip themselves
+      # (so `cargo test` works on any laptop); here a missing target is a
+      # failure, so the plugin path is always exercised.
+      - name: Install the wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2
 
-      # The Rust->Python crossing test (PR B2). It is #[ignore]d so that
-      # `cargo test` works without an interpreter -- Python is not a host
-      # dependency -- but the property it checks is a cross-language
-      # contract with the egress proxy, which reads the YAML the host
-      # writes with PyYAML, so it has to run somewhere. Here.
-      #
-      # It asserts four things a pure-Rust test cannot: that every
-      # scalar in tests/fixtures/yaml_1_1_scalars.json survives
-      # `yaml.safe_load` as the string it went in as, that the bare crate
-      # really does corrupt the ones the fixture calls hazardous (the
-      # control arm), that every committed config means the same thing to
-      # PyYAML after a Rust round trip, and -- the reading direction --
-      # that `yaml::load` and `yaml.safe_load` produce the same value for
-      # every document in the read-side corpus, including the four
-      # corners of `tls: no` / `'no'` / `false` / `"false"`.
-      - name: Rust to PyYAML crossing test
-        run: |
-          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
-          cargo test --locked -p agentcage-core --test yaml_pyyaml_crossing -- --ignored
+      - name: cargo test
+        env:
+          AGENTCAGE_REQUIRE_WASM: "1"
+        run: cargo test --workspace --locked
 
       # --all-targets covers tests and examples, which is where the lints
       # that matter (unwrap in a helper, a stray dbg!) actually land.
@@ -118,3 +118,66 @@ jobs:
           echo "expected: $expected"
           echo "actual:   $actual"
           [ "$actual" = "$expected" ]
+
+  # Dependency policy (deny.toml): RustSec advisories, licenses, banned
+  # crates and sources. Separate from the build job so a new advisory
+  # names itself in the job list instead of hiding in a long log. The
+  # action pins cargo-deny itself (v2.1.1 ships cargo-deny 0.20.2); it is
+  # pinned by commit, as a third-party action that sees the checkout.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features
+
+  # The release path for the egress binary, on every PR: build it for
+  # linux-musl, embed it in the host, and check what was embedded. The
+  # job above builds the host without one (the default for a dev
+  # checkout), so without this a broken embed would first show up in
+  # publish.yml, during a release.
+  egress-embed:
+    name: musl egress, embedded
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain, the musl target and musl-gcc
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+
+      - name: Cache cargo registry and target/
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: >-
+            cargo-embed-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-embed-${{ runner.os }}-
+
+      - name: Build the egress for linux-musl
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p agentcage-egress
+
+      # `AGENTCAGE_REQUIRE_EGRESS_BIN=1` makes "not found" a build
+      # failure, so these tests cannot pass vacuously on the no-binary
+      # branch.
+      - name: Embed and stage it
+        env:
+          AGENTCAGE_REQUIRE_EGRESS_BIN: "1"
+        run: |
+          cargo test --locked -p agentcage-egress-embed
+          cargo test --locked -p agentcage-cli --lib egress_image
+          cargo build --release --locked --bin agentcage

@@ -165,20 +165,16 @@ fn build_tree(tree: &Value) -> (TestDir, FixtureHost) {
 /// The egress content hash, against the tree this binary carries.
 ///
 /// The digest is already pinned by `tests/fixtures/egress_hash.json`
-/// and checked in `agentcage-assets`. What this adds is that the value
-/// the *Python* computed over the same tree, recorded independently, is
-/// the same one — the cross-language half of the contract. A mismatch
-/// means every Mac rebuilds its egress image once on upgrade and then
-/// drifts permanently from the Python-computed tag.
+/// and checked in `agentcage-assets`; this keeps the apple fixture's
+/// recording of it in step.
 #[test]
-fn egress_content_hash_matches_the_python() {
+fn egress_content_hash_matches_the_fixture() {
     let fixture = document("image.json");
     assert_eq!(
         text_of(&fixture["content_hash"]),
         agentcage_assets::egress::content_hash(),
         "the egress content hash moved; if that was deliberate, re-bless \
-         tests/fixtures/egress_hash.json too and expect every Mac to \
-         rebuild once"
+         tests/fixtures/egress_hash.json and update this fixture too"
     );
 }
 
@@ -188,8 +184,16 @@ fn image_name_is_repo_version_hash() {
     let expected =
         text_of(&fixture["image_name"]).replace("{{VERSION}}", agentcage_assets::VERSION);
     assert_eq!(
-        agentcage_cli::apple::image::egress_image_name_embedded(),
+        egress_image_name(agentcage_assets::VERSION, text_of(&fixture["content_hash"])),
         expected
+    );
+    // The real tag also covers the egress binary, when one is embedded.
+    assert_eq!(
+        agentcage_cli::apple::image::egress_image_name_embedded(),
+        egress_image_name(
+            agentcage_assets::VERSION,
+            &agentcage_cli::egress_image::content_hash()
+        )
     );
     assert_eq!(
         text_of(&fixture["repo"]),
@@ -241,7 +245,7 @@ fn a_changed_copy_source_changes_the_tag() {
 }
 
 #[test]
-fn build_argv_matches_the_python() {
+fn build_argv_matches_the_fixture() {
     let fixture = document("image.json");
     let image = text_of(&fixture["image_name"]);
     let context = text_of(&fixture["build_context"]);

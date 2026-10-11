@@ -139,7 +139,7 @@ fn every_valid_case_reproduces_resolved_config() {
         wrong.join("\n")
     );
     assert_eq!(
-        checked, 128,
+        checked, 130,
         "the corpus grew or shrank; if that is intended, update this number"
     );
     println!("{checked} valid corpus configs reproduced resolved-config.json");
@@ -453,6 +453,7 @@ const C1_OWNED: &[&str] = &[
     "err-agents-watcher-number-not-number",
     "err-agents-watcher-wrapper-decider",
     "err-decider-timeout-not-finite",
+    "err-egress-budget-below-cap",
     "err-port-entry-bool",
     "err-port-entry-not-int",
     "err-ports-icmp-allow-not-bool",

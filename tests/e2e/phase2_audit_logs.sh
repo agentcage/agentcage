@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 2: Container Mode — Audit, Logs & HAR Capture
 source "$(dirname "$0")/lib.sh"
-preflight_check "$AGENTCAGE" podman curl
+preflight_check "$AGENTCAGE" podman curl jq
 phase_header 2 "Container Mode — Audit, Logs & HAR Capture"
 
 CAGE="basic"
@@ -90,7 +90,7 @@ if wait_ready "$HAR_BASE" 120; then
 
   HAR_FILE=$(mktemp /tmp/e2e-har-XXXXXX.har)
   if "$AGENTCAGE" cage har "$HAR_CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then
-    if python3 -c "import json; json.load(open('$HAR_FILE'))" 2>/dev/null; then
+    if jq -e 'type == "object"' "$HAR_FILE" >/dev/null 2>&1; then
       e2e_pass "2.8" "HAR export (inbound)"
     else
       e2e_fail "2.8" "HAR export (inbound)" "invalid JSON"

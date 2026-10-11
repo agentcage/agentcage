@@ -2,8 +2,8 @@
   "contract": "encoded_private_ip",
   "summary": "Does this hostname ENCODE a non-globally-routable IP address? The structural half of agentcage's SSRF guard: wildcard-DNS services (nip.io, sslip.io, clones) turn a syntactically valid PUBLIC name into a route to 169.254.169.254, which name-suffix matching cannot see. Returns the decoded address, or null.",
   "implementations": {
-    "host": "agentcage.config.encoded_private_ip (src/agentcage/config.py)",
-    "proxy": "policy_api._encoded_private_ip (src/agentcage/data/proxy/policy_api.py)"
+    "host": "agentcage_core::config::encoded_private_ip (rust/agentcage-core/src/config/domain.rs)",
+    "proxy": "the same function, reused by rust/agentcage-egress/src/policy/mod.rs"
   },
   "fields": {
     "input": "the candidate hostname",

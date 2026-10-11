@@ -10,7 +10,7 @@ Usage: agentcage domain add [OPTIONS] NAME DOMAIN_NAMES...
   default.
 
 Options:
-  --passthrough      Also add to TLS passthrough list (no MITM interception).
+  --passthrough      Also add to TLS passthrough list (no TLS interception).
   --expires-in TEXT  Time-limit the entry: e.g. 30m, 1h, 2d (or a bare number of
                      seconds). After it expires the domain is blocked at the
                      proxy and pruned from the allowlist. Useful for a one-off

@@ -1,6 +1,6 @@
 {# Per-cage wrapper Containerfile — slimmed for the 2-microVM model (PR 3
    of #196). The legacy single-VM template was ~120 lines installing
-   mitmproxy + dnsmasq + supervisor.sh; those all moved to the sibling
+   the egress proxy + dnsmasq + supervisor.sh; those all moved to the sibling
    <cage>-egress microVM built from agentcage-egress (PR 1). This wrapper
    now only adds a small cage-init.sh entrypoint + the shell-escaped one-
    shot exec script the user's CMD lives in.
@@ -17,7 +17,7 @@
        parsing, no shell-metacharacter risk.
 
    What this template no longer carries (vs the legacy version):
-     * mitmproxy bundle (and its SHA-pinned 120MB download)
+     * the egress proxy (and its SHA-pinned 120MB download)
      * dnsmasq
      * iptables binary
      * jq

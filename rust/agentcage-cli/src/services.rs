@@ -395,7 +395,7 @@ fn copy_tree(source: &Path, dest: &Path) -> io::Result<()> {
 /// The egress's (`resolv-egress-<name>.conf`) is seeded with the
 /// configured upstreams and nothing else. It exists because the egress
 /// joins two aardvark-enabled podman networks and podman would otherwise
-/// generate its `/etc/resolv.conf` for it — which is where mitmproxy
+/// generate its `/etc/resolv.conf` for it — which is where the egress proxy
 /// resolves every allowlisted upstream hostname from, so a resolver that
 /// intermittently fails to forward turns every allowlisted host into a
 /// 502. The quadlet bind-mounts this file **rw**, not ro: the supervisor
@@ -542,6 +542,13 @@ pub fn build_and_deploy(
     if config.capture.enable_har {
         paths.ensure_capture_dir(deploy_name)?;
     }
+
+    // The egress unit bind-mounts the staged plugin directory whenever
+    // the config names a plugin. Every deploy path checks it here, not
+    // only `cage update`: a restored cage (backups do not carry the
+    // staged plugins) would otherwise start an egress whose mount source
+    // is missing.
+    paths.check_inspector_plugins_staged(deploy_name, config)?;
 
     // The grants overlay directory, for the same reason and with the same
     // failure: `state.grants_dir()` created it while `quadlets.py`

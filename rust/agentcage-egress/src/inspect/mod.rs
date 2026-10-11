@@ -11,9 +11,13 @@
 //! same [`Inspector`] trait.
 
 pub mod body_size;
+pub mod chain;
 pub mod content_type;
+#[cfg(test)]
+mod corpus;
 pub mod domain;
 pub mod entropy;
+mod pyconf;
 pub mod secrets;
 
 use crate::json::Json;
@@ -146,8 +150,9 @@ pub struct Context {
     /// The `Content-Type` header value, or `""`.
     pub content_type: String,
     /// The decoded (Content-Encoding removed) body, or `None` when there is
-    /// no body.
-    pub body_bytes: Option<Vec<u8>>,
+    /// no body. Shared, not copied, when the context is cloned or handed
+    /// on.
+    pub body_bytes: Option<bytes::Bytes>,
     /// The body as text, decoded the way [`crate::text::get_text`] does, or
     /// `None` when there is no body or it cannot be decoded.
     pub body_text: Option<String>,
@@ -158,6 +163,23 @@ pub struct Context {
     pub body_entropy: Option<f64>,
     /// Verdicts already returned by earlier inspectors in this chain.
     pub prior_results: Vec<Verdict>,
+    /// Which way the flow runs. No built-in reads it; custom inspectors
+    /// are handed it (`agentcage:inspector` `context.direction`).
+    pub direction: Direction,
+    /// True when this is one WebSocket message rather than an HTTP
+    /// request or response. Custom inspectors see it as
+    /// `phase: websocket`.
+    pub websocket: bool,
+}
+
+/// Which way a flow runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Direction {
+    /// Cage to world: the forward and transparent proxy, the relays.
+    #[default]
+    Outbound,
+    /// World to a port the cage exposes: the reverse proxy.
+    Inbound,
 }
 
 /// An inspector, built-in or plugin.
@@ -176,6 +198,15 @@ pub trait Inspector: Send + Sync + std::fmt::Debug {
     /// responses.
     fn inspect_response(&self, _ctx: &Context) -> Option<Verdict> {
         None
+    }
+
+    /// Whether [`Inspector::inspect_response`] can return anything: an
+    /// inspector that overrides `inspect_response` must override this to
+    /// return `true`. The pipeline skips building a response's inspection
+    /// context (a copy of the body, its text and its entropy) when no
+    /// inspector in the chain inspects responses.
+    fn inspects_responses(&self) -> bool {
+        false
     }
 }
 
