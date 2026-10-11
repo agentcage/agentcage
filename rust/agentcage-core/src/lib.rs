@@ -63,6 +63,7 @@
 
 pub mod apple;
 pub mod audit;
+pub mod cage_ca;
 pub mod config;
 pub mod fingerprint;
 pub mod har;

@@ -4,8 +4,8 @@
     "image_digests": "a48406e7ea9c62bf2bcd7bdf115eb55bcf09580431ad10268a7ba88825d3f2b1",
     "resolved_config": "d01fbe7d1826beffe14bffc8a70c17c50b6489a891c509be83c8f88ba9e79ff1",
     "scaffold_version": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "units": "f9504f492e7f4cc3e6479cb5434799c25d54c93dc9348623fd307646bb341be2"
+    "units": "0eb426bd2df0b57fea887d112d14b0b6ca98a09a51a0eace26753802795c06f9"
   },
-  "fingerprint": "dc028d5fad0b626d28121e004178fcbf90fafa8e16917446dcbc1056f51bfa64",
+  "fingerprint": "c55f0b30f8cc42bb895ea42615c644a43c41ca77d33f61bcbdd52957dd3a2aac",
   "version": 1
 }
