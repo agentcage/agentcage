@@ -2,7 +2,7 @@
 
 agentcage is a defense-in-depth security harness designed for running untrusted, autonomous AI coding agents.
 
-This document describes the threat model, the eight protective security layers, trust boundaries, fail-closed design principles, and known residual risks.
+This document describes the threat model, the eight protective security layers, the fail-closed design, trust boundaries, and known residual risks.
 
 ---
 
@@ -29,7 +29,7 @@ We assume the agent process is **actively compromised or malicious**:
 
 ### D. Explicitly Out of Scope
 - Compromise of the host machine prior to launching agentcage.
-- Operator explicitly disabling security controls (e.g. running with `--as-root`, adding `*` wildcards to allowlists, or enabling broad passthrough).
+- Operator explicitly disabling security controls (e.g. running with `--as-root`, allowlisting a bare top-level domain such as `com`, or enabling broad passthrough).
 - Malicious source code intentionally committed to your repository that is later reviewed, approved, and executed directly on the host by the operator.
 
 ---
@@ -56,25 +56,28 @@ agentcage enforces eight independent defensive rings between the agent workload 
 ### Layer 1: Network Confinement
 - **Internal Network**: Workload containers attach to an unrouted Podman network (`Internal=true`).
 - **Default-Drop Forwarding**: The egress container enforces `iptables -P FORWARD DROP` and `ip6tables -P FORWARD DROP`.
-- **Protocol Drops**: Raw UDP, ICMP, and unapproved TCP ports are dropped at the packet filter level. Only ports declared in `ports.tcp.allow` (default: 80, 443) are forwarded to the proxy.
+- **Protocol Drops**: Raw UDP, ICMP, and unapproved TCP ports are dropped at the packet filter level. Ports in `ports.tcp.allow` (default: 80, 443) are redirected to the egress proxy, except those also in `ports.tcp.passthrough`, which are forwarded uninspected.
+- **Forward-proxy ports**: The forward proxy (`HTTPS_PROXY`) only connects to the same inspected ports. A `CONNECT host:22` is refused with a `403`, so the proxy cannot be used to reach a port the packet filter drops.
 
 ### Layer 2: DNS Filtering & Sinkholing
 - **Strict Allowlist**: `dnsmasq` answers queries only for domains matching `domains.allow` or active runtime grants.
 - **RFC 5737 Sinkhole**: Unauthorized domains resolve to `198.51.100.1` (TEST-NET-2). This guarantees that HTTP clients connect to the local proxy and receive clear `403 Forbidden` policy responses rather than ambiguous connection timeouts.
-- **SSRF & Wildcard Prevention**: The resolver strips IP literals and blocks wildcard DNS domains encoding private IP addresses (e.g., `169-254-169-254.nip.io`).
+- **SSRF & Wildcard Prevention**: An IP literal never matches a domain allowlist, and names that encode a private address for a wildcard DNS service (e.g. `169-254-169-254.nip.io`) can never be granted at runtime.
 
 ### Layer 3: Proxy Identity & Rebinding Guards
 - **Strict SNI ↔ Host Matching**: The proxy terminates TLS and verifies that the TLS SNI extension matches the HTTP `Host` header, defeating domain-fronting evasion.
-- **Anti-Rebinding Check**: Before connecting upstream, the proxy resolves the target hostname and asserts that the peer IP address is a public, globally routable address. Private RFC 1918 addresses, loopbacks, and link-local ranges are blocked immediately.
+- **Anti-Rebinding Check**: A host that is reachable only through a runtime grant is resolved before the connect, and refused if any answer is not globally routable (RFC 1918, loopback, link-local, CGNAT, ULA, IPv4-mapped forms). The proxy then connects to exactly the addresses it checked, so the name cannot re-resolve in between, and the host stays refused. Baseline entries are the operator's and may name LAN hosts.
+- **Passthrough Pinning**: A `domains.passthrough` name is spliced uninspected only when the connection's real destination is an address that name resolves to. Sending a passthrough SNI to any other address gets the connection intercepted and inspected like any other.
 - **Token-Bucket Rate Limiter**: Per-host rate limiting prevents denial-of-service or rapid brute-force attacks against upstream APIs.
 
 ### Layer 4: L7 Content Inspectors
-Every HTTP request and response passes through a chain of pre-configured inspectors running off the main event loop in worker threads:
-- **`domain`**: Enforces static allowlists, blocklists, and dynamic runtime grant policies.
-- **`secrets`**: Scans outbound payloads using regex signatures to detect raw API keys or tokens leaving the cage.
-- **`entropy`**: Calculates Shannon entropy (0–8 bits/byte) on request bodies to detect encrypted or obfuscated binary exfiltration.
-- **`content-type`**: Detects MIME mismatches (e.g. executable binaries disguised as `application/json`).
-- **`body-size`**: Enforces strict request body caps (`capture.max_body_size`).
+Every HTTP request (and every WebSocket message the cage sends) passes through a chain of inspectors, run on worker threads so a large body never stalls other connections. The built-ins inspect requests only; responses are inspected only by custom inspectors that ask for them.
+- **`domain`**: Enforces the allowlist (baseline plus runtime grants, with expiry) or the blocklist. Not applied to inbound (reverse-proxied) traffic.
+- **`secrets`**: Scans the URL, headers and body for 20 built-in credential patterns plus `extra_patterns`; flags by default.
+- **`body-size`**: Caps request bodies at `max_request_body` (10 MiB by default).
+- **`entropy`** (opt-in): Blocks (by default) high-entropy bodies, query parameters and path segments that look like encrypted or encoded exfiltration.
+- **`content-type`** (on by default): Blocks (by default) bodies that claim a text type but carry high-entropy or long base64 content.
+- **Custom inspectors**: WebAssembly components loaded with no capabilities and a CPU and memory budget; see [Custom Inspectors](../how-to/custom-inspectors.md).
 
 ### Layer 5: Zero-Leak Placeholder Secrets
 Real credentials never enter the workload sandbox:
@@ -83,7 +86,8 @@ Real credentials never enter the workload sandbox:
   agentcage:secret:ANTHROPIC_API_KEY:4f2a7b8c9d0e1f2a3b4c5d6e7f8a9b0c
   ```
 - **Wire Injection**: The proxy replaces this placeholder with the real secret **only** on outbound requests targeting the authorized domain (`inject_to`) and inside credential-bearing headers (`Authorization`, `x-api-key`).
-- **Response Redaction**: The proxy scans inbound responses from the upstream server and redacts any echoed secret back to its placeholder before delivering it to the agent.
+- **Response Redaction**: The proxy redacts any real secret value (or a token a transform minted) back to its placeholder in responses, WebSocket messages, the capture file and every audit record, including its percent-encoded, JSON-escaped and base64 forms. Streamed responses are redacted as they stream.
+- **Literal-Value Blocking**: A request that carries a real secret value to a host outside that secret's `inject_to` is blocked before anything is forwarded.
 - **Encrypted At-Rest Storage**: Real credentials on the host are encrypted using `systemd-creds` (Linux TPM2 / host key) or the macOS Keychain.
 
 ### Layer 6: Process Confinement
@@ -106,7 +110,20 @@ Real credentials never enter the workload sandbox:
 
 ---
 
-## 3. Trust Boundaries
+## 3. Fail-Closed Design
+
+The egress is built so that a failure narrows egress rather than widening it:
+
+- **Internal errors block.** A flow the egress cannot process (a body whose `Content-Encoding` cannot be removed, an injection that cannot be applied) gets a JSON `502` and an `internal_error` audit record. It is never forwarded unfiltered.
+- **A bad config never goes live.** A config edit that does not parse, or whose inspector chain or rate limit cannot be built, is refused: the last good config stays live and one `config_reload_failed` record is written. A config that fails at boot makes the egress refuse every request until a good version lands.
+- **Broken plugins block.** A custom inspector that traps, runs out of fuel or memory, or returns a malformed verdict counts as a `block`.
+- **The decider fails to deny.** Any error, timeout or malformed answer from the Policy API's LLM decider is a denial, never a grant. The traffic watcher records a failed scan instead of a verdict, and never revokes on a failure.
+- **Upstream failures are explicit.** A failed upstream is a JSON `502` with an `upstream_error` record, and a response that fails mid-stream cuts the client connection rather than ending it cleanly.
+- **Memory is bounded per flow, not per process.** Request bodies have a per-body limit (`413`) and all buffered bodies share one budget (`503` when exhausted), so a burst of large transfers fails those transfers instead of the whole egress.
+
+---
+
+## 4. Trust Boundaries
 
 | Component | Trust Level | Justification |
 | :--- | :--- | :--- |
@@ -118,23 +135,23 @@ Real credentials never enter the workload sandbox:
 
 ---
 
-## 4. Known Residual Risks & Limitations
+## 5. Known Residual Risks & Limitations
 
 Transparency is a fundamental tenet of security engineering. agentcage documents the following known residual risks:
 
 1. **Abuse of Allowlisted Domains**: If an agent is granted access to a domain with arbitrary upload endpoints (e.g. `github.com` or `pastebin.com`), it could potentially exfiltrate non-credential data (such as source code) within legitimate HTTP calls. *Mitigation: Restrict allowlists to minimal API endpoints; enable the Traffic Watcher.*
 2. **Shared Linux Kernel (`container` backend)**: The Linux `container` backend relies on user namespaces. While robust, it shares the host kernel. *Mitigation: Use the `apple-container` (macOS) or `vm` (Lima) backends when strict hardware virtualization boundaries are required.*
-3. **TLS Passthrough Blindspots**: Declaring domains under `domains.passthrough` tunnels raw TCP without terminating TLS. Mitmproxy cannot inspect payloads or inject secrets into passthrough streams. *Mitigation: Use passthrough only for certificate-pinned endpoints that fail under custom CAs.*
+3. **TLS Passthrough Blindspots**: Declaring domains under `domains.passthrough` tunnels raw TCP without terminating TLS. The egress cannot inspect payloads, inject secrets or capture anything in passthrough streams. *Mitigation: Use passthrough only for certificate-pinned endpoints that fail under custom CAs.*
 4. **HAR Captures**: `capture.jsonl` records full request and response bodies. Both of its views (`cage har --view inbound` and `--view outbound`) hold every secret agentcage manages as its placeholder, the injected credentials included, but everything else is recorded as is: cookies, session tokens and any credential the agent holds itself. Captures recorded by agentcage 0.50.0 or earlier can also hold real secrets, in the `outbound` view (a server's echo of an injected secret, a token a transform minted) and in a blocked request's `inbound` view. *Mitigation: Review a capture before sharing it, and treat captures from 0.50.0 or earlier as sensitive.*
 5. **Elevated Debug Flags**: Running `agentcage run --as-root` or setting `nested_containers: true` relaxes user namespace protections. These flags should only be used in isolated CI environments.
 
 ---
 
-## 5. Security Hardening Checklist
+## 6. Security Hardening Checklist
 
 When configuring production cages:
 
-- [ ] Ensure `domains.allow` contains only specific, fully qualified hostnames (avoid wildcards like `*.com`).
+- [ ] Ensure `domains.allow` contains only specific, fully qualified hostnames (an entry also covers every subdomain, so avoid broad suffixes like `com` or `co.uk`).
 - [ ] Verify that `container.read_only: true` is enabled.
 - [ ] Do not mount sensitive host directories (never mount `~/.ssh`, `~/.aws`, or Docker sockets).
 - [ ] Store secrets with `agentcage secret set` rather than placing cleartext in `cage.yaml`.

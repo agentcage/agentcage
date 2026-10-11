@@ -1,5 +1,7 @@
 # Security Review — February 2026
 
+> **Historical record.** This review was written in February 2026 against the code of that time, including the previous Python-based egress proxy that has since been replaced. It is kept for reference and is not maintained; see [Security Model](../../explain/security-model.md) for the current design.
+
 Review of the agentcage codebase from the perspective of a compromised or malicious AI agent — the primary threat actor in agentcage's threat model.
 
 ## Threat Model

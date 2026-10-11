@@ -20,8 +20,10 @@ You write it in Rust with the `agentcage-inspector-sdk` crate. (Any language tha
 rustup target add wasm32-wasip2
 cargo new --lib header-policy
 cd header-policy
-cargo add agentcage-inspector-sdk
+cargo add agentcage-inspector-sdk --git https://github.com/agentcage/agentcage
 ```
+
+The SDK is not on crates.io yet; depend on it from the agentcage repository (pin a release tag with `--tag vX.Y.Z` to keep builds reproducible). Its ABI is the WIT world `agentcage:inspector@1.0.0`: a plugin built against any 1.x SDK keeps loading on later egress releases.
 
 In `Cargo.toml`, make it a `cdylib`:
 
@@ -116,11 +118,13 @@ A `Verdict` has an action (`block` or `flag`), a reason, a severity (`debug`, `i
 
 ### The sandbox and its limits
 
-- **No capabilities.** The plugin cannot open files, sockets, read the environment (it sees an empty one) or a clock. Code that tries traps, and the request is blocked.
+- **No capabilities.** The plugin is linked against nothing but its own exports: every WASI import (files, sockets, environment, clocks, randomness) is bound to a function that traps. Code that tries to use one traps, and the request is blocked.
 - **CPU budget.** Each call gets about 50 ms worth of fuel (a deterministic instruction count, the same on every machine). Running out blocks the request.
 - **Memory.** An instance may use up to 64 MiB of linear memory, which has to hold the body (twice, as bytes and as text). Exceeding it blocks the request.
 - **Fail closed.** A panic, trap, exhausted budget or malformed verdict becomes a `block` with the reason `inspector <name> failed: …`, and the broken instance is discarded.
 - **Concurrency.** The egress runs several instances of a plugin in parallel and replaces instances at will (after a failure, on a config change). Keep all state in `configure`; do not count on anything surviving between calls.
+- **Compilation.** Each component is compiled once and cached by the SHA-256 of its bytes; a config reload that keeps the same file only re-runs `configure`.
+- **Responses are buffered while a plugin is loaded.** The egress normally streams responses to the cage as they arrive. Because a custom inspector may inspect responses, any loaded plugin makes the egress buffer each response whole (under the egress's per-body limit) so `inspect_response` can see it. Keep that in mind for cages that download large files or stream LLM output.
 
 ---
 
