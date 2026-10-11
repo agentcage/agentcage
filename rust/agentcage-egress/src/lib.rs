@@ -28,6 +28,9 @@ pub mod capture;
 pub mod config;
 pub mod engine;
 pub mod flow;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzz_api;
 pub mod inject;
 pub mod inspect;
 pub mod json;

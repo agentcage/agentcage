@@ -29,6 +29,9 @@ members = [
     "examples/inspectors/dlp-regex",
     "rust/agentcage-egress/tests/fixtures/misbehaving-inspector",
 ]
+# The egress fuzz targets are their own workspace: they build only on
+# nightly (cargo-fuzz), so stable `--workspace` commands must not see them.
+exclude = ["rust/agentcage-egress/fuzz"]
 
 # ── Shared package metadata ──────────────────────────────────
 #

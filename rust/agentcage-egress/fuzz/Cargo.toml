@@ -1,0 +1,96 @@
+# The egress's fuzz targets (cargo-fuzz / libFuzzer).
+#
+# A standalone package with its own `[workspace]`, excluded from the root
+# one: it needs a nightly toolchain and sanitizer flags, and must not be
+# built by `cargo build/test --workspace` on stable. The harness logic is
+# in the egress crate itself (`agentcage_egress::fuzz_api`, behind the
+# `fuzzing` feature), where it can reach the crate-private parsers and
+# where the committed inputs replay as unit tests; each target here is a
+# one-line wrapper.
+#
+#   cargo +nightly fuzz run <target> -- -max_total_time=60
+#
+# from rust/agentcage-egress (`cargo fuzz list` names the targets). Seed
+# inputs live in seeds/<target>/, inputs that once found a bug in
+# regressions/<target>/; pass both after the working corpus to replay
+# them (CI does).
+
+[package]
+name = "agentcage-egress-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+agentcage-egress = { path = "..", features = ["fuzzing"] }
+
+[workspace]
+members = ["."]
+
+# Debug assertions and overflow checks on: an arithmetic overflow in a
+# parser is a finding, not a wrap.
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true
+
+[[bin]]
+name = "h1_request"
+path = "fuzz_targets/h1_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h1_response"
+path = "fuzz_targets/h1_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_detect"
+path = "fuzz_targets/tls_detect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "imap"
+path = "fuzz_targets/imap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "smtp"
+path = "fuzz_targets/smtp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redact_stream"
+path = "fuzz_targets/redact_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false

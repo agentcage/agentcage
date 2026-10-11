@@ -670,7 +670,7 @@ pub(crate) fn encode_stream_head(resp: &Response, framing: StreamFraming) -> Vec
             headers.remove("transfer-encoding");
         }
     }
-    let mut out = format!("{version} {} {reason}\r\n", resp.status).into_bytes();
+    let mut out = status_line(version, resp.status, &reason);
     put_headers(&mut out, &headers);
     out
 }
@@ -749,12 +749,27 @@ fn fix_framing(headers: &mut Headers, len: usize, needs_length: bool) -> bool {
     if is_chunked(headers) {
         return true;
     }
+    if headers.contains("transfer-encoding") {
+        // A transfer coding without `chunked` (a response read until the
+        // upstream closed): the body is close-delimited on the way out
+        // too, and the connection closes after it. A `Content-Length`
+        // beside the coding would frame it a second, different way — the
+        // shape the smuggling checks refuse on the way in.
+        return false;
+    }
     if headers.contains("content-length") {
         headers.set("content-length", len.to_string());
     } else if needs_length {
         headers.add("content-length", len.to_string());
     }
     false
+}
+
+/// A status line. The code is always three digits, the only shape the
+/// parser accepts: an upstream's `000`..`099` goes out as it came, not as
+/// a one- or two-digit code no client can parse.
+fn status_line(version: &str, status: u16, reason: &str) -> Vec<u8> {
+    format!("{version} {status:03} {reason}\r\n").into_bytes()
 }
 
 fn put_headers(out: &mut Vec<u8>, headers: &Headers) {
@@ -828,7 +843,7 @@ fn put_body(out: &mut Vec<u8>, body: &[u8], chunked: bool) {
 }
 
 /// The wire bytes of `req`, origin-form, as an HTTP/1 request.
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) fn encode_request(req: &Request) -> Vec<u8> {
     let (mut out, chunked) = request_head(req);
     put_body(&mut out, &req.body, chunked);
@@ -877,7 +892,7 @@ fn response_head(resp: &Response, method: &str) -> (Vec<u8>, bool, bool) {
     };
     let has_body = response_has_body(method, resp.status);
     let chunked = has_body && fix_framing(&mut headers, resp.body.len(), true);
-    let mut out = format!("{version} {} {reason}\r\n", resp.status).into_bytes();
+    let mut out = status_line(version, resp.status, &reason);
     put_headers(&mut out, &headers);
     (out, chunked, has_body)
 }
@@ -885,7 +900,7 @@ fn response_head(resp: &Response, method: &str) -> (Vec<u8>, bool, bool) {
 /// The head of a `101 Switching Protocols` (or any body-less response),
 /// written as-is.
 pub(crate) fn encode_head_only(resp: &Response) -> Vec<u8> {
-    let mut out = format!("HTTP/1.1 {} {}\r\n", resp.status, resp.reason).into_bytes();
+    let mut out = status_line("HTTP/1.1", resp.status, &resp.reason);
     put_headers(&mut out, &resp.headers);
     out
 }
@@ -1107,6 +1122,57 @@ mod tests {
             b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi"
         );
         assert_eq!(encode_response(&resp, "HEAD"), b"HTTP/1.1 200 OK\r\n\r\n");
+    }
+
+    /// Found by the `h1_response` fuzz target: a status the parser took
+    /// from three digits (`000`) went out as one (`0`), which no client
+    /// (nor the egress itself) can parse.
+    #[test]
+    fn status_codes_go_out_as_three_digits() {
+        let head = parse_response_head(b"HTTP/1.1 042 odd\r\n\r\n").unwrap();
+        let resp = Response {
+            status: head.status,
+            reason: head.reason,
+            http_version: head.version,
+            headers: head.headers,
+            body: Vec::new(),
+        };
+        assert_eq!(
+            encode_response(&resp, "GET"),
+            b"HTTP/1.1 042 odd\r\ncontent-length: 0\r\n\r\n"
+        );
+        assert!(encode_head_only(&resp).starts_with(b"HTTP/1.1 042 odd\r\n"));
+        assert!(
+            encode_stream_head(&resp, StreamFraming::Chunked).starts_with(b"HTTP/1.1 042 odd\r\n")
+        );
+    }
+
+    /// Found by the `h1_response` fuzz target: a response framed by a
+    /// transfer coding without `chunked` (read until the upstream closed)
+    /// was relayed with a `Content-Length` added beside the
+    /// `Transfer-Encoding` — two framings, which the egress's own
+    /// smuggling checks refuse.
+    #[test]
+    fn a_close_delimited_response_gets_no_length_beside_its_coding() {
+        let mut resp = Response {
+            status: 200,
+            reason: "OK".into(),
+            http_version: "HTTP/1.1".into(),
+            headers: Headers::new(),
+            body: b"\x1f\x8b\x08\x00".to_vec(),
+        };
+        resp.headers.add("Transfer-Encoding", "gzip");
+        let wire = encode_response(&resp, "GET");
+        assert_eq!(
+            wire,
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n\x1f\x8b\x08\x00"
+        );
+        let head = parse_response_head(&wire).unwrap();
+        assert!(validate_framing(&head.headers, &head.version, Some(200)).is_ok());
+        assert_eq!(
+            response_framing("GET", 200, &head.headers),
+            Ok(Framing::UntilEof)
+        );
     }
 
     #[test]

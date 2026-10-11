@@ -1,0 +1,6 @@
+name: vm-darwin
+isolation: vm
+container:
+  image: docker.io/library/alpine:3.20
+  ports:
+  - "3000:3000"

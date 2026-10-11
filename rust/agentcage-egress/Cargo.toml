@@ -17,6 +17,11 @@ publish = false
 name = "agentcage-egress"
 path = "src/main.rs"
 
+[features]
+# The entry points of the fuzz targets under `fuzz/` (`crate::fuzz_api`):
+# test-only harness code, never part of a build that ships.
+fuzzing = []
+
 [dependencies]
 # The pure helpers the host already ported byte-for-byte from Python:
 # `valid_domain`, `encoded_private_ip`, the never-grant floor, the relay
