@@ -357,6 +357,8 @@ fn message_context(body: &[u8], upstream_host: &str) -> Context {
         body_size: body.len(),
         body_entropy: (!body.is_empty()).then(|| shannon_entropy(body)),
         prior_results: Vec::new(),
+        direction: crate::inspect::Direction::Outbound,
+        websocket: false,
     }
 }
 
