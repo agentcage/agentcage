@@ -1528,7 +1528,7 @@ class TestAllowlistInspectorBypass:
         _run(_go())
 
     def test_default_bypass_lets_base64_through_to_allowlisted(self):
-        """Real-world jacque scenario: a forwarded mail in text/plain
+        """Real-world scenario: a forwarded mail in text/plain
         contains a 600+ char base64 chunk (PGP signature, quoted token,
         long URL). Pre-fix the content-type inspector blocked these
         even for allowlisted recipients, triggering himalaya retry
