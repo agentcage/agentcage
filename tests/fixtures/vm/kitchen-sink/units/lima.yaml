@@ -93,7 +93,7 @@ provision:
       # signatures on the Release file, so TLS adds nothing for integrity — but the
       # Debian genericcloud image defaults to https://deb.debian.org, and behind a
       # corporate TLS-inspection proxy (Netskope/Zscaler/etc.) the fresh VM doesn't
-      # trust the proxy's MITM CA, so https apt dies with "certificate verify failed:
+      # trust the egress proxy's CA, so https apt dies with "certificate verify failed:
       # self-signed certificate in certificate chain" and NOTHING installs. http apt
       # passes straight through. (The previous Ubuntu base worked for exactly this
       # reason — its cloud image used http mirrors.) Rewrite the mirror lists and any

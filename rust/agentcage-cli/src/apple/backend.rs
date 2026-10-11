@@ -186,16 +186,10 @@ impl<'a> AppleBackend<'a> {
         let _ = cli.run(["system", "start", "--enable-kernel-install"], false);
     }
 
-    /// The shared egress image's tag, `<repo>:<version>-<hash>` (or
-    /// `<version>-rust-<hash>` while the Rust engine is selected).
-    ///
-    /// An unselectable engine falls back to the default tag here; the
-    /// build refuses it with the reason before anything runs on it.
+    /// The shared egress image's tag, `<repo>:<version>-<hash>`.
     #[must_use]
     pub fn egress_image(&self) -> String {
-        crate::egress_engine::EgressEngine::from_env()
-            .and_then(super::image::egress_image_name_for)
-            .unwrap_or_else(|_| super::image::egress_image_name_embedded())
+        super::image::egress_image_name_embedded()
     }
 
     /// `generate_units` — the cage's metadata JSON.
@@ -387,7 +381,7 @@ impl<'a> AppleBackend<'a> {
     }
 
     /// Remove a CA left behind by an earlier cage of this name
-    /// (`EGRESS-PORT-PLAN.md` D11).
+    /// (`docs/history/egress-port-plan.md` D11).
     ///
     /// For `cage create`, `run` and `cage restore`, on a name that has
     /// no deployment. The egress microVM keeps its CA in the per-cage
@@ -572,7 +566,7 @@ impl AppleBackend<'_> {
 
         // The per-cage state directories, created on demand. 1777 on
         // all three: virtiofs maps host ownership into the guest
-        // identity-wise, so uid 200 (mitmproxy) and 201 (dnsmasq) can
+        // identity-wise, so uid 200 (agentcage-egress) and 201 (dnsmasq) can
         // only write here if the host-side mode lets them. The sticky
         // bit stops cross-uid deletion. The legacy single-VM model used
         // the same trick and it is preserved verbatim.
@@ -1584,8 +1578,7 @@ impl AppleBackend<'_> {
         pull: bool,
         quiet: bool,
     ) -> Result<(), BackendError> {
-        let engine = crate::egress_engine::EgressEngine::from_env()?;
-        let image = super::image::egress_image_name_for(engine)?;
+        let image = self.egress_image();
         let cli = self.cli();
         if !(no_cache || pull) && cli.image_inspect(&image).ok().flatten().is_some() {
             if !quiet {
@@ -1605,11 +1598,10 @@ impl AppleBackend<'_> {
         // that directory as the context so its
         // `COPY containers/supervisor-egress.sh` resolves.
         let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
-        engine.stage(&context)?;
-        let argv = super::image::egress_build_argv_for(
+        crate::egress_image::stage(&context)?;
+        let argv = super::image::egress_build_argv(
             &image,
             &context,
-            engine,
             super::image::BuildFlags { no_cache, pull },
         );
         let outcome = output::pause_active_spinner(|| cli.run_streaming(argv, false));
@@ -1756,8 +1748,8 @@ impl AppleBackend<'_> {
     /// 3. regenerate and SIGHUP the **cage-local** dnsmasq
     ///    ([`CAGE_RELOAD_SH`]) — the load-bearing one, since the
     ///    workload resolves through `127.0.0.1:53` inside the cage;
-    /// 4. nothing for `proxy-config.yaml`: the mitmproxy addon polls
-    ///    its mtime per request and hot-reloads itself.
+    /// 4. nothing for `proxy-config.yaml`: the egress polls its mtime
+    ///    every second and hot-reloads itself.
     ///
     /// # Errors
     ///

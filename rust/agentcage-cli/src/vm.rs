@@ -79,7 +79,6 @@ use agentcage_exec::{CommandRunner, ExecError};
 use agentcage_state::Paths;
 
 use crate::backend::{BackendError, EGRESS_BUILD_CAPS};
-use crate::egress_engine::EgressEngine;
 use crate::hostenv::{self, RealQuadletHost};
 
 /// `VmBackend.service_names` — fixed, and not a function of the cage.
@@ -128,7 +127,7 @@ const VM_USER_SESSION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// active before the cage is refused.
 ///
 /// A deadline rather than an iteration count, so the interval below can
-/// be tightened without shrinking the ceiling: mitmproxy is usually
+/// be tightened without shrinking the ceiling: the egress is usually
 /// ready in 2–6s, and a sub-second poll takes that off the median.
 const PROXY_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -373,7 +372,7 @@ impl<'a> VmBackend<'a> {
         let store_secrets = self.guest_store_view(store_name, deploy_name);
 
         let state = self.paths.quadlet_state_paths();
-        let egress_tag = crate::backend::egress_tag_override(self.version)?;
+        let egress_tag = crate::egress_image::tag(self.version);
         let quadlets = generate_quadlets(
             &effective,
             &GenerateOptions {
@@ -388,7 +387,7 @@ impl<'a> VmBackend<'a> {
                 store_secrets: store_secrets.as_ref(),
                 state: &state,
                 version: self.version,
-                egress_tag: egress_tag.as_deref(),
+                egress_tag: &egress_tag,
             },
             &host,
         )?;
@@ -511,7 +510,7 @@ impl<'a> VmBackend<'a> {
     /// The quadlets bind-mount the guest-local copy, not the host path
     /// under `~/.config/agentcage/cages/<name>/`. They have to: Lima's
     /// reverse-sshfs mount caches host writes, so dnsmasq's SIGHUP and
-    /// mitmproxy's mtime poll would re-read the same stale bytes
+    /// the egress's mtime poll would re-read the same stale bytes
     /// forever after a `domain add`. The host file stays the
     /// authoritative state — `cage backup` and the audit tooling read
     /// it — and this is an additional copy.
@@ -1157,7 +1156,7 @@ impl<'a> VmBackend<'a> {
 
     /// `VmBackend.audit_argv` — the egress unit's journal.
     ///
-    /// One `--user-unit` filter catches both producers: mitmproxy's
+    /// One `--user-unit` filter catches both producers: the egress's
     /// audit lines and dnsmasq's both flow through the egress
     /// container's stderr into conmon and then the journal.
     #[must_use]
@@ -1237,36 +1236,25 @@ impl<'a> VmBackend<'a> {
     /// when `cage create --no-cache` / `--pull` asked for them.
     #[must_use]
     pub fn egress_build_argv(&self, flags: &[String]) -> Vec<String> {
-        Self::egress_build_argv_for(
-            &format!("agentcage-egress:{}", self.version),
-            EgressEngine::Python,
-            flags,
-        )
-    }
-
-    /// [`Self::egress_build_argv`] for an engine's image: its tag and
-    /// its Containerfile inside the copied context.
-    #[must_use]
-    pub fn egress_build_argv_for(tag: &str, engine: EgressEngine, flags: &[String]) -> Vec<String> {
         build_argv(
             flags,
-            tag,
-            &format!("{VM_BUILD_DIR}/{}", engine.containerfile_rel()),
+            &self.egress_image(),
+            &format!(
+                "{VM_BUILD_DIR}/{}",
+                agentcage_assets::egress::CONTAINERFILE_REL
+            ),
             VM_BUILD_DIR,
         )
     }
 
-    /// The egress image tag for this version and the selected engine,
-    /// `agentcage-egress:<version>` by default; see
+    /// The egress image, `agentcage-egress:<version>-<hash>`; see
     /// [`ContainerBackend::egress_image`](crate::backend::ContainerBackend::egress_image),
     /// whose tags these are.
     #[must_use]
     pub fn egress_image(&self) -> String {
         format!(
             "agentcage-egress:{}",
-            EgressEngine::from_env()
-                .and_then(|engine| engine.tag(self.version))
-                .unwrap_or_else(|_| self.version.to_owned())
+            crate::egress_image::tag(self.version)
         )
     }
 
@@ -1458,7 +1446,7 @@ impl<'a> VmBackend<'a> {
     }
 
     /// Remove a CA left behind by an earlier cage of this name
-    /// (`EGRESS-PORT-PLAN.md` D11).
+    /// (`docs/history/egress-port-plan.md` D11).
     ///
     /// For `cage create`, `run` and `cage restore`, on a name that has
     /// no deployment. A vm cage's certs volumes live in the podman
@@ -1621,12 +1609,11 @@ impl<'a> VmBackend<'a> {
             return Ok(());
         }
 
-        // Selected (and the binary staged) before anything is copied, so
-        // a bad engine choice fails here rather than after the copy.
-        let engine = EgressEngine::from_env()?;
-        let tag = format!("agentcage-egress:{}", engine.tag(self.version)?);
+        // The binary is staged before anything is copied, so a host
+        // without one fails here rather than after the copy.
+        let tag = self.egress_image();
         let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
-        engine.stage(&context)?;
+        crate::egress_image::stage(&context)?;
 
         println!("Copying build context into VM...");
         let _ = instance.exec(&["rm", "-rf", VM_BUILD_DIR].map(str::to_string), false);
@@ -1658,7 +1645,7 @@ impl<'a> VmBackend<'a> {
         let phase = crate::timing::Phase::start("build.egress", Some(deploy_name));
         let built = Self::exec_build(
             &instance,
-            &Self::egress_build_argv_for(&tag, engine, &flags),
+            &self.egress_build_argv(&flags),
             &format!("build of {tag}"),
         );
         drop(phase);

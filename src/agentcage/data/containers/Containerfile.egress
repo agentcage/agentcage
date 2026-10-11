@@ -1,41 +1,33 @@
-# agentcage-egress: combined mitmproxy + dnsmasq image for the unified
-# 2-container per-cage shape (cage + egress). Replaces the legacy
-# Containerfile.proxy + Containerfile.dns pair.
+# agentcage-egress: the per-cage egress image, the `agentcage-egress`
+# binary (TLS-intercepting proxy, policy, secret injection, audit) plus
+# dnsmasq, for the 2-container per-cage shape (cage + egress).
 #
 # Both processes run unprivileged inside the container:
-#   uid 200 (acproxy) → mitmproxy
-#   uid 201 (acdns)   → dnsmasq
-# The supervisor at PID 1 (tini → /opt/agentcage/supervisor) drops CapBnd
+#   uid 200 (acproxy) -> agentcage-egress
+#   uid 201 (acdns)   -> dnsmasq
+# The supervisor at PID 1 (tini -> /opt/agentcage/supervisor) drops CapBnd
 # via setpriv on each child, closing the setuid-root reacquisition path
 # that --reuid alone leaves open. See supervisor-egress.sh for the full
 # security rationale.
 #
-# Base: the official mitmproxy image (Python + pip + mitmproxy in
-# working order, with pyyaml installable). The PyInstaller bundle was
-# tried first but doesn't expose pip, so the addon's `import yaml`
-# fails at startup. Same base + same `pip install pyyaml cryptography`
-# pattern as the legacy Containerfile.proxy.
+# No interpreter: the binary is static (linux-musl) and carries its own
+# TLS stack and Mozilla roots. ca-certificates stays for anything in the
+# image that does TLS through the system store.
 #
-# update-from: docker.io/mitmproxy/mitmproxy:latest
-FROM docker.io/mitmproxy/mitmproxy@sha256:743b6cdc817211d64bc269f5defacca8d14e76e647fc474e5c7244dbcb645141
+# update-from: docker.io/library/debian:trixie-slim
+FROM docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
-# Addon dependencies:
-#   pyyaml      — addon reads /etc/agentcage/config.yaml
-#   cryptography — secret_injection's google-jwt-bearer transform signs
-#                  JWTs (already pulled transitively but pinned for safety)
-RUN pip install --no-cache-dir pyyaml==6.0.3 'cryptography>=41'
-
-# apt packages we need on TOP of the mitmproxy base (which already has
-# Python + ca-certificates). Single RUN to keep layer count low.
+#   ca-certificates  — system trust store (the binary embeds its own roots)
 #   dnsmasq          — recursive DNS forwarder + allowlist enforcer
 #   libcap2-bin      — capsh + setcap (we setcap dnsmasq for :53 bind)
 #   iptables         — egress FORWARD-chain shape (egress as router)
 #   jq               — utility for parsing JSON config in scripts
 #   procps           — pgrep/pkill for the smoke test + general debug
-#   tini             — PID 1 → SIGCHLD reaping + SIGTERM forwarding
+#   tini             — PID 1 -> SIGCHLD reaping + SIGTERM forwarding
 #   util-linux       — setpriv (CapBnd drop) + prlimit (memory caps)
 #   iproute2         — ss for the supervisor's listener readiness check
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        ca-certificates \
         dnsmasq \
         libcap2-bin \
         iptables \
@@ -49,9 +41,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # Per-component users. uids match the apple-container backend's wrapper
 # (which also uses 200/201) so any iptables rule using uid-owner matchers
 # in shared scripts works consistently. `acproxy` / `acdns` (not `proxy` /
-# `dns`) to avoid colliding with debian bookworm's existing `proxy` user
-# at uid 13 — silently taking that would leave mitmproxy running as uid
-# 13, invisible to any uid-200 owner-match.
+# `dns`) to avoid colliding with debian's existing `proxy` user at uid 13
+# — silently taking that would leave the egress running as uid 13,
+# invisible to any uid-200 owner-match.
 RUN useradd --uid 200 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acproxy \
     && useradd --uid 201 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acdns
 
@@ -62,33 +54,23 @@ RUN useradd --uid 200 --system --no-create-home --shell /usr/sbin/nologin --home
 # capabilities(7).
 RUN setcap cap_net_bind_service=+ep /usr/sbin/dnsmasq
 
-# mitmproxy addon + helpers. Same source as Containerfile.proxy.
-# mitmproxy's script loader puts the addon's dir on sys.path, so all
-# sibling packages (inspectors, transforms, relays) resolve relative to
-# /opt/agentcage/.
-COPY proxy/addon.py /opt/agentcage/addon.py
-COPY proxy/capture.py /opt/agentcage/capture.py
-COPY proxy/secret_injector.py /opt/agentcage/secret_injector.py
-COPY proxy/secret_lookup.py /opt/agentcage/secret_lookup.py
-COPY proxy/policy_api.py /opt/agentcage/policy_api.py
-COPY proxy/watcher.py /opt/agentcage/watcher.py
-COPY proxy/inspectors/ /opt/agentcage/inspectors/
-COPY proxy/transforms/ /opt/agentcage/transforms/
-COPY proxy/relays/ /opt/agentcage/relays/
+# The egress binary, staged into the build context by the host
+# (agentcage-egress-embed carries the linux-musl build matching the
+# host's architecture). Its bytes are a content-hash input, so a new
+# binary is a new image tag.
+COPY bin/agentcage-egress /opt/agentcage/agentcage-egress
 
-# Supervisor + DNS audit wrapper. dns-audit.sh is also referenced by the
-# legacy Containerfile.dns; both images keep a copy during the transition.
-# Source-of-truth lives in src/agentcage/data/containers/dns-audit.sh.
+# Supervisor + DNS audit wrapper.
 COPY containers/supervisor-egress.sh /opt/agentcage/supervisor
 COPY containers/dns-audit.sh /opt/agentcage/dns-audit.sh
-RUN chmod 0755 /opt/agentcage/supervisor /opt/agentcage/dns-audit.sh
+RUN chmod 0755 /opt/agentcage/agentcage-egress /opt/agentcage/supervisor /opt/agentcage/dns-audit.sh
 
 # Home + log dirs. /home/acproxy/ca is the mount point of the cage's
-# private CA store (its own `<name>-certs` volume); the supervisor points
-# mitmproxy at it with `--set confdir=`, and publishes only the public
-# cert to /home/acproxy/public-certs for the cage. Empty in the image:
-# no CA is generated at build time, so a fresh volume starts empty and
-# each cage's egress generates its own on first start.
+# private CA store (its own `<name>-certs` volume); the egress generates
+# its CA there on first start, and the supervisor publishes only the
+# public cert to /home/acproxy/public-certs for the cage. Empty in the
+# image: no CA is generated at build time, so a fresh volume starts empty
+# and each cage's egress generates its own.
 #
 # /var/log/agentcage is chmod 1777 (world-writable, sticky bit) so:
 #   * the supervisor (PID 1, root) can `touch /var/log/agentcage/ready`
@@ -96,7 +78,7 @@ RUN chmod 0755 /opt/agentcage/supervisor /opt/agentcage/dns-audit.sh
 #     podman setups (`default_capabilities = []` in containers.conf)
 #     drop that cap, and the supervisor's strict `set -eu` then exits
 #     before either daemon's listener finishes; AND
-#   * mitmproxy (uid 200) can still write audit.jsonl / capture.jsonl
+#   * the egress (uid 200) can still write audit.jsonl / capture.jsonl
 #     into the same dir, AND
 #   * the sticky bit prevents cross-uid file deletion.
 RUN mkdir -p /home/acproxy/ca /var/log/agentcage \
@@ -106,17 +88,14 @@ RUN mkdir -p /home/acproxy/ca /var/log/agentcage \
 RUN mkdir -p /home/acdns \
     && chown acdns:acdns /home/acdns
 
-# Egress-local DNS apply: the addon publishes the granted zone list here and
-# the supervisor renders it into dnsmasq's servers-file. Pre-chowned in an
-# image layer for the same reason /home/acdns is — the supervisor must not
-# need CAP_CHOWN at runtime (hardened rootless podman drops it). 0700: only
-# the addon writes, only root (the supervisor) reads.
+# Egress-local DNS apply: the egress publishes the granted zone list here
+# and the supervisor renders it into dnsmasq's servers-file. Pre-chowned in
+# an image layer for the same reason /home/acdns is — the supervisor must
+# not need CAP_CHOWN at runtime (hardened rootless podman drops it). 0700:
+# only the egress writes, only root (the supervisor) reads.
 RUN mkdir -p /home/acproxy/dns \
     && chown acproxy:acproxy /home/acproxy/dns \
     && chmod 0700 /home/acproxy/dns
 
-# The upstream mitmproxy image's ENTRYPOINT runs a script that chowns
-# /home/mitmproxy at runtime — fails under rootless Podman + irrelevant
-# for our supervisor anyway. Override to use tini → our supervisor.
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/agentcage/supervisor"]
 CMD []

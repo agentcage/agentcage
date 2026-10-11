@@ -1243,7 +1243,11 @@ fn the_build_and_copy_argv_are_pinned_for_e4() {
             "--cap-add=CAP_DAC_OVERRIDE",
             "--cap-add=CAP_SETFCAP",
             "-t",
-            "agentcage-egress:0.40.1",
+            format!(
+                "agentcage-egress:0.40.1-{}",
+                agentcage_cli::egress_image::content_hash()
+            )
+            .as_str(),
             "-f",
             "/tmp/agentcage-build/containers/Containerfile.egress",
             "/tmp/agentcage-build",

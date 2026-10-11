@@ -7,46 +7,33 @@
 //! # Why the tag carries a hash
 //!
 //! [`egress_build_argv`] is only ever reached when the tag is *not*
-//! already present locally: `_build_egress_image_if_missing` probes with
+//! already present locally: the build probes with
 //! `container image inspect` and skips the build when it hits. Nothing
 //! about the image's contents took part in that decision while the tag
 //! was `agentcage-egress:<version>` alone, so a security fix landing in
-//! `supervisor-egress.sh` or the mitmproxy addon between releases never
-//! reached a host that already held the tag. Measured on a real Mac
-//! (#312): a `0.32.0` image built before the #186 proxy-log hardening
-//! still had the pre-fix supervisor and a world-readable `audit.jsonl`,
-//! while `cage create` printed "already present; skipping rebuild".
+//! `supervisor-egress.sh` between releases never reached a host that
+//! already held the tag. Measured on a real Mac (#312): a `0.32.0` image
+//! built before the #186 proxy-log hardening still had the pre-fix
+//! supervisor and a world-readable `audit.jsonl`, while `cage create`
+//! printed "already present; skipping rebuild".
 //!
-//! So the tag is `<version>-<12 hex of the build inputs>`. A changed
+//! So the tag is `<version>-<12 hex of the build inputs>`, the same
+//! scheme as the container and vm backends. The inputs include the
+//! `agentcage-egress` binary ([`crate::egress_image`]), so a changed
 //! input yields a tag the host cannot already have, the probe misses,
 //! and the rebuild happens with no flag.
 //!
-//! # The hash is a cross-language contract
+//! # The build context
 //!
-//! The digest itself is [`agentcage_assets::egress`] (PR B3), pinned by
-//! `tests/fixtures/egress_hash.json` (PR A5) and reproduced there. It
-//! must match the Python **byte-exactly**: if it does not, every Mac
-//! rebuilds its egress image once on upgrade and then drifts
-//! permanently from the Python-computed tag — two tag lineages for
-//! identical content, and the "already present" skip stops meaning
-//! anything across the boundary. This module is the *wiring* around it
-//! and nothing more.
-//!
-//! # The one structural difference from the Python
-//!
-//! `backends/apple_container.py` hands `container build` the installed
-//! package's own `data/` directory, because it is simply there on disk.
-//! A single binary has no such directory, so the context comes from
+//! A single binary has no package directory, so the context comes from
 //! [`agentcage_assets::extract`], which materializes the embedded tree
-//! into a cache dir (plan section 2.1). Which is why the context is a
-//! parameter here rather than a constant: the argv *shape* is the
-//! contract, the path is not.
+//! into a cache dir, with the egress binary staged into it. Which is why
+//! the context is a parameter here rather than a constant: the argv
+//! *shape* is the contract, the path is not.
 
 use std::path::Path;
 
 use agentcage_assets::egress;
-
-use crate::egress_engine::{EgressEngine, EngineError};
 
 /// `_EGRESS_IMAGE_REPO` — the repository half of the tag.
 ///
@@ -74,31 +61,17 @@ pub fn egress_image_name_from_context(version: &str, context: &Path) -> String {
     egress_image_name(version, &egress::content_hash_from_dir(context))
 }
 
-/// [`egress_image_name`] over the tree embedded in this binary.
+/// [`egress_image_name`] over the tree and the egress binary embedded
+/// in this binary.
 ///
 /// The version is this crate's, which the workspace holds equal to the
-/// root `VERSION` file (`scripts/check-version.sh`), so the tag is the
-/// one the Python of the same release would compute.
+/// root `VERSION` file (`scripts/check-version.sh`).
 #[must_use]
 pub fn egress_image_name_embedded() -> String {
-    egress_image_name(agentcage_assets::VERSION, &egress::content_hash())
-}
-
-/// The shared egress image's reference for an engine.
-///
-/// [`egress_image_name_embedded`] for the default engine; for Rust,
-/// `<repo>:<version>-rust-<hash>`, whose hash covers the embedded
-/// binary, so the "already present" short-circuit stays sound when only
-/// the binary changed.
-///
-/// # Errors
-///
-/// [`EngineError::MissingBinary`] for Rust on a host without one.
-pub fn egress_image_name_for(engine: EgressEngine) -> Result<String, EngineError> {
-    Ok(format!(
-        "{EGRESS_IMAGE_REPO}:{}",
-        engine.apple_tag(agentcage_assets::VERSION)?
-    ))
+    egress_image_name(
+        agentcage_assets::VERSION,
+        &crate::egress_image::content_hash(),
+    )
 }
 
 /// What `cage create --no-cache` / `--pull` mean for the egress build.
@@ -129,24 +102,13 @@ impl BuildFlags {
 /// *between* `-f <containerfile>` and the context, not at the end.
 #[must_use]
 pub fn egress_build_argv(image: &str, context: &Path, flags: BuildFlags) -> Vec<String> {
-    egress_build_argv_for(image, context, EgressEngine::Python, flags)
-}
-
-/// [`egress_build_argv`] for an engine's Containerfile.
-#[must_use]
-pub fn egress_build_argv_for(
-    image: &str,
-    context: &Path,
-    engine: EgressEngine,
-    flags: BuildFlags,
-) -> Vec<String> {
     let context = context.display().to_string();
     let mut argv = vec![
         "build".to_owned(),
         "-t".to_owned(),
         image.to_owned(),
         "-f".to_owned(),
-        format!("{context}/{}", engine.containerfile_rel()),
+        format!("{context}/{}", egress::CONTAINERFILE_REL),
     ];
     if flags.no_cache {
         argv.push("--no-cache".to_owned());
@@ -190,7 +152,7 @@ mod tests {
             .rsplit_once('-')
             .expect("the tag is <version>-<hash>");
         assert_eq!(version, agentcage_assets::VERSION);
-        assert_eq!(hash, agentcage_assets::egress::content_hash());
+        assert_eq!(hash, crate::egress_image::content_hash());
     }
 
     /// The flags go before the context, which is not a free choice:
