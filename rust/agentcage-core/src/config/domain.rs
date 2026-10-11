@@ -183,7 +183,13 @@ pub fn encoded_private_ip(domain: &str) -> Option<String> {
 /// and `$` allows one trailing newline, but [`valid_domain`] has already
 /// refused every string containing whitespace by the time this runs, so
 /// what is left is "between 1 and 253 characters".
-fn matches_domain_shape(domain: &str) -> bool {
+///
+/// Public for the egress, whose DNS publish filters granted names by
+/// this shape alone (the regex, not the full [`valid_domain`]). It holds
+/// on its own too: a whitespace character is never a label byte, so a
+/// string carrying one fails here without the pre-check.
+#[must_use]
+pub fn matches_domain_shape(domain: &str) -> bool {
     let length = domain.chars().count();
     if length == 0 || length > 253 {
         return false;
@@ -238,7 +244,8 @@ fn is_label(label: &str) -> bool {
 /// the point: `char::is_whitespace` follows the `White_Space` property,
 /// which omits the C0 separators `U+001C`–`U+001F`. Those are exactly
 /// the kind of character a domain-injection attempt would carry.
-pub(super) fn is_python_space(character: char) -> bool {
+#[must_use]
+pub fn is_python_space(character: char) -> bool {
     matches!(
         character as u32,
         0x09..=0x0d

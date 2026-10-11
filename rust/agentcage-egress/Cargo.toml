@@ -38,7 +38,16 @@ base64 = "0.22"
 # Mozilla roots from webpki-roots (plan D8). No OpenSSL, no cmake.
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
+# OS randomness for the Policy API's request ids (`req_` + 24 hex);
+# already in the tree through ring.
+getrandom = "0.3"
+
 [dev-dependencies]
+# Test-only: the host's own grants-overlay reader and writer, so an
+# interop test proves the egress and `cage grants` agree on the shared
+# `grants.yaml`. Never a runtime dependency (the egress image carries no
+# host code).
+agentcage-state = { path = "../agentcage-state" }
 
 [lints]
 workspace = true
