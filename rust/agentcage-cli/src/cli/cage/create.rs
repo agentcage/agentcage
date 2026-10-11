@@ -177,7 +177,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         let outcome = build_container_image(
             ctx,
             &config,
-            config_path.parent().unwrap_or(Path::new(".")),
+            agentcage_cli::staging::parent_dir(&config_path),
             no_cache,
             pull,
         );
@@ -185,7 +185,11 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         outcome?;
     }
 
-    if config.isolation == "container" {
+    // A `localhost/` image only ever exists in the local store (a
+    // scaffold or Containerfile build, normally the one just above), so
+    // pulling it can only fail, after podman's three registry retries
+    // against https://localhost/.
+    if config.isolation == "container" && !config.container.image.starts_with("localhost/") {
         println!("Pulling {}...", config.container.image);
         let phase = agentcage_cli::timing::Phase::start("pull.cage", Some(&name));
         let pulled = podman.pull(&config.container.image).unwrap_or(false);
@@ -379,14 +383,11 @@ pub(crate) fn stage_context(config: &Config, config_path: &Path, state_dir: &Pat
     if containerfile.is_empty() {
         return;
     }
-    let source = config_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join(containerfile);
+    let source = agentcage_cli::staging::parent_dir(config_path).join(containerfile);
     if !source.is_file() {
         return;
     }
-    let context = source.parent().unwrap_or(Path::new("."));
+    let context = agentcage_cli::staging::parent_dir(&source);
     if let Err(error) = agentcage_cli::staging::stage_build_context(context, state_dir, true, &[]) {
         eprintln!("warning: could not stage the build context: {error}");
     }

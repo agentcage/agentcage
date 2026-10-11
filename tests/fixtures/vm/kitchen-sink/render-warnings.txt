@@ -1,0 +1,1 @@
+warning: capture.enable is not a capture setting and is ignored (did you mean `enable_har`?); capture takes: enable_har, max_body_size, max_file_size, min_action, domains, exclude_domains

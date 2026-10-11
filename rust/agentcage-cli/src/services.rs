@@ -571,7 +571,7 @@ pub fn build_and_deploy(
         network_octet,
     )?;
     for warning in &units.warnings {
-        eprint!("{warning}");
+        eprintln!("{warning}");
     }
     backend.install_units(&units, quiet)?;
 

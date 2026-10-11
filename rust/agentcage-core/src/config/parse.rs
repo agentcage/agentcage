@@ -122,11 +122,11 @@ use super::secret::{
     KNOWN_BACKENDS, validate_enum, validate_env_name, validate_source, validate_transform,
 };
 use super::types::{
-    AgentsConfig, BuildConfig, CaptureConfig, Config, ContainerConfig, DeciderAgentConfig,
-    DomainConfig, IcmpPortsConfig, LlmAgentConfig, LoggingConfig, MAX_CAPTURE_BODY_BYTES,
-    MAX_CAPTURE_FILE_BYTES, OrderedMap, PortsConfig, ProtocolRelay, RelayAuth, RelayPolicy,
-    RelayRecipientAllowlist, RelayUpstream, SecretInjectionRule, SecretsConfig, UdpPortsConfig,
-    VALID_SECRET_SCOPES, VmConfig, WatcherAgentConfig,
+    AgentsConfig, BuildConfig, CAPTURE_KEYS, CaptureConfig, Config, ContainerConfig,
+    DeciderAgentConfig, DomainConfig, IcmpPortsConfig, LlmAgentConfig, LoggingConfig,
+    MAX_CAPTURE_BODY_BYTES, MAX_CAPTURE_FILE_BYTES, OrderedMap, PortsConfig, ProtocolRelay,
+    RelayAuth, RelayPolicy, RelayRecipientAllowlist, RelayUpstream, SecretInjectionRule,
+    SecretsConfig, UdpPortsConfig, VALID_SECRET_SCOPES, VmConfig, WatcherAgentConfig,
 };
 use super::{ConfigError, HostProbe};
 
@@ -830,6 +830,11 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
             capture_raw.get("exclude_domains"),
             "capture.exclude_domains",
         )?,
+        unknown_keys: capture_raw
+            .keys()
+            .map(str_of)
+            .filter(|key| !CAPTURE_KEYS.contains(&key.as_str()))
+            .collect(),
     };
 
     // ── Ports ───────────────────────────────────────────
@@ -1576,6 +1581,22 @@ mod tests {
         // A document that is not a mapping is the same -- it fails
         // later, on the missing name.
         assert_eq!(parse("- one\n- two\n"), Config::default());
+    }
+
+    /// A typo under `capture:` is kept so the renderer can warn about it,
+    /// and still changes nothing (#489).
+    #[test]
+    fn unknown_capture_keys_are_collected_not_applied() {
+        let config = parse("name: c\ncapture:\n  enabled: true\n  min_action: flag\n  har: 1\n");
+        assert!(!config.capture.enable_har);
+        assert_eq!(config.capture.min_action, "flag");
+        assert_eq!(config.capture.unknown_keys, ["enabled", "har"]);
+        assert!(
+            parse("name: c\ncapture:\n  enable_har: true\n")
+                .capture
+                .unknown_keys
+                .is_empty()
+        );
     }
 
     #[test]
