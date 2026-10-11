@@ -32,7 +32,8 @@ jobs:
   # docs/history/rust-port-plan.md §2.4 and the egress cutover. A static
   # scan with no build of the workspace beyond the xtask itself, so it
   # fails in seconds rather than behind the full test run: Rust does not
-  # shell out to a Python interpreter, and no shipped image installs one
+  # shell out to a Python interpreter, no shipped image installs one, no
+  # tracked file is Python, and no live file names the replaced egress
   # (see rust/xtask/src/invariants.rs).
   invariants:
     name: repository invariants
