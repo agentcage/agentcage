@@ -20,9 +20,11 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
+use agentcage_core::config::egress::EgressConfig;
 use agentcage_egress::ca::{CaOrigin, CertAuthority};
 use agentcage_egress::engine::{Engine, EngineOptions};
 use agentcage_egress::flow::Pipeline;
+use agentcage_egress::limits::{self, Overrides, TransportLink};
 use agentcage_egress::proxy::{self, ListenerSpec, Proxy, TransportSettings};
 
 #[derive(Parser, Debug)]
@@ -35,7 +37,22 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Run the egress proxy.
-    Run(RunArgs),
+    Run(Box<RunArgs>),
+    /// Print the address-space limit (`prlimit --as`, in bytes) to run
+    /// the egress under: 2 GiB, or the configured body budget plus 1 GiB
+    /// when that is larger. The supervisor asks before starting `run`.
+    AddressSpace(AddressSpaceArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct AddressSpaceArgs {
+    /// The egress config (`/etc/agentcage/config.yaml`); missing means
+    /// the defaults.
+    #[arg(long, env = "AGENTCAGE_CONFIG")]
+    config: Option<PathBuf>,
+    /// A development override of the budget, as `run` takes it.
+    #[arg(long, env = "AGENTCAGE_BODY_BUDGET_BYTES")]
+    body_budget_bytes: Option<usize>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -61,15 +78,18 @@ struct RunArgs {
     /// The ports forward-proxy targets may use (`INSPECTED_TCP_PORTS`).
     #[arg(long, env = "INSPECTED_TCP_PORTS", default_value = "80 443")]
     inspected_ports: String,
-    /// The largest body buffered, in bytes.
-    #[arg(long, env = "AGENTCAGE_MAX_BODY_BYTES", default_value_t = proxy::DEFAULT_MAX_BODY)]
-    max_body_bytes: usize,
-    /// The most body bytes buffered at once across all flows (default
-    /// 1 GiB); a body that would exceed it waits briefly for room, then is
-    /// refused with a 503 instead of risking an allocation failure that
-    /// would abort the egress.
-    #[arg(long, env = "AGENTCAGE_BODY_BUDGET_BYTES", default_value_t = proxy::DEFAULT_BODY_BUDGET)]
-    body_budget_bytes: usize,
+    /// The largest body buffered, in bytes. Normally the config's
+    /// `egress.max_body_bytes` (default 256 MiB); setting it here pins it
+    /// for development, and config reloads leave it alone.
+    #[arg(long, env = "AGENTCAGE_MAX_BODY_BYTES")]
+    max_body_bytes: Option<usize>,
+    /// The most body bytes buffered at once across all flows; a body that
+    /// would exceed it waits briefly for room, then is refused with a 503
+    /// instead of risking an allocation failure that would abort the
+    /// egress. Normally the config's `egress.body_budget_bytes` (default
+    /// 1 GiB); setting it here pins it, as for the cap.
+    #[arg(long, env = "AGENTCAGE_BODY_BUDGET_BYTES")]
+    body_budget_bytes: Option<usize>,
     /// The egress config (`/etc/agentcage/config.yaml`).
     #[arg(long, env = "AGENTCAGE_CONFIG")]
     config: Option<PathBuf>,
@@ -83,11 +103,14 @@ const MAX_BLOCKING_THREADS: usize = 64;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let Command::Run(args) = cli.command;
+    let args = match cli.command {
+        Command::Run(args) => *args,
+        Command::AddressSpace(args) => return address_space(&args),
+    };
     // The blocking pool runs the inspector chain, injection and the
     // decider; each thread reserves a 2 MiB stack, and the supervisor's
-    // `prlimit --as=2G` counts reservations, so the pool is capped well
-    // below tokio's default of 512.
+    // `prlimit --as` (2 GiB by default) counts reservations, so the pool
+    // is capped well below tokio's default of 512.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .max_blocking_threads(MAX_BLOCKING_THREADS)
         .enable_all()
@@ -108,6 +131,20 @@ fn main() -> ExitCode {
     }
 }
 
+/// `address-space`: print the limit. A config that does not load still
+/// prints the default (on stdout, with the reason on stderr), so the
+/// supervisor always has a number; the egress then refuses that config
+/// itself.
+fn address_space(args: &AddressSpaceArgs) -> ExitCode {
+    let bytes = limits::address_space_for(args.config.as_deref(), args.body_budget_bytes)
+        .unwrap_or_else(|e| {
+            eprintln!("agentcage-egress: {e}; using the default address-space limit");
+            EgressConfig::default().address_space_bytes()
+        });
+    println!("{bytes}");
+    ExitCode::SUCCESS
+}
+
 fn listeners(args: &RunArgs) -> Result<Vec<ListenerSpec>, String> {
     let mut specs = vec![
         ListenerSpec::Regular(proxy::parse_bind(&args.regular)?),
@@ -121,8 +158,14 @@ fn listeners(args: &RunArgs) -> Result<Vec<ListenerSpec>, String> {
 
 async fn run(args: RunArgs) -> Result<(), String> {
     let specs = listeners(&args)?;
-    let settings = TransportSettings {
+    let overrides = Overrides {
         max_body: args.max_body_bytes,
+        body_budget: args.body_budget_bytes,
+    };
+    // The defaults until the engine applies the config's `egress:`
+    // section (`attach_transport`, before the first connection).
+    let settings = TransportSettings {
+        max_body: overrides.max_body.unwrap_or(proxy::DEFAULT_MAX_BODY),
         inspected_ports: proxy::parse_ports(&args.inspected_ports)?,
     };
     let (ca, origin) =
@@ -142,8 +185,8 @@ async fn run(args: RunArgs) -> Result<(), String> {
     let engine = Engine::boot(EngineOptions::from_env(args.config.clone()));
     engine.start();
     let handler = Arc::new(Pipeline::new(Arc::clone(&engine)));
-    let mut proxy =
-        Proxy::new(handler, Arc::clone(&ca), settings).with_body_budget(args.body_budget_bytes);
+    let mut proxy = Proxy::new(handler, Arc::clone(&ca), settings)
+        .with_body_budget(overrides.body_budget.unwrap_or(proxy::DEFAULT_BODY_BUDGET));
     if let Some(path) = &args.upstream_ca {
         use rustls::pki_types::CertificateDer;
         use rustls::pki_types::pem::PemObject as _;
@@ -153,6 +196,11 @@ async fn run(args: RunArgs) -> Result<(), String> {
         proxy = proxy.with_extra_upstream_roots(roots);
     }
     let bound = proxy.bind(&specs).await.map_err(|e| e.to_string())?;
+    engine.attach_transport(TransportLink::new(
+        bound.settings(),
+        bound.body_budget(),
+        overrides,
+    ));
     for (kind, addr) in bound.local_addrs() {
         eprintln!("agentcage-egress: listening ({kind:?}) on {addr}");
     }

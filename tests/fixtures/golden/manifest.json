@@ -265,6 +265,18 @@
       "warning_count": 0
     },
     {
+      "cage_name": "backend-vm-egress-budget",
+      "case": "backend-vm-egress-budget",
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
       "cage_name": "backend-vm-file-volume",
       "case": "backend-vm-file-volume",
       "isolation": "vm",
@@ -615,6 +627,18 @@
     {
       "cage_name": "domains-two-letter-tld",
       "case": "domains-two-letter-tld",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "egress-limits",
+      "case": "egress-limits",
       "isolation": "container",
       "kind": "valid",
       "platform": [
@@ -1061,6 +1085,15 @@
     },
     {
       "case": "err-domains-allow-and-block",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-egress-budget-below-cap",
       "error_type": "ValueError",
       "kind": "invalid",
       "platform": [
@@ -2725,9 +2758,9 @@
   ],
   "schema": 1,
   "stats": {
-    "distinct_error_messages": 126,
-    "invalid": 131,
-    "total": 259,
-    "valid": 128
+    "distinct_error_messages": 127,
+    "invalid": 132,
+    "total": 262,
+    "valid": 130
   }
 }

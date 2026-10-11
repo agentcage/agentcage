@@ -133,10 +133,11 @@ sha2 = "0.10.9"
 unicode-normalization = "0.1.25"
 caseless = "0.2.2"
 
-# `SO_ORIGINAL_DST` for the transparent listener, through a safe wrapper
+# `SO_ORIGINAL_DST` for the transparent listener, and `getrlimit` for the
+# address-space limit the body budget must fit under, through a safe wrapper
 # (`unsafe_code` is forbidden workspace-wide).
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["socket", "net"] }
+nix = { version = "0.31", default-features = false, features = ["socket", "net", "resource"] }
 
 [dev-dependencies]
 # Test-only: the host's own grants-overlay reader and writer, so an

@@ -37,6 +37,10 @@ logging:
 capture:
   # The traffic watcher reads the capture.
   enable_har: true
+egress:
+  # 1.5 GiB: past the 1 GiB default, so the supervisor starts the egress
+  # under a 2.5 GiB address-space limit instead of 2 GiB (9.24).
+  body_budget_bytes: 1610612736
 agents:
   decider:
     enable: true

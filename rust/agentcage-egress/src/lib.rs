@@ -34,6 +34,7 @@ pub mod fuzz_api;
 pub mod inject;
 pub mod inspect;
 pub mod json;
+pub mod limits;
 pub mod llm;
 pub mod message;
 pub mod plugin;

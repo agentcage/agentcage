@@ -676,7 +676,41 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     // looking healthy.
     warnings.extend(super::agents::validate_agents(config)?);
 
+    warnings.extend(egress_memory_warning(config));
+
     Ok(warnings)
+}
+
+/// A warning when an `egress:` section sets a body budget the egress's
+/// machine cannot hold. The address-space limit follows the budget (see
+/// [`super::egress`]), but resident memory is the guest's: on `vm` the
+/// egress shares the Lima guest (`vm.mem_mb`) with the cage, and on
+/// apple-container it has a 512 MiB microVM of its own. Only an explicit
+/// section draws it: the defaults predate the knob.
+fn egress_memory_warning(config: &Config) -> Option<String> {
+    let egress = &config.egress;
+    if *egress == super::egress::EgressConfig::default() {
+        return None;
+    }
+    let (memory, what) = match config.isolation.as_str() {
+        "vm" => (
+            u64::try_from(config.vm.mem_mb).unwrap_or(0) << 20,
+            format!("the VM's vm.mem_mb ({} MiB)", config.vm.mem_mb),
+        ),
+        "apple-container" => (
+            super::egress::APPLE_EGRESS_MEMORY_BYTES,
+            "the apple-container egress microVM's 512 MiB".to_owned(),
+        ),
+        _ => return None,
+    };
+    (egress.body_budget_bytes > memory / 2).then(|| {
+        format!(
+            "egress.body_budget_bytes ({} MiB) is more than half of {what}: \
+             a burst of large bodies could exhaust the egress's memory before \
+             the budget refuses one",
+            egress.body_budget_bytes >> 20
+        )
+    })
 }
 
 // ── ports ────────────────────────────────────────────────
@@ -1205,6 +1239,42 @@ mod tests {
             "A".repeat(64)
         )));
         assert!(!matches_image_reference("alpine@sha256:abc"));
+    }
+
+    #[test]
+    fn an_egress_budget_the_guest_cannot_hold_draws_a_warning() {
+        use super::super::egress::EgressConfig;
+        let with = |isolation: &str, budget: u64| {
+            let mut config = Config {
+                isolation: isolation.to_owned(),
+                ..Config::default()
+            };
+            config.egress = EgressConfig {
+                max_body_bytes: 1 << 20,
+                body_budget_bytes: budget,
+            };
+            super::egress_memory_warning(&config)
+        };
+        let apple = with("apple-container", 384 << 20).expect("a warning");
+        assert!(
+            apple.starts_with(
+                "egress.body_budget_bytes (384 MiB) is more than half of the \
+                 apple-container egress microVM's 512 MiB"
+            ),
+            "{apple}"
+        );
+        assert_eq!(with("apple-container", 128 << 20), None);
+        // vm.mem_mb defaults to 4096.
+        assert!(with("vm", 3 << 30).is_some());
+        assert_eq!(with("vm", 1 << 30), None);
+        // The container backend sets no memory limit on the egress.
+        assert_eq!(with("container", 32 << 30), None);
+        // The defaults predate the knob and never warn.
+        let config = Config {
+            isolation: "apple-container".to_owned(),
+            ..Config::default()
+        };
+        assert_eq!(super::egress_memory_warning(&config), None);
     }
 
     #[test]

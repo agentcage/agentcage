@@ -23,14 +23,16 @@
 //! (the domain inspector reconfigured in place), injector, rate limit,
 //! logging, passthrough, relays (synced in order by one worker task),
 //! capture, Policy API (reconfigured in
-//! place while enabled, so its token bucket survives), watcher.
+//! place while enabled, so its token bucket survives), the body cap and
+//! budget (`egress:`, see [`crate::limits`]), watcher.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use agentcage_core::config::egress::EgressConfig;
 use agentcage_core::har::datetime::DateTime;
 use arc_swap::ArcSwap;
 use indexmap::IndexMap;
@@ -41,6 +43,7 @@ use crate::config::{self, Config};
 use crate::inject::Injector;
 use crate::inspect::chain::{Chain, PluginLoader, build_chain};
 use crate::inspect::domain::DomainInspector;
+use crate::limits::TransportLink;
 use crate::llm::{LlmClient, ToolCaller, UreqTransport};
 use crate::plugin::WasmPluginLoader;
 use crate::policy::{PolicyApi, PolicyPaths, Revocation, SystemEnv, decider_enabled};
@@ -77,6 +80,8 @@ pub struct Live {
     pub burst: f64,
     /// `domains.passthrough`.
     pub passthrough: PassthroughMatcher,
+    /// `egress:` (the body cap and budget).
+    pub limits: EgressConfig,
 }
 
 /// A job for the relay worker, which owns the [`RelayManager`] and
@@ -196,6 +201,9 @@ pub struct Engine {
     relay_worker: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<RelayJob>>>,
     rate: Mutex<RateLimiter>,
     poisoned: Mutex<IndexMap<String, ()>>,
+    /// The bound proxy's settings and budget, once attached
+    /// ([`Engine::attach_transport`]).
+    transport: OnceLock<TransportLink>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -212,6 +220,7 @@ struct Prepared {
     chain: crate::inspect::chain::PendingChain,
     rate: f64,
     burst: f64,
+    limits: EgressConfig,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -293,6 +302,7 @@ impl Engine {
             rate: 10.0,
             burst: 50.0,
             passthrough: PassthroughMatcher::default(),
+            limits: EgressConfig::default(),
         };
         let (relay_jobs, relay_rx) = tokio::sync::mpsc::unbounded_channel();
         let engine = Arc::new(Self {
@@ -313,6 +323,7 @@ impl Engine {
             relay_worker: Mutex::new(Some(relay_rx)),
             rate: Mutex::new(RateLimiter::default()),
             poisoned: Mutex::new(IndexMap::new()),
+            transport: OnceLock::new(),
         });
         match engine.config_path.clone() {
             None => {
@@ -379,6 +390,9 @@ impl Engine {
     }
 
     fn prepare(&self, cfg: Config) -> Result<Prepared, String> {
+        // The host's own parser: a section `cage create` accepted is
+        // never refused here, and one it would refuse is refused here.
+        let limits = EgressConfig::from_yaml(cfg.get("egress"))?;
         let chain = build_chain(&cfg, &self.domain, &*self.plugins)?;
         let (rate, burst) = parse_rate(&cfg)?;
         Ok(Prepared {
@@ -386,7 +400,25 @@ impl Engine {
             chain,
             rate,
             burst,
+            limits,
         })
+    }
+
+    /// Hand the engine the bound proxy's settings and body budget, so
+    /// `egress.max_body_bytes` and `egress.body_budget_bytes` apply now
+    /// and on every reload. Once per process; a second call is ignored.
+    pub fn attach_transport(&self, link: TransportLink) {
+        if self.transport.set(link).is_ok() {
+            self.apply_limits(&self.live().limits);
+        }
+    }
+
+    fn apply_limits(&self, limits: &EgressConfig) {
+        if let Some(link) = self.transport.get() {
+            for note in link.apply(limits) {
+                eprintln!("agentcage: {note}");
+            }
+        }
     }
 
     /// Whether the config file's mtime differs from the applied version
@@ -459,6 +491,7 @@ impl Engine {
             chain,
             rate,
             burst,
+            limits,
         } = prepared;
         let chain = chain.commit();
         for warning in chain.warnings() {
@@ -481,6 +514,7 @@ impl Engine {
         ));
         let _ = self.capture.reconfigure(&cfg);
         self.apply_policy(&cfg);
+        self.apply_limits(&limits);
         self.live.store(Arc::new(Live {
             cfg,
             chain,
@@ -488,6 +522,7 @@ impl Engine {
             rate,
             burst,
             passthrough,
+            limits,
         }));
         self.epoch.fetch_add(1, Ordering::Release);
         self.apply_watcher();
@@ -717,6 +752,25 @@ mod tests {
         let log = String::from_utf8(lock(&out.0).clone()).unwrap();
         assert_eq!(log.matches("config_reload_failed").count(), 1, "{log}");
         assert!(!engine.config_changed(), "a refused version is not retried");
+    }
+
+    #[test]
+    fn a_refused_egress_section_keeps_the_last_good_limits() {
+        let dir = tmp("limits");
+        let (engine, out) = engine(&dir, Some("egress:\n  max_body_bytes: 2097152\n"));
+        assert_eq!(engine.live().limits.max_body_bytes, 2 << 20);
+        // The budget below the cap: refused, as `cage create` refuses it.
+        bump(
+            &dir.join("config.yaml"),
+            "egress:\n  max_body_bytes: 4194304\n  body_budget_bytes: 2097152\n",
+        );
+        engine.reload_if_changed();
+        assert_eq!(engine.live().limits.max_body_bytes, 2 << 20);
+        let log = String::from_utf8(lock(&out.0).clone()).unwrap();
+        assert!(
+            log.contains("egress.body_budget_bytes (2097152) must be at least"),
+            "{log}"
+        );
     }
 
     #[test]

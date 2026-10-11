@@ -158,11 +158,11 @@ Every response the egress generates itself is JSON: `{"blocked": <bool>, "reason
 
 #### Symptom: `503` "the egress is already buffering its … budget of bodies; retry later"
 - **Cause**: Too many large request or response bodies were buffered at once; the egress refuses new ones after waiting two seconds for room, rather than run out of memory.
-- **Solution**: Retry. If it persists, the cage is moving many large bodies concurrently; streamed responses hold only a little at a time, so check whether a custom inspector (which forces responses to be buffered) is loaded.
+- **Solution**: Retry. If it persists, the cage is moving many large bodies concurrently; streamed responses hold only a little at a time, so check whether a custom inspector (which forces responses to be buffered) is loaded. If the host has the memory, raise `egress.body_budget_bytes` in `cage.yaml` (1 GiB by default).
 
 #### Symptom: `413` "request body exceeds the egress limit of … bytes"
-- **Cause**: A request body over the egress's per-body limit (256 MiB). Request bodies are buffered whole so they can be inspected. A body over `max_request_body` (10 MiB by default) is blocked earlier by the `body-size` inspector with a `403`.
-- **Solution**: Raise `max_request_body` in `cage.yaml` if the upload is legitimate.
+- **Cause**: A request body over the egress's per-body limit (`egress.max_body_bytes`, 256 MiB by default). Request bodies are buffered whole so they can be inspected. A body over `max_request_body` (10 MiB by default) is blocked earlier by the `body-size` inspector with a `403`.
+- **Solution**: Raise `max_request_body` in `cage.yaml` if the upload is legitimate; an upload over 256 MiB also needs `egress.max_body_bytes` (and a `egress.body_budget_bytes` at least as large).
 
 #### Symptom: `403` "port N is not an inspected port"
 - **Cause**: A client used the forward proxy (`HTTPS_PROXY`) to `CONNECT` to a port that is not an inspected port. The forward proxy only connects to `ports.tcp.allow` minus `ports.tcp.passthrough`.

@@ -544,4 +544,25 @@ else
     "found=$FOUND; status (rc $STATUS_RC): $(tr '\n' '|' <<<"$STATUS"); stub calls: $(tail -3 <<<"$LLM_LOG" | tr '\n' '|')"
 fi
 
+# ── 9.24: the egress's address-space limit follows its body budget ──
+# egress.body_budget_bytes is 1.5 GiB in this cage's config, so the
+# supervisor (asking `agentcage-egress address-space`) must have started
+# the egress under budget + 1 GiB = 2684354560 bytes, not the fixed 2 GiB.
+e2e_timer_start
+WANT_AS=2684354560
+# shellcheck disable=SC2016 # expanded by the egress container's shell
+LIMITS=$(podman exec --user root "${CAGE}-egress" sh -c '
+  for p in /proc/[0-9]*; do
+    if [ "$(cat "$p/comm" 2>/dev/null)" = agentcage-egres ]; then
+      grep "Max address space" "$p/limits"
+      break
+    fi
+  done' 2>/dev/null || true)
+if [ "$(awk '{print $4}' <<<"$LIMITS")" = "$WANT_AS" ]; then
+  e2e_pass "9.24" "Egress address space follows egress.body_budget_bytes"
+else
+  e2e_fail "9.24" "Egress address space follows egress.body_budget_bytes" \
+    "want soft limit $WANT_AS; got: ${LIMITS:-<no egress process found>}"
+fi
+
 print_results

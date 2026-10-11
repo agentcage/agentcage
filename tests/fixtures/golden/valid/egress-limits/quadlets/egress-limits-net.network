@@ -1,0 +1,4 @@
+[Network]
+NetworkName=egress-limits-net
+Internal=true
+Subnet=10.89.194.0/24

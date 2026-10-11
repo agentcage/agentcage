@@ -1,0 +1,1 @@
+egress.body_budget_bytes (1536 MiB) is more than half of the VM's vm.mem_mb (2048 MiB): a burst of large bodies could exhaust the egress's memory before the budget refuses one

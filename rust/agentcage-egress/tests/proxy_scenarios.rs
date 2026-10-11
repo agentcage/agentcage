@@ -619,6 +619,7 @@ struct Egress {
     ca_pem: String,
     original_dst: Arc<Mutex<SocketAddr>>,
     settings: Arc<arc_swap::ArcSwap<TransportSettings>>,
+    budget: Arc<agentcage_egress::proxy::BodyBudget>,
 }
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -682,6 +683,7 @@ async fn egress_with_budget<H: FlowHandler>(
     let addrs = bound.local_addrs();
     let find = |k: ListenerKind| addrs.iter().find(|(kind, _)| *kind == k).map(|(_, a)| *a);
     let settings = bound.settings();
+    let budget = bound.body_budget();
     tokio::spawn(bound.run());
     Egress {
         regular: find(ListenerKind::Regular).unwrap(),
@@ -691,6 +693,7 @@ async fn egress_with_budget<H: FlowHandler>(
         ca_pem: ca.cert_pem().to_string(),
         original_dst,
         settings,
+        budget,
     }
 }
 
@@ -1545,6 +1548,26 @@ fn pipeline(
     Sink,
     std::path::PathBuf,
 ) {
+    pipeline_with(
+        secrets,
+        capture,
+        "",
+        Arc::new(agentcage_egress::inspect::chain::NoPlugins),
+    )
+}
+
+/// [`pipeline`], with `extra` appended to the config and custom
+/// inspectors loaded through `plugins`.
+fn pipeline_with(
+    secrets: bool,
+    capture: bool,
+    extra: &str,
+    plugins: Arc<dyn agentcage_egress::inspect::chain::PluginLoader + Send + Sync>,
+) -> (
+    Arc<agentcage_egress::flow::Pipeline>,
+    Sink,
+    std::path::PathBuf,
+) {
     use agentcage_egress::engine::{Engine, EngineOptions};
     let dir = temp_dir("pipeline");
     std::fs::create_dir_all(&dir).unwrap();
@@ -1559,6 +1582,7 @@ fn pipeline(
     if capture {
         yaml.push_str("capture:\n  enable_har: true\n  max_body_size: 2048\n");
     }
+    yaml.push_str(extra);
     let config = dir.join("config.yaml");
     std::fs::write(&config, &yaml).unwrap();
     let sink = Sink::default();
@@ -1572,7 +1596,7 @@ fn pipeline(
         capture: Arc::new(agentcage_egress::capture::Capture::new(Some(
             capture_path.clone(),
         ))),
-        plugins: Arc::new(agentcage_egress::inspect::chain::NoPlugins),
+        plugins,
         policy_paths: agentcage_egress::policy::PolicyPaths::new(
             dir.join("grants"),
             dir.join("dns/granted"),
@@ -1738,6 +1762,92 @@ async fn large_responses_stream_past_the_buffer_cap_in_bounded_memory() {
         );
         assert!(!audit.text().contains("upstream_error"), "{}", audit.text());
     }
+}
+
+/// `egress.max_body_bytes` and `egress.body_budget_bytes` reach the
+/// running transport when the engine is attached, and follow a reload.
+#[tokio::test]
+async fn the_configured_body_cap_and_budget_take_effect_and_follow_reloads() {
+    use agentcage_egress::limits::{Overrides, TransportLink};
+    const MIB: usize = 1 << 20;
+    let root = test_root();
+    let up = mock(Kind::Plain, &root).await;
+    let p = up.addr.port();
+    let (handler, _audit, capture) = pipeline_with(
+        false,
+        false,
+        "egress:\n  max_body_bytes: 2097152\n  body_budget_bytes: 8388608\n",
+        Arc::new(agentcage_egress::inspect::chain::NoPlugins),
+    );
+    let engine = Arc::clone(handler.engine());
+    // Started on the defaults, as `run` starts before the engine applies
+    // the config.
+    let eg = egress(
+        handler,
+        &root,
+        vec![p],
+        agentcage_egress::proxy::DEFAULT_MAX_BODY,
+        None,
+    )
+    .await;
+    assert_eq!(
+        eg.budget.limit(),
+        agentcage_egress::proxy::DEFAULT_BODY_BUDGET
+    );
+    engine.attach_transport(
+        TransportLink::new(
+            Arc::clone(&eg.settings),
+            Arc::clone(&eg.budget),
+            Overrides::default(),
+        )
+        .with_address_space(None),
+    );
+    assert_eq!(eg.settings.load().max_body, 2 * MIB);
+    assert_eq!(eg.budget.limit(), 8 * MIB);
+
+    let post = |n: usize| {
+        let mut req = format!(
+            "POST http://localhost:{p}/up HTTP/1.1\r\nHost: localhost:{p}\r\nContent-Length: {n}\r\n\r\n"
+        )
+        .into_bytes();
+        req.resize(req.len() + n, b'x');
+        req
+    };
+    // Over the configured cap: refused on its Content-Length, before the
+    // body is read (so only the head is sent).
+    let mut s = TcpStream::connect(eg.regular).await.unwrap();
+    let headers_only = post(0);
+    let headers_only = String::from_utf8(headers_only)
+        .unwrap()
+        .replace("Content-Length: 0", &format!("Content-Length: {}", 3 * MIB));
+    let (head, body) = roundtrip(&mut s, headers_only.as_bytes()).await;
+    assert!(head.starts_with("HTTP/1.1 413"), "{head}");
+    let body = String::from_utf8_lossy(&body);
+    assert!(
+        body.contains("request body exceeds the egress limit of 2097152 bytes"),
+        "{body}"
+    );
+
+    // A reload raises both; the same body now goes through.
+    let config = capture.with_file_name("config.yaml");
+    let text = std::fs::read_to_string(&config).unwrap().replace(
+        "max_body_bytes: 2097152\n  body_budget_bytes: 8388608",
+        "max_body_bytes: 4194304\n  body_budget_bytes: 16777216",
+    );
+    std::fs::write(&config, text).unwrap();
+    let later = std::time::SystemTime::now() + Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(&config)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    engine.reload_if_changed();
+    assert_eq!(eg.settings.load().max_body, 4 * MIB);
+    assert_eq!(eg.budget.limit(), 16 * MIB);
+    let mut s = TcpStream::connect(eg.regular).await.unwrap();
+    let (head, _) = roundtrip(&mut s, &post(3 * MIB)).await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
 }
 
 #[tokio::test]

@@ -529,7 +529,18 @@ mod tests {
     use std::path::Path;
 
     use super::super::meta::Meta;
-    use super::{CageInputs, EgressPaths, cage_argv, egress_argv};
+    use super::{CageInputs, EGRESS_MEMORY, EgressPaths, cage_argv, egress_argv};
+
+    /// The config warnings compare `egress.body_budget_bytes` with the
+    /// egress microVM's memory; they keep their own copy of the number.
+    #[test]
+    fn the_egress_memory_matches_what_the_config_warnings_assume() {
+        assert_eq!(EGRESS_MEMORY, "512M");
+        assert_eq!(
+            agentcage_core::config::egress::APPLE_EGRESS_MEMORY_BYTES,
+            512 << 20
+        );
+    }
 
     /// The flag and its value, as a pair, for every `-e`/`--volume`
     /// style argument. Asserting on pairs rather than on a flat list is

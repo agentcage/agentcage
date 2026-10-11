@@ -606,7 +606,7 @@ fn every_valid_case_reproduces_its_quadlets() {
          outside quadlets.py"
     );
     assert_eq!(
-        checked_cases, 120,
+        checked_cases, 122,
         "expected every valid case that has units; the corpus grew or shrank"
     );
     assert!(checked_units >= 600, "only {checked_units} units compared");
@@ -696,7 +696,7 @@ fn every_valid_case_reproduces_its_dns_allowlist() {
     }
 
     assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
-    assert_eq!(checked, 128);
+    assert_eq!(checked, 130);
 }
 
 /// Every `.j2` under `src/agentcage/templates/` is byte-identical to

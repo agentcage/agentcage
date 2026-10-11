@@ -232,7 +232,7 @@ pub enum Refusal {
         limit: usize,
     },
     /// Buffering this body would take the egress past its process-wide
-    /// budget for buffered bodies (`AGENTCAGE_BODY_BUDGET_BYTES`).
+    /// budget for buffered bodies (`egress.body_budget_bytes`).
     BodyBudgetExhausted {
         /// The budget, in bytes.
         limit: usize,

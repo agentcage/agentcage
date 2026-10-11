@@ -159,6 +159,13 @@ impl<H: FlowHandler> BoundProxy<H> {
         Arc::clone(&self.shared.settings)
     }
 
+    /// The process-wide body budget: [`super::BodyBudget::set_limit`] resizes
+    /// it without touching open connections.
+    #[must_use]
+    pub fn body_budget(&self) -> Arc<super::budget::BodyBudget> {
+        Arc::clone(&self.shared.budget)
+    }
+
     /// Accept and serve on every listener until the process exits.
     ///
     /// # Errors
