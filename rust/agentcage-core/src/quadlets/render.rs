@@ -450,6 +450,18 @@ pub fn generate_quadlets(
         options.deploy_name
     };
     let mut out = Quadlets::default();
+    for key in &config.capture.unknown_keys {
+        let hint = if matches!(key.as_str(), "enabled" | "enable" | "har") {
+            " (did you mean `enable_har`?)"
+        } else {
+            ""
+        };
+        out.warnings.push(format!(
+            "warning: capture.{key} is not a capture setting and is ignored{hint}; \
+             capture takes: {}",
+            crate::config::types::CAPTURE_KEYS.join(", ")
+        ));
+    }
 
     // Expand ~ and env vars in volume paths and env values. The inline
     // `np` option marks one bind non-persistent: it uses Podman's

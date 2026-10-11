@@ -450,7 +450,7 @@ pub fn update_fingerprint(
         // saw under Python and not under Rust is a regression in the
         // only output this path has.
         for warning in &rendered.warnings {
-            eprint!("{warning}");
+            eprintln!("{warning}");
         }
         rendered
     };

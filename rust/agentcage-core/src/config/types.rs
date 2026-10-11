@@ -336,7 +336,24 @@ pub struct CaptureConfig {
     pub domains: Vec<String>,
     /// Never capture these domains.
     pub exclude_domains: Vec<String>,
+    /// Keys under `capture:` that are none of the above, in config order.
+    ///
+    /// Ignored, as they always were, but no longer silently: a typo such
+    /// as `enabled: true` for `enable_har: true` left capture off with
+    /// nothing to say why. The renderer turns each into a warning. Not
+    /// part of the resolved config.
+    pub unknown_keys: Vec<String>,
 }
+
+/// The keys `capture:` takes.
+pub const CAPTURE_KEYS: [&str; 6] = [
+    "enable_har",
+    "max_body_size",
+    "max_file_size",
+    "min_action",
+    "domains",
+    "exclude_domains",
+];
 
 impl Default for CaptureConfig {
     fn default() -> Self {
@@ -347,6 +364,7 @@ impl Default for CaptureConfig {
             min_action: "all".to_owned(),
             domains: Vec::new(),
             exclude_domains: Vec::new(),
+            unknown_keys: Vec::new(),
         }
     }
 }

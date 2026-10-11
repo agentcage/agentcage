@@ -43,6 +43,21 @@ fn is_deleted_marker(name: &str) -> bool {
         .any(|(index, _)| index > 0 && index + ".deleted.".len() < name.len())
 }
 
+/// The directory `path` is in, as Python's `Path.parent` gives it.
+///
+/// Rust's [`Path::parent`] returns an *empty* path for a bare file name
+/// (`cage.yaml`), where `pathlib` returns `.`; an empty path then fails
+/// every filesystem call with `ENOENT`. So `cage create -c cage.yaml`,
+/// run from the config's own directory, could not stage or build its
+/// Containerfile's context (#489), while `-c ./cage.yaml` could.
+#[must_use]
+pub fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
 /// `cli._stage_build_context` — copy a Containerfile's siblings.
 ///
 /// Directories as well as files, because a Containerfile that `COPY`s a
@@ -535,8 +550,21 @@ fn remove_path(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_inputs, canonical, is_ignored, line_copies, stage_build_context, stage_conflicts,
+        build_inputs, canonical, is_ignored, line_copies, parent_dir, stage_build_context,
+        stage_conflicts,
     };
+    use std::path::Path;
+
+    /// `pathlib`'s answer, not `Path::parent`'s: a bare file name is in
+    /// `.`, not in `""` (#489).
+    #[test]
+    fn a_bare_file_name_is_in_the_current_directory() {
+        assert_eq!(parent_dir(Path::new("cage.yaml")), Path::new("."));
+        assert_eq!(parent_dir(Path::new("./cage.yaml")), Path::new("."));
+        assert_eq!(parent_dir(Path::new("cfg/cage.yaml")), Path::new("cfg"));
+        assert_eq!(parent_dir(Path::new("/abs/cage.yaml")), Path::new("/abs"));
+        assert_eq!(parent_dir(Path::new("/")), Path::new("."));
+    }
 
     #[test]
     fn the_ignore_patterns_are_the_pythons_five() {
