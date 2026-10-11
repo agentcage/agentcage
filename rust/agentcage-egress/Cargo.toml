@@ -33,6 +33,17 @@ indexmap = "2"
 # standard base64 (`base64.b64encode` in the replaced implementation).
 base64 = "0.22"
 
+# ── Per-cage CA ──────────────────────────────────────────────
+# CA generation and leaf minting; `x509-parser` reloads the CA from disk.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+# Certificate validity windows for rcgen.
+time = "0.3"
+# Random serials and the CA fingerprint (already in the tree through rustls).
+ring = "0.17"
+# Leaves are handed to the TLS stack as rustls `CertifiedKey`s; ring
+# provider only (no aws-lc / cmake).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
 [dev-dependencies]
 
 [lints]
