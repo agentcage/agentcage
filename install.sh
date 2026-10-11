@@ -254,14 +254,19 @@ install_podman() {
 # ---------------------------------------------------------------------------
 #
 # agentcage is a single binary, built here from source with cargo straight
-# from the GitHub repository. The host CLI stopped being Python at the
-# Rust cutover, and the only Python left in the product ships inside the
-# egress container image, where the image installs it.
+# from the GitHub repository. It carries a second binary inside it: the
+# linux-musl agentcage-egress for this machine's architecture, which it
+# bakes into each cage's egress image. That one is downloaded from the
+# release (and checked against its published sha256) rather than built,
+# because building it needs a musl C toolchain (ring compiles C) that
+# this machine has no other reason to have.
 #
-# Why source rather than a prebuilt download: the macOS binaries are not
-# notarized yet (#413), and a binary built on this machine is not
-# quarantined, so Gatekeeper has nothing to say about it. One path for
-# every platform is simpler than two.
+# Why source for the host rather than a prebuilt download: the macOS
+# binaries are not notarized yet (#413), and a binary built on this
+# machine is not quarantined, so Gatekeeper has nothing to say about it.
+# One path for every platform is simpler than two. That reasoning does
+# not apply to the egress: it is a Linux binary that is only embedded in
+# the host and copied into an image, never executed on the Mac.
 
 AGENTCAGE_REPO="${AGENTCAGE_REPO:-agentcage/agentcage}"
 
@@ -348,6 +353,94 @@ ensure_linker() {
     command -v cc >/dev/null 2>&1 || err "C linker installation failed; install gcc and re-run."
 }
 
+# The Linux target of the egress this host embeds: the host's own
+# architecture, whatever its OS, because a macOS host runs its egress in a
+# Linux VM (Lima, Apple's containerization) of the same architecture.
+egress_target() {
+    case "$(uname -m)" in
+        x86_64|amd64)  EGRESS_TARGET=x86_64-unknown-linux-musl ;;
+        arm64|aarch64) EGRESS_TARGET=aarch64-unknown-linux-musl ;;
+        *)             err "unsupported architecture for the egress: $(uname -m)" ;;
+    esac
+}
+
+# The sha256 of a file, with whichever tool this system has.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+# Whether release $1 (x.y.z) predates the Rust egress: 0.50.1 and older
+# built their egress image entirely on the host, with nothing to embed.
+predates_rust_egress() {
+    _v="${1%%[!0-9.]*}"
+    _major=$(echo "$_v" | cut -d. -f1)
+    _minor=$(echo "$_v" | cut -d. -f2)
+    _patch=$(echo "$_v" | cut -d. -f3)
+    [ "${_major:-0}" -eq 0 ] 2>/dev/null || return 1
+    [ "${_minor:-0}" -lt 50 ] 2>/dev/null && return 0
+    [ "${_minor:-0}" -eq 50 ] && [ "${_patch:-0}" -le 1 ] 2>/dev/null
+}
+
+# Put the egress binary this host will embed at $EGRESS_BIN.
+#
+# A release tag: the release's own `agentcage-egress-<version>-<target>`
+# asset, verified against its `.sha256`. A branch (AGENTCAGE_REF): there
+# is no release asset, so the egress is built from that branch, which
+# needs the musl target and musl-gcc; without them this stops and says
+# how to do the two steps by hand, rather than install a host that
+# cannot build a cage.
+prepare_egress() {
+    EGRESS_BIN=""
+    egress_target
+    if [ "$REF_FLAG" = --tag ]; then
+        version="${REF#v}"
+        if predates_rust_egress "$version"; then
+            return
+        fi
+        name="agentcage-egress-$version-$EGRESS_TARGET"
+        base="https://github.com/$AGENTCAGE_REPO/releases/download/$REF"
+        info "Downloading the egress ($name)..."
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp/$name" "$base/$name" \
+            || err "could not download $base/$name"
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp/$name.sha256" "$base/$name.sha256" \
+            || err "could not download $base/$name.sha256"
+        expected=$(cut -d' ' -f1 < "$tmp/$name.sha256")
+        actual=$(sha256_of "$tmp/$name")
+        if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+            err "checksum mismatch for $name (expected '$expected', got '$actual'); refusing to install"
+        fi
+        EGRESS_BIN="$tmp/$name"
+        return
+    fi
+
+    cc_var="CC_$(echo "$EGRESS_TARGET" | tr '-' '_')"
+    recipe="build both yourself in a checkout of $REF:
+    rustup target add $EGRESS_TARGET
+    $cc_var=musl-gcc cargo build --release --locked --target $EGRESS_TARGET -p agentcage-egress
+    AGENTCAGE_REQUIRE_EGRESS_BIN=1 cargo build --release --locked --bin agentcage"
+    if [ "$OS" != "linux" ]; then
+        err "a branch build ($REF) has no released egress to embed, and building one needs a Linux musl toolchain. Install a release instead (unset AGENTCAGE_REF), or $recipe"
+    fi
+    rustc_bin="$(dirname "$CARGO")/rustc"
+    [ -x "$rustc_bin" ] || rustc_bin=rustc
+    sysroot=$("$rustc_bin" --print sysroot 2>/dev/null || true)
+    if ! command -v musl-gcc >/dev/null 2>&1 || [ ! -d "$sysroot/lib/rustlib/$EGRESS_TARGET" ]; then
+        err "a branch build ($REF) has no released egress to embed; building one needs the $EGRESS_TARGET Rust target and musl-gcc. Install a release instead (unset AGENTCAGE_REF), or $recipe"
+    fi
+    info "Building the egress from $REF for $EGRESS_TARGET..."
+    env "$cc_var=musl-gcc" \
+        "$CARGO" install --locked --quiet \
+        --git "https://github.com/$AGENTCAGE_REPO" --branch "$REF" \
+        --target "$EGRESS_TARGET" --root "$tmp/egress-root" agentcage-egress \
+        || err "building the egress from $REF failed"
+    EGRESS_BIN="$tmp/egress-root/bin/agentcage-egress"
+    [ -f "$EGRESS_BIN" ] || err "the egress build produced no binary"
+}
+
 install_agentcage() {
     tmp=$(mktemp -d)
     # `trap ... 0` rather than EXIT: POSIX sh, and the script may not
@@ -357,13 +450,18 @@ install_agentcage() {
     resolve_ref
     ensure_rust
     ensure_linker
+    prepare_egress
 
     bindir="${AGENTCAGE_BIN_DIR:-$HOME/.local/bin}"
 
     # --locked builds against the committed Cargo.lock, so the dependency
     # versions are the ones CI tested at that ref. --root keeps cargo's
     # install bookkeeping out of $bindir's parent; the binary is moved
-    # into place below.
+    # into place below. AGENTCAGE_REQUIRE_EGRESS_BIN makes the build fail
+    # rather than produce a host that carries no egress.
+    if [ -n "$EGRESS_BIN" ]; then
+        export AGENTCAGE_EGRESS_BIN="$EGRESS_BIN" AGENTCAGE_REQUIRE_EGRESS_BIN=1
+    fi
     info "Building agentcage from github.com/$AGENTCAGE_REPO ($REF) — this takes a few minutes..."
     "$CARGO" install --locked --quiet \
         --git "https://github.com/$AGENTCAGE_REPO" "$REF_FLAG" "$REF" \
@@ -541,7 +639,10 @@ Builds agentcage from source with cargo, straight from the GitHub
 repository, and installs its prerequisite, Podman. If no Rust toolchain
 is found, a minimal one is installed with rustup (into ~/.rustup and
 ~/.cargo, without editing shell profiles). The build uses the committed
-Cargo.lock.
+Cargo.lock. The egress binary agentcage embeds is downloaded from the
+release and verified against its published sha256; a branch build
+(AGENTCAGE_REF) builds it instead, which needs the <arch>-unknown-linux-musl
+Rust target and musl-gcc (Linux only).
 
 On macOS 26+ Apple Silicon also installs Apple's 'container' CLI (the
 default isolation backend on that platform). On older macOS / Intel Macs
@@ -558,7 +659,8 @@ Options:
 
 Environment:
   AGENTCAGE_VERSION   Build this release tag instead of the latest release.
-  AGENTCAGE_REF       Build this branch instead (e.g. master).
+  AGENTCAGE_REF       Build this branch instead (e.g. master); needs the
+                      linux-musl Rust target and musl-gcc for the egress.
   AGENTCAGE_BIN_DIR   Where to put the binary (default: ~/.local/bin).
   AGENTCAGE_REPO      Source repository (default: agentcage/agentcage).
 HELP

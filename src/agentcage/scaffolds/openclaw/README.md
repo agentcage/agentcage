@@ -1,6 +1,6 @@
 # OpenClaw Setup Guide
 
-[OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
+[OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by the agentcage egress proxy for domain filtering, secret leak detection, and payload analysis.
 
 For the full list of configuration options, see the [Configuration Reference](../../../../docs/reference/configuration.md).
 
@@ -74,7 +74,7 @@ agentcage cage exec --as-root myapp -- openclaw health
 
 # View logs
 agentcage cage logs myapp           # cage container
-agentcage cage logs myapp -s proxy  # mitmproxy (traffic inspection)
+agentcage cage logs myapp -s egress  # egress proxy and DNS (traffic inspection)
 agentcage cage logs myapp -s dns    # DNS sidecar
 ```
 
@@ -84,7 +84,7 @@ See [Troubleshooting](../../../../docs/how-to/troubleshooting.md) for diagnosing
 
 ## Reverse proxy & device pairing
 
-agentcage runs a reverse proxy (mitmproxy) in front of the cage container. When you connect a browser to OpenClaw through this proxy, there are two things to be aware of:
+agentcage runs a reverse proxy (the egress proxy) in front of the cage container. When you connect a browser to OpenClaw through this proxy, there are two things to be aware of:
 
 **Trusted proxies** — The OpenClaw scaffold auto-configures `trustedProxies` in `openclaw.json` on first start (writing `{"gateway": {"trustedProxies": ["10.89.0.11"]}}` into the state volume). No manual setup is needed. If you need to customize this, edit the file inside the container or provide your own `openclaw.json` in the state volume before starting the cage.
 

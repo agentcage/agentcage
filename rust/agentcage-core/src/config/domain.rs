@@ -77,8 +77,8 @@ pub enum LabelPolicy {
 /// inject additional directives when interpolated into dnsmasq config.
 /// That is the whole job: `domains.allow` / `block` flow verbatim into
 /// `state.save_dns_allowlist`'s `server=/<domain>/` lines, and
-/// `domains.passthrough` is `re.escape`d into a mitmproxy
-/// `--ignore-hosts` regex *and* merged into the DNS allowlist. A value
+/// `domains.passthrough` is matched by the egress's passthrough rule
+/// *and* merged into the DNS allowlist. A value
 /// containing `\n` would emit extra `server=` lines — per-cage dnsmasq
 /// config corruption that fails `dnsmasq --test`.
 ///

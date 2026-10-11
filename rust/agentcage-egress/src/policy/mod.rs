@@ -646,8 +646,8 @@ impl PolicyApi {
                 (
                     "suggestion",
                     Json::string(
-                        "wait for an existing grant to expire, or ask the operator to remove \
-                         one with `agentcage domain rm`, then re-request",
+                        "wait for an existing grant to expire, or ask the operator to revoke \
+                         one with `agentcage cage grants <name> revoke <domain>`, then re-request",
                     ),
                 ),
                 ("retryable", Json::Bool(true)),

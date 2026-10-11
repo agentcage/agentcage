@@ -37,7 +37,7 @@
 //! # Custom inspectors (`path:`)
 //!
 //! An entry with a `path:` is a custom inspector: a WebAssembly
-//! component (`EGRESS-PORT-PLAN.md` D2). `cage create` / `cage update`
+//! component (`docs/history/egress-port-plan.md` D2). `cage create` / `cage update`
 //! copy each referenced file into the cage's `inspectors/` data
 //! directory by its file name, the egress mounts that directory at
 //! `/etc/agentcage/inspectors`, and `proxy-config.yaml` names each

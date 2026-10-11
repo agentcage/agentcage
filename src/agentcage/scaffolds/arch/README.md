@@ -20,7 +20,7 @@ agentcage run arch
 
 ## What you get
 
-- The cage's startup command installs the agentcage MITM proxy CA into Arch's system trust store (`trust extract-compat`) so pacman trusts the intercepted TLS to the mirrors. Then `sleep infinity` keeps the container alive; you drop in via `cage exec`.
+- The cage's startup command installs the agentcage egress proxy CA into Arch's system trust store (`trust extract-compat`) so pacman trusts the intercepted TLS to the mirrors. Then `sleep infinity` keeps the container alive; you drop in via `cage exec`.
 - `${PROJECT_DIR}:/workspace:rw` is the only volume mount.
 - Domain allowlist pre-allows `pkgbuild.com` (covers `fastly.mirror.pkgbuild.com` and `geo.mirror.pkgbuild.com` via subdomain matching) and `archlinux.org`. Everything else is blocked by the proxy until you add it under `domains.allow` in `cage.yaml`.
 - Cage runs as root with the minimum `add_capabilities` for `pacman` to install packages (`CHOWN`, `FOWNER`, `DAC_OVERRIDE`, `SETUID`, `SETGID`).

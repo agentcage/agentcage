@@ -79,7 +79,7 @@ impl Ctx {
     }
 
     /// Make sure a cage about to be deployed under a fresh name starts
-    /// with a CA of its own (`EGRESS-PORT-PLAN.md` D11).
+    /// with a CA of its own (`docs/history/egress-port-plan.md` D11).
     ///
     /// The one path `cage create`, `run` and `cage restore` share, run
     /// after their own "already exists" refusal and before any state is

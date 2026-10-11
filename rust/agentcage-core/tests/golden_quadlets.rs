@@ -494,7 +494,7 @@ fn render_case(
             store_secrets: None,
             state: &state,
             version: FROZEN_VERSION,
-            egress_tag: None,
+            egress_tag: FROZEN_VERSION,
         },
         &host,
     )

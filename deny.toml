@@ -80,7 +80,7 @@ multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
 deny = [
-    # TLS is rustls with the ring provider (EGRESS-PORT-PLAN.md D8): no
+    # TLS is rustls with the ring provider (docs/history/egress-port-plan.md D8): no
     # OpenSSL and no aws-lc (which needs cmake) may creep in.
     { name = "openssl-sys" },
     { name = "openssl" },

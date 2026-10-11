@@ -14,13 +14,14 @@ on:
 
 # agentcage ships as a binary.
 #
-# There is no PyPI step any more: `pyproject.toml` is only the egress
-# proxy's test environment, not a package, so there is nothing to
-# upload. What a release
-# produces is four binaries and their checksums, attached to the GitHub
-# release that `install.sh`, the Homebrew formula and the AUR PKGBUILD
-# all read. Each one carries the linux-musl agentcage-egress for its
-# architecture, built by the `egress` job.
+# What a release produces is four host binaries and their checksums,
+# attached to the GitHub release that `install.sh`, the Homebrew formula
+# and the AUR PKGBUILD all read. Each one carries the linux-musl
+# agentcage-egress for its architecture, built by the `egress` job. The
+# two egress binaries are attached too (`agentcage-egress-<version>-<arch>
+# -unknown-linux-musl`, each with a `.sha256`): `install.sh` builds the
+# host from source and embeds the released egress rather than building
+# one, which would need a musl C toolchain on the installing machine.
 
 permissions:
   contents: read
@@ -39,7 +40,7 @@ jobs:
       - run: ./scripts/check-version.sh
 
   # The egress binary, for the two Linux architectures a host can run
-  # its egress on (EGRESS-PORT-PLAN.md D9). Every host binary embeds
+  # its egress on (docs/history/egress-port-plan.md D9). Every host binary embeds
   # the one matching its own architecture, so these build first.
   #
   # Unlike the host CLI, the egress has C in its dependency tree: ring
@@ -92,6 +93,23 @@ jobs:
         with:
           name: egress-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/agentcage-egress
+          if-no-files-found: error
+
+      # The same binary as a release asset, for install.sh:
+      #   agentcage-egress-<version>-<target> (+ .sha256)
+      - name: Package as a release asset
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          name="agentcage-egress-$version-${{ matrix.target }}"
+          mkdir -p "$RUNNER_TEMP/asset"
+          cp "target/${{ matrix.target }}/release/agentcage-egress" "$RUNNER_TEMP/asset/$name"
+          ( cd "$RUNNER_TEMP/asset" && sha256sum "$name" > "$name.sha256" )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-egress-${{ matrix.target }}
+          path: ${{ runner.temp }}/asset/
           if-no-files-found: error
 
   build:
@@ -249,7 +267,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: release-${{ matrix.target }}
           path: |
             ${{ env.ARTIFACT_DIR }}/${{ env.ARTIFACT_NAME }}.tar.gz
             ${{ env.ARTIFACT_DIR }}/${{ env.ARTIFACT_NAME }}.tar.gz.sha256
@@ -257,15 +275,19 @@ jobs:
 
   release:
     name: GitHub release
-    needs: build
+    needs: [egress, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      # `release-*` only: the bare `egress-<target>` artifacts are the
+      # build inputs of the host job, two files both named
+      # `agentcage-egress`, and must not land in the release.
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: release-*
           merge-multiple: true
 
       # Extract the CHANGELOG section for this tag. Format expected:

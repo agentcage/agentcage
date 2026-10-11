@@ -6,20 +6,13 @@
 //! Both were considered. Neither can do the job on its own, and the
 //! reasons are measurable rather than aesthetic:
 //!
-//! 1. **The embed set has to be deterministic, and the source tree is
-//!    not.** `pyproject.toml` sets `pythonpath = ["src",
-//!    "src/agentcage/data/proxy"]`, so one `uv run pytest` plants
-//!    `__pycache__/` directories *inside* the egress build context --
-//!    `data/proxy/__pycache__`, `data/proxy/inspectors/__pycache__`,
-//!    `relays/`, `transforms/`. `include_dir!` takes a directory whole,
-//!    with no exclusion mechanism, so whether the shipped binary
-//!    contains interpreter-version-specific `.pyc` files would depend on
-//!    whether the machine that built it had ever run the test suite.
-//!    That is not a hypothetical: it is the state of a checkout after
-//!    `make test`. `egress_hash.py` excludes those same paths from the
-//!    content hash for exactly this reason ("bytecode caches are
-//!    interpreter-dependent"), and the embed has to make the same
-//!    exclusion or the hash and the build context disagree.
+//! 1. **The embed set has to be deterministic, and a checkout is not.**
+//!    `include_dir!` takes a directory whole, with no exclusion
+//!    mechanism, so whatever a tool happened to leave in the source tree
+//!    (an editor backup, a bytecode cache) would ship. The walk below
+//!    refuses symlinks and special files outright and drops bytecode
+//!    caches, the same exclusion the egress content hash makes, so the
+//!    hash and the build context never disagree.
 //! 2. **File modes have to survive.** Neither crate carries them:
 //!    `include_dir` exposes `contents()` and metadata behind a feature
 //!    flag that covers timestamps, not permissions, and `rust-embed`
@@ -53,7 +46,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-/// The Python package root, relative to the repository root.
+/// The root of the embedded trees, relative to the repository root.
 ///
 /// Kept equal to `agentcage_assets::PACKAGE_ROOT` by a test; a build
 /// script cannot import the crate it builds.
@@ -66,13 +59,12 @@ const TREES: [&str; 3] = ["data", "templates", "scaffolds"];
 
 /// Directory names that never enter the embed.
 ///
-/// Mirrors `egress_hash.HASH_EXCLUDE_DIRS`. See the module docs for how
-/// these come to exist inside the build context in the first place.
+/// Mirrors `agentcage_assets::egress::HASH_EXCLUDE_DIRS`.
 const EXCLUDE_DIRS: [&str; 1] = ["__pycache__"];
 
 /// File suffixes that never enter the embed.
 ///
-/// Mirrors `egress_hash.HASH_EXCLUDE_SUFFIXES`.
+/// Mirrors `agentcage_assets::egress::HASH_EXCLUDE_SUFFIXES`.
 const EXCLUDE_SUFFIXES: [&str; 2] = [".pyc", ".pyo"];
 
 /// One embedded file, as the build script sees it.
@@ -103,7 +95,7 @@ fn main() {
         let dir = package_root.join(tree);
         assert!(
             dir.is_dir(),
-            "missing embedded tree {} -- did the Python package move?",
+            "missing embedded tree {} -- did src/agentcage move?",
             dir.display()
         );
         walk(&dir, tree, &mut found);

@@ -222,7 +222,7 @@ impl Command {
 
     /// Send the child's stderr wherever its stdout goes (`2>&1`).
     ///
-    /// Used by every audit and log-filtering path: the mitmproxy addon
+    /// Used by every audit and log-filtering path: the egress proxy
     /// writes audit JSON to stderr and dnsmasq's lines arrive on the same
     /// stream, so the reader wants one interleaved pipe.
     ///

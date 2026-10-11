@@ -391,8 +391,8 @@ pub const EGRESS_RESERVED_PORTS: [i64; 2] = [8080, 8443];
 /// - `allow` — TCP destination ports the cage may reach. Anything not
 ///   in allow (and not in passthrough, which is implicitly allowed) is
 ///   dropped by the proxy's filter:FORWARD policy.
-/// - `passthrough` — subset of allowed TCP ports that bypass mitmdump
-///   inspection. These flow L3-forwarded to upstream without entering
+/// - `passthrough` — subset of allowed TCP ports that bypass the egress
+///   proxy's inspection. These flow L3-forwarded to upstream without entering
 ///   `audit.jsonl`, the inspector chain, or the secret injector.
 ///
 /// Inspected TCP ports = allow - passthrough.
@@ -416,7 +416,7 @@ impl Default for TcpPortsConfig {
 /// `UdpPortsConfig` — UDP egress port policy.
 ///
 /// - `allow` — UDP destination ports the cage may reach. UDP is never
-///   inspected (mitmdump is HTTP-only); all entries are forwarded
+///   inspected (the egress proxy speaks TCP only); all entries are forwarded
 ///   uninspected. Ports not in allow are dropped by filter:FORWARD.
 ///
 /// Defaults to empty. HTTP/3 (UDP/443), NTP (UDP/123), and any other
@@ -948,8 +948,7 @@ pub struct Config {
     /// the caged agent's runtime domain requests) and the traffic
     /// watcher (after-the-fact auditor). Parsed here, plumbed into the
     /// egress's `proxy-config.yaml` via `state._PROXY_KEYS` ("agents"),
-    /// enforced by the mitmproxy addon + `watcher.py` inside the
-    /// egress. Absent blocks → default (disabled) configs → zero
+    /// enforced by the egress proxy's policy API and traffic watcher. Absent blocks → default (disabled) configs → zero
     /// surface.
     pub agents: AgentsConfig,
     /// Logging knobs.

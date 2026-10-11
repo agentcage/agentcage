@@ -1,0 +1,24 @@
+[package]
+name = "xtask"
+description = "Repository maintenance tasks: invariants, dependency pins, packaging."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# A developer and CI tool run from the checkout (`cargo xtask`); never
+# shipped, never published.
+publish = false
+
+[dependencies]
+# The task and flag parser; already in the workspace (the egress uses it).
+clap = { version = "4", features = ["derive"] }
+# `skopeo inspect` output, for the container-pin check.
+serde_json = "1"
+# Reads a published release's checksums for `gen-packaging --from-release`;
+# already in the workspace (the egress's control-plane client).
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
+[lints]
+workspace = true

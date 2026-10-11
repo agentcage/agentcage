@@ -11,9 +11,10 @@
 //!    which is where `cargo build --release --target <musl target> -p
 //!    agentcage-egress` leaves it -- the developer flow in
 //!    CONTRIBUTING.md.
-//! 3. Otherwise nothing. The host still builds, and only
-//!    `AGENTCAGE_EGRESS_ENGINE=rust` fails, at image-build time, with a
-//!    message saying how to provide the binary. Release builds set
+//! 3. Otherwise nothing. The host still builds (so `cargo build`,
+//!    `cargo test` and clippy work on a machine without the musl
+//!    target), and building an egress image fails, with a message saying
+//!    how to provide the binary. Release builds and `install.sh` set
 //!    `AGENTCAGE_REQUIRE_EGRESS_BIN=1`, which turns this case into a
 //!    build failure.
 //!

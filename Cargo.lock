@@ -60,6 +60,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentcage-e2e-mock"
+version = "0.50.1"
+dependencies = [
+ "base64 0.22.1",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+]
+
+[[package]]
 name = "agentcage-egress"
 version = "0.50.1"
 dependencies = [
@@ -2631,6 +2644,15 @@ dependencies = [
  "rusticata-macros",
  "thiserror",
  "time",
+]
+
+[[package]]
+name = "xtask"
+version = "0.50.1"
+dependencies = [
+ "clap",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

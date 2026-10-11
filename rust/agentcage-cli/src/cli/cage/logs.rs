@@ -387,7 +387,7 @@ fn service_of<'a>(name: &str, services: &'a [String], line: &str) -> &'a str {
 
 /// `_classify_line` — a severity for a line that carries no priority.
 ///
-/// The `egress` container is mitmproxy and dnsmasq in one, so its
+/// The `egress` container is agentcage-egress and dnsmasq in one, so its
 /// classifier is the union of the two pre-v0.22 heuristics: the
 /// inspector's decision JSON first, then dnsmasq's vocabulary. Falling
 /// through to `info` is the legacy `dns` branch's default, kept.

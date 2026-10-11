@@ -255,7 +255,7 @@ pub fn vm_local_watcher_dir(name: &str) -> String {
 // ── agentcage's own volumes ──────────────────────────────
 
 /// The egress's private CA store: the key and certificate it generated
-/// on its first start (`EGRESS-PORT-PLAN.md` D11).
+/// on its first start (`docs/history/egress-port-plan.md` D11).
 #[must_use]
 pub fn certs_volume(name: &str) -> String {
     format!("{CERTS_VOLUME_PREFIX}{name}")
@@ -383,52 +383,12 @@ pub fn systemd_exec_join(args: &[String]) -> String {
     parts.join(" ")
 }
 
-/// The characters Python's `re.escape` backslashes.
-///
-/// Python 3.7 narrowed `re.escape` to this exact set
-/// (`re._special_chars_map`), so escaping "every non-alphanumeric" — the
-/// pre-3.7 behaviour and the obvious Rust shortcut — would produce a
-/// *different regex string* for a domain containing, say, `_`. The
-/// string is what reaches mitmproxy's `--ignore-hosts`, so it is the
-/// contract.
-const PYTHON_RE_SPECIAL: [char; 24] = [
-    '(', ')', '[', ']', '{', '}', '?', '*', '+', '-', '|', '^', '$', '\\', '.', '&', '~', '#', ' ',
-    '\t', '\n', '\r', '\u{0b}', '\u{0c}',
-];
-
-/// `re.escape`, for the subset of inputs a domain can be.
-fn re_escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if PYTHON_RE_SPECIAL.contains(&c) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// Build a mitmproxy `--ignore-hosts` regex from a list of domains.
-///
-/// Each domain becomes `^(.+\.)?example\.com(:\d+)?$` so both the bare
-/// domain and any subdomain match (with optional port). Multiple domains
-/// are OR-joined. mitmproxy matches against `host:port`, so the port
-/// suffix is required.
-#[must_use]
-pub fn passthrough_regex(domains: &[String]) -> String {
-    domains
-        .iter()
-        .map(|domain| format!("^(.+\\.)?{}(:\\d+)?$", re_escape(domain)))
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
 /// DNS host per LLM provider for the egress's own agent calls (the
 /// decider and the traffic watcher).
 ///
-/// Kept in sync with the base URLs in `data/proxy/policy_api.py`
-/// `_LLM_BASE_URLS` — this is the hostnames-only half, because DNS
-/// resolution needs a host while the urllib call needs the full base
+/// Kept in sync with the provider base URLs in the egress
+/// (`agentcage-egress/src/llm.rs`) — this is the hostnames-only half,
+/// because DNS resolution needs a host while the call needs the full base
 /// URL.
 const LLM_PROVIDER_DNS_HOSTS: [(&str, &str); 3] = [
     ("anthropic", "api.anthropic.com"),
@@ -440,7 +400,7 @@ const LLM_PROVIDER_DNS_HOSTS: [(&str, &str); 3] = [
 ///
 /// These hosts must resolve via upstream DNS (not the sinkhole) because
 /// a component *inside the egress* connects to them directly — not
-/// through mitmproxy, so the L7 allowlist never sees them and the
+/// through the egress proxy, so the L7 allowlist never sees them and the
 /// sinkhole would just break the connection:
 ///
 /// * `passthrough` domains (cage traffic that bypasses TLS interception).
@@ -450,8 +410,8 @@ const LLM_PROVIDER_DNS_HOSTS: [(&str, &str); 3] = [
 ///   (only the relay can); but they must still resolve, so they're
 ///   auto-added here.
 /// * the `agents.decider` agent's LLM provider host — the decider calls
-///   the model via `urllib` from the addon process, again outside
-///   mitmproxy. Without DNS resolution the decider 502s on every
+///   the model from inside the egress process, again outside its
+///   proxy path. Without DNS resolution the decider 502s on every
 ///   request. Same for the traffic watcher.
 ///
 /// Being in the DNS allowlist only makes a host *resolvable*; it does
@@ -480,10 +440,10 @@ pub fn effective_dns_allowlist(config: &Config) -> Vec<String> {
         push(&relay.upstream.host, &mut merged);
     }
     // agents.decider's LLM provider host — and the traffic watcher
-    // agent's. Both LLMs call their model via urllib from the addon
-    // process, outside mitmproxy, so without DNS resolution here every
+    // agent's. Both LLMs call their model from inside the egress
+    // process, outside its proxy path, so without DNS resolution here every
     // decider adjudication / watcher scan fails. One shared map for both
-    // agents (kept in sync with `policy_api._LLM_BASE_URLS` — the
+    // agents (kept in sync with the egress's provider base URLs — the
     // DNS-relevant HOST half of it; the full base URLs live there): a
     // provider addition means one edit here, not N inline copies. If the
     // operator set a custom base_url, parse ITS host instead (a
@@ -624,10 +584,7 @@ pub fn b64_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        b64, cage_network_addrs, effective_port_policy, passthrough_regex, systemd_exec_join,
-        url_hostname,
-    };
+    use super::{b64, cage_network_addrs, effective_port_policy, systemd_exec_join, url_hostname};
     use crate::config::{Config, FixedHost, load};
 
     fn config_from(yaml: &str) -> Config {
@@ -663,34 +620,6 @@ mod tests {
             "echo \"$HOME\""
         );
         assert_eq!(systemd_exec_join(&[]), "");
-    }
-
-    /// `tests/test_quadlets.py::TestPassthroughRegex`.
-    #[test]
-    fn passthrough_regex_matches_the_python() {
-        let domains =
-            |items: &[&str]| -> Vec<String> { items.iter().map(|s| (*s).to_owned()).collect() };
-        assert_eq!(
-            passthrough_regex(&domains(&["whatsapp.com"])),
-            r"^(.+\.)?whatsapp\.com(:\d+)?$"
-        );
-        assert_eq!(
-            passthrough_regex(&domains(&["whatsapp.com", "signal.org"])),
-            r"^(.+\.)?whatsapp\.com(:\d+)?$|^(.+\.)?signal\.org(:\d+)?$"
-        );
-        assert_eq!(passthrough_regex(&[]), "");
-        // A hyphen is in `re._special_chars_map`, so Python escapes it
-        // even outside a character class.
-        assert_eq!(
-            passthrough_regex(&domains(&["my-host.example.com"])),
-            r"^(.+\.)?my\-host\.example\.com(:\d+)?$"
-        );
-        // An underscore is not, which is where "escape everything
-        // non-alphanumeric" would diverge.
-        assert_eq!(
-            passthrough_regex(&domains(&["a_b.example"])),
-            r"^(.+\.)?a_b\.example(:\d+)?$"
-        );
     }
 
     /// The octet is MD5-derived and must not move: a deployed cage's

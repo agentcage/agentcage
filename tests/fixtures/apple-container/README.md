@@ -144,7 +144,7 @@ comment.
 ## `audit_argv` is the odd one
 
 There is **no host-side `audit.jsonl` for a `container` or `vm` cage**.
-The egress addon writes its audit trail to stderr and the host reads it
+The egress proxy writes its audit trail to stderr and the host reads it
 back out of `journalctl`; only apple-container bind-mounts the file out
 of its microVM. So this is agentcage's only file-reading audit path, and
 nothing else in the port covers it.

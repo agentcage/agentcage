@@ -1,44 +1,29 @@
-//! The Python trees that ship *inside* the Rust binary.
+//! The source trees that ship *inside* the Rust binary.
 //!
 //! # Why this crate exists
 //!
-//! The port does not replace the egress proxy — mitmproxy, the addon,
-//! the inspectors and the relays stay Python, unchanged, inside the
-//! egress container (docs/history/rust-port-plan.md, scope decision). But today those
-//! files are simply *there* on disk, because agentcage is installed as a
-//! Python package and `backends/container.py` hands the package's own
-//! `data/` directory to podman as the build context:
-//!
-//! ```text
-//! data_dir = Path(__file__).resolve().parent.parent / "data"
-//! build_context = str(data_dir)
-//! ```
-//!
-//! A single static binary has no package directory. So it has to carry
-//! those trees and materialize them on disk before any image build, and
-//! that is work with no Python counterpart at all — which is why it gets
-//! its own crate instead of being a module of [`agentcage_core`], and
-//! why PR B3 is scheduled early: it is the highest-risk piece of *new*
-//! code in the port, and it fails loudly and cheaply.
+//! A single static binary has no package directory, yet image builds
+//! need a build context on disk (`Containerfile.egress`, the egress
+//! supervisor, the apple-container assets), quadlets and the Lima config
+//! are rendered from templates, and `agentcage init` renders scaffolds.
+//! So the binary carries those trees and materializes them on disk
+//! before any image build. That is I/O, which [`agentcage_core`] is not
+//! allowed, hence a crate of its own.
 //!
 //! # The three jobs
 //!
 //! - **Embedding.** [`EMBEDDED_TREES`] are compiled into the binary by
 //!   `build.rs`, which also records each file's mode. Its module docs
 //!   explain why neither `include_dir!` nor `rust-embed` could do it
-//!   alone; the short version is that `uv run pytest` plants
-//!   `__pycache__` inside the egress build context, so an
-//!   embed-the-whole-directory macro makes the binary's contents depend
-//!   on whether the build machine ever ran the tests.
+//!   alone; the short version is that file modes have to survive and the
+//!   embed has to be deterministic whatever else sits in the checkout.
 //! - **Extraction.** [`extract`] materializes the trees under
 //!   `$XDG_DATA_HOME/agentcage/assets/<version>-<digest>` and hands back
 //!   the build-context path. Byte-exact and mode-exact, because the
 //!   Containerfile only `chmod`s the files it knows about.
-//! - **Hashing.** [`egress`] reproduces `egress_hash.py` byte-exactly.
-//!   That digest is the suffix of the egress image tag, so a Rust
-//!   implementation that disagrees means every Mac rebuilds its image
-//!   once on upgrade and then keeps a second, permanently divergent tag
-//!   lineage for identical content.
+//! - **Hashing.** [`egress`] digests the egress image's build inputs.
+//!   That digest is the suffix of the egress image tag, so changed
+//!   content always yields a tag a host cannot already hold.
 //!
 //! This crate is where the extraction and hashing live because both are
 //! I/O, and [`agentcage_core`] is not allowed any. `agentcage-core` is
@@ -68,15 +53,15 @@ use sha2::{Digest as _, Sha256};
 
 /// Where the embedded trees live in the source repository.
 ///
-/// The Python package root. Paths in [`EMBEDDED_TREES`] are relative to
-/// this, and this is relative to the repository root.
+/// Paths in [`EMBEDDED_TREES`] are relative to this, and this is
+/// relative to the repository root.
 pub const PACKAGE_ROOT: &str = "src/agentcage";
 
 /// The trees the binary embeds, relative to [`PACKAGE_ROOT`].
 ///
-/// - `data/` — the podman build context: `Containerfile.egress`, the
-///   mitmproxy addon, inspectors, relays, transforms, the supervisor
-///   scripts and the apple-container assets.
+/// - `data/` — the image build context: `Containerfile.egress`, the
+///   egress supervisor and DNS audit wrapper, the nested-podman configs
+///   and the apple-container assets.
 /// - `templates/` — the Jinja2 sources for quadlets, the Lima config and
 ///   the provisioning script, rendered by minijinja rather than
 ///   rewritten (Track C, PR C8).
@@ -96,7 +81,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Clone, Copy)]
 pub struct EmbeddedFile {
     /// POSIX-relative path from [`PACKAGE_ROOT`], e.g.
-    /// `data/proxy/addon.py`. Always contains a `/`, since every file
+    /// `data/containers/supervisor-egress.sh`. Always contains a `/`, since every file
     /// lives under one of [`EMBEDDED_TREES`].
     pub path: &'static str,
     /// The file's contents, verbatim.
@@ -117,8 +102,8 @@ impl EmbeddedFile {
 impl fmt::Debug for EmbeddedFile {
     /// Prints the size rather than the contents.
     ///
-    /// The derived impl would dump 92 KB of `watcher.py` into a failing
-    /// test's output.
+    /// The derived impl would dump a 40 KB supervisor script into a
+    /// failing test's output.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EmbeddedFile")
             .field("path", &self.path)
@@ -148,7 +133,7 @@ pub fn embedded_files() -> &'static [EmbeddedFile] {
 /// The embedded files under one of [`EMBEDDED_TREES`], still sorted.
 ///
 /// Paths are relative to the tree, so `tree("data")` yields
-/// `proxy/addon.py`, not `data/proxy/addon.py` — the build context's
+/// `containers/dns-audit.sh`, not `data/containers/dns-audit.sh` — the build context's
 /// root is `data/` itself, which is what `Containerfile.egress` `COPY`s
 /// are written against.
 pub fn tree(name: &str) -> impl Iterator<Item = (&'static str, &'static EmbeddedFile)> + '_ {
@@ -160,9 +145,8 @@ pub fn tree(name: &str) -> impl Iterator<Item = (&'static str, &'static Embedded
 
 /// A digest over the entire embed, for cache keying only.
 ///
-/// **This is not [`egress::content_hash`].** That one is a frozen
-/// cross-language contract covering only the egress image's `COPY`
-/// sources, and it is what goes in the image tag. This one covers every
+/// **This is not [`egress::content_hash`].** That one covers only the
+/// egress image's `COPY` sources, and it is what goes in the image tag. This one covers every
 /// embedded byte, path and mode across all three trees, because the
 /// extraction cache has to be invalidated by a change to
 /// `templates/lima/provision.sh.j2` or `scaffolds/codex/Containerfile`
@@ -356,15 +340,15 @@ mod tests {
 
     /// The set of embedded files is small, known, and reviewable.
     ///
-    /// A count that moves without a deliberate change to the Python
+    /// A count that moves without a deliberate change to the embedded
     /// trees means something leaked into the embed — a build artifact, a
-    /// `.pyc`, an editor backup. Update the number in the same commit
+    /// bytecode cache, an editor backup. Update the number in the same commit
     /// that adds or removes the file.
     #[test]
     fn the_embedded_file_count_is_pinned() {
         assert_eq!(
             embedded_files().len(),
-            79,
+            56,
             "embedded file set changed: {:#?}",
             embedded_files().iter().map(|f| f.path).collect::<Vec<_>>()
         );
@@ -372,11 +356,8 @@ mod tests {
 
     /// Bytecode caches never reach the binary.
     ///
-    /// `pythonpath` in `pyproject.toml` includes
-    /// `src/agentcage/data/proxy`, so `uv run pytest` leaves
-    /// `__pycache__` directories inside the egress build context. This
-    /// asserts they stayed out — the single reason this crate has a
-    /// build script instead of an `include_dir!`.
+    /// Defensive: `build.rs` keeps them out of the embed, and the egress
+    /// hash keeps them out of the tag; this asserts the two agree.
     #[test]
     fn no_bytecode_caches_are_embedded() {
         for file in embedded_files() {
@@ -421,7 +402,10 @@ mod tests {
     #[test]
     fn tree_strips_its_own_prefix() {
         let data: Vec<&str> = tree("data").map(|(rel, _)| rel).collect();
-        assert!(data.contains(&"proxy/addon.py"), "{data:?}");
+        assert!(
+            data.contains(&"containers/supervisor-egress.sh"),
+            "{data:?}"
+        );
         assert!(data.iter().all(|rel| !rel.starts_with("data/")), "{data:?}");
         assert_eq!(
             data.len(),

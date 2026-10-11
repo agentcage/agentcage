@@ -1,11 +1,11 @@
-//! YAML, on the Rust side of a boundary whose other side is PyYAML.
+//! YAML with YAML 1.1 (PyYAML-compatible) scalar semantics.
 //!
 //! Every YAML file agentcage writes is read by something else:
-//! `proxy-config.yaml` by the mitmproxy addon inside the egress
-//! container, `cage.yaml` by the user and then by the next `cage`
-//! invocation. The addon is Python and stays Python forever
-//! (docs/history/rust-port-plan.md, scope decision), so this module is one half of a
-//! cross-language contract, not a convenience wrapper.
+//! `proxy-config.yaml` by the egress proxy inside the egress container,
+//! `cage.yaml` by the user and then by the next `cage` invocation. Both
+//! readers go through [`load`], whose scalar resolution is PyYAML's —
+//! the semantics every `cage.yaml` written before the Rust port was
+//! read with, which a user's hand-written file must keep.
 //!
 //! Use [`load`] and [`dump`] rather than `serde_norway` directly. The
 //! difference is not stylistic.
@@ -25,12 +25,9 @@
 //! | `2024-01-02` `2024-01-02T03:04:05` | `"2024-01-02"` … | `datetime.date` / `datetime` |
 //! | `=` `<<` | `"="`, `"<<"` | **`ConstructorError`** |
 //!
-//! The direction matters. PyYAML *quotes* `'no'` when it writes, so
-//! Python→Rust and Python→Python are both safe. **Only Rust→Python
-//! corrupts**, which is why a Rust round-trip test passes while the bug
-//! is live, and why the test that actually proves this module correct
-//! shells out to `yaml.safe_load`
-//! (`tests/yaml_pyyaml_crossing.rs`).
+//! A plain `no` written by a YAML 1.2 emitter therefore changes meaning
+//! when [`load`] reads it back, which is why [`dump`] quotes it, and why
+//! `tests/yaml_hazard_fixture.rs` round-trips the whole hazard corpus.
 //!
 //! What it costs, concretely: the host writes `proxy-config.yaml` and
 //! the egress proxy reads it. A domain, a header name, a relay field or

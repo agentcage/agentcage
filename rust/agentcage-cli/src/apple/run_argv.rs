@@ -115,7 +115,7 @@ pub struct EgressPaths<'a> {
 /// The other sysctl `egress.container.j2` sets,
 /// `net.ipv4.ip_unprivileged_port_start=80`, is deliberately **not**
 /// carried: on the Quadlet path it exists only for the reverse-mode
-/// inbound forwards this backend never stages, and here mitmproxy binds
+/// inbound forwards this backend never stages, and here the egress binds
 /// `:8080` and `:8443`, both already unprivileged, while dnsmasq gets
 /// `:53` from its file capability plus the bounding-set entry above.
 #[must_use]
@@ -203,7 +203,7 @@ pub fn egress_argv(
     ]);
     // The port policy `generate_units` persisted. `supervisor-egress.sh`
     // step A turns these into iptables rules: inspected TCP into a
-    // `nat:PREROUTING` REDIRECT to mitmproxy, passthrough TCP into a
+    // `nat:PREROUTING` REDIRECT to the egress, passthrough TCP into a
     // `FORWARD` ACCEPT that skips inspection, allowed UDP into a UDP
     // `FORWARD` ACCEPT.
     //

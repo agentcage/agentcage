@@ -2,8 +2,8 @@
   "contract": "validate_relay_entry",
   "summary": "Structural validation of one protocol_relays entry. The only contract of the four that is currently ONE module imported from both sides \u2014 the host as agentcage.data.proxy.relays._validate, the proxy as relays._validate. After the port it becomes two implementations, and the error strings are user-visible: `agentcage cage create` surfaces them verbatim.",
   "implementations": {
-    "host": "agentcage.data.proxy.relays._validate.validate_relay_entry, called from agentcage.config with source_validator=secret_resolver.validate_source",
-    "proxy": "relays._validate.validate_relay_entry, called from addon.py with no source_validator"
+    "host": "agentcage_core::relays::validate_relay_entry, called from the config loader with the secret-source validator",
+    "proxy": "agentcage_core::relays::validate_relay_entry, called from the egress's relay setup with no source validator"
   },
   "fields": {
     "entry": "the protocol_relays entry, exactly as parsed from YAML",

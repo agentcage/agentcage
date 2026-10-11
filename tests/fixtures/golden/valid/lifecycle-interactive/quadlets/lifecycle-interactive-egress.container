@@ -1,19 +1,19 @@
 [Unit]
-Description=agentcage egress (mitmproxy + dnsmasq)
+Description=agentcage egress (agentcage-egress + dnsmasq)
 
 [Container]
 ContainerName=lifecycle-interactive-egress
 Image=localhost/agentcage-egress:0.0.0-golden
 Network=lifecycle-interactive-net.network:ip=10.89.90.10
 Network=podman
-# mitmproxy resolves allowlisted upstream hostnames via this file (it
+# The egress proxy resolves allowlisted upstream hostnames via this file (it
 # re-resolves the SNI/Host on the upstream connection — empirically
 # confirmed: breaking only this resolver 502s every allowlisted host even
 # when the cage itself resolved fine). services.write_resolv_files seeds it
 # with config.dns_servers; supervisor-egress.sh then PREPENDS the egress's
 # default-route gateway as the primary nameserver (host-tracking — on
 # netavark that gateway is aardvark, which forwards to the host's CURRENT
-# resolver), keeping dns_servers as fallback. This makes mitmproxy track
+# resolver), keeping dns_servers as fallback. This makes the egress track
 # host network changes with no restart, matching the apple-container egress
 # (whose resolv.conf is the vmnet gateway). getaddrinfo checks /etc/hosts
 # FIRST, so the e2e upstream mock is unaffected by the nameserver order.
@@ -28,10 +28,9 @@ Network=podman
 Volume={{WORK}}/patches/resolv-egress-lifecycle-interactive.conf:/etc/resolv.conf:rw,Z
 Volume={{XDG_CONFIG_HOME}}/agentcage/cages/lifecycle-interactive/cage.yaml:/etc/agentcage/config.yaml:ro,Z
 Volume={{XDG_CONFIG_HOME}}/agentcage/cages/lifecycle-interactive/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro,Z
-Environment="PYTHONUNBUFFERED=1"
 Environment="AGENTCAGE_VERSION=0.0.0-golden"
 # The cage's name, for the subject of the CA the Rust egress generates
-# (`CN=agentcage egress CA (<name>)`). Ignored by the Python egress.
+# (`CN=agentcage egress CA (<name>)`).
 Environment="AGENTCAGE_CAGE_NAME=lifecycle-interactive"
 # Upstream resolvers for policy-api granted zones. The supervisor
 # forwards a granted zone here (plus the default-route gateway when
@@ -50,7 +49,7 @@ AddCapability=NET_BIND_SERVICE
 # SETUID + SETGID + SETPCAP: the supervisor uses ``setpriv
 # --reuid=acdns --regid=acdns --bounding-set=-all,+net_bind_service``
 # for dnsmasq and ``--reuid=acproxy --regid=acproxy --bounding-set=-all
-# --no-new-privs`` for mitmproxy.
+# --no-new-privs`` for agentcage-egress.
 #   * setresuid/setresgid need CAP_SETUID / CAP_SETGID
 #   * --bounding-set drops bits from the bounding set, which needs
 #     CAP_SETPCAP
@@ -64,7 +63,7 @@ AddCapability=SETUID
 AddCapability=SETGID
 AddCapability=SETPCAP
 # KILL: the supervisor (PID 1 of the egress container, root in the
-# user namespace) polls dnsmasq + mitmproxy via ``kill -0 "$pid"``
+# user namespace) polls dnsmasq + agentcage-egress via ``kill -0 "$pid"``
 # (step C, step E, the monitor loop). Both daemons run as non-root
 # (acdns=201, acproxy=200) after setpriv drops privileges, so a uid-0
 # → uid-201 signal needs either matching uid OR CAP_KILL. On default
@@ -85,7 +84,7 @@ Sysctl=net.ipv4.ip_forward=1
 # / ``ports.tcp.passthrough`` / ``ports.udp.allow`` (after the inspected =
 # allow − passthrough subtraction in quadlets._effective_port_policy). The
 # supervisor reads these env vars and emits one iptables rule per port —
-# REDIRECT to mitmproxy for INSPECTED_TCP_PORTS, ACCEPT in FORWARD for
+# REDIRECT to the egress for INSPECTED_TCP_PORTS, ACCEPT in FORWARD for
 # PASSTHROUGH_TCP_PORTS and ALLOW_UDP_PORTS. Always rendered (even when a
 # list is empty) so the supervisor can distinguish "use defaults" from
 # "intentionally none" — pre-fix the supervisor's hard-coded ``80 443``
@@ -98,13 +97,13 @@ Environment="ALLOW_UDP_PORTS="
 # FORWARD accept rule only when this is "1"; otherwise the default-deny
 # policy drops echo-request for every in-cage uid.
 Environment="ALLOW_ICMP=0"
-# Bind mitmproxy's regular (forward) proxy to the egress's cage-net IP
+# Bind the egress's regular (forward) proxy to the egress's cage-net IP
 # only. The egress sits on TWO networks — its own ``lifecycle-interactive-net``
 # (cage-facing) AND the default ``podman`` network (host-facing, used
 # for the egress's own outbound to the internet). The initial v0.22
-# supervisor used ``--mode regular@:8080`` (i.e. 0.0.0.0) which let
+# supervisor bound the forward proxy to 0.0.0.0:8080, which let
 # any OTHER rootless container on the host's default podman network
-# reach this cage's mitmproxy as an open forward proxy via the
+# reach this cage's egress as an open forward proxy via the
 # egress's podman-network IP. Pinning the bind to ip_egress closes
 # that path and matches what the legacy proxy.container.j2 did.
 #
@@ -116,7 +115,7 @@ Environment="ALLOW_ICMP=0"
 # corresponding note in supervisor-egress.sh.
 #
 # Transparent mode (8443) still listens on all interfaces but is safe
-# in practice because mitmproxy uses SO_ORIGINAL_DST to recover the
+# in practice because the egress uses SO_ORIGINAL_DST to recover the
 # target — a direct connection from a foreign netns has no
 # REDIRECT-supplied original dst and the handshake fails.
 Environment="AGENTCAGE_REGULAR_BIND=10.89.90.10:8080"

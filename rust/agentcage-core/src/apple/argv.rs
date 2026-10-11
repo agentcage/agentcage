@@ -83,7 +83,7 @@ impl std::error::Error for AppleArgvError {}
 pub enum Service {
     /// The user's workload microVM, named after the cage itself.
     Cage,
-    /// The sibling running mitmproxy and dnsmasq, `<cage>-egress`.
+    /// The sibling running agentcage-egress and dnsmasq, `<cage>-egress`.
     Egress,
 }
 

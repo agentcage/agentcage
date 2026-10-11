@@ -33,7 +33,7 @@ agentcage-core = { path = "../agentcage-core" }
 agentcage-assets = { path = "../agentcage-assets" }
 
 # The linux-musl agentcage-egress binary for this host's architecture
-# (EGRESS-PORT-PLAN.md D9), staged into the Rust egress image's build
+# (docs/history/egress-port-plan.md D9), staged into the Rust egress image's build
 # context. A crate of its own so the egress, which depends on
 # agentcage-assets through agentcage-core, never has to exist before
 # itself.

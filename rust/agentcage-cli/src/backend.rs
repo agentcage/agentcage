@@ -29,7 +29,6 @@ use agentcage_exec::tools::podman::{BuildOptions, Podman, secret_env_names};
 use agentcage_exec::{CommandRunner, ExecError};
 use agentcage_state::{Paths, Units};
 
-use crate::egress_engine::EgressEngine;
 use crate::hostenv::RealQuadletHost;
 
 /// The capability set the egress image's build needs.
@@ -60,7 +59,7 @@ pub const SERVICE_NAMES: [&str; 2] = ["cage", "egress"];
 /// and certificate it generated on its first start — and
 /// `agentcage-public-certs-<name>` the public certificate the cage
 /// mounts. Both belong to one cage and neither outlives it
-/// (`EGRESS-PORT-PLAN.md` D11: a new CA per cage).
+/// (`docs/history/egress-port-plan.md` D11: a new CA per cage).
 #[must_use]
 pub fn ca_volumes(name: &str) -> [String; 2] {
     [certs_volume(name), public_certs_volume(name)]
@@ -103,27 +102,11 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// An egress-engine refusal, as the one-line deploy failure it is.
-impl From<crate::egress_engine::EngineError> for BackendError {
-    fn from(error: crate::egress_engine::EngineError) -> Self {
+/// The egress binary could not be staged, as the one-line deploy failure
+/// it is.
+impl From<crate::egress_image::StageError> for BackendError {
+    fn from(error: crate::egress_image::StageError) -> Self {
         Self::Failed(error.to_string())
-    }
-}
-
-/// The egress image tag a unit render needs when it is not the version.
-///
-/// `None` for the default engine, so its units render byte-for-byte as
-/// they always have; `Some(<version>-rust-<hash>)` while the Rust engine
-/// is selected. Shared by the container and vm backends, whose images
-/// are tagged the same way.
-///
-/// # Errors
-///
-/// [`BackendError::Failed`] when the engine cannot be selected.
-pub(crate) fn egress_tag_override(version: &str) -> Result<Option<String>, BackendError> {
-    match EgressEngine::from_env()? {
-        EgressEngine::Python => Ok(None),
-        engine @ EgressEngine::Rust => Ok(Some(engine.tag(version)?)),
     }
 }
 
@@ -218,45 +201,36 @@ impl<'a> ContainerBackend<'a> {
     /// create/update path reads the same as the Python's.
     pub const fn ensure_ready(&self) {}
 
-    /// The egress image tag for this version and the selected engine.
-    ///
-    /// `agentcage-egress:<version>` for the default engine. An
-    /// unselectable engine (a bad `AGENTCAGE_EGRESS_ENGINE`, or Rust
-    /// without a binary) falls back to that tag here rather than
-    /// failing a lookup: every deploy reaches [`Self::build_artifacts`]
-    /// or [`Self::generate_units`] first, and both refuse it with the
-    /// reason.
+    /// The egress image, `agentcage-egress:<version>-<hash>`.
     #[must_use]
     pub fn egress_image(&self) -> String {
         format!(
             "agentcage-egress:{}",
-            EgressEngine::from_env()
-                .and_then(|engine| engine.tag(self.version))
-                .unwrap_or_else(|_| self.version.to_owned())
+            crate::egress_image::tag(self.version)
         )
     }
 
     /// `build_artifacts` — build the static egress image.
     ///
     /// The user's own image is built and pulled by the create/update
-    /// path, not here; this is the sidecar that mitmproxy and dnsmasq
-    /// run in, and it is shared by every cage on the host.
+    /// path, not here; this is the sidecar that agentcage-egress and
+    /// dnsmasq run in, and it is shared by every cage on the host.
     ///
     /// # Errors
     ///
     /// [`BackendError::Assets`] if the embedded tree cannot be
-    /// extracted, [`BackendError::Exec`] if the build fails.
+    /// extracted, [`BackendError::Failed`] if this host carries no egress
+    /// binary, [`BackendError::Exec`] if the build fails.
     pub fn build_artifacts(
         &self,
         no_cache: bool,
         pull: bool,
         quiet: bool,
     ) -> Result<(), BackendError> {
-        let engine = EgressEngine::from_env()?;
-        let tag = format!("agentcage-egress:{}", engine.tag(self.version)?);
+        let tag = self.egress_image();
         let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
-        engine.stage(&context)?;
-        let containerfile = context.join(engine.containerfile_rel());
+        crate::egress_image::stage(&context)?;
+        let containerfile = context.join(agentcage_assets::egress::CONTAINERFILE_REL);
         if !quiet {
             println!("Building egress image ({tag})...");
         }
@@ -313,7 +287,7 @@ impl<'a> ContainerBackend<'a> {
             .map(|names| names.into_iter().collect());
         let state = self.paths.quadlet_state_paths();
         let host = RealQuadletHost::new(self.paths.data_root());
-        let egress_tag = egress_tag_override(self.version)?;
+        let egress_tag = crate::egress_image::tag(self.version);
         let quadlets = generate_quadlets(
             config,
             &GenerateOptions {
@@ -326,7 +300,7 @@ impl<'a> ContainerBackend<'a> {
                 store_secrets: store_secrets.as_ref(),
                 state: &state,
                 version: self.version,
-                egress_tag: egress_tag.as_deref(),
+                egress_tag: &egress_tag,
             },
             &host,
         )?;

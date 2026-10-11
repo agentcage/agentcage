@@ -1,5 +1,14 @@
 # `state-compat` fixtures — 0.40.2
 
+> **Edited once, at the egress cutover.** The quadlet units under
+> `xdg-config/containers/systemd/` named the egress implementation of
+> their day in comments and in its CA paths. Those references were
+> rewritten to neutral names (`legacy-ca-cert.pem`, `/home/acproxy/.legacy-ca`)
+> and the unit comments to the current template's wording, so the live
+> tree carries no trace of the replaced egress. Nothing reads those
+> values: the units are inputs that `cage update` regenerates, which is
+> what the compat tests assert.
+
 A byte-frozen snapshot of the on-disk state that **agentcage 0.40.2
 (Python)** writes for a deployed cage.
 

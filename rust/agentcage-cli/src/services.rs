@@ -395,7 +395,7 @@ fn copy_tree(source: &Path, dest: &Path) -> io::Result<()> {
 /// The egress's (`resolv-egress-<name>.conf`) is seeded with the
 /// configured upstreams and nothing else. It exists because the egress
 /// joins two aardvark-enabled podman networks and podman would otherwise
-/// generate its `/etc/resolv.conf` for it — which is where mitmproxy
+/// generate its `/etc/resolv.conf` for it — which is where the egress proxy
 /// resolves every allowlisted upstream hostname from, so a resolver that
 /// intermittently fails to forward turns every allowlisted host into a
 /// 502. The quadlet bind-mounts this file **rw**, not ro: the supervisor

@@ -1,0 +1,5 @@
+# `cargo xtask <task>` runs the repository's maintenance tasks
+# (rust/xtask): the invariants CI enforces, dependency-pin checks and
+# release packaging.
+[alias]
+xtask = "run --quiet --locked --package xtask --"

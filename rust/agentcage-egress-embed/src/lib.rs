@@ -2,7 +2,7 @@
 //!
 //! The egress runs in a Linux container (or a Linux VM on macOS), so the
 //! host has to ship a Linux build of it whatever the host's own OS is
-//! (`EGRESS-PORT-PLAN.md` D9). This crate holds exactly that: the
+//! (`docs/history/egress-port-plan.md` D9). This crate holds exactly that: the
 //! linux-musl build for the host's architecture, found by `build.rs`
 //! (which documents where it looks and what it checks), or nothing when
 //! the host was built without one.
@@ -29,14 +29,16 @@ pub fn binary() -> Option<&'static [u8]> {
 }
 
 /// How to get a host binary that carries the egress, for the error a
-/// build without one reports when the Rust engine is selected.
+/// build without one reports when it is asked to build the egress image.
 #[must_use]
 pub fn missing_hint() -> String {
     let target = LINUX_TARGET.unwrap_or("<arch>-unknown-linux-musl");
     format!(
-        "this agentcage was built without the agentcage-egress binary; build it with \
-         `rustup target add {target} && cargo build --release --target {target} -p agentcage-egress`, \
-         then rebuild agentcage (or point AGENTCAGE_EGRESS_BIN at a built binary when building it)"
+        "this agentcage was built without the agentcage-egress binary, so it cannot build the \
+         egress image; build it with `rustup target add {target} && cargo build --release \
+         --target {target} -p agentcage-egress`, then rebuild agentcage (or point \
+         AGENTCAGE_EGRESS_BIN at a built binary, such as a release's \
+         agentcage-egress-<version>-{target} asset, when building it)"
     )
 }
 

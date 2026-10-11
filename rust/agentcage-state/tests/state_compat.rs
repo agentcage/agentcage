@@ -744,7 +744,7 @@ fn load_fingerprint() {
     }
     assert_eq!(
         jstr(&fp, "fingerprint"),
-        "f1f70ea67d597f124616fa0b0a328d18ea1d26ca61eafc1e5e548ae3b161e24d"
+        "b10df8c36d73cc59cc981933730a99ede75d85cbbcd05b3dd811f4a1497c52e0"
     );
     assert_eq!(
         jstr(components, "cage_yaml"),

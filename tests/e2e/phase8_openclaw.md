@@ -15,7 +15,7 @@ test shape *cannot* catch.
 |---|---|---|
 | Log base image digest | `ghcr.io/openclaw/openclaw:latest` is present locally before cage build — failure triage knows which upstream sha ran | Doesn't record the digest on PASS runs (only visible in log) |
 | `agentcage init --scaffold openclaw --port P` | Scaffold renderer produces a valid `cage.yaml` | Doesn't diff against a known-good rendering — a template change that silently drops a field is invisible |
-| `sed`/`python3` patches to cage.yaml | CI-only resource trim (memory 4g, cpus 2.0, timeout 300s) + test-shape tweaks (`inject_to: httpbin.org`, add `httpbin.org`/`postman-echo.com` to allowlist) | Patches are idempotent; a template change that reshapes the inject block could leave the sed no-op'd and the phase would still "pass" setup |
+| `sed`/`awk` patches to cage.yaml | CI-only resource trim (memory 4g, cpus 2.0, timeout 300s) + test-shape tweaks (`inject_to: httpbin.org`, add `httpbin.org`/`postman-echo.com` to allowlist) | Patches are idempotent; a template change that reshapes the inject block could leave the sed no-op'd and the phase would still "pass" setup |
 | `agentcage cage create -s K=V ...` | Scaffold Containerfile builds; quadlets install; container starts under user systemd | Doesn't distinguish "build passed but slow" from "build crashed and systemd swallowed stderr" — a dump_cage_diagnostics is issued on wait_ready failure but not on create failure |
 | `wait_ready BASE 300s` | Host-side port :19180 returns HTTP 200 at least once | 200 could come from the reverse proxy's error page if openclaw never bound internally — `wait_ready` polls `/` with no body check |
 
@@ -64,8 +64,8 @@ regression that this phase is blind to.
    with the Playwright the image ships, missing libs), no assertion
    fires.
 
-5. **mitmproxy CA chain / TLS trust.** The entrypoint installs the
-   mitm CA into `/usr/local/share/ca-certificates` and the NSS DB at
+5. **Egress CA chain / TLS trust.** The entrypoint installs the
+   cage's egress CA into `/usr/local/share/ca-certificates` and the NSS DB at
    `/home/node/.pki`. If a future openclaw image pre-installs a
    hardened CA store that rejects our cert, HTTPS through the proxy
    breaks silently. 8.8b/c drive HTTPS curls, so a TLS break would

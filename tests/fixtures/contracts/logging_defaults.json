@@ -3,7 +3,7 @@
   "summary": "Whether allowed requests (HTTP and protocol-relay commands) are written to the egress log, for each way an operator can spell or omit it. The host copies the raw logging block into proxy-config.yaml without filling defaults in, so an omitted key runs at the EGRESS fallback while the host validates and documents its own. The two must be the same value.",
   "implementations": {
     "host": "rust/agentcage-core/src/config/parse.rs (the resolved value) and rust/agentcage-state/src/derived.rs (PROXY_KEYS: what reaches proxy-config.yaml)",
-    "proxy": "src/agentcage/data/proxy/addon.py (_log_allowed)"
+    "proxy": "rust/agentcage-egress/src/audit/mod.rs (log_allowed)"
   },
   "fields": {
     "cage": "the logging keys of a cage.yaml, merged into an otherwise minimal valid config",

@@ -762,7 +762,7 @@ impl Watcher {
                 removals,
                 "medium",
                 &|d| format!("revocation recommended for {d} (auto_revoke is off)"),
-                "revoke the runtime grant with `agentcage cage grants revoke`, or set \
+                "revoke the runtime grant with `agentcage cage grants <name> revoke <domain>`, or set \
                  agents.watcher.auto_revoke: true to have the watcher apply this itself",
             );
             return Vec::new();

@@ -74,6 +74,9 @@ fn stub_deploy(fake: &FakeRunner) {
 }
 
 fn deploy(paths: &Paths, fake: &FakeRunner, config: &Config, network_octet: Option<u32>) {
+    // A development build embeds no egress, and the build step needs one
+    // to stage (the stubbed `podman build` never looks at it).
+    agentcage_cli::egress_image::provide_binary_for_tests(b"stub egress");
     let backend = AnyBackend::Container(ContainerBackend::with_elevation(
         paths,
         fake,
@@ -121,15 +124,19 @@ fn the_deploy_sequence_is_the_pythons() {
         "containerfile: {containerfile}"
     );
     assert!(context.ends_with("/data"), "build context: {context}");
+    let tag = format!(
+        "agentcage-egress:{}",
+        agentcage_cli::egress_image::tag("9.9.9")
+    );
     fake.assert_call(
         0,
         &[
             "podman",
             "build",
             "-t",
-            // Tagged with the running version, so the egress quadlet's
-            // `Image=` pin matches what was just built.
-            "agentcage-egress:9.9.9",
+            // Tagged `<version>-<hash>`, the tag the egress quadlet's
+            // `Image=` pin names.
+            &tag,
             "-f",
             &containerfile,
             // `setfcap` for dnsmasq's NET_BIND_SERVICE file capability;
