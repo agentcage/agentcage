@@ -791,7 +791,7 @@ fn a_blocked_request_is_recorded_with_one_snapshot_for_both_views() {
             decision: Decision::Blocked,
             ..info("b", "evil.example")
         },
-        inspectors,
+        &inspectors,
         (&req, b"body"),
         Some((&resp, br#"{"blocked": true}"#)),
     );
@@ -805,7 +805,7 @@ fn a_blocked_request_is_recorded_with_one_snapshot_for_both_views() {
     let c = enabled(&excluded, "  exclude_domains: [evil.example]\n");
     c.record_blocked_request(
         &info("b", "evil.example"),
-        Json::Array(Vec::new()),
+        &Json::Array(Vec::new()),
         (&req, b""),
         None,
     );

@@ -482,44 +482,6 @@ impl CaptureWriter {
         Json::Object(pairs)
     }
 
-    /// The entry as a JSON object, stamped `ts`.
-    fn entry_json(entry: &CaptureEntry, ts: &DateTime) -> Json {
-        let mut out = object([
-            ("ts", Json::string(ts.isoformat())),
-            ("flow_id", Json::string(entry.flow_id.clone())),
-            ("direction", Json::string(entry.direction.as_str())),
-            ("decision", Json::string(entry.decision.as_str())),
-            ("host", Json::string(entry.host.clone())),
-            ("method", Json::string(entry.method.clone())),
-            ("path", Json::string(entry.path.clone())),
-            ("inspectors", entry.inspectors.clone()),
-            (
-                "inbound",
-                object([
-                    ("request", entry.inbound_req.clone()),
-                    ("response", entry.inbound_resp.clone()),
-                ]),
-            ),
-            (
-                "outbound",
-                object([
-                    ("request", entry.outbound_req.clone()),
-                    ("response", entry.outbound_resp.clone()),
-                ]),
-            ),
-        ]);
-        if !entry.ws_messages.is_empty() {
-            out.set("ws_messages", Json::Array(entry.ws_messages.clone()));
-        }
-        if entry.ws_messages_omitted != 0 {
-            out.set(
-                "ws_messages_omitted",
-                Json::Int(len_i64(entry.ws_messages_omitted)),
-            );
-        }
-        out
-    }
-
     /// Append one entry as a compact JSON line, then rotate if the file
     /// passed `max_file_size`.
     ///
@@ -527,17 +489,87 @@ impl CaptureWriter {
     ///
     /// The write failed.
     pub fn write_entry(&mut self, entry: &CaptureEntry) -> std::io::Result<()> {
-        let mut line = json::to_compact_string(&Self::entry_json(entry, &(self.clock)()));
-        line.push('\n');
+        self.write_ref(&EntryRef {
+            flow_id: &entry.flow_id,
+            direction: entry.direction,
+            decision: entry.decision,
+            host: &entry.host,
+            method: &entry.method,
+            path: &entry.path,
+            inspectors: &entry.inspectors,
+            inbound: (&entry.inbound_req, &entry.inbound_resp),
+            outbound: (&entry.outbound_req, &entry.outbound_resp),
+            ws_messages: &entry.ws_messages,
+            ws_messages_omitted: entry.ws_messages_omitted,
+        })
+    }
+
+    /// Write one entry, byte for byte the compact `json.dumps` of the
+    /// whole object, without ever building it: the small fields are
+    /// rendered together, each body-carrying snapshot is rendered once
+    /// (once for both views when they are the same snapshot), and the
+    /// pieces go to the file in one vectored write. A captured body is
+    /// thus held as its snapshot and one rendering of it, not cloned per
+    /// view and again into a whole-line object and string.
+    fn write_ref(&mut self, entry: &EntryRef<'_>) -> std::io::Result<()> {
+        let ts = (self.clock)();
+        let head = json::to_compact_string(&object([
+            ("ts", Json::string(ts.isoformat())),
+            ("flow_id", Json::string(entry.flow_id)),
+            ("direction", Json::string(entry.direction.as_str())),
+            ("decision", Json::string(entry.decision.as_str())),
+            ("host", Json::string(entry.host)),
+            ("method", Json::string(entry.method)),
+            ("path", Json::string(entry.path)),
+            ("inspectors", entry.inspectors.clone()),
+        ]));
+        let mut tail_fields = Vec::new();
+        if !entry.ws_messages.is_empty() {
+            tail_fields.push(("ws_messages", Json::Array(entry.ws_messages.to_vec())));
+        }
+        if entry.ws_messages_omitted != 0 {
+            tail_fields.push((
+                "ws_messages_omitted",
+                Json::Int(len_i64(entry.ws_messages_omitted)),
+            ));
+        }
+        let tail = if tail_fields.is_empty() {
+            "}\n".to_owned()
+        } else {
+            let mut t = json::to_compact_string(&object(tail_fields));
+            t.replace_range(..1, ",");
+            t.push('\n');
+            t
+        };
+        let in_req = json::to_compact_string(entry.inbound.0);
+        let in_resp = json::to_compact_string(entry.inbound.1);
+        let same_req = std::ptr::eq(entry.inbound.0, entry.outbound.0);
+        let same_resp = std::ptr::eq(entry.inbound.1, entry.outbound.1);
+        let out_req = (!same_req).then(|| json::to_compact_string(entry.outbound.0));
+        let out_resp = (!same_resp).then(|| json::to_compact_string(entry.outbound.1));
+        let pieces: [&[u8]; 11] = [
+            &head.as_bytes()[..head.len() - 1],
+            b",\"inbound\":{\"request\":",
+            in_req.as_bytes(),
+            b",\"response\":",
+            in_resp.as_bytes(),
+            b"},\"outbound\":{\"request\":",
+            out_req.as_deref().unwrap_or(&in_req).as_bytes(),
+            b",\"response\":",
+            out_resp.as_deref().unwrap_or(&in_resp).as_bytes(),
+            b"}",
+            tail.as_bytes(),
+        ];
         let file = match self.file.as_mut() {
             Some(file) => file,
             None => self.file.insert(open_append(&self.path)?),
         };
-        file.write_all(line.as_bytes())?;
+        write_all_vectored(file, &pieces)?;
         file.flush()?;
         // The size is tracked from what was written rather than stat()ed
         // per entry.
-        self.size += u64::try_from(line.len()).unwrap_or(u64::MAX);
+        let written: usize = pieces.iter().map(|p| p.len()).sum();
+        self.size += u64::try_from(written).unwrap_or(u64::MAX);
         self.maybe_rotate();
         Ok(())
     }
@@ -645,6 +677,41 @@ impl CaptureWriter {
     }
 }
 
+/// Write every piece, in order, in as few `writev` calls as the kernel
+/// allows (one, for a regular file): the line is never assembled in
+/// memory, and a reader tailing the file sees it appear whole.
+fn write_all_vectored(file: &mut File, pieces: &[&[u8]]) -> std::io::Result<()> {
+    let mut slices: Vec<std::io::IoSlice<'_>> =
+        pieces.iter().map(|p| std::io::IoSlice::new(p)).collect();
+    let mut slices = &mut slices[..];
+    std::io::IoSlice::advance_slices(&mut slices, 0);
+    while !slices.is_empty() {
+        match file.write_vectored(slices) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => std::io::IoSlice::advance_slices(&mut slices, n),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// An entry to write, borrowed: the pipeline's staged entry writes its one
+/// snapshot per half as both views without copying it.
+struct EntryRef<'a> {
+    flow_id: &'a str,
+    direction: Direction,
+    decision: Decision,
+    host: &'a str,
+    method: &'a str,
+    path: &'a str,
+    inspectors: &'a Json,
+    inbound: (&'a Json, &'a Json),
+    outbound: (&'a Json, &'a Json),
+    ws_messages: &'a [Json],
+    ws_messages_omitted: usize,
+}
+
 fn open_append(path: &Path) -> std::io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
@@ -682,27 +749,25 @@ pub struct FlowInfo {
 struct Pending {
     info: FlowInfo,
     inspectors: Json,
-    inbound_req: Json,
-    outbound_req: Json,
-    inbound_resp: Json,
-    outbound_resp: Json,
+    /// The request snapshot, both views (they always hold the same).
+    request: Json,
+    /// The response snapshot, both views.
+    response: Json,
     websocket: bool,
 }
 
 impl Pending {
-    fn entry(&self, ws_messages: Vec<Json>, ws_messages_omitted: usize) -> CaptureEntry {
-        CaptureEntry {
-            flow_id: self.info.id.clone(),
+    fn entry<'a>(&'a self, ws_messages: &'a [Json], ws_messages_omitted: usize) -> EntryRef<'a> {
+        EntryRef {
+            flow_id: &self.info.id,
             direction: self.info.direction,
             decision: self.info.decision,
-            host: self.info.host.clone(),
-            method: self.info.method.clone(),
-            path: self.info.path.clone(),
-            inspectors: self.inspectors.clone(),
-            inbound_req: self.inbound_req.clone(),
-            inbound_resp: self.inbound_resp.clone(),
-            outbound_req: self.outbound_req.clone(),
-            outbound_resp: self.outbound_resp.clone(),
+            host: &self.info.host,
+            method: &self.info.method,
+            path: &self.info.path,
+            inspectors: &self.inspectors,
+            inbound: (&self.request, &self.response),
+            outbound: (&self.request, &self.response),
             ws_messages,
             ws_messages_omitted,
         }
@@ -728,9 +793,9 @@ struct State {
 }
 
 impl State {
-    fn write(&mut self, entry: &CaptureEntry) {
+    fn write(&mut self, entry: &EntryRef<'_>) {
         if let Some(writer) = self.writer.as_mut()
-            && let Err(e) = writer.write_entry(entry)
+            && let Err(e) = writer.write_ref(entry)
         {
             eprintln!("agentcage: capture write failed: {e}");
         }
@@ -887,7 +952,7 @@ impl Capture {
     pub fn record_blocked_request(
         &self,
         flow: &FlowInfo,
-        inspectors: Json,
+        inspectors: &Json,
         req: (&Request, &[u8]),
         response: Option<(&Response, &[u8])>,
     ) {
@@ -900,22 +965,19 @@ impl Capture {
         }
         let request = writer.snapshot_request(req.0, req.1);
         let response = writer.snapshot_response(response);
-        let entry = CaptureEntry {
-            flow_id: flow.id.clone(),
+        state.write(&EntryRef {
+            flow_id: &flow.id,
             direction: flow.direction,
             decision: Decision::Blocked,
-            host: flow.host.clone(),
-            method: flow.method.clone(),
-            path: flow.path.clone(),
+            host: &flow.host,
+            method: &flow.method,
+            path: &flow.path,
             inspectors,
-            inbound_req: request.clone(),
-            inbound_resp: response.clone(),
-            outbound_req: request,
-            outbound_resp: response,
-            ws_messages: Vec::new(),
+            inbound: (&request, &response),
+            outbound: (&request, &response),
+            ws_messages: &[],
             ws_messages_omitted: 0,
-        };
-        state.write(&entry);
+        });
     }
 
     /// Stage an allowed or flagged request's entry for the response hook
@@ -933,10 +995,8 @@ impl Capture {
             Pending {
                 info: flow,
                 inspectors,
-                inbound_req: request.clone(),
-                outbound_req: request,
-                inbound_resp: Json::Object(Vec::new()),
-                outbound_resp: Json::Object(Vec::new()),
+                request,
+                response: Json::Object(Vec::new()),
                 websocket: false,
             },
         );
@@ -961,8 +1021,7 @@ impl Capture {
             return;
         };
         let snapshot = writer.snapshot_request(redacted, content);
-        staged.inbound_req = snapshot.clone();
-        staged.outbound_req = snapshot;
+        staged.request = snapshot;
         staged.info.path.clone_from(&redacted.path);
         staged.info.host.clone_from(&redacted.host);
     }
@@ -990,9 +1049,8 @@ impl Capture {
             mine.extend(more);
         }
         pending.info.decision = Decision::Blocked;
-        pending.inbound_resp = snapshot.clone();
-        pending.outbound_resp = snapshot;
-        state.write(&pending.entry(Vec::new(), 0));
+        pending.response = snapshot;
+        state.write(&pending.entry(&[], 0));
     }
 
     /// Complete a flow at its (redacted) response.
@@ -1018,15 +1076,13 @@ impl Capture {
         let snapshot = writer.snapshot_response(Some(response));
         if websocket_upgrade {
             if writer.captures_host(&pending.info.host) {
-                pending.inbound_resp = snapshot.clone();
-                pending.outbound_resp = snapshot;
+                pending.response = snapshot;
                 pending.websocket = true;
                 state.pending.insert(flow_id.to_owned(), pending);
             }
         } else if writer.should_capture(pending.info.decision.as_str(), &pending.info.host) {
-            pending.inbound_resp = snapshot.clone();
-            pending.outbound_resp = snapshot;
-            state.write(&pending.entry(Vec::new(), 0));
+            pending.response = snapshot;
+            state.write(&pending.entry(&[], 0));
         }
     }
 
@@ -1064,9 +1120,8 @@ impl Capture {
         };
         if writer.should_capture(pending.info.decision.as_str(), &pending.info.host) {
             let snapshot = writer.snapshot_streamed_response(resp, kept, total);
-            pending.inbound_resp = snapshot.clone();
-            pending.outbound_resp = snapshot;
-            state.write(&pending.entry(Vec::new(), 0));
+            pending.response = snapshot;
+            state.write(&pending.entry(&[], 0));
         }
     }
 
@@ -1116,17 +1171,15 @@ impl Capture {
         let State {
             writer, pending, ..
         } = &mut *state;
-        let mut entry = None;
         if let (Some(w), Some(staged)) = (writer.as_mut(), pending.get(flow_id))
             && staged.websocket
         {
             let (messages, omitted) = w.pop_ws_buffer(flow_id);
-            if w.should_capture(staged.info.decision.as_str(), &staged.info.host) {
-                entry = Some(staged.entry(messages, omitted));
+            if w.should_capture(staged.info.decision.as_str(), &staged.info.host)
+                && let Err(e) = w.write_ref(&staged.entry(&messages, omitted))
+            {
+                eprintln!("agentcage: capture write failed: {e}");
             }
-        }
-        if let Some(entry) = entry {
-            state.write(&entry);
         }
         Self::release_locked(&mut state, flow_id);
     }

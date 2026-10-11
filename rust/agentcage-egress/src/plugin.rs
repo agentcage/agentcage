@@ -666,7 +666,7 @@ fn to_abi(ctx: &Context, response: bool) -> abi::Context {
         method: ctx.method.clone(),
         headers: ctx.headers.clone(),
         content_type: ctx.content_type.clone(),
-        body: ctx.body_bytes.clone(),
+        body: ctx.body_bytes.as_deref().map(<[u8]>::to_vec),
         body_text: ctx.body_text.clone(),
         body_size: ctx.body_size as u64,
         body_entropy: ctx.body_entropy,

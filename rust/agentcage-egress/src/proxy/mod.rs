@@ -57,7 +57,7 @@ use arc_swap::ArcSwap;
 use crate::ca::CertAuthority;
 use crate::message::{Headers, Request, Response};
 
-pub use budget::DEFAULT_BODY_BUDGET;
+pub use budget::{BodyBudget, DEFAULT_BODY_BUDGET, Reservation};
 pub use detect::{ClientHello, parse_client_hello};
 pub use listen::{
     BoundProxy, ListenerSpec, OriginalDstFn, ReverseSpecError, original_dst, parse_bind,
@@ -402,6 +402,14 @@ pub trait FlowHandler: Send + Sync + 'static {
     ) -> impl Future<Output = Option<Box<dyn ResponseStream>>> + Send {
         let _ = (conn, flow, req, head);
         async { None }
+    }
+
+    /// The process-wide budget for buffered body bytes, handed over once
+    /// when the proxy is bound, so the handler can account the copies it
+    /// makes of a buffered body (a compressed body's decoded copy). The
+    /// default ignores it.
+    fn body_budget(&self, budget: &Arc<BodyBudget>) {
+        let _ = budget;
     }
 
     /// One complete WebSocket message, either direction.

@@ -37,9 +37,9 @@ pub(crate) const FREE_BYTES: usize = 1024 * 1024;
 /// before it is refused.
 pub(crate) const WAIT: Duration = Duration::from_secs(2);
 
-/// The shared counter.
+/// The shared counter: the process-wide budget for buffered body bytes.
 #[derive(Debug)]
-pub(crate) struct BodyBudget {
+pub struct BodyBudget {
     used: AtomicUsize,
     limit: usize,
     /// Woken whenever bytes are released, for reservations waiting.
@@ -62,7 +62,8 @@ impl BodyBudget {
     }
 
     /// The configured limit.
-    pub(crate) fn limit(&self) -> usize {
+    #[must_use]
+    pub fn limit(&self) -> usize {
         self.limit
     }
 
@@ -82,13 +83,15 @@ impl BodyBudget {
 
 /// What one body holds against the budget; released on drop.
 #[derive(Debug)]
-pub(crate) struct Reservation {
+pub struct Reservation {
     budget: Arc<BodyBudget>,
     held: usize,
 }
 
 impl Reservation {
-    pub(crate) fn new(budget: &Arc<BodyBudget>) -> Self {
+    /// An empty reservation on `budget`.
+    #[must_use]
+    pub fn new(budget: &Arc<BodyBudget>) -> Self {
         Self {
             budget: Arc::clone(budget),
             held: 0,
@@ -133,7 +136,7 @@ impl Reservation {
     /// Grow the reservation to `total` bytes, waiting up to the budget's
     /// bounded wait for other flows to release bytes; `false` (nothing
     /// changed) when it still does not fit.
-    pub(crate) async fn grow_to(&mut self, total: usize) -> bool {
+    pub async fn grow_to(&mut self, total: usize) -> bool {
         if self.try_grow_to(total) {
             return true;
         }

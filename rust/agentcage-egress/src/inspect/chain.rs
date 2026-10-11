@@ -488,7 +488,7 @@ mod tests {
             url: format!("https://{host}/"),
             host: host.to_owned(),
             body_text: Some(body.to_owned()),
-            body_bytes: Some(body.as_bytes().to_vec()),
+            body_bytes: Some(bytes::Bytes::copy_from_slice(body.as_bytes())),
             body_size: body.len(),
             ..Context::default()
         }

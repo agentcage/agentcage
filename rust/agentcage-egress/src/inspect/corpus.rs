@@ -144,7 +144,7 @@ fn context(spec: &Json) -> Context {
             Some(Json::Int(i)) => Some(*i as f64),
             _ => None,
         },
-        body_bytes,
+        body_bytes: body_bytes.map(Into::into),
         prior_results: Vec::new(),
         direction: Direction::Outbound,
         websocket: false,

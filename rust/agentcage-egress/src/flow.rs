@@ -42,8 +42,8 @@ use crate::json::{self, Json, object};
 use crate::message::{Request, Response};
 use crate::policy::{CONTENT_TYPE, ControlRequest};
 use crate::proxy::{
-    ConnInfo, ConnectDecision, ConnectTarget, Direction, FlowEnd, FlowHandler, Refusal,
-    RequestAction, ResponseStream, UpstreamError, WsMessage, WsVerdict, make_response,
+    BodyBudget, ConnInfo, ConnectDecision, ConnectTarget, Direction, FlowEnd, FlowHandler, Refusal,
+    RequestAction, Reservation, ResponseStream, UpstreamError, WsMessage, WsVerdict, make_response,
     parse_authority, retarget_to_host,
 };
 use crate::text;
@@ -72,13 +72,19 @@ pub struct Flow {
 #[derive(Debug, Clone)]
 pub struct Pipeline {
     engine: Arc<Engine>,
+    /// The proxy's body budget, once bound: decoded copies of buffered
+    /// bodies are accounted on it too.
+    budget: Arc<std::sync::OnceLock<Arc<BodyBudget>>>,
 }
 
 impl Pipeline {
     /// A pipeline over `engine`.
     #[must_use]
     pub fn new(engine: Arc<Engine>) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            budget: Arc::default(),
+        }
     }
 
     /// The engine.
@@ -177,7 +183,7 @@ fn context(
         method: req.method.clone(),
         headers: headers_text(headers),
         content_type,
-        body_bytes: Some(content),
+        body_bytes: Some(content.into()),
         body_text: Some(body_text),
         body_size: size,
         body_entropy: entropy,
@@ -209,7 +215,8 @@ fn request_context(
 /// Give a request back the body [`request_context`] moved out of it.
 fn restore_body(req: &mut Request, ctx: &mut Context, moved: bool) {
     if moved {
-        req.body = ctx.body_bytes.take().unwrap_or_default();
+        // Unshared again once the chain is done with it: no copy.
+        req.body = ctx.body_bytes.take().map(Vec::from).unwrap_or_default();
     }
 }
 
@@ -271,6 +278,38 @@ fn normalise(name: &str) -> String {
 }
 
 impl Pipeline {
+    /// Hold `n` bytes of a body copy (a decoded one) on the body budget
+    /// until the returned reservation drops; refused (the flow fails
+    /// closed) when the budget stays full.
+    async fn hold_copy(&self, n: usize) -> Result<Option<Reservation>, String> {
+        let Some(budget) = self.budget.get() else {
+            return Ok(None);
+        };
+        let mut held = Reservation::new(budget);
+        if held.grow_to(n).await {
+            Ok(Some(held))
+        } else {
+            Err(UpstreamError::BodyBudgetExhausted {
+                limit: budget.limit(),
+            }
+            .to_string())
+        }
+    }
+
+    /// [`request_context`], with a decoded copy of a compressed body held
+    /// on the body budget while it lives.
+    async fn held_context(
+        &self,
+        req: &mut Request,
+        direction: AuditDirection,
+    ) -> Result<(Context, bool, Option<Reservation>), String> {
+        let (ctx, moved) = request_context(req, direction).map_err(|e| e.to_string())?;
+        let copy = self
+            .hold_copy(if moved { 0 } else { ctx.body_size })
+            .await?;
+        Ok((ctx, moved, copy))
+    }
+
     /// D1: a flow that hit an internal error gets a 502 and a record.
     fn internal_error(&self, req: &Request, direction: AuditDirection, error: &str) -> Response {
         let reason = format!("internal error: {error}");
@@ -379,7 +418,7 @@ impl Pipeline {
             let resp_content = resp.body.clone();
             capture.record_blocked_request(
                 &flow,
-                capture_inspectors(results, &*self.engine.injector),
+                &capture_inspectors(results, &*self.engine.injector),
                 (req, &content),
                 Some((&resp, &resp_content)),
             );
@@ -459,7 +498,7 @@ impl Pipeline {
             .injector
             .check_injection_policy(req)
             .map_err(|e| e.to_string())?;
-        let (mut ctx, moved) = request_context(req, direction).map_err(|e| e.to_string())?;
+        let (mut ctx, moved, _copy) = self.held_context(req, direction).await?;
         let mut results = Vec::new();
         if let Some(verdict) = inject_result {
             results.push(verdict.clone());
@@ -562,15 +601,31 @@ impl Pipeline {
             Ok(Cow::Borrowed(_)) => None,
             Err(e) => return Err(e.to_string()),
         };
+        let _copy = match &decoded {
+            Some(copy) => self.hold_copy(copy.len()).await?,
+            None => None,
+        };
         // No built-in inspects responses: unless a plugin (or a refusing
         // chain) does, the context — a copy of the body, its text and its
         // entropy — is never built.
+        let mut decoded = decoded;
         let results = if flow.live.chain.inspects_responses() {
-            let content = decoded.clone().unwrap_or_else(|| resp.body.clone());
-            let ctx = context(req, &resp.headers, content, flow.direction);
-            run_inspectors(&flow.live, ctx, Phase::Response, false)
-                .await?
-                .0
+            // The body (decoded, or the response's own) is moved into the
+            // context and taken back after the chain, not copied.
+            let content = match decoded.take() {
+                Some(decoded) => (decoded, true),
+                None => (std::mem::take(&mut resp.body), false),
+            };
+            let ctx = context(req, &resp.headers, content.0, flow.direction);
+            let (results, mut ctx) =
+                run_inspectors(&flow.live, ctx, Phase::Response, false).await?;
+            let body = ctx.body_bytes.take().map(Vec::from).unwrap_or_default();
+            if content.1 {
+                decoded = Some(body);
+            } else {
+                resp.body = body;
+            }
+            results
         } else {
             Vec::new()
         };
@@ -712,7 +767,7 @@ impl Pipeline {
             method: "WEBSOCKET".to_owned(),
             headers: headers_text(&req.headers),
             content_type: "application/x-websocket-frame".to_owned(),
-            body_bytes: Some(body.clone()),
+            body_bytes: Some(bytes::Bytes::copy_from_slice(&body)),
             body_text: Some(String::from_utf8_lossy(&body).into_owned()),
             body_size: body.len(),
             body_entropy: Some(shannon_entropy(&body)),
@@ -894,6 +949,10 @@ impl FlowHandler for Pipeline {
                 WsVerdict::Drop
             }
         }
+    }
+
+    fn body_budget(&self, budget: &Arc<BodyBudget>) {
+        let _ = self.budget.set(Arc::clone(budget));
     }
 
     fn flow_end(&self, _conn: &ConnInfo, flow: Flow, _end: FlowEnd) {
