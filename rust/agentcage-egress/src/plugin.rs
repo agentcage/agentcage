@@ -11,8 +11,10 @@
 //!     config: {required_header: X-Trace-ID}
 //! ```
 //!
-//! [`load`] turns one such entry into an [`Inspector`] the chain runs
-//! like any built-in. What it guarantees:
+//! [`WasmPluginLoader`] is the chain builder's
+//! [`PluginLoader`](crate::inspect::chain::PluginLoader); it (and the
+//! one-shot [`load`]) turns one such entry into an [`Inspector`] the chain
+//! runs like any built-in. What it guarantees:
 //!
 //! * **Confinement.** `path` must resolve, after following symlinks, to a
 //!   regular `.wasm` file inside one of the plugin directories
@@ -53,6 +55,8 @@ use sha2::{Digest, Sha256};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, ResourceLimiter, Store, Trap};
 
+use crate::config::Value;
+use crate::inspect::chain::PluginLoader;
 use crate::inspect::{Action, Context, Direction, Inspector, Severity, Verdict};
 use crate::json::{self, Json};
 
@@ -109,8 +113,8 @@ impl Default for Limits {
 /// `config_json` (a JSON object, `{}` for none), using the plugin
 /// directories from the environment and the default [`Limits`].
 ///
-/// This is what the chain builder calls for each `inspectors:` entry
-/// that has a `path`.
+/// The chain builder goes through [`WasmPluginLoader`] instead, which
+/// runs the same code in two steps; this is the one-shot form.
 ///
 /// # Errors
 ///
@@ -126,9 +130,9 @@ pub fn load(name: &str, path: &str, config_json: &str) -> Result<Arc<dyn Inspect
 /// plugin's `configure`: as `json.dumps` would render the parsed YAML.
 /// A missing (`null`) config becomes `{}`.
 #[must_use]
-pub fn config_json(config: Option<&serde_norway::Value>) -> String {
+pub fn config_json(config: Option<&Value>) -> String {
     match config {
-        None | Some(serde_norway::Value::Null) => "{}".to_owned(),
+        None | Some(Value::Null) => "{}".to_owned(),
         Some(value) => json::to_string(&agentcage_core::config::json::from_yaml(value)),
     }
 }
@@ -235,11 +239,70 @@ impl Loader {
         path: &str,
         config_json: &str,
     ) -> Result<Arc<dyn Inspector>, String> {
+        let component = self.component(name, path)?;
+        let plugin = Plugin::new(name, component, config_json, self.limits)?;
+        Ok(Arc::new(plugin))
+    }
+
+    /// Resolve and compile (or fetch from the cache) the plugin at `path`.
+    fn component(&self, name: &str, path: &str) -> Result<Component, String> {
         let real = self.resolve(path)?;
         let bytes = std::fs::read(&real)
             .map_err(|e| format!("inspector {name}: cannot read {}: {e}", real.display()))?;
-        let plugin = Plugin::new(name, &bytes, config_json, self.limits)?;
-        Ok(Arc::new(plugin))
+        compile(&bytes).map_err(|e| format!("inspector {name}: {e}"))
+    }
+}
+
+/// The chain builder's [`PluginLoader`]: plugins from a [`Loader`]'s
+/// directories, under its limits.
+///
+/// Compiled components are cached process-wide by the SHA-256 of their
+/// bytes, so a reload that re-lists an unchanged plugin reuses the
+/// compiled code (a changed file is a new hash, so it is recompiled),
+/// while its instances are always created and configured afresh, so a
+/// changed `config:` takes effect.
+///
+/// A component declares no name of its own (the WIT world has none), so
+/// a plugin's declared name is its entry's `name:`; an entry without one
+/// is refused, since its verdicts would carry no inspector name. Naming
+/// still resolves and compiles the file, so a bad path or a broken
+/// component fails the build at that first step.
+#[derive(Clone, Debug)]
+pub struct WasmPluginLoader {
+    loader: Loader,
+}
+
+impl WasmPluginLoader {
+    /// A plugin loader over `loader`'s directories and limits.
+    #[must_use]
+    pub fn new(loader: Loader) -> Self {
+        Self { loader }
+    }
+
+    /// Directories from the environment, default limits
+    /// ([`Loader::from_env`]).
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self::new(Loader::from_env())
+    }
+}
+
+impl PluginLoader for WasmPluginLoader {
+    fn declared_name(&self, entry_name: &str, path: &str) -> Result<String, String> {
+        if entry_name.is_empty() {
+            return Err(format!("custom inspector {path:?} needs a name"));
+        }
+        self.loader.component(entry_name, path)?;
+        Ok(entry_name.to_owned())
+    }
+
+    fn instantiate(
+        &self,
+        name: &str,
+        path: &str,
+        config: &Value,
+    ) -> Result<Arc<dyn Inspector>, String> {
+        self.loader.load(name, path, &config_json(Some(config)))
     }
 }
 
@@ -418,8 +481,7 @@ enum CallError {
 }
 
 impl Plugin {
-    fn new(name: &str, bytes: &[u8], config: &str, limits: Limits) -> Result<Self, String> {
-        let component = compile(bytes).map_err(|e| format!("inspector {name}: {e}"))?;
+    fn new(name: &str, component: Component, config: &str, limits: Limits) -> Result<Self, String> {
         let linker =
             linker_for(&component).map_err(|e| format!("inspector {name}: {}", one_line(&e)))?;
         let plugin = Self {
@@ -673,8 +735,8 @@ mod tests {
     #[test]
     fn configs_are_handed_over_as_python_would_dump_them() {
         assert_eq!(config_json(None), "{}");
-        assert_eq!(config_json(Some(&serde_norway::Value::Null)), "{}");
-        let yaml: serde_norway::Value =
+        assert_eq!(config_json(Some(&Value::Null)), "{}");
+        let yaml: Value =
             serde_norway::from_str("b: 1\na: [x, 2.0, true, null]\nc: {d: é}\n").unwrap();
         assert_eq!(
             config_json(Some(&yaml)),
