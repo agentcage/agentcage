@@ -33,6 +33,11 @@ indexmap = "2"
 # standard base64 (`base64.b64encode` in the replaced implementation).
 base64 = "0.22"
 
+# The LLM decider's and watcher's outbound HTTPS client: small, blocking
+# (run off the async runtime), rustls with the ring provider and the
+# Mozilla roots from webpki-roots (plan D8). No OpenSSL, no cmake.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
 [dev-dependencies]
 
 [lints]
