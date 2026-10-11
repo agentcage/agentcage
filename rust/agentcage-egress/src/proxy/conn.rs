@@ -9,10 +9,9 @@
 //! speaks plaintext HTTP/1 (`CONNECT` and absolute-form); a reverse
 //! listener serves HTTP (plain or TLS) to the cage address.
 
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -20,6 +19,7 @@ use tokio::net::TcpStream;
 
 use super::detect::{self, ClientHello, Plain};
 use super::io::{BoxIo, Buffered};
+use super::pool::{H2Lease, UpstreamKey, UpstreamPool};
 use super::tls::{UpstreamTls, server_config};
 use super::upstream::{self, UpstreamConn};
 use super::{
@@ -39,42 +39,11 @@ pub(crate) struct Shared<H> {
     pub(crate) upstream_tls: Arc<UpstreamTls>,
     pub(crate) settings: Arc<ArcSwap<TransportSettings>>,
     pub(crate) budget: Arc<super::budget::BodyBudget>,
+    /// Upstream connections kept across client connections.
+    pub(crate) pool: Arc<UpstreamPool>,
+    /// The cage-facing TLS session ticket key.
+    pub(crate) tickets: Option<Arc<dyn rustls::server::ProducesTickets>>,
 }
-
-/// Which upstream an HTTP connection may be reused for.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct UpstreamKey {
-    host: String,
-    port: u16,
-    tls: bool,
-    sni: Option<String>,
-}
-
-/// HTTP/2 upstream sessions of one client connection, shared by its
-/// streams.
-#[derive(Clone, Default)]
-pub(crate) struct UpstreamPool(Arc<Mutex<HashMap<UpstreamKey, h2::client::SendRequest<Bytes>>>>);
-
-impl UpstreamPool {
-    fn get(&self, key: &UpstreamKey) -> Option<h2::client::SendRequest<Bytes>> {
-        self.0.lock().ok()?.get(key).cloned()
-    }
-
-    fn put(&self, key: UpstreamKey, sender: h2::client::SendRequest<Bytes>) {
-        if let Ok(mut map) = self.0.lock() {
-            map.insert(key, sender);
-        }
-    }
-
-    fn forget(&self, key: &UpstreamKey) {
-        if let Ok(mut map) = self.0.lock() {
-            map.remove(key);
-        }
-    }
-}
-
-/// An idle HTTP/1 upstream connection kept for the next request.
-pub(crate) type H1Slot = Option<(UpstreamKey, Buffered)>;
 
 /// The result of running one request through the handler and upstream.
 // Built once per request and matched on at once; boxing the upgrade case
@@ -146,6 +115,8 @@ pub(crate) enum UpstreamBody {
     H1 {
         up: Buffered,
         key: UpstreamKey,
+        /// The address it reached.
+        peer: IpAddr,
         framing: h1::Framing,
         reader: h1::BodyReader,
         reusable: bool,
@@ -155,16 +126,24 @@ pub(crate) enum UpstreamBody {
         recv: h2::RecvStream,
         headers: Headers,
         _sending: Option<super::h2::AbortOnDrop>,
+        /// The stream slot on the pooled session, held while the body is.
+        _lease: H2Lease,
         /// Flow-control credit not yet returned for the last piece.
         unreleased: usize,
     },
 }
 
 impl UpstreamBody {
-    fn h1(head: upstream::H1Head, up: Buffered, key: &UpstreamKey) -> (Response, Self) {
+    fn h1(
+        head: upstream::H1Head,
+        up: Buffered,
+        key: &UpstreamKey,
+        peer: IpAddr,
+    ) -> (Response, Self) {
         let body = Self::H1 {
             up,
             key: key.clone(),
+            peer,
             framing: head.framing,
             reader: h1::BodyReader::new(head.framing),
             reusable: head.reusable,
@@ -176,12 +155,14 @@ impl UpstreamBody {
         resp: Response,
         recv: h2::RecvStream,
         sending: Option<super::h2::AbortOnDrop>,
+        lease: H2Lease,
     ) -> (Response, Self) {
         let headers = resp.headers.clone();
         let body = Self::H2 {
             recv,
             headers,
             _sending: sending,
+            _lease: lease,
             unreleased: 0,
         };
         (resp, body)
@@ -249,13 +230,15 @@ impl UpstreamBody {
     }
 
     /// The body has been read whole: an HTTP/1 connection goes back to
-    /// `slot` when it can carry another request, or comes back for a
-    /// `101` upgrade.
-    fn finish(self, status: u16, slot: &mut H1Slot) -> Option<Buffered> {
+    /// the pool when it can carry another request (its response framed
+    /// and read to the last byte, so nothing of it is left for the next
+    /// exchange to read), or comes back for a `101` upgrade.
+    pub(crate) fn finish(self, status: u16, pool: &UpstreamPool) -> Option<Buffered> {
         match self {
             Self::H1 {
                 up,
                 key,
+                peer,
                 reusable,
                 reader,
                 ..
@@ -264,7 +247,7 @@ impl UpstreamBody {
                     return Some(up);
                 }
                 if reusable && reader.is_done() {
-                    *slot = Some((key, up));
+                    pool.put_h1(&key, up, peer);
                 }
                 None
             }
@@ -278,8 +261,6 @@ pub(crate) async fn exchange<H: FlowHandler>(
     shared: &Shared<H>,
     conn: &ConnInfo,
     mut req: Request,
-    pool: &UpstreamPool,
-    slot: &mut H1Slot,
     alpn_offers: &[Vec<u8>],
     resp_budget: &mut super::budget::Reservation,
 ) -> Exchanged<H::Flow> {
@@ -300,12 +281,6 @@ pub(crate) async fn exchange<H: FlowHandler>(
     }
     let max = shared.settings.load().max_body;
     let tls = req.scheme == "https";
-    let key = UpstreamKey {
-        host: req.host.clone(),
-        port: req.port,
-        tls,
-        sni: upstream_sni(conn, &req),
-    };
     let offers: Vec<Vec<u8>> = if !tls || !conn.tls {
         Vec::new()
     } else if websocket && !alpn_offers.is_empty() {
@@ -314,7 +289,16 @@ pub(crate) async fn exchange<H: FlowHandler>(
     } else {
         alpn_offers.to_vec()
     };
-    let (mut resp, mut body) = match send(shared, conn, &mut req, &key, &offers, pool, slot).await {
+    let key = UpstreamKey {
+        inbound: UpstreamKey::inbound(conn.listener),
+        tls,
+        host: req.host.clone(),
+        port: req.port,
+        sni: upstream_sni(conn, &req),
+        alpn: offers,
+        epoch: handler.upstream_epoch(),
+    };
+    let (mut resp, mut body) = match send(shared, conn, &mut req, &key).await {
         Ok(ok) => ok,
         Err(err) => return Exchanged::Done(handler.upstream_error(conn, flow, &req, &err)),
     };
@@ -339,7 +323,7 @@ pub(crate) async fn exchange<H: FlowHandler>(
         Ok(bytes) => resp.body = bytes,
         Err(err) => return Exchanged::Done(handler.upstream_error(conn, flow, &req, &err)),
     }
-    let upgraded = body.finish(resp.status, slot);
+    let upgraded = body.finish(resp.status, &shared.pool);
     handler.response(conn, &mut flow, &mut req, &mut resp).await;
     if resp.status == 101 {
         if let (true, Some(upstream)) = (is_websocket(&req, &resp), upgraded) {
@@ -357,63 +341,69 @@ pub(crate) async fn exchange<H: FlowHandler>(
     Exchanged::Done(resp)
 }
 
-/// Send on a reused connection when there is one (retrying once on a
-/// fresh connection when a reused one turns out dead), else on a new one;
-/// the response head and its unread body.
-#[allow(clippy::too_many_arguments)]
+/// Send on a pooled connection when there is one (moving on to a fresh
+/// connection when a pooled one turns out dead), else on a new one; the
+/// response head and its unread body.
 async fn send<H: FlowHandler>(
     shared: &Shared<H>,
     conn: &ConnInfo,
     req: &mut Request,
     key: &UpstreamKey,
-    offers: &[Vec<u8>],
-    pool: &UpstreamPool,
-    slot: &mut H1Slot,
 ) -> Result<(Response, UpstreamBody), UpstreamError> {
-    if let Some(sender) = pool.get(key) {
-        match super::h2::send_head(&sender, req).await {
-            Ok((resp, recv, sending)) => return Ok(UpstreamBody::h2(resp, recv, sending)),
-            Err(UpstreamError::Protocol(_)) => pool.forget(key),
-            Err(other) => return Err(other),
-        }
-    }
-    let reused = match slot.take() {
-        Some((slot_key, up)) if slot_key == *key => Some(up),
-        _ => None,
-    };
-    if let Some(mut up) = reused {
-        match upstream::send_h1_head(&mut up, req).await {
-            Ok(head) => return Ok(UpstreamBody::h1(head, up, key)),
-            Err((_, true)) => {}
-            Err((err, false)) => return Err(err),
-        }
-    }
+    let pool = &*shared.pool;
     let target = ConnectTarget {
         host: req.host.clone(),
         port: req.port,
         sni: key.sni.clone(),
         purpose: ConnectPurpose::Http,
     };
-    match upstream::open(
+    // The peer guard again, for the address a pooled connection reached:
+    // the rules may have changed since it was opened.
+    let vet = |peer: IpAddr| shared.handler.may_reuse(conn, &target, peer);
+    if let Some(lease) = pool.h2(key, vet) {
+        match super::h2::send_head(&lease.sender, req).await {
+            Ok((resp, recv, sending)) => return Ok(UpstreamBody::h2(resp, recv, sending, lease)),
+            Err(UpstreamError::Protocol(_)) => pool.forget_h2(key, &lease),
+            Err(other) => return Err(other),
+        }
+    }
+    // A few pooled HTTP/1 connections at most: one that died since the
+    // idle check is rare, and each costs a round trip to find out.
+    for _ in 0..3 {
+        let Some((mut up, peer)) = pool.take_h1(key, vet) else {
+            break;
+        };
+        match upstream::send_h1_head(&mut up, req).await {
+            Ok(head) => return Ok(UpstreamBody::h1(head, up, key, peer)),
+            Err((_, true)) => {}
+            Err((err, false)) => return Err(err),
+        }
+    }
+    let (opened, peer) = upstream::open(
         &*shared.handler,
         conn,
         &shared.upstream_tls,
         &target,
         key.tls,
-        offers,
+        &key.alpn,
     )
-    .await?
-    {
+    .await?;
+    match opened {
         UpstreamConn::H2(sender) => {
-            let (resp, recv, sending) = super::h2::send_head(&sender, req).await?;
-            pool.put(key.clone(), sender);
-            Ok(UpstreamBody::h2(resp, recv, sending))
+            let lease = pool.put_h2(key, sender, peer);
+            match super::h2::send_head(&lease.sender, req).await {
+                Ok((resp, recv, sending)) => Ok(UpstreamBody::h2(resp, recv, sending, lease)),
+                Err(err) => {
+                    pool.forget_h2(key, &lease);
+                    Err(err)
+                }
+            }
         }
         UpstreamConn::H1(mut up) => {
             let head = upstream::send_h1_head(&mut up, req)
                 .await
                 .map_err(|(err, _)| err)?;
-            Ok(UpstreamBody::h1(head, up, key))
+            Ok(UpstreamBody::h1(head, up, key, peer))
         }
     }
 }
@@ -479,7 +469,6 @@ async fn relay_h1<H: FlowHandler>(
     flow: H::Flow,
     mut stream: Box<dyn ResponseStream>,
     mut body: UpstreamBody,
-    slot: &mut H1Slot,
 ) -> bool {
     let framing = if stream.passthrough() && resp.headers.contains("content-length") {
         h1::StreamFraming::Length
@@ -519,7 +508,7 @@ async fn relay_h1<H: FlowHandler>(
     stream.close(outcome);
     shared.handler.flow_end(info, flow, end);
     if completed {
-        let _ = body.finish(resp.status, slot);
+        let _ = body.finish(resp.status, &shared.pool);
     }
     completed && framing != h1::StreamFraming::Close
 }
@@ -763,7 +752,11 @@ async fn terminate_tls<H: FlowHandler>(
         }
     };
     let chosen = detect::choose_alpn(&hello.alpn);
-    let config = match server_config(leaf, chosen, !hello.alpn.is_empty()) {
+    // Only a session with an SNI is resumable: rustls binds a ticket to
+    // the SNI it was issued under, and without one the leaf is minted for
+    // whatever address the client happened to reach.
+    let tickets = info.sni.as_ref().and(shared.tickets.as_ref());
+    let config = match server_config(leaf, chosen, !hello.alpn.is_empty(), tickets) {
         Ok(config) => config,
         Err(e) => {
             log(&info, &format!("TLS config: {e}"));
@@ -1063,8 +1056,6 @@ pub(crate) async fn serve_h1<H: FlowHandler>(
     mut client: Buffered,
     alpn_offers: Arc<Vec<Vec<u8>>>,
 ) {
-    let pool = UpstreamPool::default();
-    let mut slot: H1Slot = None;
     loop {
         // Loaded per request, so a reload applies to the next request on a
         // kept-alive connection without disturbing it.
@@ -1082,17 +1073,7 @@ pub(crate) async fn serve_h1<H: FlowHandler>(
         let version = req.http_version.clone();
         // Held until the response is written.
         let mut resp_budget = super::budget::Reservation::new(&shared.budget);
-        match exchange(
-            &shared,
-            &info,
-            req,
-            &pool,
-            &mut slot,
-            &alpn_offers,
-            &mut resp_budget,
-        )
-        .await
-        {
+        match exchange(&shared, &info, req, &alpn_offers, &mut resp_budget).await {
             Exchanged::Done(resp) => {
                 if h1::write_response(&mut client, &resp, &method)
                     .await
@@ -1147,7 +1128,6 @@ pub(crate) async fn serve_h1<H: FlowHandler>(
                     flow,
                     stream,
                     body,
-                    &mut slot,
                 )
                 .await;
                 let resp_close = resp.http_version.starts_with("HTTP/1")

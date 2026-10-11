@@ -362,21 +362,22 @@ pub(crate) async fn serve<H: FlowHandler>(
             return;
         }
     };
-    let pool = conn::UpstreamPool::default();
     while let Some(next) = session.accept().await {
         let Ok((request, respond)) = next else { break };
         let shared = Arc::clone(&shared);
         let conn = Arc::clone(&conn);
-        let pool = pool.clone();
         let offers = Arc::clone(&alpn_offers);
         tokio::spawn(async move {
-            stream(shared, conn, request, respond, pool, offers).await;
+            stream(shared, conn, request, respond, offers).await;
         });
     }
 }
 
 /// What an HTTP/2 client stream gets: a whole response, or a head and a
 /// body relayed as it arrives.
+// Built once per stream and matched on at once, like `conn::Exchanged`;
+// boxing the streamed case would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 enum Answer<F> {
     Whole(Response),
     Streamed {
@@ -392,7 +393,6 @@ async fn stream<H: FlowHandler>(
     conn: Arc<ConnInfo>,
     request: http::Request<RecvStream>,
     mut respond: h2::server::SendResponse<Bytes>,
-    pool: conn::UpstreamPool,
     offers: Arc<Vec<Vec<u8>>>,
 ) {
     let max = shared.settings.load().max_body;
@@ -406,18 +406,7 @@ async fn stream<H: FlowHandler>(
     let answer = match read_body(&mut body, max, declared, &mut req_budget).await {
         Ok(body) => {
             let req = request_from_h2(&parts, body, &conn);
-            let mut slot = None;
-            match conn::exchange(
-                &shared,
-                &conn,
-                req,
-                &pool,
-                &mut slot,
-                &offers,
-                &mut resp_budget,
-            )
-            .await
-            {
+            match conn::exchange(&shared, &conn, req, &offers, &mut resp_budget).await {
                 conn::Exchanged::Done(resp) | conn::Exchanged::RawUpgrade(resp) => {
                     Answer::Whole(resp)
                 }
@@ -569,9 +558,14 @@ async fn relay<H: FlowHandler>(
             }
         },
     };
+    let completed = outcome == StreamOutcome::Completed;
     let end = conn::stream_flow_end(&outcome);
     stream.close(outcome);
     shared.handler.flow_end(conn, flow, end);
+    if completed {
+        // An HTTP/1 upstream read to its end can serve the next request.
+        let _ = body.finish(resp.status, &shared.pool);
+    }
 }
 
 #[cfg(test)]

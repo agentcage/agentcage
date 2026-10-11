@@ -105,3 +105,76 @@ strip = "symbols"
 # This is a decision worth revisiting once the Track C/D code exists, but
 # it has to be made now rather than inherited, because whether Drop can be
 # relied on changes how that code gets written.
+
+# ── The egress is the exception ──────────────────────────────
+#
+# The egress is the one binary here whose hot path is compute: every byte
+# an agent sends or receives is decrypted, parsed, scanned and re-encrypted
+# in it. So it and the crates its per-request path spends its time in are
+# built for speed, while everything else (the CLI, and the egress's cold
+# parts: config parsing, the wasm compiler, the CLI parser) keeps `z`.
+#
+# Per-package overrides rather than a separate profile, so `cargo build
+# --release -p agentcage-egress` keeps producing the shipped artifact in
+# `target/<triple>/release/`, where CI, the publish workflow and the embed
+# crate's build script look for it. Under LTO a function keeps the size
+# attributes of the crate it was compiled in, so the list matters even
+# though everything is optimized together at link time. The CLI shares
+# only flate2/miniz_oxide/memchr/crc32fast/sha2 from it, which barely
+# move its size.
+[profile.release.package.agentcage-egress]
+opt-level = 3
+# TLS, both sides of every connection.
+[profile.release.package.rustls]
+opt-level = 3
+[profile.release.package.ring]
+opt-level = 3
+[profile.release.package.tokio-rustls]
+opt-level = 3
+[profile.release.package.rustls-webpki]
+opt-level = 3
+# The runtime and the HTTP/1 and HTTP/2 codecs.
+[profile.release.package.tokio]
+opt-level = 3
+[profile.release.package.bytes]
+opt-level = 3
+[profile.release.package.h2]
+opt-level = 3
+[profile.release.package.http]
+opt-level = 3
+[profile.release.package.httparse]
+opt-level = 3
+[profile.release.package.hashbrown]
+opt-level = 3
+[profile.release.package.indexmap]
+opt-level = 3
+[profile.release.package.tungstenite]
+opt-level = 3
+# Body scanning and secret injection/redaction.
+[profile.release.package.memchr]
+opt-level = 3
+[profile.release.package.aho-corasick]
+opt-level = 3
+[profile.release.package.regex]
+opt-level = 3
+[profile.release.package.regex-automata]
+opt-level = 3
+[profile.release.package.encoding_rs]
+opt-level = 3
+[profile.release.package.base64]
+opt-level = 3
+# Content-encoding of inspected bodies.
+[profile.release.package.flate2]
+opt-level = 3
+[profile.release.package.miniz_oxide]
+opt-level = 3
+[profile.release.package.crc32fast]
+opt-level = 3
+[profile.release.package.adler2]
+opt-level = 3
+[profile.release.package.brotli-decompressor]
+opt-level = 3
+[profile.release.package.ruzstd]
+opt-level = 3
+[profile.release.package.sha2]
+opt-level = 3

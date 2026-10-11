@@ -39,6 +39,8 @@ struct Recorder {
     events: Mutex<Vec<String>>,
     passthrough: PassthroughMatcher,
     refuse_connect: bool,
+    /// The peer guard refuses every pooled connection at reuse.
+    refuse_reuse: bool,
     control_host: Option<String>,
 }
 
@@ -193,6 +195,10 @@ impl FlowHandler for Recorder {
             addrs = resolved.to_vec();
         }
         ConnectDecision::Allow(addrs)
+    }
+
+    fn may_reuse(&self, _: &ConnInfo, _: &ConnectTarget, _: IpAddr) -> bool {
+        !self.refuse_reuse
     }
 
     fn is_passthrough(&self, _: &ConnInfo, candidate: &str) -> bool {
@@ -1874,4 +1880,148 @@ async fn a_client_that_goes_away_stops_the_upstream_read() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let sent = STREAMED.load(Ordering::SeqCst) - before;
     assert!(sent > 0 && sent < 256 << 20, "{sent}");
+}
+
+// ── Upstream pooling and TLS resumption ──────────────────────
+
+/// One HTTP/1 request in a fresh `CONNECT` tunnel (a fresh client
+/// connection) with its own TLS session; the response head.
+async fn one_tunnel_request(eg: &Egress, target: &str, sni: &str, path: &str) -> String {
+    let (_, tunnel) = connect(eg.regular, target).await;
+    let mut tls = client_tls(&eg.ca, &[b"http/1.1"])
+        .connect(sn(sni), tunnel)
+        .await
+        .unwrap();
+    let (head, _) = roundtrip(
+        &mut tls,
+        format!("GET {path} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes(),
+    )
+    .await;
+    head
+}
+
+#[tokio::test]
+async fn upstream_connections_are_reused_across_client_connections() {
+    let root = test_root();
+    let up = mock(Kind::Tls(&[b"http/1.1"]), &root).await;
+    let handler = Arc::new(Recorder::default());
+    let eg = egress(
+        Arc::clone(&handler),
+        &root,
+        vec![up.addr.port()],
+        1 << 20,
+        None,
+    )
+    .await;
+    let target = format!("localhost:{}", up.addr.port());
+    for path in ["/one", "/two", "/three"] {
+        let head = one_tunnel_request(&eg, &target, "localhost", path).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+    }
+    assert_eq!(
+        up.accepted.load(Ordering::SeqCst),
+        1,
+        "three client connections, one upstream connection"
+    );
+    // The same upstream dialled by address is another connection (the
+    // key is what was dialled, as well as the name verified).
+    let by_ip = format!("127.0.0.1:{}", up.addr.port());
+    let head = one_tunnel_request(&eg, &by_ip, "localhost", "/by-ip").await;
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+    assert_eq!(up.accepted.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn h2_upstream_sessions_are_shared_by_client_connections() {
+    let root = test_root();
+    let up = mock(Kind::Tls(&[b"h2", b"http/1.1"]), &root).await;
+    let handler = Arc::new(Recorder::default());
+    let eg = egress(
+        Arc::clone(&handler),
+        &root,
+        vec![up.addr.port()],
+        1 << 20,
+        None,
+    )
+    .await;
+    let auth = format!("localhost:{}", up.addr.port());
+    for path in ["/a", "/b"] {
+        let (_, t) = connect(eg.regular, &auth).await;
+        let tls = client_tls(&eg.ca, &[b"h2", b"http/1.1"])
+            .connect(sn("localhost"), t)
+            .await
+            .unwrap();
+        let (status, text) = h2_get(tls, &auth, path, b"").await;
+        assert_eq!(status, 200);
+        assert!(text.starts_with(&format!("GET {path} h2 ")), "{text}");
+    }
+    assert_eq!(up.accepted.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_pooled_connection_the_peer_guard_now_refuses_is_not_reused() {
+    let root = test_root();
+    let up = mock(Kind::Tls(&[b"http/1.1"]), &root).await;
+    let handler = Arc::new(Recorder {
+        refuse_reuse: true,
+        ..Recorder::default()
+    });
+    let eg = egress(
+        Arc::clone(&handler),
+        &root,
+        vec![up.addr.port()],
+        1 << 20,
+        None,
+    )
+    .await;
+    let target = format!("localhost:{}", up.addr.port());
+    for path in ["/one", "/two"] {
+        let head = one_tunnel_request(&eg, &target, "localhost", path).await;
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+    }
+    assert_eq!(up.accepted.load(Ordering::SeqCst), 2);
+    // Each was vetted by `server_connect` when it was opened.
+    let connects = handler
+        .events()
+        .iter()
+        .filter(|e| e.starts_with("connect "))
+        .count();
+    assert_eq!(connects, 2);
+}
+
+#[tokio::test]
+async fn agents_reconnecting_resume_their_tls_session() {
+    let root = test_root();
+    let up = mock(Kind::Tls(&[b"http/1.1"]), &root).await;
+    let handler = Arc::new(Recorder::default());
+    let eg = egress(
+        Arc::clone(&handler),
+        &root,
+        vec![up.addr.port()],
+        1 << 20,
+        None,
+    )
+    .await;
+    let target = format!("localhost:{}", up.addr.port());
+    // One client config, as one agent process keeps one.
+    let client = client_tls(&eg.ca, &[b"http/1.1"]);
+    let mut kinds = Vec::new();
+    for path in ["/one", "/two"] {
+        let (_, tunnel) = connect(eg.regular, &target).await;
+        let mut tls = client.connect(sn("localhost"), tunnel).await.unwrap();
+        let (head, _) = roundtrip(
+            &mut tls,
+            format!("GET {path} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes(),
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+        kinds.push(tls.get_ref().1.handshake_kind());
+    }
+    assert_eq!(
+        kinds,
+        [
+            Some(rustls::HandshakeKind::Full),
+            Some(rustls::HandshakeKind::Resumed)
+        ]
+    );
 }
