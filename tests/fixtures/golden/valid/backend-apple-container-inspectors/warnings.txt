@@ -1,2 +1,2 @@
 container.read_only: silently has no effect on apple-container (read-only rootfs — apple-container's rootfs is always RW, so `read_only: true` cannot be enforced). See issue #120 for the parity plan.
-inspectors[1] 'not-a-real-inspector': not a known built-in inspector — the in-cage addon will skip this entry. Valid names: body-size, content-type, domain, entropy, secrets.
+inspectors[1] 'not-a-real-inspector': not a known built-in inspector — the egress will skip this entry. Valid names: body-size, content-type, domain, entropy, secrets.

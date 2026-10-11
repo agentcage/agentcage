@@ -155,11 +155,12 @@ RUN if ! getent passwd 1000 >/dev/null 2>&1 \
     fi
 
 # Bake the user's original argv as a shell-escaped one-shot script.
-# cage-init.sh exec's this after capsh-dropping. The shlex.quote on the
-# Python side handles every metacharacter (spaces, $VAR, &&, ; etc.) so
-# the resulting `exec ...` line is safe to feed straight to /bin/sh
-# without further parsing. Closes the I2 argv-injection risk from the
-# eng review on the prior runtime-jq approach.
+# cage-init.sh exec's this after capsh-dropping. The host quotes each
+# argument (agentcage_core::quadlets::shlex_quote), which handles every
+# metacharacter (spaces, $VAR, &&, ; etc.), so the resulting `exec ...`
+# line is safe to feed straight to /bin/sh without further parsing.
+# Closes the I2 argv-injection risk from the eng review on the prior
+# runtime-jq approach.
 RUN mkdir -p /opt/agentcage /etc/agentcage
 RUN cat > /opt/agentcage/cage-cmd.sh <<'CAGECMD'
 #!/bin/sh

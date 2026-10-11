@@ -76,7 +76,6 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         agentcage_cli::backends::AnyBackend::refusal(&config.isolation, "cage audit")
     {
         eprintln!("{refusal}");
-        eprintln!("  run the Python `agentcage cage audit {name}` for now");
         return Err(ExitCode::from(EXIT_FAILURE));
     }
     // Note what is *not* a branch below: apple-container reads its

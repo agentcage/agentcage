@@ -957,12 +957,12 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
     }
 
     // `secret_injection.transform` runs end-to-end on apple-container —
-    // the in-cage addon loads the same `data/proxy/transforms` registry
+    // the egress loads the same transform registry (`transforms.rs`)
     // the container backend uses, and `KNOWN_TRANSFORMS` is the schema's
     // view of what it can dispatch. Anything outside that set is already
     // rejected at parse time by `validate_transform`, so reaching this
     // loop with an unknown transform is impossible. It is kept as a hard
-    // assert, so a future divergence between the schema and the in-cage
+    // assert, so a future divergence between the schema and the egress's
     // registry surfaces as a config-time warning instead of a silent
     // runtime drop.
     for rule in &config.secret_injection {
@@ -971,7 +971,7 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
         {
             warnings.push(format!(
                 "secret_injection[{}].transform ={}: not in KNOWN_TRANSFORMS — the \
-                 apple-container addon will skip the rule at startup. See issue #120.",
+                 egress will skip the rule at startup. See issue #120.",
                 quote_text(&rule.env),
                 quote_text(&rule.transform)
             ));
@@ -1007,8 +1007,8 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
         }
         if is_truthy(name) && !is_builtin_inspector(name) {
             warnings.push(format!(
-                "inspectors[{index}] {}: not a known built-in inspector — the in-cage \
-                 addon will skip this entry. Valid names: {}.",
+                "inspectors[{index}] {}: not a known built-in inspector — the egress \
+                 will skip this entry. Valid names: {}.",
                 display_value(name),
                 sorted_builtin_inspector_names().join(", ")
             ));
