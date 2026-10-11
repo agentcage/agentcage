@@ -56,11 +56,19 @@ agentcage renders expected failures as a single `error: ...` line; set `AGENTCAG
 #### Symptom: Package managers report TLS / SSL Certificate Errors
 - **Cause**: The agent runtime is not trusting the per-cage CA certificate mounted at `/certs/agentcage-ca.pem`.
 - **Solution**:
-  Verify the following environment variables are set inside the container:
-  - Python: `REQUESTS_CA_BUNDLE=/certs/agentcage-ca.pem`
-  - Node.js: `NODE_EXTRA_CA_CERTS=/certs/agentcage-ca.pem`
-  - cURL: `CURL_CA_BUNDLE=/certs/agentcage-ca.pem`
-  - Git: `git config --global http.sslCAInfo /certs/agentcage-ca.pem`
+  The cage sets these environment variables to `/certs/agentcage-ca.pem`. Check that the container still has them (`env | grep /certs/`) and that `container.env` doesn't override one:
+  - OpenSSL-based tools, Go, uv: `SSL_CERT_FILE`
+  - Node.js, npm, Bun: `NODE_EXTRA_CA_CERTS`
+  - Git: `GIT_SSL_CAINFO`
+  - Python `requests`: `REQUESTS_CA_BUNDLE`
+  - cURL: `CURL_CA_BUNDLE`
+  - pip: `PIP_CERT`
+  - boto3 / AWS CLI: `AWS_CA_BUNDLE`
+  - cargo: `CARGO_HTTP_CAINFO`
+  - Deno: `DENO_CERT`
+  - gRPC: `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`
+
+  A tool that reads none of these (Java, for one) needs the CA in its own trust store, or in the image's system store as the arch/debian/ubuntu scaffolds do.
 
 ---
 
