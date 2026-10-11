@@ -150,6 +150,10 @@ pub fn egress_argv(
     }
     argv.push("-e".to_owned());
     argv.push(format!("AGENTCAGE_VERSION={version}"));
+    // The CA subject's cage name (the Rust egress; the Python one
+    // ignores it).
+    argv.push("-e".to_owned());
+    argv.push(format!("AGENTCAGE_CAGE_NAME={name}"));
     // The upstreams for policy-api granted zones. Same env as
     // `egress.container.j2`; the baseline is empty under default-deny,
     // so the supervisor cannot scrape them out of it.

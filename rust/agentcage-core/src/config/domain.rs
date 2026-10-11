@@ -409,9 +409,100 @@ fn is_global(address: u32) -> bool {
     !in_network(address, CARRIER_GRADE_NAT) && !is_private(address)
 }
 
+/// `ipaddress.ip_address(x).is_global` for either family, with an
+/// IPv4-mapped IPv6 address judged as the IPv4 address it carries (the
+/// egress peer guard's rule: a v4 target reached over a v6 socket must
+/// not launder itself past the check).
+///
+/// IPv6 follows CPython 3.12.4+'s `_private_networks` table and its
+/// exceptions; as in CPython, multicast is not in the table and so
+/// counts as global.
+#[must_use]
+pub fn is_global_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => is_global(u32::from(v4)),
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_global(u32::from(v4)),
+            None => !is_private_v6(u128::from(v6)),
+        },
+    }
+}
+
+/// CPython's IPv6 `_private_networks`, `(network, prefix length)`.
+const PRIVATE_NETWORKS_V6: [(u128, u32); 11] = [
+    (1, 128),                     // ::1/128
+    (0, 128),                     // ::/128
+    (0xffff_0000_0000, 96),       // ::ffff:0:0/96
+    (0x0064_ff9b_0001 << 80, 48), // 64:ff9b:1::/48
+    (0x0100 << 112, 64),          // 100::/64
+    (0x2001 << 112, 23),          // 2001::/23
+    (0x2001_0db8 << 96, 32),      // 2001:db8::/32
+    (0x2002 << 112, 16),          // 2002::/16
+    (0x3fff << 112, 20),          // 3fff::/20
+    (0xfc00 << 112, 7),           // fc00::/7
+    (0xfe80 << 112, 10),          // fe80::/10
+];
+
+/// CPython's IPv6 `_private_networks_exceptions`.
+const PRIVATE_EXCEPTIONS_V6: [(u128, u32); 6] = [
+    ((0x2001_0001 << 96) | 1, 128), // 2001:1::1/128
+    ((0x2001_0001 << 96) | 2, 128), // 2001:1::2/128
+    (0x2001_0003 << 96, 32),        // 2001:3::/32
+    (0x2001_0004_0112 << 80, 48),   // 2001:4:112::/48
+    (0x2001_0020 << 96, 28),        // 2001:20::/28
+    (0x2001_0030 << 96, 28),        // 2001:30::/28
+];
+
+fn in_network_v6(address: u128, (network, prefix): (u128, u32)) -> bool {
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    };
+    address & mask == network
+}
+
+fn is_private_v6(address: u128) -> bool {
+    PRIVATE_NETWORKS_V6
+        .iter()
+        .any(|n| in_network_v6(address, *n))
+        && !PRIVATE_EXCEPTIONS_V6
+            .iter()
+            .any(|n| in_network_v6(address, *n))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::is_global_ip;
     use super::{LabelPolicy, encoded_private_ip, is_global, is_private, valid_domain};
+
+    #[test]
+    fn is_global_ip_matches_the_peer_guard_cases() {
+        for bad in [
+            "169.254.169.254",
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.1",
+            "172.16.0.1",
+            "100.64.0.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:169.254.169.254",
+            "::ffff:127.0.0.1",
+            "2001:db8::1",
+        ] {
+            assert!(!is_global_ip(bad.parse().unwrap()), "{bad}");
+        }
+        for good in [
+            "93.184.216.34",
+            "1.1.1.1",
+            "2606:4700:4700::1111",
+            "2001:4860:4860::8888",
+        ] {
+            assert!(is_global_ip(good.parse().unwrap()), "{good}");
+        }
+    }
 
     /// The contract fixtures are the real test (`tests/contract_domain.rs`).
     /// These are the two or three properties worth stating in prose.

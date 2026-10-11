@@ -86,8 +86,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 
 # ── Proxy core ───────────────────────────────────────────────
 # The async runtime every listener, connection and upstream runs on
-# (`process` only for the curl scenario test).
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync", "process"] }
+# (`signal` for an orderly stop that drains the relays; `process` only for
+# the curl scenario test).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync", "process", "signal"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 # The upstream trust store (plan D8): the Mozilla bundle, compiled in.
 webpki-roots = "1"
@@ -112,30 +113,20 @@ clap = { version = "4", features = ["derive", "env"] }
 # egress has no use for. wasmtime 49 needs rustc 1.96, above the
 # workspace's declared 1.85 floor; rust-toolchain.toml tracks stable.
 wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
-# Compiled plugins are cached by the SHA-256 of their bytes.
-sha2 = "0.10"
 
-# `SO_ORIGINAL_DST` for the transparent listener, through a safe wrapper
-# (`unsafe_code` is forbidden workspace-wide).
-[target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["socket", "net"] }
-
-# The async runtime the listeners and relays run on (plan §4.1).
-# Upstream TLS for the relays (and the proxy): rustls on the ring
-# provider, so no OpenSSL and no cmake in the build (plan D8).
-# The Mozilla root store, the one trust store every upstream uses (D8).
-
-# The async runtime the listeners and relays run on (plan §4.1).
-# Upstream TLS for the relays (and the proxy): rustls on the ring
-# provider, so no OpenSSL and no cmake in the build (plan D8).
-# The Mozilla root store, the one trust store every upstream uses (D8).
 # Digest of a relay's resolved credentials, so a reload notices a
-# rotated secret without keeping another plaintext copy of it.
+# rotated secret without keeping another plaintext copy of it; compiled
+# inspector plugins are cached by the SHA-256 of their bytes.
 sha2 = "0.10.9"
 # IMAP folder lists compare names the way Python's `unicodedata.normalize`
 # and `str.casefold` do: NFC plus full Unicode case folding.
 unicode-normalization = "0.1.25"
 caseless = "0.2.2"
+
+# `SO_ORIGINAL_DST` for the transparent listener, through a safe wrapper
+# (`unsafe_code` is forbidden workspace-wide).
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["socket", "net"] }
 
 [dev-dependencies]
 # Test-only: the host's own grants-overlay reader and writer, so an

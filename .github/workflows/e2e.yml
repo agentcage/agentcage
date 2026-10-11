@@ -137,6 +137,14 @@ jobs:
           cargo build --release --locked --bin agentcage
           echo "AGENTCAGE=$PWD/target/release/agentcage" >> "$GITHUB_ENV"
 
+      # Phase 6.12 runs a custom inspector; without the component the test
+      # skips.
+      - name: Build the example inspector plugin
+        run: |
+          rustup target add wasm32-wasip2
+          cargo build --release --locked --target wasm32-wasip2 -p header-policy-inspector
+          echo "E2E_INSPECTOR_WASM=$PWD/target/wasm32-wasip2/release/header_policy_inspector.wasm" >> "$GITHUB_ENV"
+
       - name: Setup rootless Podman
         run: |
           sudo apt-get install -y -qq podman uidmap slirp4netns

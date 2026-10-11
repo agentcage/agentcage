@@ -206,4 +206,105 @@ if [ -n "${MASK_PROJECT:-}" ]; then
   rm -rf "$MASK_PROJECT"
 fi
 
+# 6.12: A custom inspector (a WebAssembly component) blocks a request.
+# Uses examples/inspectors/header-policy with block_on_missing, so every
+# request without X-Trace-ID is refused before any upstream connect. The
+# component is built outside the harness (it needs the wasm32-wasip2
+# target): E2E_INSPECTOR_WASM names it, else the test skips. The Python
+# egress cannot run components and fails closed with a stand-in that
+# blocks everything, so the expected reason depends on the engine; only
+# the Rust engine gets the positive control (a request WITH the header
+# passes the plugin).
+PLUGIN_CAGE="e2e-plugin"
+PLUGIN_PORT="${E2E_PORT_PLUGIN:-19087}"
+PLUGIN_BASE="http://localhost:$PLUGIN_PORT"
+if [ -z "${E2E_INSPECTOR_WASM:-}" ] || [ ! -f "${E2E_INSPECTOR_WASM:-}" ]; then
+  e2e_skip "6.12" "Custom WebAssembly inspector blocks" \
+    "E2E_INSPECTOR_WASM not set (build examples/inspectors/header-policy for wasm32-wasip2)"
+else
+  PLUGIN_DIR="$(mktemp -d "$HOME/.agentcage-e2e-plugin-XXXXXX")"
+  cp "$E2E_INSPECTOR_WASM" "$PLUGIN_DIR/header_policy_inspector.wasm"
+  PLUGIN_CONFIG="$PLUGIN_DIR/cage.yaml"
+  # create_cage runs the config through envsubst, so ${AGENT_DIR} stays
+  # literal here. The plugin path is absolute: create_cage stages the
+  # config in /tmp, and a relative path resolves against the config.
+  cat > "$PLUGIN_CONFIG" <<PLUGIN_YAML
+name: $PLUGIN_CAGE
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "\${AGENT_DIR}:/app:ro"
+  ports:
+    - "127.0.0.1:${PLUGIN_PORT}:3000"
+  env:
+    AGENT_DEMO: "false"
+domains:
+  allow:
+    - httpbin.org
+inspectors:
+  - name: header-policy
+    path: $PLUGIN_DIR/header_policy_inspector.wasm
+    config:
+      block_on_missing: true
+PLUGIN_YAML
+  destroy_cage "$PLUGIN_CAGE"
+  register_cage "$PLUGIN_CAGE"
+  e2e_timer_start
+  if ! create_cage "$PLUGIN_CONFIG" >/dev/null; then
+    e2e_fail "6.12" "Custom WebAssembly inspector blocks" "cage create failed (output dumped above)"
+  else
+    start_mock "$PLUGIN_CAGE" httpbin.org >/dev/null || true
+    if [ "${AGENTCAGE_EGRESS_ENGINE:-python}" = "rust" ]; then
+      WANT="Missing mandatory header: x-trace-id"
+    else
+      WANT="WebAssembly inspectors are not supported by this egress"
+    fi
+    PLUGIN_BODY=""
+    PLUGIN_CODE=""
+    # The chain runs on inbound requests too (only the domain check is
+    # skipped there), so the probes to the cage carry the header; the
+    # cage's own fetch does not, and is what the plugin refuses.
+    for _ in $(seq 1 60); do
+      PLUGIN_BODY=$(curl -s --max-time 10 -H 'X-Trace-ID: e2e' -w '\n%{http_code}' \
+        "$PLUGIN_BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
+      PLUGIN_CODE=$(printf '%s' "$PLUGIN_BODY" | tail -n1)
+      if [ "$PLUGIN_CODE" = "403" ] && printf '%s' "$PLUGIN_BODY" | grep -qF "$WANT"; then
+        break
+      fi
+      sleep 2
+    done
+    if [ "$PLUGIN_CODE" != "403" ] || ! printf '%s' "$PLUGIN_BODY" | grep -qF "$WANT"; then
+      e2e_fail "6.12" "Custom WebAssembly inspector blocks" \
+        "expected 403 with \"$WANT\", got ${PLUGIN_CODE:-000}: $(printf '%s' "$PLUGIN_BODY" | head -c 400)"
+      dump_cage_diagnostics "$PLUGIN_CAGE" "6.12 plugin failure"
+    elif [ "${AGENTCAGE_EGRESS_ENGINE:-python}" = "rust" ]; then
+      # Positive control: with the header the plugin has nothing to say,
+      # so the request reaches the mock.
+      WITH_HEADER=""
+      for _ in $(seq 1 30); do
+        WITH_HEADER=$("$AGENTCAGE" cage exec "$PLUGIN_CAGE" -- node -e \
+          "fetch('http://httpbin.org/get',{headers:{'X-Trace-ID':'e2e'}}).then(r=>console.log(r.status)).catch(e=>console.log('ERR '+e.message))" \
+          2>/dev/null | tr -d '\r' | tail -n1) || true
+        [ "$WITH_HEADER" = "200" ] && break
+        repatch_mock "$PLUGIN_CAGE" httpbin.org >/dev/null 2>&1 || true
+        sleep 2
+      done
+      if [ "$WITH_HEADER" = "200" ]; then
+        e2e_pass "6.12" "Custom WebAssembly inspector blocks"
+      else
+        e2e_fail "6.12" "Custom WebAssembly inspector blocks" \
+          "blocked without the header, but a request WITH X-Trace-ID got: ${WITH_HEADER:-<nothing>}"
+      fi
+    else
+      e2e_pass "6.12" "Custom WebAssembly inspector blocks"
+    fi
+  fi
+  stop_mock "$PLUGIN_CAGE"
+  destroy_cage "$PLUGIN_CAGE"
+  if [ -n "${PLUGIN_DIR:-}" ]; then
+    rm -rf "$PLUGIN_DIR"
+  fi
+fi
+
 print_results

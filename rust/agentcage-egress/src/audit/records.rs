@@ -323,6 +323,17 @@ pub fn upstream_error(ts: DateTime, req: &Request, direction: Direction, reason:
     ])
 }
 
+/// A flow the egress could not process (a body whose Content-Encoding
+/// cannot be removed, an injection that cannot be applied, a worker that
+/// died) and refused with a 502 instead of passing it unfiltered (plan
+/// D1): the [`upstream_error`] shape with `kind: "internal_error"`.
+#[must_use]
+pub fn internal_error(ts: DateTime, req: &Request, direction: Direction, reason: &str) -> Json {
+    let mut entry = upstream_error(ts, req, direction, reason);
+    entry.set("kind", Json::string("internal_error"));
+    entry
+}
+
 /// A config edit that could not be applied; the last good config stays
 /// live (plan D1): `{ts, kind: "config_reload_failed", path, reason}`,
 /// `reason` being `config reload failed, keeping the last good config:

@@ -3,7 +3,7 @@
 //! ```text
 //! agentcage-egress run --regular <ip>:8080 --transparent :8443 \
 //!   [--reverse <cage_ip>:<p>@0.0.0.0:<p> …] \
-//!   --ca-dir /home/acproxy/ca --public-cert /home/acproxy/public-certs/agentcage-ca.pem \
+//!   --ca-dir /home/acproxy/ca --public-cert /home/acproxy/ca/agentcage-ca.pem \
 //!   --cage-name <name>
 //! ```
 //!
@@ -21,10 +21,9 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use agentcage_egress::ca::{CaOrigin, CertAuthority};
-use agentcage_egress::config::{self, Config};
-use agentcage_egress::proxy::{
-    self, ListenerSpec, PassThroughHandler, PassthroughMatcher, Proxy, TransportSettings,
-};
+use agentcage_egress::engine::{Engine, EngineOptions};
+use agentcage_egress::flow::Pipeline;
+use agentcage_egress::proxy::{self, ListenerSpec, Proxy, TransportSettings};
 
 #[derive(Parser, Debug)]
 #[command(name = "agentcage-egress", version = agentcage_egress::VERSION)]
@@ -73,10 +72,18 @@ struct RunArgs {
     upstream_ca: Option<PathBuf>,
 }
 
+/// The blocking pool's size (see `main`).
+const MAX_BLOCKING_THREADS: usize = 64;
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let Command::Run(args) = cli.command;
+    // The blocking pool runs the inspector chain, injection and the
+    // decider; each thread reserves a 2 MiB stack, and the supervisor's
+    // `prlimit --as=2G` counts reservations, so the pool is capped well
+    // below tokio's default of 512.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .max_blocking_threads(MAX_BLOCKING_THREADS)
         .enable_all()
         .build()
     {
@@ -106,24 +113,6 @@ fn listeners(args: &RunArgs) -> Result<Vec<ListenerSpec>, String> {
     Ok(specs)
 }
 
-/// The passthrough domains from the config, until the request pipeline
-/// (which owns the config) replaces the pass-through handler.
-fn passthrough(args: &RunArgs) -> PassthroughMatcher {
-    let Some(path) = &args.config else {
-        return PassthroughMatcher::default();
-    };
-    match Config::load(path) {
-        Ok(cfg) => PassthroughMatcher::new(&config::str_list(config::mget(
-            cfg.section("domains"),
-            "passthrough",
-        ))),
-        Err(e) => {
-            eprintln!("agentcage-egress: {e}; no passthrough domains");
-            PassthroughMatcher::default()
-        }
-    }
-}
-
 async fn run(args: RunArgs) -> Result<(), String> {
     let specs = listeners(&args)?;
     let settings = TransportSettings {
@@ -142,9 +131,11 @@ async fn run(args: RunArgs) -> Result<(), String> {
         }
     );
     let ca = Arc::new(ca);
-    let handler = Arc::new(PassThroughHandler {
-        passthrough: passthrough(&args),
-    });
+    // Without a config (the image smoke test) the pipeline runs on an
+    // empty config: listeners and CA, with the empty config's policy.
+    let engine = Engine::boot(EngineOptions::from_env(args.config.clone()));
+    engine.start();
+    let handler = Arc::new(Pipeline::new(Arc::clone(&engine)));
     let mut proxy = Proxy::new(handler, Arc::clone(&ca), settings);
     if let Some(path) = &args.upstream_ca {
         use rustls::pki_types::CertificateDer;
@@ -165,5 +156,28 @@ async fn run(args: RunArgs) -> Result<(), String> {
             path.display()
         );
     }
-    bound.run().await.map_err(|e| e.to_string())
+    tokio::select! {
+        served = bound.run() => served.map_err(|e| e.to_string()),
+        () = terminated() => {
+            eprintln!("agentcage-egress: shutting down");
+            engine.shutdown().await;
+            Ok(())
+        }
+    }
+}
+
+/// SIGTERM (tini forwards the container stop) or SIGINT.
+async fn terminated() {
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        () = term => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
 }
