@@ -4,7 +4,7 @@ These JSON files are the **oracle** for every piece of logic that agentcage
 implements on *both* sides of its trust boundary: the host CLI and the
 per-cage egress proxy (`rust/agentcage-egress`).
 
-- Originally generated from the Python host CLI by
+- Originally generated from the host CLI of v0.50.0 and earlier by
   `scripts/gen-contract-fixtures.py`, cross-checked against the previous
   egress implementation; both are gone, and the files are now maintained
   by hand (see [Adding a case](#adding-a-case)).
@@ -69,7 +69,7 @@ naming both sides, a `fields` block describing each case key, optional
 diff is read against) and a `why` (the reason that input is in the corpus).
 `rust/agentcage-core/tests/contract_fixture_integrity.rs` enforces that
 shape, unique ids, and ASCII-escaped JSON. (The `implementations` strings
-name the modules of the Python implementations the corpus was first
+name the modules of the implementations the corpus was first
 recorded against; they are provenance, not a map of the current code.)
 
 | File | Case key | Expectation |
@@ -114,9 +114,10 @@ internal service looks like.
 
 - **Pure JSON, ASCII-escaped.** Several cases carry zero-width and
   non-breaking characters that are invisible (or misleading) raw in a diff.
-- **Error messages interpolate Python type names and reprs**, because the
-  messages were defined by the original implementation and operators see
-  them verbatim. The JSON-to-type-name mapping the messages use:
+- **Error messages interpolate values and kind names in a fixed literal
+  notation** (`agentcage_core::value_fmt`), because the messages were
+  defined by earlier releases and operators see them verbatim. The
+  JSON-to-kind-name mapping the messages use:
 
   | JSON | type name |
   | :-- | :-- |

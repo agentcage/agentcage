@@ -6,7 +6,7 @@ For the full list of configuration options, see the [Configuration Reference](..
 
 ## Prerequisites
 
-- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) — see [installation instructions](../../../../docs/get-started/install.md) for your platform
+- [Podman](https://podman.io/) (rootless) and the `agentcage` binary — see [installation instructions](../../../../docs/get-started/install.md) for your platform
 - An OpenClaw container image (`ghcr.io/openclaw/openclaw:latest` or custom-built)
 - An Anthropic API key (`ANTHROPIC_API_KEY`)
 

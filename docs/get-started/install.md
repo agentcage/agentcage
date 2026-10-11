@@ -14,7 +14,7 @@ agentcage is a single command-line binary, built from source with Rust's `cargo`
 | **Rust toolchain** | Rust 1.85+ and a C linker | Build-time only. The installer sets up a minimal toolchain with rustup if none is found. |
 | **Disk Space** | ≥ 2 GB free in `$HOME` | Used for base container images and per-cage persistent volumes. |
 
-agentcage has no runtime dependencies of its own: once built, the binary needs no interpreter and no Rust toolchain. The network-facing components (the `agentcage-egress` proxy and `dnsmasq`) run inside the isolated egress container image, which agentcage builds automatically on first use. That image is `debian:trixie-slim` plus a few utilities and the static `agentcage-egress` binary, which the host binary carries inside it for its own architecture. There is no Python anywhere in the product.
+agentcage has no runtime dependencies of its own: once built, the binary needs no interpreter and no Rust toolchain. The network-facing components (the `agentcage-egress` proxy and `dnsmasq`) run inside the isolated egress container image, which agentcage builds automatically on first use. That image is `debian:trixie-slim` plus a few utilities and the static `agentcage-egress` binary, which the host binary carries inside it for its own architecture. There is no interpreter anywhere in the product.
 
 ---
 
@@ -202,10 +202,9 @@ All checks passed! Your system is ready to run agentcage.
 
 If any check fails, `agentcage doctor` outputs the exact command required to fix the issue.
 
-There is no Python check. There used to be one, and it was dropped
-rather than ported: the host does not need an interpreter any more, so a
-check for one would fail on exactly the machines this design exists to
-support.
+`agentcage doctor` does not check for an interpreter: the host binary
+needs none, so such a check would only fail on machines that are
+otherwise ready.
 
 ---
 

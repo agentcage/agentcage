@@ -394,9 +394,10 @@ export LOGNAME="${CAGE_USER}"
 #
 # The exec target is /opt/agentcage/cage-cmd.sh — a shell script baked
 # at image build time by the wrapper Containerfile, containing the
-# user's argv shell-quoted via Python's shlex.quote(). No jq, no
-# runtime parsing, no shell-metacharacter risk; the argv is preserved
-# verbatim because each element was quote-escaped host-side.
+# user's argv shell-quoted host-side by the CLI (`shlex_join` in
+# rust/agentcage-cli/src/apple/wrapper.rs). No jq, no runtime
+# parsing, no shell-metacharacter risk; the argv is preserved verbatim
+# because each element was quote-escaped host-side.
 exec capsh \
   --no-new-privs \
   --drop=all \

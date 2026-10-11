@@ -1,8 +1,8 @@
 # Golden corpus
 
-> **Recorded from the Python CLI, now maintained by hand.** These files
-> were produced by `scripts/gen-golden-corpus.py`, which ran the Python host CLI and was
-> removed with it after v0.50.0. The Rust tests assert them as golden
+> **Recorded from an earlier release, now maintained by hand.** These files
+> were produced by `scripts/gen-golden-corpus.py`, which drove the host CLI of v0.50.0 and earlier and
+> was removed with it. The Rust tests assert them as golden
 > output: a deliberate behaviour change edits them in the same commit
 > (the failing assertion shows the new output), and any other change is
 > a regression. The rest of this README describes how they were

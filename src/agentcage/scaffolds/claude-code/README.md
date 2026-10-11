@@ -6,7 +6,7 @@ For the full list of configuration options, see the [Configuration Reference](..
 
 ## Prerequisites
 
-- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) -- see [installation instructions](../../../../docs/get-started/install.md) for your platform
+- [Podman](https://podman.io/) (rootless) and the `agentcage` binary -- see [installation instructions](../../../../docs/get-started/install.md) for your platform
 - An Anthropic API key (`ANTHROPIC_API_KEY`) or a Claude subscription (Pro/Team/Enterprise)
 
 ## Quick start

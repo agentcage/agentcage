@@ -7,9 +7,8 @@
 # CHANGELOG heading is matched against it, and a release tag has to name
 # it. This script is the thing that notices when one of those drifts.
 #
-# It is deliberately POSIX sh with no dependencies -- not pytest, not
-# Python -- so it runs in the Release workflow before anything is built
-# or installed.
+# It is deliberately POSIX sh with no dependencies, so it runs in the
+# Release workflow before anything is built or installed.
 #
 # Usage:
 #   scripts/check-version.sh              # check VERSION vs Cargo + CHANGELOG
