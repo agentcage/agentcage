@@ -236,6 +236,83 @@ fn plugins_sit_in_the_chain_with_built_ins() {
     assert_eq!(c.prior_results.len(), 2);
 }
 
+#[test]
+fn the_chain_builder_loads_plugins_through_the_wasm_loader() {
+    use agentcage_egress::config::Config;
+    use agentcage_egress::inspect::chain::build_chain;
+    use agentcage_egress::inspect::domain::DomainInspector;
+    use agentcage_egress::plugin::WasmPluginLoader;
+
+    let dir = plugins_or_skip!();
+    let plugins = WasmPluginLoader::new(loader(dir));
+    let domain = Arc::new(DomainInspector::new());
+    let build = |yaml: &str| {
+        let yaml = format!("domains: {{allow: [api.example.com]}}\n{yaml}");
+        let cfg = Config::parse("config.yaml", &yaml).unwrap();
+        build_chain(&cfg, &domain, &plugins)
+            .map(agentcage_egress::inspect::chain::PendingChain::commit)
+    };
+
+    // The same component twice, under two names with two configs: each
+    // slot runs as its own entry, with its own config.
+    let chain = build(
+        "inspectors:\n\
+         \x20 - name: dlp-plan\n\
+         \x20   path: dlp_regex_inspector.wasm\n\
+         \x20   config: {patterns: [{name: plan, regex: secret-plan}], action: flag}\n\
+         \x20 - name: dlp-key\n\
+         \x20   path: dlp_regex_inspector.wasm\n\
+         \x20   config: {patterns: [{name: key, regex: 'KEY-[0-9]+'}]}\n",
+    )
+    .unwrap();
+    let names: Vec<&str> = chain.inspectors().iter().map(|i| i.name()).collect();
+    assert_eq!(names[names.len() - 2..], ["dlp-plan", "dlp-key"]);
+    let mut c = ctx(&[], Some("the secret-plan, KEY-42"));
+    let out = run_chain(chain.inspectors(), &mut c, Phase::Request, &|_| false);
+    let found: Vec<(&str, Action)> = out
+        .iter()
+        .map(|v| (v.inspector.as_str(), v.action))
+        .collect();
+    assert_eq!(
+        found,
+        [("dlp-plan", Action::Flag), ("dlp-key", Action::Block)]
+    );
+
+    // A rebuild (a reload) with a changed config takes effect.
+    let chain = build(
+        "inspectors:\n\
+         \x20 - name: dlp-key\n\
+         \x20   path: dlp_regex_inspector.wasm\n\
+         \x20   config: {patterns: [{name: key, regex: 'KEY-[0-9]+'}], action: flag}\n",
+    )
+    .unwrap();
+    let mut c = ctx(&[], Some("KEY-42"));
+    let out = run_chain(chain.inspectors(), &mut c, Phase::Request, &|_| false);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        (out[0].inspector.as_str(), out[0].action),
+        ("dlp-key", Action::Flag)
+    );
+
+    // Anything that cannot be loaded fails the whole build (D1): a
+    // missing file, an entry without a name, a config the plugin refuses.
+    let Err(err) = build("inspectors:\n  - {name: x, path: missing.wasm}\n") else {
+        panic!("refused");
+    };
+    assert!(err.contains("not found"), "{err}");
+    let Err(err) = build("inspectors:\n  - {path: dlp_regex_inspector.wasm}\n") else {
+        panic!("refused");
+    };
+    assert!(err.contains("needs a name"), "{err}");
+    let Err(err) = build("inspectors:\n  - {name: dlp, path: dlp_regex_inspector.wasm}\n") else {
+        panic!("refused");
+    };
+    assert!(
+        err.contains("dlp: configure refused: patterns must be"),
+        "{err}"
+    );
+}
+
 // ── The context crosses intact ──────────────────────────────
 
 #[test]

@@ -75,13 +75,20 @@ pub trait PluginLoader {
     fn declared_name(&self, entry_name: &str, path: &str) -> Result<String, String>;
 
     /// An inspector for the plugin at `path`, configured with `config`
-    /// (the entry's `config:` value; null when absent).
+    /// (the entry's `config:` value; null when absent), running as
+    /// `name` (the slot's name: what [`declared_name`](Self::declared_name)
+    /// returned for it), which its verdicts carry.
     ///
     /// # Errors
     ///
     /// The plugin cannot be instantiated or its `configure` rejects
     /// `config`.
-    fn instantiate(&self, path: &str, config: &Value) -> Result<Arc<dyn Inspector>, String>;
+    fn instantiate(
+        &self,
+        name: &str,
+        path: &str,
+        config: &Value,
+    ) -> Result<Arc<dyn Inspector>, String>;
 }
 
 /// A [`PluginLoader`] for builds without plugin support: every plugin
@@ -96,9 +103,14 @@ impl PluginLoader for NoPlugins {
         ))
     }
 
-    fn instantiate(&self, path: &str, _config: &Value) -> Result<Arc<dyn Inspector>, String> {
+    fn instantiate(
+        &self,
+        name: &str,
+        path: &str,
+        _config: &Value,
+    ) -> Result<Arc<dyn Inspector>, String> {
         Err(format!(
-            "custom inspector {path}: plugins are not supported by this egress"
+            "custom inspector {name:?} ({path}): plugins are not supported by this egress"
         ))
     }
 }
@@ -413,7 +425,7 @@ pub fn build_chain(
     let mut secrets = None;
     for slot in &slots {
         let built: Arc<dyn Inspector> = match (&slot.kind, slot.name.as_str()) {
-            (SlotKind::Plugin(path), _) => plugins.instantiate(path, &slot.config)?,
+            (SlotKind::Plugin(path), name) => plugins.instantiate(name, path, &slot.config)?,
             (SlotKind::Builtin, super::domain::NAME) => {
                 domain_config = Some(DomainConfig::parse(&slot.config)?);
                 Arc::clone(domain) as Arc<dyn Inspector>

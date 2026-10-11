@@ -220,9 +220,13 @@ impl PluginLoader for CorpusPlugins {
             .ok_or_else(|| format!("cannot load {path}"))
     }
 
-    fn instantiate(&self, path: &str, _config: &Value) -> Result<Arc<dyn Inspector>, String> {
-        let name = self.declared_name("", path)?;
-        Ok(Arc::new(StubPlugin(name)))
+    fn instantiate(
+        &self,
+        name: &str,
+        _path: &str,
+        _config: &Value,
+    ) -> Result<Arc<dyn Inspector>, String> {
+        Ok(Arc::new(StubPlugin(name.to_owned())))
     }
 }
 
