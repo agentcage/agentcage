@@ -18,6 +18,33 @@ set -eu
 log() { printf '[egress-supervisor] %s\n' "$*" >&2; }
 die() { log "FATAL: $1"; exit "${2:-99}"; }
 
+#-- Orderly stop -----------------------------------------------------------
+# A stop (`podman stop`, the unit's `podman rm -f`) is SIGTERM to tini,
+# which forwards it to its one child: this script. With no handler the
+# shell died of it and tini reported 143, so every routine stop or restart
+# left the unit failed ("exit-code") and fired its OnFailure alert. Pass
+# the signal on to the children, wait for them, and exit 0. The shell runs
+# the handler between commands, so at worst after the monitor loop's
+# `sleep 1`; anything that ignores SIGTERM still meets the runtime's
+# SIGKILL at its stop timeout. dnsmasq is signalled through its pidfile
+# as well, because $DNSMASQ_PID can be the dns-audit.sh wrapper.
+DNSMASQ_PID=""
+PROXY_PID=""
+# shellcheck disable=SC2317,SC2329  # invoked by the trap below
+_stop() {
+  trap '' TERM INT
+  log "stop requested; stopping agentcage-egress and dnsmasq"
+  _dns_pid=$(cat "${DNSMASQ_PID_FILE:-/nonexistent}" 2>/dev/null || true)
+  for _p in $PROXY_PID $DNSMASQ_PID $_dns_pid; do
+    kill -TERM "$_p" 2>/dev/null || true
+  done
+  for _p in $PROXY_PID $DNSMASQ_PID; do
+    wait "$_p" 2>/dev/null || true
+  done
+  exit 0
+}
+trap _stop TERM INT
+
 #-- Pre-create proxy log files at mode 0640 owned by their service user ----
 # Regression fix for #186. On the apple-container backend the egress
 # sibling bind-mounts the host per-cage logs_dir into the egress microVM
@@ -698,10 +725,10 @@ log "step F: ready marker written; entering monitor loop"
 
 #-- Step G. Monitor loop ---------------------------------------------------
 # Two `kill -0` polls in the while condition — dash has no `wait -n`, so
-# we just sleep+poll. tini handles SIGCHLD reaping and SIGTERM
-# propagation, so once either child dies the kill -0 fails on the next
-# iteration and we exit 1 — tini will then propagate the exit to the
-# container runtime.
+# we just sleep+poll. tini reaps (SIGCHLD) and forwards SIGTERM to this
+# script (handled by _stop above); once either child dies on its own the
+# kill -0 fails on the next iteration and we exit 1 — tini will then
+# propagate the exit to the container runtime.
 #
 # The loop also picks up policy-api grants. The egress (uid 200) cannot signal
 # dnsmasq (uid 201) — it has no CAP_KILL — so it publishes the granted zone

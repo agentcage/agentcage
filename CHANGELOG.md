@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stopping or restarting a cage no longer fails its egress unit.** The egress supervisor had no SIGTERM handler, so on every stop the shell died of the signal and the container exited 143: systemd marked `<name>-egress.service` failed (`Result=exit-code`) and fired any `OnFailure=` alert, on every routine `cage stop`, `cage restart` or `cage update`. The supervisor now passes SIGTERM on to the egress and dnsmasq, waits for them, and exits 0. The egress image changes, so the next `cage update` rebuilds it and restarts the egress once.
+
 ## [0.51.1] - 2026-10-12
 
 ### Changed
