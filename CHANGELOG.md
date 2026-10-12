@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A cage restarts cleanly after an unclean stop.** The cage container's hostname is now the cage name instead of podman's default, the container ID, which changes on every start. A workload that records its owner as "pid P on host H" (a lock file, or OpenClaw's gateway owner lease) could never recognise its predecessor as dead after a kill, so it waited out the record's expiry: an OpenClaw cage stopped mid-work crash-looped for five minutes before its gateway would start again. With a stable hostname the new process sees the old owner is gone and takes over at once.
+- **The cage gets the stop budget its unit declares.** `container.timeout_stop_sec` (default 30) set systemd's `TimeoutStopSec`, but the unit stops the container with `podman rm -f`, which sent SIGKILL after podman's own 10-second default, so a workload draining in-flight work on SIGTERM was killed after 10 s whatever the setting said. The cage now runs with `--stop-timeout` a little under `timeout_stop_sec` (25 s by default), and podman, not systemd, does any killing. A cage with `timeout_stop_sec: null` keeps podman's default. Each cage's unit changes, so the next `cage update` restarts it once.
+
 ## [0.51.0] - 2026-10-12
 
 **The egress proxy is rewritten in Rust.** Every cage's egress now runs `agentcage-egress`, a single static Rust binary, in place of the previous Python-based egress. It does the same job (TLS interception, the inspector chain, secret injection and redaction, audit and capture, the Policy API, the traffic watcher and the IMAP/SMTP relays) with the same config, wire formats, audit record shapes and Policy API responses, and the host contracts are unchanged except where noted below. The egress image is now `debian:trixie-slim` with `dnsmasq`, `iptables`, `tini`, a few utilities and the binary: no Python, no interpreter, and much smaller. The host binary carries the linux-musl egress for its own architecture and builds the image from it locally, so the image tag (`agentcage-egress:<version>-<hash>`, the hash now covering the binary) changes with every egress change.

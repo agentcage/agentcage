@@ -98,6 +98,21 @@ PodmanArgs=--memory={{ memory }}
 {% if cpus %}
 PodmanArgs=--cpus={{ cpus }}
 {% endif %}
+{# A hostname that survives restarts. Podman's default is the container
+   ID, a new one on every start, so a process that records "pid P on host
+   H" (a lock file, OpenClaw's gateway owner lease) can never tell that
+   its predecessor is dead: the old record names a host that no longer
+   exists, and the cage waits out the record's expiry instead of
+   reclaiming it. #}
+PodmanArgs=--hostname={{ name }}
+{# How long `podman rm -f` (the unit's stop) waits after SIGTERM before
+   SIGKILL. Podman's own default is 10 s whatever TimeoutStopSec says, so
+   a workload draining on SIGTERM was killed long before the unit's stop
+   budget ran out. Held a little under TimeoutStopSec so podman, not
+   systemd, does the killing. #}
+{% if podman_stop_timeout %}
+PodmanArgs=--stop-timeout={{ podman_stop_timeout }}
+{% endif %}
 {% if command %}
 Exec={{ command | systemd_exec }}
 {% endif %}

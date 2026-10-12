@@ -421,5 +421,41 @@ else
   fi
 fi
 
+# 8.11: a killed gateway comes back without waiting out its owner lease.
+# openclaw records its state-directory owner as "pid P on host H" and
+# reclaims that lease at start only when H is this host and P is gone.
+# The cage's hostname used to be the container ID — a new one on every
+# start — so after a SIGKILL (or a stop that ran past podman's stop
+# timeout) the new gateway saw a lease from a "different host" and
+# refused to start until it expired: five minutes of crash-looping,
+# renewed every 30s, so a 120s budget only passes when the lease is
+# reclaimed. The cage hostname is now the cage name.
+e2e_timer_start
+cage_hostname=$(podman exec "${CAGE}-cage" cat /proc/sys/kernel/hostname 2>/dev/null || true)
+if [ "$cage_hostname" != "$CAGE" ]; then
+  e2e_fail "8.11" "gateway restarts cleanly after SIGKILL" \
+    "cage hostname is '$cage_hostname', expected the cage name '$CAGE'"
+else
+  KILL_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
+  # tini forwards nothing for SIGKILL; killing the gateway ends the
+  # container non-zero and the unit's Restart=on-failure brings it back.
+  podman exec "${CAGE}-cage" pkill -KILL -f '^openclaw($|-gateway)' 2>/dev/null || true
+  # Wait for the old gateway to stop answering before polling for the
+  # new one, so a probe that lands before the kill does not pass.
+  for _ in $(seq 1 20); do
+    curl -sf --max-time 2 "$BASE/" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if wait_ready "$BASE/" 120; then
+    e2e_pass "8.11" "gateway restarts cleanly after SIGKILL (owner lease reclaimed)"
+  else
+    lease_log=$(journalctl --user -u "${CAGE}-cage" --since "$KILL_SINCE" --no-pager 2>/dev/null \
+      | grep -c 'owner lease is still active' || true)
+    e2e_fail "8.11" "gateway restarts cleanly after SIGKILL" \
+      "gateway not ready within 120s of the kill ($lease_log 'owner lease is still active' start failures)"
+    dump_cage_diagnostics "$CAGE" "8.11 restart failure"
+  fi
+fi
+
 # Trap handles teardown
 print_results

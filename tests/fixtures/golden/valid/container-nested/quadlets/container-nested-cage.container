@@ -53,6 +53,8 @@ Volume={{WORK}}/patches/nested/storage.conf:/etc/containers/storage.conf:ro,Z
 Volume={{WORK}}/patches/nested/containers.conf:/etc/containers/containers.conf:ro,Z
 Volume={{WORK}}/patches/nested/registries.conf:/etc/containers/registries.conf:ro,Z
 Tmpfs=/run:rw,exec,size=256M,mode=1777
+PodmanArgs=--hostname=container-nested
+PodmanArgs=--stop-timeout=25
 Exec=node /app/agent.js
 
 [Service]
