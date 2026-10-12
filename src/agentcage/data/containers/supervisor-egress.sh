@@ -30,7 +30,7 @@ die() { log "FATAL: $1"; exit "${2:-99}"; }
 # as well, because $DNSMASQ_PID can be the dns-audit.sh wrapper.
 DNSMASQ_PID=""
 PROXY_PID=""
-# shellcheck disable=SC2329  # invoked by the trap below
+# shellcheck disable=SC2317,SC2329  # invoked by the trap below
 _stop() {
   trap '' TERM INT
   log "stop requested; stopping agentcage-egress and dnsmasq"
