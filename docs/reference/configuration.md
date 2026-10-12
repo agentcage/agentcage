@@ -272,7 +272,7 @@ Keys both agents take:
 | `model` | none, required | The provider's model identifier. |
 | `api_key` | none, required | `env:NAME` or `systemd-creds:NAME`. `cmd:` and other schemes are refused: the egress has no shell. |
 | `base_url` | the provider's own endpoint | An `https://` URL with a host. `http://` is refused because the key is sent on every call. |
-| `timeout_seconds` | decider `15`, watcher `30` | Finite and greater than 0. |
+| `timeout_seconds` | decider `15`, watcher `30` | Finite and greater than 0. Bounds each step of the LLM call separately: connecting, sending, waiting for the response headers, and receiving the whole reply. A reasoning model can take longer than the default to finish its reply; a call that runs out fails with `llm error: timeout: receive body`, which denies the request (decider) or skips the scan (watcher). Raise it for such a model. |
 | `max_tokens` | `8192` | At least `1024`. The budget includes a reasoning model's thinking tokens, so a smaller value can leave no room for the answer. Providers bill tokens generated, not this ceiling. |
 | `context` | `""` (off) | A string of at most 4096 characters after trimming. It is added to the agent's system prompt as trusted operator guidance. It does not override the never-grant floor or the rate limit. |
 
