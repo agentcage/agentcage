@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-12
+
 **The egress proxy is rewritten in Rust.** Every cage's egress now runs `agentcage-egress`, a single static Rust binary, in place of the previous Python-based egress. It does the same job (TLS interception, the inspector chain, secret injection and redaction, audit and capture, the Policy API, the traffic watcher and the IMAP/SMTP relays) with the same config, wire formats, audit record shapes and Policy API responses, and the host contracts are unchanged except where noted below. The egress image is now `debian:trixie-slim` with `dnsmasq`, `iptables`, `tini`, a few utilities and the binary: no Python, no interpreter, and much smaller. The host binary carries the linux-musl egress for its own architecture and builds the image from it locally, so the image tag (`agentcage-egress:<version>-<hash>`, the hash now covering the binary) changes with every egress change.
 
 What to expect when you upgrade:
