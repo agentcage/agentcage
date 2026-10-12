@@ -39,6 +39,8 @@ NoNewPrivileges=true
 DropCapability=ALL
 PodmanArgs=--memory=2g
 PodmanArgs=--cpus=2
+PodmanArgs=--hostname=misc-kitchen-sink
+PodmanArgs=--stop-timeout=25
 Exec=node /app/agent.js
 
 [Service]

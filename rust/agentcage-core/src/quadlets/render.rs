@@ -424,6 +424,8 @@ struct CageContext<'a> {
     restart_sec: i64,
     timeout_start_sec: i64,
     timeout_stop_sec: i64,
+    /// `--stop-timeout`, from [`podman_stop_timeout`]; 0 renders none.
+    podman_stop_timeout: i64,
     deploy_name: &'a str,
     nested_containers: bool,
     lifecycle: &'a str,
@@ -1161,6 +1163,7 @@ pub fn generate_quadlets(
                 restart_sec: cc.restart_sec,
                 timeout_start_sec: cc.timeout_start_sec,
                 timeout_stop_sec: cc.timeout_stop_sec,
+                podman_stop_timeout: podman_stop_timeout(cc.timeout_stop_sec),
                 deploy_name: options.deploy_name,
                 nested_containers,
                 lifecycle,
@@ -1169,6 +1172,18 @@ pub fn generate_quadlets(
     );
 
     Ok(out)
+}
+
+/// The cage's podman stop timeout for a unit `TimeoutStopSec` of
+/// `timeout_stop_sec`: the same budget less a margin (5 s, or a quarter
+/// of a short budget), at least 1 s, so podman's SIGKILL lands before
+/// systemd gives up on the stop. 0 (no `TimeoutStopSec`, systemd's own
+/// default applies) leaves podman's default in place.
+fn podman_stop_timeout(timeout_stop_sec: i64) -> i64 {
+    if timeout_stop_sec <= 0 {
+        return 0;
+    }
+    (timeout_stop_sec - (timeout_stop_sec / 4).min(5)).max(1)
 }
 
 /// Render one template, turning a minijinja failure into an error the
@@ -1509,7 +1524,7 @@ mod tests {
     use super::{
         GenerateOptions, QuadletHost, StatePaths, apply_tmpfs_mask_options, basename, dirname,
         expanduser, expandvars, generate_quadlets, mask_copyup_owner, non_persistent_overlay_mount,
-        partition, shlex_quote,
+        partition, podman_stop_timeout, shlex_quote,
     };
     use crate::volume_mounts::MountTarget;
 
@@ -1636,6 +1651,77 @@ secret_injection:
             ]
         );
         assert!(units.warnings.is_empty());
+    }
+
+    /// The cage keeps its hostname across restarts, and podman's stop
+    /// timeout follows the unit's `TimeoutStopSec` instead of podman's
+    /// fixed 10 s. Together they are what lets a gateway that records
+    /// "pid P on host H" drain on a stop and reclaim its own lease after
+    /// a kill (a stale gateway owner lease held a restarted cage down
+    /// for five minutes).
+    #[test]
+    fn the_cage_keeps_its_hostname_and_gets_the_unit_stop_budget() {
+        let render_cage = |container_yaml: &str| {
+            let yaml = format!(
+                "name: c\ncontainer:\n  image: busybox\n{container_yaml}domains:\n  allow: [api.example.com]\ndns_servers: [192.0.2.53]\n"
+            );
+            let config = crate::config::load(
+                "cage.yaml",
+                &yaml,
+                &crate::config::FixedHost::linux(&["192.0.2.53"]),
+            )
+            .expect("valid config");
+            let state = StatePaths {
+                config_root: "/cfg/agentcage".to_owned(),
+                data_root: "/data/agentcage".to_owned(),
+            };
+            let units = generate_quadlets(
+                &config,
+                &GenerateOptions {
+                    config_host_path: "/cfg/agentcage/cages/c/cage.yaml",
+                    patches_host_dir: "/data/patches",
+                    deploy_name: "c",
+                    rootless: true,
+                    used_octets: None,
+                    network_octet: None,
+                    store_secrets: None,
+                    state: &state,
+                    version: "9.9.9",
+                    egress_tag: "9.9.9-0123456789ab",
+                },
+                &TestHost,
+            )
+            .expect("renders");
+            units.files["c-cage.container"].clone()
+        };
+
+        // Default: TimeoutStopSec=30, podman waits 25 s.
+        let cage = render_cage("");
+        assert!(cage.contains("PodmanArgs=--hostname=c\n"), "{cage}");
+        assert!(cage.contains("PodmanArgs=--stop-timeout=25\n"), "{cage}");
+        assert!(cage.contains("TimeoutStopSec=30\n"), "{cage}");
+
+        let cage = render_cage("  timeout_stop_sec: 120\n");
+        assert!(cage.contains("PodmanArgs=--stop-timeout=115\n"), "{cage}");
+        assert!(cage.contains("TimeoutStopSec=120\n"), "{cage}");
+
+        // No TimeoutStopSec: podman keeps its own default too.
+        let cage = render_cage("  timeout_stop_sec: null\n");
+        assert!(!cage.contains("--stop-timeout"), "{cage}");
+        assert!(!cage.contains("TimeoutStopSec"), "{cage}");
+        assert!(cage.contains("PodmanArgs=--hostname=c\n"), "{cage}");
+    }
+
+    #[test]
+    fn the_podman_stop_timeout_stays_under_the_unit_budget() {
+        assert_eq!(podman_stop_timeout(0), 0);
+        assert_eq!(podman_stop_timeout(-1), 0);
+        assert_eq!(podman_stop_timeout(1), 1);
+        assert_eq!(podman_stop_timeout(4), 3);
+        assert_eq!(podman_stop_timeout(8), 6);
+        assert_eq!(podman_stop_timeout(20), 15);
+        assert_eq!(podman_stop_timeout(30), 25);
+        assert_eq!(podman_stop_timeout(600), 595);
     }
 
     /// Every CA var reaches the cage pointing at the egress CA, and one

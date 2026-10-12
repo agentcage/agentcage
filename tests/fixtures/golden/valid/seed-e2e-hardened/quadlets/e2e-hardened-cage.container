@@ -33,6 +33,8 @@ NoNewPrivileges=true
 DropCapability=ALL
 PodmanArgs=--memory=256m
 PodmanArgs=--cpus=1
+PodmanArgs=--hostname=e2e-hardened
+PodmanArgs=--stop-timeout=25
 Exec=node /app/agent.js
 
 [Service]

@@ -28,6 +28,8 @@ User=1000:1000
 DropCapability=CAP_NET_RAW
 DropCapability=CAP_SYS_ADMIN
 AddCapability=NET_BIND_SERVICE
+PodmanArgs=--hostname=container-caps
+PodmanArgs=--stop-timeout=25
 Exec=node /app/agent.js
 
 [Service]
