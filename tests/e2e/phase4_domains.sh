@@ -77,6 +77,18 @@ else
   e2e_fail "4.6" "Stop cage" "command failed"
 fi
 
+# 4.6b: a stop is not a failure. The egress supervisor used to die of the
+# SIGTERM and exit 143, leaving the unit "failed" (Result=exit-code) and
+# firing any OnFailure= alert on every routine stop or restart.
+e2e_timer_start
+egress_result=$(systemctl --user show -p Result --value "${CAGE}-egress.service" 2>/dev/null || true)
+if [ "$egress_result" = "success" ]; then
+  e2e_pass "4.6b" "Egress stops cleanly (unit Result=success)"
+else
+  e2e_fail "4.6b" "Egress stops cleanly" \
+    "egress unit Result='$egress_result' after cage stop, expected 'success'"
+fi
+
 # 4.7: Start cage
 e2e_timer_start
 "$AGENTCAGE" cage start "$CAGE" >/dev/null 2>&1
