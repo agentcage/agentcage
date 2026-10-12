@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-10-12
+
 ### Changed
 
 - **Documented: since 0.51.0 an agent's `timeout_seconds` bounds the whole LLM reply.** The decider and watcher calls are bounded per step (connect, send, response headers, whole reply body); the previous egress bounded each socket read, so a provider that sent its headers at once and kept the connection busy while a reasoning model thought never timed out. A reasoning model that takes longer than the default (decider 15 s, watcher 30 s) to finish now fails with `llm error: timeout: receive body`, which denies the domain request or skips the scan. Raise `agents.decider.timeout_seconds` / `agents.watcher.timeout_seconds` for such a model. The configuration reference and the code comment that said otherwise are corrected.

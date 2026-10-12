@@ -51,7 +51,7 @@ exclude = ["rust/agentcage-egress/fuzz"]
 # scripts/check-version.sh exists to notice exactly this kind of drift
 # (against the CHANGELOG too). Keep VERSION as the thing you edit; this follows.
 [workspace.package]
-version = "0.51.0"
+version = "0.51.1"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
