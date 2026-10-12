@@ -366,11 +366,14 @@ pub trait HttpTransport: Send + Sync + std::fmt::Debug {
 /// (`webpki-roots`), no proxy, no redirects, no retries.
 ///
 /// The timeout bounds each phase of the exchange (resolve, connect, send,
-/// await the response, read the body) separately, the closest match to
-/// the replaced implementation's per-socket-operation timeout: a provider
-/// that trickles a long reply is not cut off mid-body for being slow
-/// overall, but one that goes silent is. The proxy environment variables
-/// are deliberately ignored — the call leaves the egress directly.
+/// await the response headers, read the body) separately. The body phase
+/// is bounded as a whole, not per read: a provider that sends its headers
+/// at once and then takes longer than the timeout to finish the reply
+/// (a reasoning model thinking before its tool call) is cut off with
+/// "timeout: receive body". The replaced implementation bounded each
+/// socket read instead, so a reply that kept trickling never timed out.
+/// The proxy environment variables are deliberately ignored — the call
+/// leaves the egress directly.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UreqTransport;
 
