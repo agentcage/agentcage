@@ -148,7 +148,15 @@ fn build_no_cache_without_a_containerfile() {
         .unwrap();
     fake.assert_call(
         0,
-        &["podman", "build", "-t", "img", "--no-cache", "--pull=newer", "/ctx"],
+        &[
+            "podman",
+            "build",
+            "-t",
+            "img",
+            "--no-cache",
+            "--pull=newer",
+            "/ctx",
+        ],
     );
     assert!(!fake.argv(0).iter().any(|a| a == "-f"));
 }
@@ -174,7 +182,15 @@ fn build_no_cache_and_pull_are_independent() {
     }
     fake.assert_argv(&[
         &["podman", "build", "-t", "img", "--pull=always", "/ctx"],
-        &["podman", "build", "-t", "img", "--no-cache", "--pull=newer", "/ctx"],
+        &[
+            "podman",
+            "build",
+            "-t",
+            "img",
+            "--no-cache",
+            "--pull=newer",
+            "/ctx",
+        ],
         &[
             "podman",
             "build",

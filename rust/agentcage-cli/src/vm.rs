@@ -1628,7 +1628,14 @@ impl<'a> VmBackend<'a> {
         // `newer` unless `--pull` asked for `always`: a floating base tag
         // then picks up its security fixes on the next build, and an
         // offline guest falls back to the image it already has.
-        flags.push(if pull { "--pull=always" } else { "--pull=newer" }.to_owned());
+        flags.push(
+            if pull {
+                "--pull=always"
+            } else {
+                "--pull=newer"
+            }
+            .to_owned(),
+        );
 
         // Issue #319's safety net, in front of the FIRST in-guest podman
         // invocation. Provisioning is what guarantees the user D-Bus;

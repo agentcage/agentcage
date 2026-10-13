@@ -334,7 +334,9 @@ fn everything_the_supervisor_runs_is_copied_into_the_image() {
 fn both_daemons_drop_their_bounding_set() {
     let s = supervisor();
     let launch = index_of(&s, r#""$EGRESS_BIN" run"#);
-    let prelude = &s[s[..launch].rfind("_with_as").expect("egress address-space limit")..launch];
+    let prelude = &s[s[..launch]
+        .rfind("_with_as")
+        .expect("egress address-space limit")..launch];
     assert!(prelude.contains("--reuid=acproxy --regid=acproxy --clear-groups"));
     assert!(prelude.contains("--no-new-privs --bounding-set=-all --inh-caps=-all"));
     assert!(s.contains("--bounding-set=-all,+net_bind_service --inh-caps=-all"));
@@ -354,7 +356,9 @@ fn the_egress_address_space_limit_comes_from_its_config() {
     assert!(asking.contains("setpriv --reuid=acproxy --regid=acproxy --clear-groups"));
     assert!(asking.contains("AGENTCAGE_CONFIG=/etc/agentcage/config.yaml"));
     assert!(s.contains("''|*[!0-9]*) EGRESS_AS_BYTES=$((2 * 1024 * 1024 * 1024)) ;;"));
-    let prelude = &s[s[..launch].rfind("_with_as").expect("egress address-space limit")..launch];
+    let prelude = &s[s[..launch]
+        .rfind("_with_as")
+        .expect("egress address-space limit")..launch];
     assert!(prelude.starts_with(r#"_with_as "$EGRESS_AS_BYTES" "#));
     // `ulimit -v` (KiB, rounded up) in the child, then exec: the limit
     // never lands on the supervisor itself.
