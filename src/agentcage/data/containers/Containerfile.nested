@@ -1,5 +1,6 @@
-# update-from: docker.io/node:22-slim
-FROM docker.io/node@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
+# The base is a floating tag, not a digest pin, on purpose, so a rebuild
+# can pick up its security fixes.
+FROM docker.io/library/node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         podman \
