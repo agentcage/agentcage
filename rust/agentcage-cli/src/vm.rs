@@ -1229,8 +1229,9 @@ impl<'a> VmBackend<'a> {
     ///
     /// The six `--cap-add`s are the container backend's
     /// [`EGRESS_BUILD_CAPS`], in that order, because it is the order
-    /// that reaches argv. `flags` carries `--no-cache` / `--pull=always`
-    /// when `cage create --no-cache` / `--pull` asked for them.
+    /// that reaches argv. `flags` carries `--no-cache` when `cage create
+    /// --no-cache` asked for it, and `--pull=always` (`--pull`) or else
+    /// `--pull=newer`.
     #[must_use]
     pub fn egress_build_argv(&self, flags: &[String]) -> Vec<String> {
         build_argv(
@@ -1624,9 +1625,17 @@ impl<'a> VmBackend<'a> {
         if no_cache {
             flags.push("--no-cache".to_owned());
         }
-        if pull {
-            flags.push("--pull=always".to_owned());
-        }
+        // `newer` unless `--pull` asked for `always`: a floating base tag
+        // then picks up its security fixes on the next build, and an
+        // offline guest falls back to the image it already has.
+        flags.push(
+            if pull {
+                "--pull=always"
+            } else {
+                "--pull=newer"
+            }
+            .to_owned(),
+        );
 
         // Issue #319's safety net, in front of the FIRST in-guest podman
         // invocation. Provisioning is what guarantees the user D-Bus;

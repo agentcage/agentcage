@@ -101,10 +101,11 @@ RUN if [ -x /usr/sbin/dnsmasq ]; then \
     fi
 
 # Ensure a uid-1000 user exists for the cage workload. Bases like
-# ubuntu (`ubuntu`), node (`node`), claude-code (`claude`) ship their
-# own at uid 1000 — we reuse those. Only synthesize `cage` as a
-# fallback when uid 1000 is truly free: useradd refuses to share a uid,
-# which is why we don't try to alias the existing name to `cage`.
+# ubuntu (`ubuntu`), node (`node`) and the first-party claude-code, codex
+# and pi scaffolds (`agent`) ship their own at uid 1000 — we reuse those.
+# Only synthesize `cage` as a fallback when uid 1000 is truly free:
+# useradd refuses to share a uid, which is why we don't try to alias the
+# existing name to `cage`.
 #
 # Three creation paths, because `useradd` is shadow-utils and not POSIX
 # — and a base without it is a *shipped scaffold*. `busybox` has

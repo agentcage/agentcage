@@ -1,4 +1,4 @@
-FROM docker.io/library/node:22-slim
+FROM docker.io/library/debian:stable-slim
 
 USER root
 
@@ -14,30 +14,78 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
 
-# Install OpenAI Codex CLI (latest stable).
-# --ignore-scripts skips npm postinstall hooks (defense-in-depth — the
-# package's runtime code still runs, only postinstall is skipped).
-RUN npm install -g --ignore-scripts @openai/codex
+# Install the OpenAI Codex CLI from its standalone release package: the
+# same `codex-package-<target>.tar.gz` upstream's own install.sh uses. The
+# CLI is a static (musl) Rust binary; the npm package is only a Node
+# wrapper that execs it, so the image needs no Node.js at all.
+#
+# Latest release at build time (like the old `npm install -g @openai/codex`),
+# verified against the SHA-256 that release publishes in
+# `codex-package_SHA256SUMS`. Set CODEX_VERSION below (e.g. 0.162.1) to
+# pin a release. To update Codex, rebuild without the layer cache
+# (`agentcage cage update --pull --no-cache`); Codex's in-app update
+# prompt does not apply inside the cage.
+#
+# Each tarball also ships a sigstore bundle (`<asset>.sigstore`) signed by
+# upstream's rust-release.yml workflow; check it on the host with
+# `cosign verify-blob` if you want more than the checksum (cosign is
+# deliberately not installed into the image).
+ARG CODEX_VERSION=
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) target=x86_64 ;; \
+        arm64) target=aarch64 ;; \
+        *) echo "codex: unsupported architecture $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    version="$CODEX_VERSION"; \
+    if [ -z "$version" ]; then \
+        latest="$(curl -fsSL --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' \
+            https://github.com/openai/codex/releases/latest)"; \
+        version="${latest##*/rust-v}"; \
+    fi; \
+    case "$version" in \
+        *[!0-9A-Za-z.-]*|"") echo "codex: bad release version '$version'" >&2; exit 1 ;; \
+    esac; \
+    base="https://github.com/openai/codex/releases/download/rust-v${version}"; \
+    asset="codex-package-${target}-unknown-linux-musl.tar.gz"; \
+    cd /tmp; \
+    curl -fsSL --proto '=https' --tlsv1.2 -o "$asset" "$base/$asset"; \
+    curl -fsSL --proto '=https' --tlsv1.2 -o SHA256SUMS "$base/codex-package_SHA256SUMS"; \
+    awk -v a="$asset" '$2 == a { print; exit }' SHA256SUMS > "$asset.sha256"; \
+    test -s "$asset.sha256"; \
+    sha256sum -c "$asset.sha256"; \
+    mkdir -p /opt/codex; \
+    tar -xzf "$asset" -C /opt/codex --no-same-owner; \
+    rm -f "$asset" "$asset.sha256" SHA256SUMS; \
+    ln -s /opt/codex/bin/codex /usr/local/bin/codex; \
+    codex --version
+
+# The unprivileged cage user: `agent`, uid/gid 1000, home /home/agent. The
+# uid matches the `node` user node:22-slim used to provide, so host file
+# ownership and `userns: keep-id` are unchanged. Debian's useradd creates
+# homes 0700; make it 0755.
+RUN groupadd --gid 1000 agent \
+    && useradd --uid 1000 --gid agent --shell /bin/bash --create-home agent \
+    && chmod 0755 /home/agent
 
 # agentcage introspection: bake a short "you are sandboxed" brief into Codex's
 # global guidance file (~/.codex/AGENTS.md) so the agent discovers it is caged
 # with zero setup. agentcage stages the canonical AGENTS.md brief into the
 # build context (see agentcage.scaffold_brief) — it is not committed per-scaffold.
 #
-# Delivered as a plain, writable, node-owned file — deliberately NOT a
+# Delivered as a plain, writable, agent-owned file — deliberately NOT a
 # read-only bind mount over ~/.codex (that makes the runtime create ~/.codex
 # root-owned, breaking Codex's own config/auth writes). Codex keeps full
 # ownership of ~/.codex.
-RUN mkdir -p /home/node/.codex
-COPY AGENTS.md /home/node/.codex/AGENTS.md
+RUN mkdir -p /home/agent/.codex
+COPY AGENTS.md /home/agent/.codex/AGENTS.md
 
 # agentcage skill: the Policy API how-to (reflect on the allowlist, request a
 # domain, give a grant back) as an Agent Skills package under Codex's user
 # skills dir. Staged into the build context by agentcage like the brief above
 # (scaffolds/skills/agentcage) — not committed per-scaffold.
-COPY skills/agentcage /home/node/.codex/skills/agentcage
-RUN chown -R node:node /home/node/.codex
+COPY skills/agentcage /home/agent/.codex/skills/agentcage
+RUN chown -R agent:agent /home/agent/.codex
 
-# node:22-slim already has user node (1000:1000)
-USER node
+USER agent
 WORKDIR /workspace

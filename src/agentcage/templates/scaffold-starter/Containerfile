@@ -1,2 +1,4 @@
-FROM alpine:3.21
-RUN apk add --no-cache curl
+FROM docker.io/library/debian:stable-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*

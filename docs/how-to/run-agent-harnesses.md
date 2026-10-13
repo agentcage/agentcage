@@ -68,7 +68,7 @@ agentcage run pi --project . -s OPENAI_API_KEY -- -m gpt-5.6-sol --thinking high
 
 ## 3. Running OpenAI Codex CLI
 
-The `codex` scaffold runs OpenAI's Codex agent in an interactive terminal.
+The `codex` scaffold runs OpenAI's Codex agent in an interactive terminal. The image is `debian:stable-slim` with Codex's standalone release (a static Rust binary, SHA-256 checked against the release's `codex-package_SHA256SUMS` at build time); it carries no Node.js. Rebuild the image with `agentcage cage update --pull --no-cache` to pick up a newer Codex and Debian security updates.
 
 ### Quick Ephemeral Session
 ```bash

@@ -39,6 +39,12 @@ pub struct BuildOptions {
     /// clean rebuild needs both.
     pub no_cache: bool,
     /// `--pull=always`: re-fetch the `FROM` image from the registry.
+    ///
+    /// Without it the build runs with `--pull=newer`: podman checks the
+    /// registry and pulls the `FROM` image only when the registry has a
+    /// newer one, so a floating base tag picks up its security fixes on
+    /// the next build. Offline, or for a local-only (`localhost/`) base,
+    /// `newer` uses the local image instead of failing.
     pub pull: bool,
     /// `--build-arg K=V`, in order.
     ///
@@ -143,8 +149,8 @@ impl<'a> Podman<'a> {
 
     /// `podman build -t <tag> [flags] <context_dir>`.
     ///
-    /// Flag order is fixed -- `-f`, `--no-cache`,
-    /// `--pull=always`, each `--cap-add`, each `--build-arg`, then the
+    /// Flag order is fixed -- `-f`, `--no-cache`, `--pull=always` (or
+    /// `--pull=newer`), each `--cap-add`, each `--build-arg`, then the
     /// context directory last -- because that order is what the argv
     /// tests pin and what a reader comparing the two files will check.
     ///
@@ -168,9 +174,11 @@ impl<'a> Podman<'a> {
         if options.no_cache {
             cmd = cmd.arg("--no-cache");
         }
-        if options.pull {
-            cmd = cmd.arg("--pull=always");
-        }
+        cmd = cmd.arg(if options.pull {
+            "--pull=always"
+        } else {
+            "--pull=newer"
+        });
         for cap in &options.cap_add {
             cmd = cmd.args(["--cap-add", cap]);
         }

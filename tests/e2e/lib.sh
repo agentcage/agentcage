@@ -470,7 +470,7 @@ _E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The image the mock binary runs in. The binary is static and
 # bind-mounted read-only, so the image only has to provide a root
-# filesystem; it is the same pinned debian digest the egress image is
+# filesystem; it is the same alpine image the egress image is
 # built FROM, which `cage create` has already pulled by the time a mock
 # starts, so nothing extra is fetched. Kept in its own file so CI can
 # key its image cache on it. Override with E2E_MOCK_IMAGE (e.g. a
@@ -488,7 +488,7 @@ _MOCK_BIN_IN=/agentcage-e2e-mock
 #   PATH (a no-op when it is up to date); without cargo an existing build
 #   is used as is.
 #
-#   Static (musl) because it runs in the debian image above, whose libc
+#   Static (musl) because it runs in the alpine image above, whose libc
 #   need not match the host's.
 e2e_mock_bin() {
   if [ -n "${E2E_MOCK_BIN:-}" ]; then

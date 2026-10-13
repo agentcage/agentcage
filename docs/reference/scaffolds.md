@@ -13,7 +13,7 @@ agentcage includes hardened, pre-configured scaffolds for leading AI agent harne
 | Scaffold | Alias | Default Lifecycle | Description |
 | :--- | :--- | :--- | :--- |
 | **`claude-code`** | `claude` | `interactive` | Anthropic's Claude Code CLI. Pre-configures `anthropic.com` and `claude.com` allowlists, injects `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`, and masks `.git/hooks` and `.claude/`. |
-| **`codex`** | — | `interactive` | OpenAI Codex CLI. Allowlists `api.openai.com` and injects `OPENAI_API_KEY`. |
+| **`codex`** | — | `interactive` | OpenAI Codex CLI on `debian:stable-slim`, installed from upstream's checksum-verified standalone release (no Node.js). Allowlists `api.openai.com` and injects `OPENAI_API_KEY`. |
 | **`pi`** | — | `interactive` | Pi.dev autonomous terminal coding agent harness. Supports Anthropic/OpenAI keys or in-cage `/login`. |
 | **`openclaw`** | — | `service` | Full-featured OpenClaw agent with browser automation and local web gateway (`127.0.0.1:18789`). Supports nested rootless containers and named volume caches. |
 | **`ubuntu`** | — | `interactive` | Minimal Ubuntu Linux development environment with `apt` package management. |

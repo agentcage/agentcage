@@ -37,33 +37,37 @@ fn index_of(haystack: &str, needle: &str) -> usize {
         .unwrap_or_else(|| panic!("{needle:?} not found"))
 }
 
-/// scaffold -> (agent memory file the brief is copied to, home dir chowned to node)
+/// scaffold -> (agent memory file the brief is copied to, home dir chowned to agent)
 const BRIEF_WIRING: [(&str, &str, &str); 3] = [
     (
         "claude-code",
-        "/home/node/.claude/CLAUDE.md",
-        "/home/node/.claude",
-    ),
-    ("codex", "/home/node/.codex/AGENTS.md", "/home/node/.codex"),
-    ("pi", "/home/node/.pi/agent/AGENTS.md", "/home/node/.pi"),
-];
-
-/// scaffold -> (skills dir the skill is copied to, dir chowned to node)
-const SKILL_WIRING: [(&str, &str, &str); 3] = [
-    (
-        "claude-code",
-        "/home/node/.claude/skills/agentcage",
-        "/home/node/.claude",
+        "/home/agent/.claude/CLAUDE.md",
+        "/home/agent/.claude",
     ),
     (
         "codex",
-        "/home/node/.codex/skills/agentcage",
-        "/home/node/.codex",
+        "/home/agent/.codex/AGENTS.md",
+        "/home/agent/.codex",
+    ),
+    ("pi", "/home/agent/.pi/agent/AGENTS.md", "/home/agent/.pi"),
+];
+
+/// scaffold -> (skills dir the skill is copied to, dir chowned to agent)
+const SKILL_WIRING: [(&str, &str, &str); 3] = [
+    (
+        "claude-code",
+        "/home/agent/.claude/skills/agentcage",
+        "/home/agent/.claude",
+    ),
+    (
+        "codex",
+        "/home/agent/.codex/skills/agentcage",
+        "/home/agent/.codex",
     ),
     (
         "pi",
-        "/home/node/.agents/skills/agentcage",
-        "/home/node/.agents",
+        "/home/agent/.agents/skills/agentcage",
+        "/home/agent/.agents",
     ),
 ];
 
@@ -94,8 +98,8 @@ fn canonical_brief_content() {
     assert!(brief.lines().count() < 60);
 }
 
-/// Plain `COPY` into the agent's own memory file, before `USER node`,
-/// with the home dir chowned back to node so the file stays writable and
+/// Plain `COPY` into the agent's own memory file, before `USER agent`,
+/// with the home dir chowned back to agent so the file stays writable and
 /// the agent's own state writes still work. A real file, not a shell
 /// redirect or `@import` indirection.
 #[test]
@@ -107,11 +111,11 @@ fn containerfiles_copy_the_brief_into_agent_memory_writable() {
             "{scaffold}"
         );
         assert!(
-            cf.contains(&format!("chown -R node:node {home_dir}")),
+            cf.contains(&format!("chown -R agent:agent {home_dir}")),
             "{scaffold}"
         );
         assert!(
-            index_of(&cf, "COPY AGENTS.md") < index_of(&cf, "USER node"),
+            index_of(&cf, "COPY AGENTS.md") < index_of(&cf, "USER agent"),
             "{scaffold}"
         );
         assert!(!cf.contains(&format!("> {mem_path}")), "{scaffold}");
@@ -164,8 +168,8 @@ fn canonical_skill_frontmatter_and_content() {
     }
 }
 
-/// Copied into each agent's skills dir, owned by node afterwards, before
-/// `USER node` like the brief.
+/// Copied into each agent's skills dir, owned by agent afterwards, before
+/// `USER agent` like the brief.
 #[test]
 fn containerfiles_copy_the_skill_into_agent_skills_dir() {
     for (scaffold, skill_path, home_dir) in SKILL_WIRING {
@@ -173,11 +177,47 @@ fn containerfiles_copy_the_skill_into_agent_skills_dir() {
         let copy_line = format!("COPY skills/agentcage {skill_path}");
         let copy = index_of(&cf, &copy_line);
         assert!(
-            copy < index_of(&cf, &format!("chown -R node:node {home_dir}")),
+            copy < index_of(&cf, &format!("chown -R agent:agent {home_dir}")),
             "{scaffold}"
         );
-        assert!(copy < index_of(&cf, "USER node"), "{scaffold}");
+        assert!(copy < index_of(&cf, "USER agent"), "{scaffold}");
     }
+}
+
+/// The cage user the Debian-based agent images and the nested-podman image
+/// create: `agent`, uid/gid 1000, home `/home/agent` made 0755, and no
+/// leftover `node` user or `/home/node` path (the `openclaw` scaffold is
+/// exempt: its upstream base image ships its own `node` user).
+#[test]
+fn debian_images_create_the_agent_user_at_uid_1000() {
+    let nested = read(&repo_root().join("src/agentcage/data/containers/Containerfile.nested"));
+    let images = ["claude-code", "codex", "pi"]
+        .map(|scaffold| (scaffold, containerfile(scaffold)))
+        .into_iter()
+        .chain([("Containerfile.nested", nested)]);
+    for (name, cf) in images {
+        // Join `\`-continued lines so a wrapped `useradd` reads as one.
+        let joined = cf.replace("\\\n", " ");
+        let useradd = joined
+            .lines()
+            .find(|line| !line.trim_start().starts_with('#') && line.contains("useradd"))
+            .unwrap_or_else(|| panic!("{name}: no useradd"));
+        for needle in ["1000", "agent", "/bin/bash"] {
+            assert!(useradd.contains(needle), "{name}: {needle} in {useradd}");
+        }
+        assert!(
+            cf.contains("groupadd --gid 1000 agent") || cf.contains("groupadd -g 1000 agent"),
+            "{name}"
+        );
+        assert!(cf.contains("chmod 0755 /home/agent"), "{name}");
+        assert!(!cf.contains("/home/node"), "{name}");
+        assert!(!cf.contains("USER node"), "{name}");
+        assert!(!cf.contains("node:node"), "{name}");
+    }
+    let nested = read(&repo_root().join("src/agentcage/data/containers/Containerfile.nested"));
+    // Rootless podman needs a subuid/subgid range for the same user.
+    assert!(nested.contains("\"agent:100000:65536\" >> /etc/subuid"));
+    assert!(nested.contains("\"agent:100000:65536\" >> /etc/subgid"));
 }
 
 // ── scaffolds/<name>/scaffold.yaml ───────────────────────────────────────
@@ -398,6 +438,6 @@ fn other_agent_scaffolds_have_no_dotclaude_mask() {
 #[test]
 fn claude_code_home_dotclaude_not_masked() {
     let cfg = rendered("claude-code");
-    assert!(mask(&cfg, "/home/node/.claude").is_none());
-    assert!(mask(&cfg, "/home/node/.claude/").is_none());
+    assert!(mask(&cfg, "/home/agent/.claude").is_none());
+    assert!(mask(&cfg, "/home/agent/.claude/").is_none());
 }

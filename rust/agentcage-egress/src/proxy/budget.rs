@@ -3,9 +3,9 @@
 //! Bodies are buffered whole (plan D6), and the per-body cap
 //! ([`super::TransportSettings::max_body`]) alone does not bound the
 //! process: a handful of concurrent large bodies, each under the cap, can
-//! together exhaust the address space the supervisor allows (`prlimit
-//! --as`), and a failed allocation aborts the whole egress — every
-//! connection of the cage with it. Every buffered body therefore holds a
+//! together exhaust the address space the supervisor allows
+//! (`RLIMIT_AS`), and a failed allocation aborts the whole egress —
+//! every connection of the cage with it. Every buffered body therefore holds a
 //! [`Reservation`] against one shared [`BodyBudget`], grown as the body
 //! grows and released when the reservation drops (when the exchange's
 //! buffers are gone). A body that would take the total past the limit
