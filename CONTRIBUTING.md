@@ -55,7 +55,7 @@ The version lives in the root `VERSION` file and nowhere else. Cargo cannot read
 
 ## Updating Dependencies
 
-All dependencies are pinned (`Cargo.lock`, binary checksums) except the container base images, which deliberately float on a tag so that a rebuild can pick up their security fixes (`alpine:3` for the egress image, `node:22-slim` for `Containerfile.nested`). A base image that is pinned instead carries an `# update-from:` comment naming the tag it tracks; to check the pinned ones for newer digests:
+All dependencies are pinned (`Cargo.lock`, binary checksums) except the container base images, which deliberately float on a tag so that a rebuild can pick up their security fixes (`alpine:3` for the egress image, `debian:stable-slim` for `Containerfile.nested`). A base image that is pinned instead carries an `# update-from:` comment naming the tag it tracks; to check the pinned ones for newer digests:
 
 ```bash
 cargo xtask update-deps            # report only

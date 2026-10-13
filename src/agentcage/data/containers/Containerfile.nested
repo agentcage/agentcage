@@ -1,6 +1,12 @@
 # The base is a floating tag, not a digest pin, on purpose, so a rebuild
 # can pick up its security fixes (build it with --pull=newer).
-FROM docker.io/library/node:22-slim
+FROM docker.io/library/debian:stable-slim
+
+# The unprivileged user nested podman runs as, with the ids and home the
+# former node:22-slim base gave it: uid/gid 1000, /home/node.
+RUN groupadd -g 1000 node \
+ && useradd -m -d /home/node -u 1000 -g 1000 -s /bin/bash node \
+ && chmod 0755 /home/node
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         podman \
@@ -8,11 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         crun \
         uidmap \
         slirp4netns \
+        passt \
     && rm -rf /var/lib/apt/lists/*
 
-# Allow rootless podman for the node user (uid 1000)
-RUN echo "node:100000:65536" >> /etc/subuid \
- && echo "node:100000:65536" >> /etc/subgid
+# Allow rootless podman for the node user (uid 1000). Debian's useradd
+# already allocates node:100000:65536; add it only if it did not, since a
+# second, overlapping range makes newuidmap fail.
+RUN grep -q "^node:" /etc/subuid || echo "node:100000:65536" >> /etc/subuid; \
+    grep -q "^node:" /etc/subgid || echo "node:100000:65536" >> /etc/subgid
 
 # Create user-level containers config so rootless podman uses the
 # bind-mounted /var/lib/containers volume instead of ~/.local/share
