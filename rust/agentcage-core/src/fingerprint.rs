@@ -511,6 +511,33 @@ pub fn fingerprint_matches(stored: &Json, current: &Fingerprint) -> bool {
         && stored.get("fingerprint").and_then(Json::as_str) == Some(current.fingerprint.as_str())
 }
 
+/// Whether `stored` and `current` differ in their image identities and
+/// in nothing else.
+///
+/// `cage update` treats that case like a moved base: the cage's own
+/// inputs are what they were, only an image under one of its tags (or a
+/// base it builds from) is not, so it rebuilds and restarts only if the
+/// image a container runs is no longer the one its tag names. False when
+/// the versions differ, when any other component differs or is missing,
+/// or when the image identities are the same.
+#[must_use]
+pub fn only_images_differ(stored: &Json, current: &Fingerprint) -> bool {
+    if stored.get("version") != Some(&Json::Int(current.version)) {
+        return false;
+    }
+    let Some(components) = stored.get("components") else {
+        return false;
+    };
+    let stored_component = |key: &str| components.get(key).and_then(Json::as_str);
+    let mine = &current.components;
+    stored_component("cage_yaml") == Some(mine.cage_yaml.as_str())
+        && stored_component("resolved_config") == Some(mine.resolved_config.as_str())
+        && stored_component("units") == Some(mine.units.as_str())
+        && stored_component("scaffold_version") == Some(mine.scaffold_version.as_str())
+        && stored_component("inspector_plugins") == mine.inspector_plugins.as_deref()
+        && stored_component("image_digests") != Some(mine.image_digests.as_str())
+}
+
 // ── The scaffold build context ───────────────────────────────
 
 /// State this tool writes into a scaffold cage's directory, which must
@@ -602,8 +629,8 @@ mod tests {
 
     use super::{
         CageYaml, Error, FINGERPRINT_VERSION, Fingerprint, Inputs, compute_fingerprint,
-        fingerprint_matches, is_state_artifact, normalize_cage_yaml, scaffold_context_digest,
-        stable_json,
+        fingerprint_matches, is_state_artifact, normalize_cage_yaml, only_images_differ,
+        scaffold_context_digest, stable_json,
     };
     use crate::har::json::{Json, parse};
 
@@ -974,5 +1001,45 @@ mod tests {
         // A rebuilt plugin (same name, new bytes) is a change.
         assert_ne!(compute(&other).fingerprint, with.fingerprint);
         assert_eq!(compute(&one).fingerprint, with.fingerprint);
+    }
+
+    /// Only the image identities moved: `cage update` may rebuild
+    /// without restarting. Anything else moving, or a stored document of
+    /// another version, is a real input change.
+    #[test]
+    fn only_images_differ_needs_every_other_component_equal() {
+        let fingerprint = |image: &str, units: &str| {
+            let units: BTreeMap<String, String> =
+                [("a.container".to_owned(), units.to_owned())].into();
+            let images: BTreeMap<String, String> = [("x".to_owned(), image.to_owned())].into();
+            compute_fingerprint(Inputs {
+                cage_yaml: CageYaml::Text("name: t\n"),
+                resolved_config: &json(r#"{"name": "t"}"#),
+                units: &units,
+                image_digests: &images,
+                scaffold_version: ":",
+                inspector_plugins: &BTreeMap::new(),
+            })
+            .expect("hashes")
+        };
+        let stored = fingerprint("sha256:old", "unit").to_json();
+        assert!(only_images_differ(
+            &stored,
+            &fingerprint("sha256:new", "unit")
+        ));
+        assert!(!only_images_differ(
+            &stored,
+            &fingerprint("sha256:old", "unit")
+        ));
+        assert!(!only_images_differ(
+            &stored,
+            &fingerprint("sha256:new", "other unit")
+        ));
+        let mut other_version = stored.clone();
+        other_version.set("version", Json::Int(FINGERPRINT_VERSION + 1));
+        assert!(!only_images_differ(
+            &other_version,
+            &fingerprint("sha256:new", "unit")
+        ));
     }
 }

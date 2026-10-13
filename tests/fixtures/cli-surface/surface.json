@@ -321,7 +321,7 @@
     "groups": 7,
     "hidden_options": 4,
     "nodes": 48,
-    "options": 129,
+    "options": 130,
     "passthrough_commands": 2,
     "top_level": 7,
     "variadic_arguments": 4
@@ -3308,7 +3308,7 @@
       "allow_extra_args": false,
       "class": "Command",
       "deprecated": false,
-      "help": "Rebuild and restart an existing cage.\n\nNAME is optional when ``-c`` is given \u2014 the cage to update is taken\nfrom the config's ``name:`` field. Mirrors ``cage create``, which\nhas never required a positional NAME for the same reason.",
+      "help": "Rebuild and restart an existing cage.\n\nNAME is optional when ``-c`` is given \u2014 the cage to update is taken\nfrom the config's ``name:`` field. Mirrors ``cage create``, which\nhas never required a positional NAME for the same reason.\n\nWhen the cage's inputs are unchanged and it is running, update asks\nthe registry whether a base image has moved (`podman manifest\ninspect`, no layers are pulled): the egress image's and the cage\nimage's `FROM` references, or the cage image itself when it is not\nbuilt. If one has, that image is rebuilt (or re-pulled), and the\ncage restarts only if the rebuilt image differs from the one it is\nrunning. If the registry cannot be reached, update warns and treats\nthe bases as unchanged. --no-pull skips the check.\n\nOn the apple-container backend there is no registry check: the\n`container` CLI cannot read a remote digest without pulling, so the\ncage image's upstream references are pulled as before, and the shared\negress image is rebuilt only with --pull or --no-cache.",
       "hidden": false,
       "ignore_unknown_options": false,
       "is_group": false,
@@ -3398,6 +3398,29 @@
           "nargs": 1,
           "opts": [
             "--pull"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "no_pull",
+          "help": "Do not ask the registry whether a base image moved; only changed inputs, --force or --no-cache rebuild. For offline use, or to keep the images fixed.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--no-pull"
           ],
           "prompt": null,
           "required": false,

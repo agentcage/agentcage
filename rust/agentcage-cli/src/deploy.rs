@@ -96,6 +96,22 @@ pub fn containerfile_image_refs(
         return BTreeSet::new();
     };
 
+    containerfile_text_image_refs(&content, resolved_args)
+}
+
+/// The concrete images a Containerfile's text names in its `FROM` lines.
+///
+/// The parsing half of [`containerfile_image_refs`], for a Containerfile
+/// that is not a cage's staged one — the embedded egress Containerfile,
+/// whose bases `cage update` checks against the registry. Same rules:
+/// `ARG` defaults fill in where `resolved_args` does not, and a reference
+/// that is still unresolved, names an earlier stage, or is `scratch` is
+/// dropped.
+#[must_use]
+pub fn containerfile_text_image_refs(
+    content: &str,
+    resolved_args: &[(String, String)],
+) -> BTreeSet<String> {
     let mut args: Vec<(String, String)> = resolved_args.to_vec();
     for line in content.lines() {
         if let Some((name, default)) = parse_arg(line) {

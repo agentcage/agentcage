@@ -97,11 +97,23 @@ Rebuilds and restarts an existing persistent cage to pick up configuration or im
 agentcage cage update my-agent --no-cache --pull
 ```
 
+When the cage's inputs (its `cage.yaml`, units, Containerfile and build context, plugins and image identities) are unchanged and it is running, `cage update` asks the registry whether a base image has moved, without pulling anything (`podman manifest inspect`):
+
+- the `FROM` images of the egress image (`docker.io/library/alpine:3`) and of the cage's Containerfile, after `ARG` substitution, skipping `localhost/` images, digest-pinned references, `scratch` and earlier build stages;
+- or the cage's image itself, when the cage runs a registry image rather than building one.
+
+A base has moved when the registry's manifest for the local platform has a different digest from the local image's. Only the image whose base moved is rebuilt (or re-pulled), and the build pulls the new base (`--pull=newer`). The cage then restarts only if a rebuilt image differs from the one the running container was started from; a rebuild that ends up identical leaves the cage running and prints `Image unchanged; not restarting`. If the registry cannot be reached (offline, an error, a rate limit), `cage update` prints one warning, treats the bases as unchanged and carries on. `--pull` and `--no-cache` skip the check and rebuild, and also restart only if an image changed. So does an update where the only thing that changed since the last one is an image identity, for example because another cage's update rebuilt the shared egress image or a base image was pulled: both images are rebuilt (mostly from cache) and the cage restarts only if one of them differs from what it runs. Any other changed input, or `--force`, rebuilds and restarts as before.
+
+This means a plain `cage update` contacts the registry, and can restart a running cage whose inputs did not change when a base image has a newer version. Use `--no-pull` to avoid both.
+
+On the **vm** backend the check runs inside the guest, and a rebuild builds the egress and cage images there together; the guest is restarted only if an image changed. On the **apple-container** backend there is no check: the `container` CLI cannot read a remote digest without pulling, so `cage update` pulls the cage image's upstream references as before (unless `--no-pull`), and the shared egress image is rebuilt only with `--pull` or `--no-cache`.
+
 **Options**:
 - `-c, --config PATH`: Path to updated `cage.yaml` (optional if `NAME` is provided).
 - `--no-cache`: Ignore image layer cache.
 - `--pull`: Re-pull base images (`--pull=always`) and rebuild even if nothing changed. A rebuild without it still pulls a newer base image when the registry has one (`--pull=newer`).
-- `--force`: Rebuild even if input files are unchanged.
+- `--no-pull`: Do not ask the registry whether a base image moved. Only changed inputs, `--force` or `--no-cache` rebuild. For offline use, or to keep the images fixed. Cannot be combined with `--pull`.
+- `--force`: Rebuild and restart even if input files are unchanged.
 
 ---
 

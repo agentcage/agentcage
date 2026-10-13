@@ -59,6 +59,12 @@ pub struct BuildOptions {
     pub quiet: bool,
 }
 
+/// How long a registry manifest lookup may take.
+///
+/// A slow or unreachable registry must not wedge `cage update`: past
+/// this, the lookup is abandoned and the base treated as unchanged.
+pub const MANIFEST_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The podman CLI.
 ///
 /// Holds a runner and an [`Elevation`]; every method builds one command
@@ -201,6 +207,67 @@ impl<'a> Podman<'a> {
     /// if the answer is not a JSON array.
     pub fn image_inspect(&self, name: &str) -> Result<Value, ExecError> {
         self.json_first(&self.cmd(["image", "inspect", name]).captured())
+    }
+
+    /// `podman manifest inspect <reference>`, parsed, with a time limit.
+    ///
+    /// The registry's manifest for `reference`, without pulling it: for
+    /// a reference that is not a local manifest list, podman fetches the
+    /// manifest (an index, or a single-image manifest) from the
+    /// registry. One small HTTPS round trip, which is what makes it the
+    /// cheap "has this base moved?" probe `cage update` runs. The output
+    /// is re-serialized JSON, so the manifest's own digest cannot be
+    /// recomputed from it; the entries' digests and `config.digest` are
+    /// what a caller compares.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] when the registry cannot be reached or does
+    /// not know the reference, [`ExecError::Timeout`] after
+    /// [`MANIFEST_INSPECT_TIMEOUT`], [`ExecError::Parse`] when the answer
+    /// is not JSON.
+    pub fn manifest_inspect(&self, reference: &str) -> Result<Value, ExecError> {
+        self.json(
+            &self
+                .cmd(["manifest", "inspect", reference])
+                .captured()
+                .timeout(MANIFEST_INSPECT_TIMEOUT),
+        )
+    }
+
+    /// `podman manifest create <list> <image>`, captured, with a time
+    /// limit.
+    ///
+    /// With a `docker://` image this reads the remote image's manifest
+    /// (and config, for its platform) into a new local list, pulling no
+    /// layers. It is how a *single-image* manifest's digest is learned:
+    /// [`Podman::manifest_inspect`] refuses those ("Treating single
+    /// images as manifest lists is not implemented"), while a list built
+    /// around one records its digest as the list's only entry.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] on a non-zero exit, [`ExecError::Timeout`]
+    /// after [`MANIFEST_INSPECT_TIMEOUT`].
+    pub fn manifest_create(&self, list: &str, image: &str) -> Result<(), ExecError> {
+        self.runner
+            .run(
+                &self
+                    .cmd(["manifest", "create", list, image])
+                    .captured()
+                    .timeout(MANIFEST_INSPECT_TIMEOUT),
+            )?
+            .check("podman")?;
+        Ok(())
+    }
+
+    /// `podman manifest rm <list>`, reporting success.
+    ///
+    /// # Errors
+    ///
+    /// Only if podman itself could not be run.
+    pub fn manifest_remove(&self, list: &str) -> Result<bool, ExecError> {
+        self.ran_ok(&self.cmd(["manifest", "rm", list]).captured())
     }
 
     /// `podman pull <image>`.

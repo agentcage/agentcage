@@ -485,6 +485,22 @@ fn update_without_a_target_says_why() {
     );
 }
 
+/// `--no-pull` skips the registry and `--pull` forces it: together they
+/// are a usage error, refused before anything is looked up.
+#[test]
+fn update_refuses_no_pull_with_pull() {
+    let dir = agentcage_state::TestDir::new("binary-update-pull");
+    let out = agentcage_sandboxed(dir.path(), &["cage", "update", "x", "--pull", "--no-pull"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cannot be used with")
+            && stderr(&out).contains("'--no-pull'")
+            && stderr(&out).contains("'--pull'"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 /// Write just enough state under `home` for the two read-only commands
 /// to get past their existence and version gates: a `cage.yaml` the
 /// loader accepts and a `metadata.json` claiming v0.22.

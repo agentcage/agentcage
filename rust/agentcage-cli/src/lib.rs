@@ -16,6 +16,8 @@ pub mod archive;
 pub mod backend;
 /// Which backend a cage's `isolation:` names (PR E4).
 pub mod backends;
+/// `cage update`'s registry check for moved base images, and its restart decision.
+pub mod base_images;
 /// Which podman answers for a cage — host, or inside a `vm` cage's
 /// Lima guest.
 pub mod cage_podman;
