@@ -270,6 +270,11 @@ fn validity(der: &[u8]) -> Option<(i64, i64)> {
 /// (`YYYYMMDDHHMMSSZ`) as Unix seconds.
 fn der_time(tag: u8, text: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(text).ok()?.strip_suffix('Z')?;
+    // The fixed-width slices below assume one byte per char; a
+    // multi-byte char from a hostile cert would otherwise panic them.
+    if !text.is_ascii() {
+        return None;
+    }
     let num = |s: &str| s.parse::<i64>().ok();
     let (year, rest) = match tag {
         0x17 if text.len() == 12 => {
@@ -302,6 +307,8 @@ mod tests {
         assert_eq!(der_time(0x18, b"20261010120000Z"), Some(1_791_633_600));
         assert_eq!(der_time(0x17, b"491231235959Z"), Some(2_524_607_999));
         assert_eq!(der_time(0x17, b"bad"), None);
+        // A multi-byte char across a slice boundary is `None`, not a panic.
+        assert_eq!(der_time(0x17, "1é000000000Z".as_bytes()), None);
     }
 
     #[test]

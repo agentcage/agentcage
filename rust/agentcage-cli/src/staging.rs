@@ -218,9 +218,15 @@ fn copy_references(containerfile: &Path, path: &str) -> bool {
 
 fn line_copies(line: &str, path: &str) -> bool {
     let trimmed = line.trim_start();
-    if trimmed.len() < 4 || !trimmed[..4].eq_ignore_ascii_case("COPY") {
+    // `get`, not `[..4]`: a comment like `# ── Stage 1` puts a multi-byte
+    // char across byte 4, and slicing there panics (as in `deploy.rs`).
+    if !trimmed
+        .get(..4)
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("COPY"))
+    {
         return false;
     }
+    // The first four bytes are ASCII `COPY`, so byte 4 is a boundary.
     let rest = &trimmed[4..];
     if !rest.starts_with(char::is_whitespace) {
         return false;
@@ -599,6 +605,17 @@ mod tests {
         // A mention in the destination is not a reference.
         assert!(!line_copies("COPY brief.md /agent/AGENTS.md", "AGENTS.md"));
         assert!(!line_copies("COPYRIGHT AGENTS.md", "AGENTS.md"));
+    }
+
+    #[test]
+    fn a_multibyte_char_across_byte_four_is_not_a_copy() {
+        // `─` is three bytes, so byte 4 of `# ── Stage 1` falls inside
+        // the second one; slicing `[..4]` there used to panic `init`.
+        assert!(!line_copies("# ── Stage 1", "AGENTS.md"));
+        assert!(!line_copies("  ébc AGENTS.md", "AGENTS.md"));
+        assert!(!line_copies("COP", "AGENTS.md"));
+        assert!(line_copies("COPY AGENTS.md /x", "AGENTS.md"));
+        assert!(line_copies("copy AGENTS.md /x", "AGENTS.md"));
     }
 
     #[test]

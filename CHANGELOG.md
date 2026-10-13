@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agentcage init` no longer crashes on a Containerfile with non-ASCII text.** Checking whether the Containerfile already `COPY`s a file sliced each line's first four bytes, so a line whose fourth byte fell inside a multi-byte character, such as a `# ── Stage 1` comment, panicked with "end byte index 4 is not a char boundary". Such a line is now simply not a `COPY`. The same kind of slice is fixed in two other parsers: an ISO timestamp with a multi-byte character inside a date or time field (in `--since` or a capture entry) is now rejected as unparseable instead of panicking, and so is a TLS certificate validity time with one.
+
 ## [0.51.2] - 2026-10-12
 
 ### Fixed
