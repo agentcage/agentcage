@@ -4,3 +4,6 @@ lifecycle: interactive
 build:
   - image: "localhost/agentcage-scaffold-{{SCAFFOLD_NAME}}:latest"
     containerfile: "Containerfile"
+    # Required for `apt-get install` to drop from root to the `_apt`
+    # user during the build of the scaffold image.
+    cap_add: [CAP_SETUID, CAP_SETGID, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER]

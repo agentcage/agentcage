@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The `pi` scaffold builds from `debian:stable-slim` instead of `node:22-slim`.** Pi now comes from upstream's latest standalone Linux release (one executable with the Bun runtime bundled), checked against the release's `SHA256SUMS`; set the `PI_VERSION` build arg to build a specific release. It used to be installed from npm, which pulls unpinned transitive dependencies from the registry. Debian stable's `nodejs` (20.19) is older than the Node 22.19 Pi requires, so the image no longer ships Node.js, npm, npx, yarn or corepack: an agent that runs `npm install` in the workspace, or installs Pi packages from npm, needs Node.js added to the `Containerfile`. The agent still runs as `node` (uid 1000, home `/home/node`), so existing `cage.yaml` files and `~/.pi` mounts work unchanged. The image shrinks from 845 MB to 611 MB. Existing cages keep their current image until it is rebuilt.
 
+- **`agentcage scaffold create` starts new scaffolds from `debian:stable-slim`.** The starter template built from `alpine:3.21`; its `Containerfile` is now `FROM docker.io/library/debian:stable-slim` with `ca-certificates` and `curl` from apt, a floating tag so rebuilds pick up security updates. The starter's exec alias and help use `bash` instead of `sh`, and its build step adds the capabilities apt needs to drop to the `_apt` user. Existing scaffolds are not changed.
+
 ## [0.51.2] - 2026-10-12
 
 ### Fixed
