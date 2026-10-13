@@ -88,10 +88,11 @@ domains:
     - openai.com
 
     # ── Package registries (commented out by default) ──
-    # Codex's deps are installed at image-build time (see Containerfile),
-    # so the running cage doesn't need access to public package indexes.
+    # Codex is installed at image-build time (see Containerfile), so the
+    # running cage doesn't need access to public package indexes.
     # Uncomment the ones you need if your agent installs packages at
-    # runtime (e.g. `npm install` in /workspace, `pip install`, etc.).
+    # runtime (e.g. `pip install`, or `npm install` after adding Node.js
+    # to the image).
     #- npmjs.org
     #- npmjs.com
     #- pypi.org

@@ -1,4 +1,4 @@
-FROM docker.io/library/node:22-slim
+FROM docker.io/library/debian:stable-slim
 
 USER root
 
@@ -14,10 +14,58 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
 
-# Install OpenAI Codex CLI (latest stable).
-# --ignore-scripts skips npm postinstall hooks (defense-in-depth — the
-# package's runtime code still runs, only postinstall is skipped).
-RUN npm install -g --ignore-scripts @openai/codex
+# Install the OpenAI Codex CLI from its standalone release package: the
+# same `codex-package-<target>.tar.gz` upstream's own install.sh uses. The
+# CLI is a static (musl) Rust binary; the npm package is only a Node
+# wrapper that execs it, so the image needs no Node.js at all.
+#
+# Latest release at build time (like the old `npm install -g @openai/codex`),
+# verified against the SHA-256 that release publishes in
+# `codex-package_SHA256SUMS`. Set CODEX_VERSION below (e.g. 0.162.1) to
+# pin a release. To update Codex, rebuild without the layer cache
+# (`agentcage cage update --pull --no-cache`); Codex's in-app update
+# prompt does not apply inside the cage.
+#
+# Each tarball also ships a sigstore bundle (`<asset>.sigstore`) signed by
+# upstream's rust-release.yml workflow; check it on the host with
+# `cosign verify-blob` if you want more than the checksum (cosign is
+# deliberately not installed into the image).
+ARG CODEX_VERSION=
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) target=x86_64 ;; \
+        arm64) target=aarch64 ;; \
+        *) echo "codex: unsupported architecture $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    version="$CODEX_VERSION"; \
+    if [ -z "$version" ]; then \
+        latest="$(curl -fsSL --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' \
+            https://github.com/openai/codex/releases/latest)"; \
+        version="${latest##*/rust-v}"; \
+    fi; \
+    case "$version" in \
+        *[!0-9A-Za-z.-]*|"") echo "codex: bad release version '$version'" >&2; exit 1 ;; \
+    esac; \
+    base="https://github.com/openai/codex/releases/download/rust-v${version}"; \
+    asset="codex-package-${target}-unknown-linux-musl.tar.gz"; \
+    cd /tmp; \
+    curl -fsSL --proto '=https' --tlsv1.2 -o "$asset" "$base/$asset"; \
+    curl -fsSL --proto '=https' --tlsv1.2 -o SHA256SUMS "$base/codex-package_SHA256SUMS"; \
+    awk -v a="$asset" '$2 == a { print; exit }' SHA256SUMS > "$asset.sha256"; \
+    test -s "$asset.sha256"; \
+    sha256sum -c "$asset.sha256"; \
+    mkdir -p /opt/codex; \
+    tar -xzf "$asset" -C /opt/codex --no-same-owner; \
+    rm -f "$asset" "$asset.sha256" SHA256SUMS; \
+    ln -s /opt/codex/bin/codex /usr/local/bin/codex; \
+    codex --version
+
+# The `node` user (1000:1000, home /home/node) that node:22-slim used to
+# provide. Kept under the same name and home so existing cage.yaml mounts
+# (`~/.codex:/home/node/.codex`) and `userns: keep-id` keep working.
+RUN groupadd --gid 1000 node \
+    && useradd --uid 1000 --gid node --shell /bin/bash --create-home node \
+    && chmod 0755 /home/node
 
 # agentcage introspection: bake a short "you are sandboxed" brief into Codex's
 # global guidance file (~/.codex/AGENTS.md) so the agent discovers it is caged
@@ -38,6 +86,5 @@ COPY AGENTS.md /home/node/.codex/AGENTS.md
 COPY skills/agentcage /home/node/.codex/skills/agentcage
 RUN chown -R node:node /home/node/.codex
 
-# node:22-slim already has user node (1000:1000)
 USER node
 WORKDIR /workspace

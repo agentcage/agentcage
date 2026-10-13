@@ -103,6 +103,28 @@ The scaffold mounts two paths from the host:
 
 Remove the `~/.codex` mount to fully isolate the cage from host state. Git config and SSH known hosts mounts are commented out in `cage.yaml` -- uncomment them if you need git push.
 
+### Image
+
+The `Containerfile` builds on `docker.io/library/debian:stable-slim` (a floating
+tag, so a rebuild picks up Debian security updates) and installs Codex from
+upstream's standalone release package (`codex-package-<arch>-unknown-linux-musl.tar.gz`,
+the same artifact upstream's `install.sh` uses). Codex is a static Rust binary;
+the npm package is only a Node wrapper around it, so the image carries no
+Node.js or npm. The build fetches the latest release and checks the tarball
+against the SHA-256 the release publishes in `codex-package_SHA256SUMS`; set
+`CODEX_VERSION` in the `Containerfile` to pin a release. Each release tarball
+also has a sigstore bundle signed by upstream's `rust-release.yml` workflow,
+which you can check on the host with `cosign verify-blob`.
+
+Codex's own update prompt does not apply inside the cage: to update Codex,
+rebuild the image without the layer cache (`agentcage cage update --pull
+--no-cache`, which also refreshes the Debian base). The image runs as `node`
+(UID/GID 1000, home `/home/node`), the same user the earlier `node:22-slim`
+base provided, so existing `~/.codex:/home/node/.codex` mounts keep working.
+It also has `git`, `curl`, `openssh-client`, `build-essential`, `python3`,
+`ripgrep` and `fd`. If your workflow needs Node.js, add Debian's `nodejs` and
+`npm` packages to the `apt-get install` line.
+
 ### Sandbox brief (introspection)
 
 The image bakes a short "you are running inside agentcage" brief into
@@ -146,7 +168,7 @@ The scaffold organizes domains into tiers:
 - `openai.com`
 
 **Package registries** (commented out):
-- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org` — Codex's deps are installed at image-build time, so the running cage doesn't need them. Uncomment if your agent runs `npm install` / `pip install` in the workspace.
+- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org` — Codex is installed at image-build time, so the running cage doesn't need them. Uncomment if your agent runs `pip install` (or `npm install`, once you add Node.js to the image) in the workspace.
 
 **Code hosting** (commented out):
 - `github.com`, `githubusercontent.com`
