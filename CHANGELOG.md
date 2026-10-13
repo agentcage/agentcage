@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The egress image is now built on Alpine (`alpine:3`) instead of `debian:trixie-slim`, for a smaller attack surface.** The base is a floating tag rather than a digest pin, so a rebuild can pick up Alpine's security fixes. The image is about a third of its previous size (48 MB instead of 139 MB, 18 MB of it the `agentcage-egress` binary) and carries 28 packages instead of 116: `dnsmasq`, `iptables` (still the nf_tables backend, as before), `tini`, util-linux `setpriv`, `ss` from iproute2, and the Alpine base, whose busybox provides the shell and the remaining utilities. `jq`, `procps`, the rest of `util-linux`, `iproute2` and `libcap2-bin` are gone: nothing in the image used `jq`, busybox covers `ip`, `sysctl` and `pgrep`, and `setcap` is only needed while the image is built. The supervisor now sets the address-space limits of `dnsmasq` and the egress with the shell's `ulimit -v` instead of `prlimit`, with the same limits, so the image does not have to carry util-linux's `prlimit` and the ten libraries it pulls in. Nothing changes for a cage: the next `cage create` or `cage update` builds the new image, under a new tag, and an existing cage keeps its CA and logs. Debugging inside the egress changes slightly: `cage shell <name> -s egress` now opens busybox `sh` (there is no `bash`), `jq` is gone, and `ps`, `pgrep` and the coreutils are busybox's.
+
 ## [0.51.2] - 2026-10-12
 
 ### Fixed

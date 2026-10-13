@@ -324,7 +324,7 @@ fn everything_the_supervisor_runs_is_copied_into_the_image() {
         s.contains("EGRESS_BIN=/opt/agentcage/agentcage-egress"),
         "the supervisor launches the binary the image ships"
     );
-    assert!(cf.contains(r#"ENTRYPOINT ["/usr/bin/tini", "--", "/opt/agentcage/supervisor"]"#));
+    assert!(cf.contains(r#"ENTRYPOINT ["/sbin/tini", "--", "/opt/agentcage/supervisor"]"#));
 }
 
 /// The egress process runs as acproxy with an empty bounding set and
@@ -334,7 +334,7 @@ fn everything_the_supervisor_runs_is_copied_into_the_image() {
 fn both_daemons_drop_their_bounding_set() {
     let s = supervisor();
     let launch = index_of(&s, r#""$EGRESS_BIN" run"#);
-    let prelude = &s[s[..launch].rfind("prlimit").expect("egress prlimit")..launch];
+    let prelude = &s[s[..launch].rfind("_with_as").expect("egress address-space limit")..launch];
     assert!(prelude.contains("--reuid=acproxy --regid=acproxy --clear-groups"));
     assert!(prelude.contains("--no-new-privs --bounding-set=-all --inh-caps=-all"));
     assert!(s.contains("--bounding-set=-all,+net_bind_service --inh-caps=-all"));
@@ -354,8 +354,15 @@ fn the_egress_address_space_limit_comes_from_its_config() {
     assert!(asking.contains("setpriv --reuid=acproxy --regid=acproxy --clear-groups"));
     assert!(asking.contains("AGENTCAGE_CONFIG=/etc/agentcage/config.yaml"));
     assert!(s.contains("''|*[!0-9]*) EGRESS_AS_BYTES=$((2 * 1024 * 1024 * 1024)) ;;"));
-    let prelude = &s[s[..launch].rfind("prlimit").expect("egress prlimit")..launch];
-    assert!(prelude.starts_with(r#"prlimit --as="$EGRESS_AS_BYTES" --"#));
+    let prelude = &s[s[..launch].rfind("_with_as").expect("egress address-space limit")..launch];
+    assert!(prelude.starts_with(r#"_with_as "$EGRESS_AS_BYTES" "#));
+    // `ulimit -v` (KiB, rounded up) in the child, then exec: the limit
+    // never lands on the supervisor itself.
+    let helper = &s[index_of(&s, "_with_as() {")..];
+    let helper = &helper[..index_of(helper, "\n}\n")];
+    assert!(helper.contains("_wa_kib=$(( ($1 + 1023) / 1024 )); shift"));
+    assert!(helper.contains(r#"ulimit -v "$_wa_kib" ||"#));
+    assert!(helper.contains(r#"exec "$@""#));
 }
 
 /// Only the public half of the CA reaches the cage. The cage mounts

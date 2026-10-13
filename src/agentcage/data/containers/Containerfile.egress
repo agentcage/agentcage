@@ -11,48 +11,59 @@
 # security rationale.
 #
 # No interpreter: the binary is static (linux-musl) and carries its own
-# TLS stack and Mozilla roots. ca-certificates stays for anything in the
-# image that does TLS through the system store.
+# TLS stack and Mozilla roots, so nothing in the image needs glibc and
+# the base is Alpine: musl, busybox for the supervisor's shell and
+# coreutils (sh, awk, sed, grep, install, sysctl, ip, pgrep, ...), and
+# only the packages below on top. The base's ca-certificates-bundle is
+# the system trust store; nothing in the image relies on it.
 #
-# update-from: docker.io/library/debian:trixie-slim
-FROM docker.io/library/debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+# The base is a floating tag, not a digest pin, on purpose, so a rebuild
+# can pick up Alpine's security fixes. `alpine:3` follows Alpine's
+# current stable release.
+FROM docker.io/library/alpine:3
 
-#   ca-certificates  — system trust store (the binary embeds its own roots)
-#   dnsmasq          — recursive DNS forwarder + allowlist enforcer
-#   libcap2-bin      — capsh + setcap (we setcap dnsmasq for :53 bind)
-#   iptables         — egress FORWARD-chain shape (egress as router)
-#   jq               — utility for parsing JSON config in scripts
-#   procps           — pgrep/pkill for the smoke test + general debug
-#   tini             — PID 1 -> SIGCHLD reaping + SIGTERM forwarding
-#   util-linux       — setpriv (CapBnd drop) + prlimit (memory caps)
-#   iproute2         — ss for the supervisor's listener readiness check
-RUN apt-get update -qq && apt-get install -y --no-install-recommends \
-        ca-certificates \
+# Per-component users, created before any package so no package's own
+# system user can take uid/gid 200 or 201. uids match the apple-container
+# backend's wrapper (which also uses 200/201) so any iptables rule using
+# uid-owner matchers in shared scripts works consistently. `acproxy` /
+# `acdns` (not `proxy` / `dns`) so the names never collide with a
+# distribution user: taking an existing one would leave the egress
+# running as some other uid, invisible to any uid-200 owner-match.
+RUN addgroup -S -g 200 acproxy \
+    && adduser -S -D -H -u 200 -G acproxy -s /sbin/nologin -h /var/empty acproxy \
+    && addgroup -S -g 201 acdns \
+    && adduser -S -D -H -u 201 -G acdns -s /sbin/nologin -h /var/empty acdns
+
+#   dnsmasq       — recursive DNS forwarder + allowlist enforcer
+#   iptables      — egress FORWARD-chain shape (egress as router); the
+#                   nf_tables backend (iptables-nft), with ip6tables
+#   iproute2-ss   — ss for the supervisor's listener readiness check
+#                   (busybox has no ss; its `ip` covers the rest)
+#   setpriv       — util-linux setpriv: the CapBnd drop needs
+#                   --bounding-set, which busybox's setpriv lacks
+#   tini          — PID 1 -> SIGCHLD reaping + SIGTERM forwarding
+#
+# setcap (libcap-setcap) is needed only to set dnsmasq's file cap, so it
+# is installed and removed in the same layer: uid 201 can then bind :53.
+# The cap needs cap_net_bind_service in CapBnd at exec time;
+# supervisor-egress.sh keeps that (and drops everything else) via setpriv
+# --bounding-set=-all,+net_bind_service. NoNewPrivs is NOT set on dnsmasq
+# because file caps are blocked under NNP per capabilities(7).
+#
+# Alpine's /etc/dnsmasq.conf is not empty (`local-service` and a
+# `conf-dir`), and dnsmasq reads it whenever no --conf-file is given,
+# which is how the container/vm path starts it. Emptied, so the
+# supervisor's command line is the whole configuration.
+RUN apk add --no-cache \
         dnsmasq \
-        libcap2-bin \
         iptables \
-        jq \
-        procps \
+        iproute2-ss \
+        setpriv \
         tini \
-        util-linux \
-        iproute2 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Per-component users. uids match the apple-container backend's wrapper
-# (which also uses 200/201) so any iptables rule using uid-owner matchers
-# in shared scripts works consistently. `acproxy` / `acdns` (not `proxy` /
-# `dns`) to avoid colliding with debian's existing `proxy` user at uid 13
-# — silently taking that would leave the egress running as uid 13,
-# invisible to any uid-200 owner-match.
-RUN useradd --uid 200 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acproxy \
-    && useradd --uid 201 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acdns
-
-# setcap so uid 201 can bind :53. Needs cap_net_bind_service in CapBnd
-# at exec time — supervisor-egress.sh handles that (and drops everything
-# else) via setpriv --bounding-set=-all,+net_bind_service. NoNewPrivs is
-# NOT set on dnsmasq because file caps are blocked under NNP per
-# capabilities(7).
-RUN setcap cap_net_bind_service=+ep /usr/sbin/dnsmasq
+    && apk add --no-cache --virtual .setcap libcap-setcap \
+    && setcap cap_net_bind_service=+ep /usr/sbin/dnsmasq \
+    && apk del --no-cache .setcap \
+    && : > /etc/dnsmasq.conf
 
 # The egress binary, staged into the build context by the host
 # (agentcage-egress-embed carries the linux-musl build matching the
@@ -97,5 +108,5 @@ RUN mkdir -p /home/acproxy/dns \
     && chown acproxy:acproxy /home/acproxy/dns \
     && chmod 0700 /home/acproxy/dns
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/agentcage/supervisor"]
+ENTRYPOINT ["/sbin/tini", "--", "/opt/agentcage/supervisor"]
 CMD []

@@ -1,11 +1,11 @@
 {
   "_comment": "Pinned digest of the agentcage-egress image build inputs, without the agentcage-egress binary (which differs per build). Regenerate ONLY for a deliberate change to those inputs: AGENTCAGE_BLESS=1 cargo test -p agentcage-assets bless_the_egress_hash_fixture -- --ignored. See rust/agentcage-assets/src/egress.rs for the wire format.",
   "algorithm": "sha256 over sorted inputs, each contributing relpath(utf-8) || 0x00 || len(body) as 8-byte big-endian || body; hex digest truncated to the first 12 characters",
-  "hash": "423a73a2d893",
+  "hash": "2f4851d8769d",
   "input_count": 3,
   "inputs": {
-    "containers/Containerfile.egress": 5137,
+    "containers/Containerfile.egress": 5738,
     "containers/dns-audit.sh": 3730,
-    "containers/supervisor-egress.sh": 41427
+    "containers/supervisor-egress.sh": 42394
   }
 }

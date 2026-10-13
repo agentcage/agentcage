@@ -422,7 +422,7 @@ egress:
 
 Both are whole numbers of bytes between `1048576` (1 MiB) and `68719476736` (64 GiB). `body_budget_bytes` must be at least `max_body_bytes`. Anything else, including a quoted number or an unknown key under `egress:`, is refused at `cage create` and `cage update`.
 
-The egress runs under an address-space limit (`prlimit --as`), which the supervisor sets when the egress starts: 2 GiB, or `body_budget_bytes` plus 1 GiB when that is larger. Raising the budget raises the limit with it.
+The egress runs under an address-space limit (`RLIMIT_AS`, set with `ulimit -v`), which the supervisor sets when the egress starts: 2 GiB, or `body_budget_bytes` plus 1 GiB when that is larger. Raising the budget raises the limit with it.
 
 Both settings reach the egress through its config, so an edit takes effect on the egress's next config reload, with no restart, for the next body. Bodies already in flight keep what they hold. The one exception is a budget raised beyond what the running egress's address-space limit leaves room for: the egress holds the budget at that room, logs why, and applies the full value when it next starts. `cage edit` restarts the cage for an `egress:` change, so there the new limit applies at once.
 

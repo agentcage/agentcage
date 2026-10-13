@@ -1,9 +1,13 @@
 //! `cargo xtask update-deps` — the pinned container base images.
 //!
-//! Every shipped Containerfile pins its base image by digest and names
-//! the tag it tracks in a `# update-from: <ref>` comment. This asks the
+//! A Containerfile either pins its base image by digest and names the
+//! tag it tracks in a `# update-from: <ref>` comment, or floats on a
+//! plain tag with no such comment. For a pinned one this asks the
 //! registry (via `skopeo inspect`) for that tag's current digest and
-//! reports — or, with `--update`, rewrites — any pin that has moved.
+//! reports — or, with `--update`, rewrites — any pin that has moved. A
+//! floating one has nothing to update: it is reported and left alone.
+//! A shipped Containerfile floats so that a rebuild picks up the base's
+//! security fixes.
 //!
 //! Rust dependencies are not handled here: `cargo update` and the
 //! `cargo deny` CI job cover them.
@@ -23,6 +27,23 @@ struct Pin {
     image: String,
     /// The pinned digest, `sha256:…`.
     digest: String,
+}
+
+/// The base image of a Containerfile that floats on purpose: a plain-tag
+/// `FROM` (no `@sha256:` digest) and no `# update-from:` comment. A file
+/// with only one of the two is half-pinned and gets `None`.
+fn floating_from(text: &str) -> Option<String> {
+    if text.lines().any(|line| line.starts_with("# update-from:")) {
+        return None;
+    }
+    let reference = text.lines().find_map(|line| {
+        let rest = line.strip_prefix("FROM")?;
+        if !rest.starts_with(char::is_whitespace) {
+            return None;
+        }
+        rest.split_whitespace().next()
+    })?;
+    (!reference.contains('@')).then(|| reference.to_owned())
 }
 
 /// The pin in a Containerfile, or why it has none.
@@ -102,7 +123,12 @@ pub(crate) fn run(root: &Path, update: bool) -> Result<ExitCode, String> {
         let pin = match parse_pin(&text) {
             Ok(pin) => pin,
             Err(why) => {
-                println!("  skipped: {why}");
+                match floating_from(&text) {
+                    Some(reference) => {
+                        println!("  floating: {reference} (not pinned; nothing to update)");
+                    }
+                    None => println!("  skipped: {why}"),
+                }
                 continue;
             }
         };
@@ -143,7 +169,7 @@ pub(crate) fn run(root: &Path, update: bool) -> Result<ExitCode, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Pin, parse_pin};
+    use super::{Pin, floating_from, parse_pin};
 
     #[test]
     fn a_pinned_containerfile_parses() {
@@ -171,14 +197,32 @@ mod tests {
         );
     }
 
-    /// The real Containerfiles stay parseable, so the task never
-    /// silently skips the image it exists for.
     #[test]
-    fn the_shipped_containerfiles_are_pinned() {
+    fn a_floating_containerfile_is_recognised() {
+        assert_eq!(
+            floating_from("# header\nFROM docker.io/library/alpine:3\nRUN true\n"),
+            Some("docker.io/library/alpine:3".to_owned())
+        );
+        // Half-pinned: a tracked tag without a digest, or a digest
+        // without the tag it tracks.
+        assert_eq!(floating_from("# update-from: alpine:3\nFROM alpine:3\n"), None);
+        assert_eq!(floating_from("FROM alpine@sha256:ab\n"), None);
+        assert_eq!(floating_from("RUN true\n"), None);
+    }
+
+    /// The real Containerfiles are either properly pinned or deliberately
+    /// floating, never half of each, so the task never silently skips an
+    /// image it should be tracking.
+    #[test]
+    fn the_shipped_containerfiles_are_pinned_or_floating() {
         let dir = crate::repo_root().join(super::CONTAINERS);
         for name in ["Containerfile.egress", "Containerfile.nested"] {
             let text = std::fs::read_to_string(dir.join(name)).expect("readable");
-            assert!(parse_pin(&text).is_ok(), "{name} has no usable pin");
+            assert!(
+                parse_pin(&text).is_ok() || floating_from(&text).is_some(),
+                "{name} is half-pinned: a digest FROM needs `# update-from:`, \
+                 a tag FROM must not have one"
+            );
         }
     }
 }

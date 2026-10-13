@@ -38,7 +38,7 @@ struct Cli {
 enum Command {
     /// Run the egress proxy.
     Run(Box<RunArgs>),
-    /// Print the address-space limit (`prlimit --as`, in bytes) to run
+    /// Print the address-space limit (`RLIMIT_AS`, in bytes) to run
     /// the egress under: 2 GiB, or the configured body budget plus 1 GiB
     /// when that is larger. The supervisor asks before starting `run`.
     AddressSpace(AddressSpaceArgs),
@@ -109,7 +109,7 @@ fn main() -> ExitCode {
     };
     // The blocking pool runs the inspector chain, injection and the
     // decider; each thread reserves a 2 MiB stack, and the supervisor's
-    // `prlimit --as` (2 GiB by default) counts reservations, so the pool
+    // `RLIMIT_AS` (2 GiB by default) counts reservations, so the pool
     // is capped well below tokio's default of 512.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .max_blocking_threads(MAX_BLOCKING_THREADS)

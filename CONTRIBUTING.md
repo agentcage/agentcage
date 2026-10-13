@@ -55,7 +55,7 @@ The version lives in the root `VERSION` file and nowhere else. Cargo cannot read
 
 ## Updating Dependencies
 
-All dependencies are pinned: `Cargo.lock`, container image digests, binary checksums. Container base images carry an `# update-from:` comment naming the tag they track; to check them for newer digests:
+All dependencies are pinned: `Cargo.lock`, binary checksums, and container image digests, except where a base image deliberately floats on a tag so that a rebuild can pick up its security fixes (the egress image's `alpine:3`). A pinned base image carries an `# update-from:` comment naming the tag it tracks; to check the pinned ones for newer digests:
 
 ```bash
 cargo xtask update-deps            # report only
@@ -66,7 +66,7 @@ This needs `skopeo` (`sudo pacman -S skopeo` on Arch). Rust dependencies are upd
 
 ## The Egress Image
 
-Every cage's egress runs `localhost/agentcage-egress:<version>-<hash>`, built on the host from one Containerfile, `src/agentcage/data/containers/Containerfile.egress`: `debian:trixie-slim`, `dnsmasq`, `iptables`, `tini` and a few utilities, `supervisor-egress.sh`, `dns-audit.sh`, and the static `agentcage-egress` binary. `<hash>` is the first 12 hex digits of a SHA-256 over the Containerfile and every file it copies, the binary included, so any change to the egress (code or image) produces a new tag that reaches hosts already holding the previous one. The digest is computed by `rust/agentcage-assets/src/egress.rs` and pinned, together with the full list of inputs, in `tests/fixtures/egress_hash.json`.
+Every cage's egress runs `localhost/agentcage-egress:<version>-<hash>`, built on the host from one Containerfile, `src/agentcage/data/containers/Containerfile.egress`: `alpine:3` (a floating tag, not a digest pin), `dnsmasq`, `iptables`, `tini`, util-linux `setpriv`, iproute2's `ss`, `supervisor-egress.sh`, `dns-audit.sh`, and the static `agentcage-egress` binary. `<hash>` is the first 12 hex digits of a SHA-256 over the Containerfile and every file it copies, the binary included, so any change to the egress (code or image) produces a new tag that reaches hosts already holding the previous one. The digest is computed by `rust/agentcage-assets/src/egress.rs` and pinned, together with the full list of inputs, in `tests/fixtures/egress_hash.json`.
 
 If you deliberately change what goes into the egress image, `cargo test -p agentcage-assets` will fail. Re-bless the fixture in the same commit:
 
