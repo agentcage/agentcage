@@ -227,6 +227,7 @@ fn compute(kind: &str, input: &Json) -> Json {
                     capture_samples: &samples,
                     policy_events: &events,
                     granted: &granted,
+                    grants: &array(input.get("grants")),
                     baseline: &baseline,
                     max_flows: int(input.get("max_flows")),
                     dedup: input.get("dedup") != Some(&Json::Bool(false)),

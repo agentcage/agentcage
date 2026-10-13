@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The traffic watcher no longer flags every long-lived runtime grant as unexplained.** Its digest listed runtime grants by domain only, and the Policy API records that explain a grant reach it only during the window in which the grant was made. A grant made days earlier therefore looked unexplained on every scan: a cage with one standing grant could collect a finding about it most scans, some rated `high` as a suspected look-alike domain, even though the decider's reasoning was recorded in `grants.yaml`. The digest now carries a `grant_provenance` list with each grant's `granted_at`, `expires_at`, `source` and recorded `reason`, the reason cut to 300 characters. The system prompt explains that list. A missing `policy_event`, or a standing grant that saw no traffic in the window, is no longer by itself treated as evidence. The rationale is still treated as untrusted and checked against how the domain is used.
+
 ## [0.51.2] - 2026-10-12
 
 ### Fixed

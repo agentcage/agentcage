@@ -70,6 +70,8 @@ The watcher reads two sources:
 1. **The audit ring**: every record the egress audits, kept in memory (the most recent 5000), including allowed requests that `logging.allowed_requests: false` keeps out of the log. It carries the host, method, path, decision and inspector verdicts of every request, plus relay, Policy API and other records.
 2. **`capture.jsonl`** (when `capture.enable_har` is on): tailed by byte offset across rotations and truncations. Only short excerpts of request and response bodies reach the digest.
 
+Alongside them, every digest lists the cage's baseline and its live runtime grants. Each runtime grant comes with its provenance from the grants overlay: when it was granted, when it lapses (or that it is standing), which adjudicator granted it, and the rationale recorded at grant time, cut to 300 characters. The audit ring holds only the Policy API records of the window being scanned, so without this a grant made days earlier would look unexplained on every scan. The rationale is untrusted like the rest of the digest, because it restates the confined agent's own justification. The watcher is asked to check it against what the domain was actually used for.
+
 `window_seconds` applies only when the watcher has to start reading the capture from scratch: the first scan after the egress starts, or after the file was rotated or truncated. Later scans read only what is new since the last one.
 
 ### Secret hygiene
