@@ -6,7 +6,30 @@
 //! *before* anything is written, a rejected edit is kept so the
 //! operator does not lose it, the good file is backed up, the write is
 //! atomic, and the operator is then told which of their changes applied
-//! live and which need a restart or a rebuild.
+//! live and which need a restart, an update or a rebuild.
+//!
+//! # Which command applies which change
+//!
+//! The hint has to name a command that actually applies the change, so
+//! the buckets follow what each command re-reads from the stored
+//! `cage.yaml`:
+//!
+//! * **live** — the proxy keys the egress hot-reloads from
+//!   `proxy-config.yaml` (rewritten right here), plus the keys the CLI
+//!   reads from `cage.yaml` each time it needs them (`exec_aliases`,
+//!   `help`, `scaffold`), which have nothing to apply.
+//! * **restart** — `cage restart` rewrites `proxy-config.yaml` and
+//!   `dns-allowlist.conf` and restarts the services on the units already
+//!   installed. Only a key that lives in `proxy-config.yaml` and is read
+//!   at egress *start* belongs here: `egress` (the address-space limit).
+//! * **update** — everything rendered into the units (`container`,
+//!   `lifecycle`, `ports`, `dns_servers`, `secrets`,
+//!   `apple_container_autostart`) and any key not named above. `cage
+//!   restart` never re-renders the units, so sending these to it was a
+//!   no-op; `cage update` re-renders them, and its fingerprint covers the
+//!   stored `cage.yaml`, so it notices the edit without `--force`.
+//! * **rebuild** — `isolation` and `vm`, which decide the image or the
+//!   network shape.
 //!
 //! # `cage edit` and `scaffold edit` pick the editor differently
 //!
@@ -40,26 +63,45 @@ use crate::cli::context::{Ctx, EXIT_FAILURE, ensure_v022_cage};
 
 /// `_PROXY_HOT_RELOAD_KEYS` — top-level keys the proxy picks up by
 /// polling `proxy-config.yaml`'s mtime, so a change needs no restart.
-const PROXY_HOT_RELOAD_KEYS: [&str; 9] = [
+///
+/// `log_allowed` is the legacy spelling of `logging.allowed_requests`;
+/// the egress re-reads it on the same reload as `logging`.
+const PROXY_HOT_RELOAD_KEYS: [&str; 10] = [
     "max_request_body",
     "entropy",
     "content_type",
     "inspectors",
     "rate_limit",
     "logging",
+    "log_allowed",
     "secret_injection",
     "capture",
     "protocol_relays",
 ];
 
+/// Keys the CLI reads from the stored `cage.yaml` whenever it uses
+/// them, so an edit has nothing to apply: `exec_aliases` at each `cage
+/// exec`, `help` when `create` / `update` print it, and `scaffold`,
+/// which `cage list` only falls back to when the metadata has none.
+const READ_ON_USE_KEYS: [&str; 3] = ["exec_aliases", "help", "scaffold"];
+
+/// Keys a `cage restart` really applies. `egress` reaches the egress
+/// only through `proxy-config.yaml`, which restart rewrites; its body
+/// caps reload live, but the address-space limit is set when the egress
+/// starts, so a raised budget needs the restart. It is not in the units.
+const RESTART_KEYS: [&str; 1] = ["egress"];
+
 /// `_REBUILD_KEYS` — keys that need a destroy and recreate, because
 /// they decide the image or the network shape rather than its contents.
 const REBUILD_KEYS: [&str; 2] = ["isolation", "vm"];
 
-/// How the three buckets came out.
+/// How the four buckets came out.
 struct Classified {
     live: BTreeSet<String>,
     restart: BTreeSet<String>,
+    /// Keys rendered into the units. `cage restart` starts the units
+    /// already installed, so only `cage update` applies these.
+    update: BTreeSet<String>,
     rebuild: BTreeSet<String>,
 }
 
@@ -68,6 +110,7 @@ fn classify_changes(before: &Value, after: &Value) -> Classified {
     let mut out = Classified {
         live: BTreeSet::new(),
         restart: BTreeSet::new(),
+        update: BTreeSet::new(),
         rebuild: BTreeSet::new(),
     };
     let keys = |value: &Value| -> BTreeSet<String> {
@@ -94,12 +137,21 @@ fn classify_changes(before: &Value, after: &Value) -> Classified {
             // edit can move the LLM provider host that has to resolve,
             // which is exactly what `update_dns_quadlet` handles.
             out.live.insert(key);
-        } else if PROXY_HOT_RELOAD_KEYS.contains(&key.as_str()) {
+        } else if PROXY_HOT_RELOAD_KEYS.contains(&key.as_str())
+            || READ_ON_USE_KEYS.contains(&key.as_str())
+        {
             out.live.insert(key);
+        } else if RESTART_KEYS.contains(&key.as_str()) {
+            out.restart.insert(key);
         } else if REBUILD_KEYS.contains(&key.as_str()) {
             out.rebuild.insert(key);
         } else {
-            out.restart.insert(key);
+            // The default is `update`, not `restart`: `cage update`
+            // re-renders the units *and* the proxy config, so it applies
+            // anything `cage restart` would, and a key added to the
+            // schema later is safe here until someone shows it is not
+            // in the units.
+            out.update.insert(key);
         }
     }
     out
@@ -373,22 +425,40 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
         "Updated cage '{name}'. Backup at {}.",
         backup_path.display()
     );
-    if !changes.live.is_empty() {
-        println!("  Live-applied: {}", joined(&changes.live));
-    }
-    if !changes.restart.is_empty() {
-        println!(
-            "  Needs restart ({}): agentcage cage restart {name}",
-            joined(&changes.restart)
-        );
-    }
-    if !changes.rebuild.is_empty() {
-        println!(
-            "  Needs rebuild ({}): agentcage cage update {name} (or destroy + create)",
-            joined(&changes.rebuild)
-        );
+    for line in next_steps(&changes, name) {
+        println!("{line}");
     }
     Ok(())
+}
+
+/// The closing lines: what applied live, and the one command that
+/// applies each remaining bucket.
+fn next_steps(changes: &Classified, name: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !changes.live.is_empty() {
+        lines.push(format!("  Live-applied: {}", joined(&changes.live)));
+    }
+    if !changes.restart.is_empty() {
+        lines.push(format!(
+            "  Needs restart ({}): agentcage cage restart {name}",
+            joined(&changes.restart)
+        ));
+    }
+    if !changes.update.is_empty() {
+        // Not `cage restart`: a restart starts the units already
+        // installed and never re-renders them from cage.yaml.
+        lines.push(format!(
+            "  Needs update ({}): agentcage cage update {name}",
+            joined(&changes.update)
+        ));
+    }
+    if !changes.rebuild.is_empty() {
+        lines.push(format!(
+            "  Needs rebuild ({}): agentcage cage update {name} (or destroy + create)",
+            joined(&changes.rebuild)
+        ));
+    }
+    lines
 }
 
 /// `", ".join(sorted(keys))` — a `BTreeSet` is already sorted.
@@ -728,32 +798,101 @@ fn lcs_opcodes(old: &[&str], new: &[&str]) -> Vec<Op> {
 mod tests {
     use agentcage_core::yaml;
 
-    use super::{classify_changes, resolve_editor, unified_diff};
+    use super::{classify_changes, next_steps, resolve_editor, unified_diff};
 
     fn doc(text: &str) -> yaml::Value {
         yaml::load_named("t", text).expect("valid YAML")
     }
 
-    /// The three buckets, and the two keys that are deliberately `live`
+    /// The four buckets, and the two keys that are deliberately `live`
     /// despite not being proxy keys.
     #[test]
     fn changes_land_in_the_right_bucket() {
         let before = doc(
             "name: x\nisolation: container\ndomains:\n  allow: [a.test]\n\
-             capture:\n  enable_har: false\ncontainer:\n  image: alpine\n",
+             capture:\n  enable_har: false\ncontainer:\n  image: alpine\n\
+             egress:\n  body_budget_bytes: 1073741824\n",
         );
         let after = doc(
             "name: x\nisolation: vm\ndomains:\n  allow: [a.test, b.test]\n\
-             capture:\n  enable_har: true\ncontainer:\n  image: ubuntu\n",
+             capture:\n  enable_har: true\ncontainer:\n  image: ubuntu\n\
+             egress:\n  body_budget_bytes: 2147483648\n",
         );
         let c = classify_changes(&before, &after);
         assert!(c.live.contains("domains"), "{:?}", c.live);
         assert!(c.live.contains("capture"), "{:?}", c.live);
         assert!(c.rebuild.contains("isolation"), "{:?}", c.rebuild);
-        // `container` is neither hot-reloadable nor a rebuild key, so it
-        // is the restart bucket — the default, and the one an operator
-        // most often lands in.
-        assert!(c.restart.contains("container"), "{:?}", c.restart);
+        // `container` is rendered into the units, which `cage restart`
+        // never regenerates, so it is the update bucket.
+        assert!(c.update.contains("container"), "{:?}", c.update);
+        assert!(!c.restart.contains("container"), "{:?}", c.restart);
+        // `egress` is read from proxy-config.yaml when the egress starts,
+        // which is exactly what a restart redoes.
+        assert_eq!(
+            c.restart.iter().cloned().collect::<Vec<_>>(),
+            vec!["egress"]
+        );
+    }
+
+    /// Every key rendered into the units goes to `update`, and so does a
+    /// key nothing knows about: `cage update` applies anything `cage
+    /// restart` would, so it is the safe default.
+    #[test]
+    fn unit_keys_and_unknown_keys_need_an_update() {
+        for key in [
+            "container",
+            "lifecycle",
+            "ports",
+            "dns_servers",
+            "secrets",
+            "apple_container_autostart",
+            "something_new",
+        ] {
+            let c = classify_changes(&doc("name: x\n"), &doc(&format!("name: x\n{key}: 1\n")));
+            assert_eq!(
+                c.update.iter().cloned().collect::<Vec<_>>(),
+                vec![key],
+                "{key}"
+            );
+            assert!(
+                c.live.is_empty() && c.restart.is_empty() && c.rebuild.is_empty(),
+                "{key}"
+            );
+        }
+    }
+
+    /// Keys read from cage.yaml on use, and `log_allowed` (reloaded with
+    /// `logging`), have nothing to restart.
+    #[test]
+    fn read_on_use_keys_are_live() {
+        for key in ["exec_aliases", "help", "scaffold", "log_allowed"] {
+            let c = classify_changes(&doc("name: x\n"), &doc(&format!("name: x\n{key}: 1\n")));
+            assert_eq!(
+                c.live.iter().cloned().collect::<Vec<_>>(),
+                vec![key],
+                "{key}"
+            );
+        }
+    }
+
+    /// The regression: changing `container.volumes` used to print
+    /// `agentcage cage restart`, which starts the old units and keeps
+    /// the old mount. It has to name `cage update`.
+    #[test]
+    fn a_volume_change_says_update_not_restart() {
+        let before = doc("name: pi\ncontainer:\n  image: alpine\n  volumes:\n  \
+             - ~/github:/workspace:rw\n");
+        let after = doc("name: pi\ncontainer:\n  image: alpine\n  volumes:\n  \
+             - ~/ctf-home:/workspace:rw\n");
+        let lines = next_steps(&classify_changes(&before, &after), "pi");
+        assert_eq!(
+            lines,
+            vec!["  Needs update (container): agentcage cage update pi".to_owned()]
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("cage restart")),
+            "{lines:?}"
+        );
     }
 
     /// An `agents` edit is `live` *and* triggers the DNS path, because
@@ -764,7 +903,7 @@ mod tests {
         let after = doc("name: x\nagents:\n  decider:\n    enable: true\n");
         let c = classify_changes(&before, &after);
         assert_eq!(c.live.iter().cloned().collect::<Vec<_>>(), vec!["agents"]);
-        assert!(c.restart.is_empty() && c.rebuild.is_empty());
+        assert!(c.restart.is_empty() && c.update.is_empty() && c.rebuild.is_empty());
     }
 
     /// A key added or removed counts as changed, not just one whose
@@ -780,7 +919,12 @@ mod tests {
     #[test]
     fn an_identical_document_changes_nothing() {
         let c = classify_changes(&doc("name: x\na: 1\n"), &doc("name: x\na: 1\n"));
-        assert!(c.live.is_empty() && c.restart.is_empty() && c.rebuild.is_empty());
+        assert!(
+            c.live.is_empty()
+                && c.restart.is_empty()
+                && c.update.is_empty()
+                && c.rebuild.is_empty()
+        );
     }
 
     /// difflib's header and hunk shape, which is what an operator reads
