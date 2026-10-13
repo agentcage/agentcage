@@ -75,7 +75,7 @@ aho-corasick = "1.1.5"
 flate2 = "1.1.10"
 crc32fast = "1.5.2"
 brotli-decompressor = "6.0.1"
-ruzstd = "0.8.2"
+ruzstd = "0.9.1"
 
 # The charset tables behind `get_text` for the legacy single-byte and
 # GB 18030 encodings.
