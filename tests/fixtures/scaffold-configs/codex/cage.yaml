@@ -31,10 +31,10 @@ container:
     # credentials, session history, and config that the cage shouldn't see
     # or be able to mutate. Prefer in-cage `codex login` (volume-backed)
     # or an injected API key.
-    #- "~/.codex:/home/node/.codex:rw"
+    #- "~/.codex:/home/agent/.codex:rw"
   #  # Git config (uncomment to enable)
-  #  - "~/.gitconfig:/home/node/.gitconfig:ro"
-  #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
+  #  - "~/.gitconfig:/home/agent/.gitconfig:ro"
+  #  - "~/.ssh/known_hosts:/home/agent/.ssh/known_hosts:ro"
 
   # Map host UID into container so mounted files have correct ownership
   userns: "keep-id"
@@ -88,10 +88,11 @@ domains:
     - openai.com
 
     # ── Package registries (commented out by default) ──
-    # Codex's deps are installed at image-build time (see Containerfile),
-    # so the running cage doesn't need access to public package indexes.
+    # Codex is installed at image-build time (see Containerfile), so the
+    # running cage doesn't need access to public package indexes.
     # Uncomment the ones you need if your agent installs packages at
-    # runtime (e.g. `npm install` in /workspace, `pip install`, etc.).
+    # runtime (e.g. `pip install`, or `npm install` after adding Node.js
+    # to the image).
     #- npmjs.org
     #- npmjs.com
     #- pypi.org

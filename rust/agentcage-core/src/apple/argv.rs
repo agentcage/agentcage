@@ -119,7 +119,7 @@ impl Service {
 ///
 /// `getent` is read twice rather than once because the cage user's
 /// *name* and *home* are separate fields and the base image varies
-/// (ubuntu / node / claude / cage). `exec env …` replaces the shell, so
+/// (ubuntu / node / agent / cage). `exec env …` replaces the shell, so
 /// nothing lingers between the operator's terminal and the command.
 const CAGE_SETPRIV_SCRIPT: &str = "CU=$(getent passwd 1000 | cut -d: -f1) && \
 CH=$(getent passwd 1000 | cut -d: -f6) && \

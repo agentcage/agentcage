@@ -105,7 +105,7 @@ container:
 
 With `lifecycle: service`, systemd auto-restarts the container on failure and starts it on boot. Use `cage logs` to follow output instead of `cage exec`.
 
-See [Pi SDK docs](https://pi.dev/docs/latest/sdk) for embedding the agent in a Node.js entrypoint.
+See [Pi SDK docs](https://pi.dev/docs/latest/sdk) for embedding the agent in a Node.js entrypoint. The scaffold image does not ship Node.js (see [Image](#image)), so an SDK entrypoint needs a Containerfile that adds Node.js 22.19 or newer and installs `@earendil-works/pi-coding-agent` from npm.
 
 ## Managing your cage
 
@@ -113,12 +113,18 @@ See [Troubleshooting](../../../../docs/how-to/troubleshooting.md) for diagnosing
 
 ## Configuration
 
+### Image
+
+The `Containerfile` builds on `debian:stable-slim`, the same base as the `debian` scaffold, and adds git, curl, an SSH client, `build-essential`, Python 3, ripgrep and fd. Pi itself comes from upstream's latest standalone Linux release (a single executable with the Bun runtime bundled), checked against the release's `SHA256SUMS` and installed under `/opt/pi`. To build a specific release, set the `PI_VERSION` build arg (e.g. `1.2.0`). `pi update` does not apply inside the image; rebuild it without the layer cache to pick up a new release.
+
+The image has no Node.js or npm. Debian stable's `nodejs` is older than the 22.19 Pi requires, and the standalone build doesn't need it. If your agent runs `npm install` in the workspace, or you install Pi packages from npm (`pi install npm:...`), add Node.js to the `Containerfile`. The agent runs as `agent` (uid/gid 1000, home `/home/agent`). Images built before this release ran as `node` with home `/home/node`; the uid is unchanged, but mount targets move to `/home/agent/...`.
+
 ### Volumes
 
 The scaffold mounts two paths from the host:
 
 - `${PROJECT_DIR}:/workspace:rw` -- your project directory (set by `agentcage init`)
-- `~/.pi:/home/node/.pi:rw` -- Pi global config, auth, and session state
+- `~/.pi:/home/agent/.pi:rw` -- Pi global config, auth, and session state
 
 Remove the `~/.pi` mount to fully isolate the cage from host state. Git config and SSH known hosts mounts are commented out in `cage.yaml` -- uncomment them if you need git push.
 
@@ -175,7 +181,7 @@ The scaffold organizes domains into tiers:
 - `pi.dev`
 
 **Package registries** (commented out):
-- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org` — pi's deps are installed at image-build time, so the running cage doesn't need them. Uncomment if your agent runs `npm install` / `pip install` in the workspace.
+- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org` — Pi is installed at image-build time, so the running cage doesn't need them. Uncomment if your agent runs `npm install` / `pip install` in the workspace (the image has no npm; see [Image](#image)).
 
 **Code hosting** (commented out):
 - `github.com`, `githubusercontent.com`

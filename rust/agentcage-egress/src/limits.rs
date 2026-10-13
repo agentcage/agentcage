@@ -13,7 +13,7 @@
 //!   `AGENTCAGE_BODY_BUDGET_BYTES`, or the matching `run` flags), for
 //!   development. A value set there is pinned: config reloads leave it
 //!   alone.
-//! * **The address-space limit.** The supervisor sizes `prlimit --as`
+//! * **The address-space limit.** The supervisor sizes `RLIMIT_AS`
 //!   from the budget at start ([`EgressConfig::address_space_bytes`],
 //!   `agentcage-egress address-space`), and a running process cannot
 //!   raise its own limit. A reload that raises the budget past what the

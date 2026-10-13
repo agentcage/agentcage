@@ -1,5 +1,12 @@
-# update-from: docker.io/node:22-slim
-FROM docker.io/node@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
+# The base is a floating tag, not a digest pin, on purpose, so a rebuild
+# can pick up its security fixes (build it with --pull=newer).
+FROM docker.io/library/debian:stable-slim
+
+# The unprivileged user nested podman runs as: `agent`, uid/gid 1000,
+# home /home/agent (the uid the former node:22-slim base's `node` user had).
+RUN groupadd -g 1000 agent \
+ && useradd -m -d /home/agent -u 1000 -g 1000 -s /bin/bash agent \
+ && chmod 0755 /home/agent
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         podman \
@@ -7,15 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         crun \
         uidmap \
         slirp4netns \
+        passt \
     && rm -rf /var/lib/apt/lists/*
 
-# Allow rootless podman for the node user (uid 1000)
-RUN echo "node:100000:65536" >> /etc/subuid \
- && echo "node:100000:65536" >> /etc/subgid
+# Allow rootless podman for the agent user (uid 1000). Debian's useradd
+# already allocates agent:100000:65536; add it only if it did not, since a
+# second, overlapping range makes newuidmap fail.
+RUN grep -q "^agent:" /etc/subuid || echo "agent:100000:65536" >> /etc/subuid; \
+    grep -q "^agent:" /etc/subgid || echo "agent:100000:65536" >> /etc/subgid
 
 # Create user-level containers config so rootless podman uses the
 # bind-mounted /var/lib/containers volume instead of ~/.local/share
-RUN mkdir -p /home/node/.config/containers \
+RUN mkdir -p /home/agent/.config/containers \
  && printf '[storage]\ndriver = "overlay"\ngraphroot = "/var/lib/containers/storage"\nrunroot = "/run/containers/storage"\n\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
-    > /home/node/.config/containers/storage.conf \
- && chown -R node:node /home/node/.config
+    > /home/agent/.config/containers/storage.conf \
+ && chown -R agent:agent /home/agent/.config

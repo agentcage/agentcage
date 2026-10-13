@@ -1,7 +1,78 @@
-FROM docker.io/library/node:22-slim
+# --- Stage 1: fetch and verify the Claude Code native binary ---
+#
+# Claude Code ships as a self-contained native binary (no Node.js runtime
+# needed). We download it straight from Anthropic's release bucket and
+# verify it the way Anthropic documents ("Binary integrity and code
+# signing", code.claude.com/docs/en/setup): the per-release manifest.json is
+# GPG-signed by the Claude Code release key, and lists the SHA-256 of every
+# platform binary. We pin the key's fingerprint here, so a swapped key, a
+# swapped manifest or a swapped binary all fail the build.
+#
+# This stage deliberately does NOT pipe https://claude.ai/install.sh into a
+# shell, and does not use npm: @anthropic-ai/claude-code now declares
+# `engines.node >= 22`, which Debian stable's nodejs (20.x) does not meet,
+# and the npm package only wraps this same native binary anyway. curl, gnupg
+# and jq live in this stage only; none of them reach the final image.
+FROM docker.io/library/debian:stable-slim AS claude-fetch
+
+# Release channel or exact version: `latest` (what `npm install -g` used to
+# give us), `stable` (about a week behind, skips releases with major
+# regressions), or a version such as `2.1.287`.
+ARG CLAUDE_CODE_VERSION=latest
+# "Anthropic Claude Code Release Signing <security@anthropic.com>",
+# published at https://downloads.claude.ai/keys/claude-code.asc.
+ARG CLAUDE_CODE_SIGNING_KEY_FPR=31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        jq \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    base=https://downloads.claude.ai/claude-code-releases; \
+    case "$(uname -m)" in \
+        x86_64|amd64) platform=linux-x64 ;; \
+        aarch64|arm64) platform=linux-arm64 ;; \
+        *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    case "$CLAUDE_CODE_VERSION" in \
+        latest|stable) version="$(curl -fsSL "$base/$CLAUDE_CODE_VERSION")" ;; \
+        *) version="$CLAUDE_CODE_VERSION" ;; \
+    esac; \
+    echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$' \
+        || { echo "bad Claude Code version: $version" >&2; exit 1; }; \
+    work="$(mktemp -d)"; cd "$work"; \
+    export GNUPGHOME="$work/gnupg"; mkdir -m 700 "$GNUPGHOME"; \
+    curl -fsSL -o key.asc https://downloads.claude.ai/keys/claude-code.asc; \
+    gpg --batch --quiet --import key.asc; \
+    gpg --batch --with-colons --fingerprint \
+        | awk -F: '$1 == "fpr" { print $10 }' | grep -qx "$CLAUDE_CODE_SIGNING_KEY_FPR" \
+        || { echo "Claude Code signing key fingerprint mismatch" >&2; exit 1; }; \
+    curl -fsSL -o manifest.json "$base/$version/manifest.json"; \
+    curl -fsSL -o manifest.json.sig "$base/$version/manifest.json.sig"; \
+    gpg --batch --status-fd 1 --verify manifest.json.sig manifest.json \
+        | grep -q "^\[GNUPG:\] VALIDSIG $CLAUDE_CODE_SIGNING_KEY_FPR " \
+        || { echo "manifest.json signature check failed" >&2; exit 1; }; \
+    [ "$(jq -r .version manifest.json)" = "$version" ] \
+        || { echo "manifest.json is not for version $version" >&2; exit 1; }; \
+    checksum="$(jq -r --arg p "$platform" '.platforms[$p].checksum // empty' manifest.json)"; \
+    echo "$checksum" | grep -Eqx '[0-9a-f]{64}' \
+        || { echo "no checksum for $platform in manifest" >&2; exit 1; }; \
+    curl -fsSL -o claude "$base/$version/$platform/claude"; \
+    echo "$checksum  claude" | sha256sum -c -; \
+    install -D -m 0755 claude /out/claude; \
+    cd /; rm -rf "$work"
+
+# --- Stage 2: the cage image ---
+FROM docker.io/library/debian:stable-slim
 
 USER root
 
+# Tools the agent uses inside the cage. node:22-slim (the previous base)
+# supplied only Node/npm/yarn/corepack on top of Debian; none of those are
+# needed by the native Claude Code binary.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
@@ -14,40 +85,45 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
 
-# Install Claude Code CLI (latest stable).
-# --ignore-scripts skips npm postinstall hooks for ALL packages in the
-# dependency tree (defense-in-depth against malicious transitive
-# postinstalls). Then run claude-code's own install.cjs explicitly —
-# it's required to wire `/usr/local/bin/claude` (which is a symlink to
-# `bin/claude.exe`) to the platform-native binary downloaded into
-# `node_modules/@anthropic-ai/claude-code-linux-<arch>/claude`. Without
-# this step the symlinked `claude.exe` is a no-shebang error stub that
-# exec()s with ENOEXEC (issue #132).
-RUN npm install -g --ignore-scripts @anthropic-ai/claude-code \
-    && node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs
+# The unprivileged cage user: `agent`, uid/gid 1000, home /home/agent, bash.
+# The uid matches the one node:22-slim's `node` user had, so host files a
+# cage wrote stay owned by the same host uid. Debian 13's useradd creates
+# homes 0700; make it 0755 like the other first-party scaffolds.
+RUN groupadd --gid 1000 agent \
+    && useradd --uid 1000 --gid agent --create-home --home-dir /home/agent \
+        --shell /bin/bash agent \
+    && chmod 0755 /home/agent
+
+# Root-owned, so the cage user can't swap its own agent binary. Updates come
+# from rebuilding the image without the layer cache (the version is resolved
+# at build time): `agentcage cage update <name> --no-cache`. Not from Claude
+# Code's in-cage auto-updater: that would download into
+# ~/.local/share/claude from downloads.claude.ai, which the cage allowlist
+# does not include, and the copy it installs there is not the one on PATH.
+COPY --from=claude-fetch /out/claude /usr/local/bin/claude
+ENV DISABLE_AUTOUPDATER=1
 
 # agentcage introspection: bake a short "you are sandboxed" brief into Claude
 # Code's user memory (~/.claude/CLAUDE.md) so the agent discovers it is caged
 # with zero setup. agentcage stages the canonical AGENTS.md brief into the
 # build context (see agentcage.scaffold_brief) — it is not committed per-scaffold.
 #
-# Delivered as a plain, writable, node-owned file — deliberately NOT a
+# Delivered as a plain, writable, agent-owned file — deliberately NOT a
 # read-only bind mount over ~/.claude/CLAUDE.md (that makes the runtime create
 # ~/.claude root-owned, breaking `claude login`, settings, and history) and
 # NOT an `@import` (a Claude-Code-only directive). Claude keeps full ownership
 # of ~/.claude, so it still saves credentials and its own appended memories
 # there. The same one-line pattern works for any agent — just change the
 # destination to that agent's memory file.
-RUN mkdir -p /home/node/.claude
-COPY AGENTS.md /home/node/.claude/CLAUDE.md
+RUN mkdir -p /home/agent/.claude
+COPY AGENTS.md /home/agent/.claude/CLAUDE.md
 
 # agentcage skill: the Policy API how-to (reflect on the allowlist, request a
 # domain, give a grant back) as an Agent Skills package under Claude Code's
 # user skills dir. Staged into the build context by agentcage like the brief
 # above (scaffolds/skills/agentcage) — not committed per-scaffold.
-COPY skills/agentcage /home/node/.claude/skills/agentcage
-RUN chown -R node:node /home/node/.claude
+COPY skills/agentcage /home/agent/.claude/skills/agentcage
+RUN chown -R agent:agent /home/agent/.claude
 
-# node:22-slim already has user node (1000:1000)
-USER node
+USER agent
 WORKDIR /workspace

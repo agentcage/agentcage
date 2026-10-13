@@ -20,7 +20,7 @@
 //! other cannot refuse.
 //!
 //! The supervisor starts the egress under an address-space limit
-//! (`prlimit --as`), which counts reservations rather than resident
+//! (`RLIMIT_AS`), which counts reservations rather than resident
 //! memory. [`EgressConfig::address_space_bytes`] is that limit: the
 //! historical 2 GiB, or the budget plus [`ADDRESS_SPACE_HEADROOM`] when
 //! that is larger, so raising the budget raises the ceiling with it
@@ -148,7 +148,7 @@ impl EgressConfig {
         })
     }
 
-    /// The address-space limit (`prlimit --as`) the supervisor starts
+    /// The address-space limit (`RLIMIT_AS`) the supervisor starts
     /// the egress under: [`BASE_ADDRESS_SPACE`], or the budget plus
     /// [`ADDRESS_SPACE_HEADROOM`] when that is larger.
     #[must_use]
