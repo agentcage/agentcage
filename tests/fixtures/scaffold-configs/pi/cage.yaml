@@ -112,7 +112,7 @@ domains:
     - pi.dev
 
     # ── Package registries (commented out by default) ──
-    # Pi installs npm + apt deps at image-build time (see Containerfile),
+    # Pi and its apt deps are installed at image-build time (see Containerfile),
     # so the running cage doesn't need access to public package indexes.
     # Uncomment the ones you need if your agent installs packages at
     # runtime (e.g. `npm install` in /workspace, `pip install`, etc.).

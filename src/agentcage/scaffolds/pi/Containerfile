@@ -1,4 +1,4 @@
-FROM docker.io/library/node:22-slim
+FROM docker.io/library/debian:stable-slim
 
 USER root
 
@@ -14,10 +14,40 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
 
-# Install Pi coding agent (latest stable).
-# --ignore-scripts mirrors the official install command from
-# https://pi.dev/docs/latest — it skips lifecycle hooks that pi does not need.
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# Unprivileged user. The image used to inherit `node` (1000:1000, home
+# /home/node) from node:22-slim; keep the same name, ids and home so cage
+# configs, volume paths and existing ~/.pi mounts carry over unchanged.
+RUN groupadd --gid 1000 node \
+    && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
+
+# Install the Pi coding agent (latest release) from upstream's standalone
+# Linux build: one self-contained executable (Bun runtime bundled) plus its
+# theme/asset files. Debian stable's nodejs (20.19) is older than Pi's
+# `engines` floor (node >=22.19.0), and the npm route pulls unpinned
+# transitive deps from the registry; the release tarball is one artifact from
+# github.com, checked against the release's SHA256SUMS. Pass
+# --build-arg PI_VERSION=1.2.0 to build a specific release instead.
+ARG PI_VERSION=latest
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) pi_arch=x64 ;; \
+        arm64) pi_arch=arm64 ;; \
+        *) echo "pi: no standalone build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    if [ "$PI_VERSION" = latest ]; then \
+        base=https://github.com/earendil-works/pi/releases/latest/download; \
+    else \
+        base="https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}"; \
+    fi; \
+    tarball="pi-linux-${pi_arch}.tar.gz"; \
+    mkdir -p /tmp/pi-dl /opt/pi; \
+    curl -fsSL -o "/tmp/pi-dl/$tarball" "$base/$tarball"; \
+    curl -fsSL -o /tmp/pi-dl/SHA256SUMS "$base/SHA256SUMS"; \
+    (cd /tmp/pi-dl && grep " ${tarball}\$" SHA256SUMS | sha256sum -c -); \
+    tar -xzf "/tmp/pi-dl/$tarball" -C /opt/pi --strip-components=1 --no-same-owner; \
+    rm -f "/tmp/pi-dl/$tarball" /tmp/pi-dl/SHA256SUMS; \
+    rmdir /tmp/pi-dl; \
+    ln -s /opt/pi/pi /usr/local/bin/pi
 
 # agentcage introspection: bake a short "you are sandboxed" brief into Pi's
 # global context file (~/.pi/agent/AGENTS.md) so the agent discovers it is
@@ -40,6 +70,5 @@ RUN chown -R node:node /home/node/.pi
 COPY skills/agentcage /home/node/.agents/skills/agentcage
 RUN chown -R node:node /home/node/.agents
 
-# node:22-slim already has user node (1000:1000)
 USER node
 WORKDIR /workspace
