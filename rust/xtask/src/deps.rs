@@ -205,7 +205,10 @@ mod tests {
         );
         // Half-pinned: a tracked tag without a digest, or a digest
         // without the tag it tracks.
-        assert_eq!(floating_from("# update-from: alpine:3\nFROM alpine:3\n"), None);
+        assert_eq!(
+            floating_from("# update-from: alpine:3\nFROM alpine:3\n"),
+            None
+        );
         assert_eq!(floating_from("FROM alpine@sha256:ab\n"), None);
         assert_eq!(floating_from("RUN true\n"), None);
     }
