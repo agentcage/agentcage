@@ -278,6 +278,72 @@ impl<'a> VmPodman<'a> {
             })
     }
 
+    /// `podman manifest inspect <reference>` in the guest, parsed.
+    ///
+    /// The guest-side twin of
+    /// [`Podman::manifest_inspect`](crate::tools::podman::Podman::manifest_inspect):
+    /// the registry is asked from inside the guest, through the guest's
+    /// own network and registries configuration, which is what its
+    /// builds will use.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] when the lookup fails,
+    /// [`ExecError::Timeout`] after
+    /// [`MANIFEST_INSPECT_TIMEOUT`](crate::tools::podman::MANIFEST_INSPECT_TIMEOUT),
+    /// [`ExecError::Parse`] when the answer is not JSON.
+    pub fn manifest_inspect(&self, reference: &str) -> Result<Value, ExecError> {
+        let argv = ["podman", "manifest", "inspect", reference].map(str::to_string);
+        let out = self
+            .instance
+            .runner
+            .run(
+                &self
+                    .instance
+                    .shell_command(&argv)
+                    .captured()
+                    .timeout(crate::tools::podman::MANIFEST_INSPECT_TIMEOUT),
+            )?
+            .check("limactl")?;
+        serde_json::from_str(out.stdout_text().trim()).map_err(|e| ExecError::Parse {
+            program: "podman".to_string(),
+            detail: e.to_string(),
+        })
+    }
+
+    /// `podman manifest create <list> <image>` in the guest; see
+    /// [`Podman::manifest_create`](crate::tools::podman::Podman::manifest_create).
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] on a non-zero exit, [`ExecError::Timeout`]
+    /// after the lookup's time limit.
+    pub fn manifest_create(&self, list: &str, image: &str) -> Result<(), ExecError> {
+        let argv = ["podman", "manifest", "create", list, image].map(str::to_string);
+        self.instance
+            .runner
+            .run(
+                &self
+                    .instance
+                    .shell_command(&argv)
+                    .captured()
+                    .timeout(crate::tools::podman::MANIFEST_INSPECT_TIMEOUT),
+            )?
+            .check("limactl")?;
+        Ok(())
+    }
+
+    /// `podman manifest rm <list>` in the guest, reporting success.
+    ///
+    /// # Errors
+    ///
+    /// Only if `limactl` itself could not be run.
+    pub fn manifest_remove(&self, list: &str) -> Result<bool, ExecError> {
+        Ok(self
+            .exec(&["podman", "manifest", "rm", list], false)?
+            .success())
+    }
+
     /// `podman secret ls` in the guest, leniently.
     ///
     /// # Errors

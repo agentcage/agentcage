@@ -52,7 +52,21 @@ Rebuild and restart an existing cage.
 
 NAME is optional when ``-c`` is given — the cage to update is taken
 from the config's ``name:`` field. Mirrors ``cage create``, which
-has never required a positional NAME for the same reason.";
+has never required a positional NAME for the same reason.
+
+When the cage's inputs are unchanged and it is running, update asks
+the registry whether a base image has moved (`podman manifest
+inspect`, no layers are pulled): the egress image's and the cage
+image's `FROM` references, or the cage image itself when it is not
+built. If one has, that image is rebuilt (or re-pulled), and the
+cage restarts only if the rebuilt image differs from the one it is
+running. If the registry cannot be reached, update warns and treats
+the bases as unchanged. --no-pull skips the check.
+
+On the apple-container backend there is no registry check: the
+`container` CLI cannot read a remote digest without pulling, so the
+cage image's upstream references are pulled as before, and the shared
+egress image is rebuilt only with --pull or --no-cache.";
 
 /// `cage edit`'s docstring, verbatim.
 const EDIT_LONG: &str = "\
@@ -251,6 +265,14 @@ fn update() -> Command {
             "pull",
             "Force re-pull of the base image from the registry (--pull=always). Combine with --no-cache for a fully clean rebuild.",
         ))
+        .arg(
+            flag(
+                "no_pull",
+                "no-pull",
+                "Do not ask the registry whether a base image moved; only changed inputs, --force or --no-cache rebuild. For offline use, or to keep the images fixed.",
+            )
+            .conflicts_with("pull"),
+        )
         .arg(flag(
             "force",
             "force",

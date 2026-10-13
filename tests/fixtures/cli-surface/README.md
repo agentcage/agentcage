@@ -46,8 +46,8 @@ each one:
 | leaf commands | 41 |
 | top-level nodes | 7 |
 | aliases | 31 |
-| options (incl. the `--help` click adds to every node, and `--version`) | 129 |
-| options declared in `cli.py` | 80 |
+| options (incl. the `--help` click adds to every node, and `--version`) | 130 |
+| options declared in `cli.py` | 81 |
 | hidden options | 4 |
 | arguments | 44 |
 | variadic arguments | 4 |

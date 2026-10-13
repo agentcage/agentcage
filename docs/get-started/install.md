@@ -226,6 +226,17 @@ After upgrading, rebuild running persistent cages to pull updated proxy and supe
 agentcage cage update <name> --pull --no-cache
 ```
 
+### Picking up base image security fixes
+
+The shipped images build from floating base tags (`alpine:3` for the egress, `debian:stable-slim` for the scaffolds), so a rebuild is what brings in the distribution's security fixes. A plain `agentcage cage update <name>` checks for this: it asks the registry whether either image's base has a newer version, rebuilds only the image whose base moved, and restarts the cage only if the rebuilt image changed. Nothing is pulled when no base moved. Run it periodically, or from a timer, to keep cages current:
+
+```bash
+agentcage cage update <name>            # check the registry, rebuild and restart only if a base moved
+agentcage cage update <name> --no-pull  # never contact the registry (offline, or to keep images fixed)
+```
+
+When the registry cannot be reached, `cage update` warns and leaves the cage as it is. A plain update does not pick up a newer version of software the Containerfile downloads itself (Claude Code, Codex, Pi): that still needs `--pull --no-cache`. On the apple-container backend there is no registry check; use `--pull --no-cache` there.
+
 ---
 
 ## Uninstalling agentcage

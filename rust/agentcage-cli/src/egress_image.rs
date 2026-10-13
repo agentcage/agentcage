@@ -116,6 +116,10 @@ pub fn stage(context: &Path) -> Result<(), StageError> {
     stage_file(&context.join(egress::BINARY_REL), binary)
 }
 
+/// Numbers each staging write, so two threads staging at once (the test
+/// harness does) never share a temporary file.
+static SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Write `bytes` to `path` atomically, executable, unless already there.
 fn stage_file(path: &Path, bytes: &[u8]) -> Result<(), StageError> {
     let fail = |what: &str, error: std::io::Error| {
@@ -129,7 +133,11 @@ fn stage_file(path: &Path, bytes: &[u8]) -> Result<(), StageError> {
     }
     let dir = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(dir).map_err(|e| fail("mkdir", e))?;
-    let tmp = dir.join(format!(".agentcage-egress.{}.tmp", std::process::id()));
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(
+        ".agentcage-egress.{}.{sequence}.tmp",
+        std::process::id()
+    ));
     let written = (|| {
         let mut file = fs::OpenOptions::new()
             .write(true)

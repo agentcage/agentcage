@@ -33,6 +33,11 @@ else
     "first=${CA_FIRST:-<none>} second=${CA_SECOND:-<none>}"
 fi
 
+# `cage create` records no fingerprint, so the first `cage update`
+# always rebuilds and restarts. Take that one now, before the mock is
+# patched in, so 1.9-1.11 below see a cage whose inputs are recorded.
+"$AGENTCAGE" cage update "$CAGE" --no-pull >/dev/null 2>&1 || true
+
 echo "Starting mock server..."
 start_mock "$CAGE" httpbin.org example.com
 
@@ -99,6 +104,60 @@ assert_output_contains "1.7" "Show command" "running" \
 
 assert_output_contains "1.8" "List command" "$CAGE" \
   "$AGENTCAGE" cage list
+
+# `cage update` with nothing changed must not restart anything. The
+# container IDs change on any restart (quadlets recreate the container),
+# so they are the witness.
+_container_ids() {
+  podman inspect --format '{{.Id}}' "$CAGE-cage" "$CAGE-egress" 2>/dev/null | tr '\n' ' '
+}
+
+# 1.9: --no-pull never asks the registry and leaves the cage alone.
+e2e_timer_start
+IDS_BEFORE=$(_container_ids)
+UPDATE_OUT=$("$AGENTCAGE" cage update "$CAGE" --no-pull 2>&1) || true
+if grep -q "already up to date" <<<"$UPDATE_OUT" \
+    && ! grep -q "Checking base images" <<<"$UPDATE_OUT" \
+    && [ "$(_container_ids)" = "$IDS_BEFORE" ]; then
+  e2e_pass "1.9" "cage update --no-pull: no registry check, no restart"
+else
+  e2e_fail "1.9" "cage update --no-pull: no registry check, no restart" "$UPDATE_OUT"
+fi
+
+# 1.10: an unreachable registry is a warning, and the cage keeps running.
+e2e_timer_start
+IDS_BEFORE=$(_container_ids)
+UPDATE_OUT=$(HTTPS_PROXY=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 \
+  "$AGENTCAGE" cage update "$CAGE" 2>&1) || true
+if grep -q "warning: could not check base images" <<<"$UPDATE_OUT" \
+    && grep -q "already up to date" <<<"$UPDATE_OUT" \
+    && [ "$(_container_ids)" = "$IDS_BEFORE" ]; then
+  e2e_pass "1.10" "cage update offline: warns, no restart"
+else
+  e2e_fail "1.10" "cage update offline: warns, no restart" "$UPDATE_OUT"
+fi
+
+# 1.11: the default update checks the registry. The bases were just
+# pulled by `cage create`, so normally nothing moved and nothing
+# restarts; if a base really did move upstream in between, the update
+# must say so and the restart is the correct outcome.
+e2e_timer_start
+IDS_BEFORE=$(_container_ids)
+UPDATE_OUT=$("$AGENTCAGE" cage update "$CAGE" 2>&1) || true
+if grep -q "has a newer image" <<<"$UPDATE_OUT"; then
+  if grep -qE "Updated cage|not restarting|up to date" <<<"$UPDATE_OUT"; then
+    e2e_pass "1.11" "cage update: base moved upstream, rebuilt"
+    repatch_mock "$CAGE" httpbin.org example.com || true
+  else
+    e2e_fail "1.11" "cage update: base moved upstream, rebuilt" "$UPDATE_OUT"
+  fi
+elif grep -q "Checking base images" <<<"$UPDATE_OUT" \
+    && grep -q "already up to date" <<<"$UPDATE_OUT" \
+    && [ "$(_container_ids)" = "$IDS_BEFORE" ]; then
+  e2e_pass "1.11" "cage update: registry checked, bases current, no restart"
+else
+  e2e_fail "1.11" "cage update: registry checked, bases current, no restart" "$UPDATE_OUT"
+fi
 
 # Keep cage running for phase 2 / 4 if run together
 if [ "${E2E_KEEP_BASIC:-}" = "1" ]; then

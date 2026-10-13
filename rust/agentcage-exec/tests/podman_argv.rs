@@ -550,6 +550,32 @@ fn image_inspect_takes_the_first_array_element() {
     fake.assert_call(0, &["podman", "image", "inspect", "myimg:latest"]);
 }
 
+/// `podman manifest inspect` asks the registry, captured and with a
+/// time limit, and parses the manifest it prints.
+#[test]
+fn manifest_inspect_is_captured_and_time_limited() {
+    let fake = FakeRunner::new();
+    fake.push(Reply::ok(r#"{"schemaVersion": 2, "manifests": []}"#));
+    let manifest = podman(&fake)
+        .manifest_inspect("docker.io/library/alpine:3")
+        .unwrap();
+    assert_eq!(manifest["schemaVersion"], 2);
+    fake.assert_call(
+        0,
+        &[
+            "podman",
+            "manifest",
+            "inspect",
+            "docker.io/library/alpine:3",
+        ],
+    );
+    assert_eq!(fake.call(0).command.stdout_spec(), &Sink::Capture);
+    assert_eq!(
+        fake.call(0).command.timeout_limit(),
+        Some(agentcage_exec::tools::podman::MANIFEST_INSPECT_TIMEOUT)
+    );
+}
+
 /// An empty array is a parse failure, not a panic.
 #[test]
 fn an_empty_inspect_array_is_an_error() {
