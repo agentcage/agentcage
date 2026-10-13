@@ -503,15 +503,12 @@ fn lib_sh_never_joins_by_container() {
 }
 
 #[test]
-fn mock_image_is_pinned_to_the_egress_base() {
+fn mock_image_is_the_egress_base() {
     let reference = mock_image_ref();
-    let (_, digest) = reference
-        .split_once("@sha256:")
-        .unwrap_or_else(|| panic!("not pinned by digest: {reference}"));
-    assert_eq!(digest.len(), 64, "{reference}");
-    assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{reference}");
+    assert!(!reference.is_empty(), "tests/e2e/mock-image.ref is empty");
     // Same base as the egress image, so a cage create has already pulled
-    // it: at least one egress Containerfile must build FROM this digest.
+    // it: at least one egress Containerfile must build FROM exactly this
+    // reference (a floating tag, as the egress base is not pinned).
     let mut containerfiles = Vec::new();
     find_files(
         &repo_root().join("src"),
@@ -527,7 +524,7 @@ fn mock_image_is_pinned_to_the_egress_base() {
     assert!(
         containerfiles.iter().any(|f| read(f)
             .lines()
-            .any(|l| l.starts_with("FROM ") && l.contains(digest))),
+            .any(|l| l.split_whitespace().collect::<Vec<_>>() == ["FROM", reference.as_str()])),
         "no egress Containerfile builds FROM {reference}: {containerfiles:?}"
     );
 }

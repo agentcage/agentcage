@@ -311,9 +311,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 fn parse_date(text: &str) -> Option<(i64, u32, u32, usize)> {
     let bytes = text.as_bytes();
     if bytes.len() >= 10 && bytes[4] == b'-' && bytes[7] == b'-' {
-        let year = parse_digits(&text[0..4])?;
-        let month = parse_digits(&text[5..7])?;
-        let day = parse_digits(&text[8..10])?;
+        let year = parse_digits(text.get(0..4)?)?;
+        let month = parse_digits(text.get(5..7)?)?;
+        let day = parse_digits(text.get(8..10)?)?;
         return Some((i64::from(year), month, day, 10));
     }
     if bytes.len() >= 8 && bytes[..8].iter().all(u8::is_ascii_digit) {
@@ -379,11 +379,15 @@ fn parse_clock(text: &str) -> Option<(u32, u32, u32, u32)> {
     } else {
         match clock.len() {
             2 => (parse_digits(clock)?, 0, 0),
-            4 => (parse_digits(&clock[..2])?, parse_digits(&clock[2..])?, 0),
+            4 => (
+                parse_digits(clock.get(..2)?)?,
+                parse_digits(clock.get(2..)?)?,
+                0,
+            ),
             6 => (
-                parse_digits(&clock[..2])?,
-                parse_digits(&clock[2..4])?,
-                parse_digits(&clock[4..])?,
+                parse_digits(clock.get(..2)?)?,
+                parse_digits(clock.get(2..4)?)?,
+                parse_digits(clock.get(4..)?)?,
             ),
             _ => return None,
         }
@@ -493,6 +497,16 @@ mod tests {
     }
 
     /// The leap-year rules, at the three boundaries that disagree.
+    #[test]
+    fn a_multibyte_char_inside_a_fixed_width_field_is_rejected() {
+        // Each puts a multi-byte char across a slice boundary, which
+        // used to panic instead of returning `None`.
+        assert_eq!(iso("2026-01-0é"), None);
+        assert_eq!(iso("2026-01-01T1é2"), None);
+        assert_eq!(iso("2026-01-01T1é234"), None);
+        assert_eq!(iso("2026-01-01T12:00+1é2"), None);
+    }
+
     #[test]
     fn leap_years_are_gregorian() {
         assert!(iso("2024-02-29").is_some());

@@ -85,7 +85,7 @@ agentcage cage create -c ./cage.yaml -s ANTHROPIC_API_KEY
 - `-c, --config PATH`: Path to `cage.yaml` (may also be provided positionally).
 - `-s, --set-secret TEXT`: Supply required secrets (`KEY=VALUE` or `KEY` to prompt). Repeatable.
 - `--no-cache`: Force full image rebuild.
-- `--pull`: Always pull latest base image.
+- `--pull`: Always pull the base image (`--pull=always`). Without it, a build on the container and vm backends still pulls a base image the registry has a newer version of (`--pull=newer`), and uses the local one when the registry cannot be reached.
 - `--time`: Print per-phase timing summaries.
 
 ---
@@ -100,7 +100,7 @@ agentcage cage update my-agent --no-cache --pull
 **Options**:
 - `-c, --config PATH`: Path to updated `cage.yaml` (optional if `NAME` is provided).
 - `--no-cache`: Ignore image layer cache.
-- `--pull`: Re-pull base images.
+- `--pull`: Re-pull base images (`--pull=always`) and rebuild even if nothing changed. A rebuild without it still pulls a newer base image when the registry has one (`--pull=newer`).
 - `--force`: Rebuild even if input files are unchanged.
 
 ---

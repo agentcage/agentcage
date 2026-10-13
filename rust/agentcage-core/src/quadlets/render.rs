@@ -2127,7 +2127,7 @@ dns_servers: [192.0.2.53]
         assert_eq!(mask_copyup_owner("1001:2002"), "1001:2002");
         // A named user cannot be resolved host-side, and root needs no
         // chown.
-        assert_eq!(mask_copyup_owner("node"), "");
+        assert_eq!(mask_copyup_owner("agent"), "");
         assert_eq!(mask_copyup_owner("0"), "");
         assert_eq!(mask_copyup_owner("0:0"), "");
         // A numeric uid with a named group falls back to uid:uid.

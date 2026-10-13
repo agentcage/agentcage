@@ -315,7 +315,7 @@ if [ -n "${AGENTCAGE_NONPERSISTENT_COPIES:-}" ]; then
       # directory would make cp place the source at ${target}/lower.
       np_parent=$(dirname "${target}")
       # Only a parent this stage invents may be handed to the cage user;
-      # an image-provided parent (e.g. /home/node/.config) keeps its own
+      # an image-provided parent (e.g. /home/agent/.config) keeps its own
       # ownership. A parent we create would otherwise be root-owned 0755,
       # which blocks the write-to-temp-then-rename save path most config
       # writers use even though the seeded file itself is writable.
@@ -362,7 +362,7 @@ fi
 
 #-- Stage D. Drop privileges + exec the user's CMD ------------------------
 # Resolve the cage user's NAME (capsh's --user= takes a name, not a uid;
-# the name varies by base image: ubuntu / node / claude / cage).
+# the name varies by base image: ubuntu / node / agent / cage).
 CAGE_USER=$(getent passwd 1000 | cut -d: -f1)
 [ -n "${CAGE_USER}" ] \
   || die "no uid-1000 user in cage image — wrapper Containerfile should have created one" 3

@@ -69,14 +69,14 @@ trap _stop TERM INT
 # First create (fresh boot): the file is created ALREADY owned by the
 # service user by running install(1) under `setpriv --reuid/--regid` for
 # that user. The 1777 dir lets any uid create here, so no caps are needed.
-# GNU install -m 0640 creates the file at mode 0600 then fchmods it to
-# 0640 in the same syscall sequence; the intermediate 0600 grants
-# "others" NOTHING, so there is no world-readable window (the security
-# claim holds), but it is not literally a single atomic create — don't
-# overclaim. Creating as the service user directly sidesteps chown
-# entirely, so there is no root-owned-0640 window during which the
-# daemon couldn't write, and no chown-failure edge case under hardened
-# rootless podman.
+# install(1) (busybox in the Alpine image) creates the file and then
+# chmods it to 0640; the umask 0027 below caps the mode it is created
+# with at 0640, so "others" get NOTHING at any point and there is no
+# world-readable window (the security claim holds), but it is not
+# literally a single atomic create — don't overclaim. Creating as the
+# service user directly sidesteps chown entirely, so there is no
+# root-owned-0640 window during which the daemon couldn't write, and no
+# chown-failure edge case under hardened rootless podman.
 #
 # Restart (file already exists, owned by the service user from a prior
 # boot, e.g. a pre-fix 0644 file on migration): tighten the mode in place
@@ -115,6 +115,23 @@ _ensure_log() {
     ) 2>/dev/null \
       || log "warn: _ensure_log create failed for $_el_file ($_el_user); daemon will create at default perms — audit trail may be forgeable (#186)"
   fi
+}
+
+#-- Address-space limits ---------------------------------------------------
+# _with_as BYTES CMD [ARGS...] — exec CMD with RLIMIT_AS at BYTES (rounded
+# up to the KiB `ulimit -v` counts in). `ulimit -v` with neither -S nor -H
+# sets the soft AND the hard limit, exactly as `prlimit --as=` did; the
+# shell builtin replaces util-linux prlimit(1), which the Alpine image does
+# not carry (it would pull in util-linux-misc and ten libraries for this
+# one call). Only ever run as an asynchronous command (`_with_as ... &`):
+# the shell runs that in a subshell, so the limit and the exec land on the
+# child and never on the supervisor itself, and $! is the child that
+# becomes CMD.
+_with_as() {
+  _wa_kib=$(( ($1 + 1023) / 1024 )); shift
+  # shellcheck disable=SC3045  # busybox ash (the image's /bin/sh) and dash have -v
+  ulimit -v "$_wa_kib" || { log "FATAL: ulimit -v $_wa_kib failed for $1"; exit 97; }
+  exec "$@"
 }
 
 # dnsmasq writes its pidfile here. We use /home/acdns/ — pre-chowned to
@@ -375,14 +392,15 @@ fi
 # {cap_net_bind_service} — it can bind privileged ports but cannot
 # iptables -F, cannot mount, cannot iptables anything.
 #
-# TODO(measurement): --as=256M for dnsmasq covers a 10k-entry allowlist
-# with headroom (eyeballed from the apple-container supervisor's working
-# set). Provisional — tune after measurement in a follow-up PR.
+# TODO(measurement): the 256M address-space limit for dnsmasq covers a
+# 10k-entry allowlist with headroom (eyeballed from the apple-container
+# supervisor's working set). Provisional — tune after measurement in a
+# follow-up PR.
 # Pre-create dnsmasq.log at 0640 owned by acdns so the cage workload
 # (uid 1000, via virtiofs identity-mapping) cannot read or forge it.
 # See _ensure_log above (#186).
 _ensure_log /var/log/agentcage/dnsmasq.log acdns
-log "step B: starting dnsmasq (uid 201, CapBnd={net_bind_service}, prlimit --as=256M)"
+log "step B: starting dnsmasq (uid 201, CapBnd={net_bind_service}, ulimit -v 256M)"
 if [ -f /etc/agentcage/dnsmasq.conf ]; then
   # apple-container path: per-cage dnsmasq.conf bind-mounted by the
   # backend (handles allowlist scoping + sinkhole + filter-AAAA). Two
@@ -416,7 +434,7 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
      && _render_servers_file; then
     chmod 0644 /run/agentcage/dnsmasq.egress.conf
     log "step B: apple-container path — dnsmasq listen ${_eth0_ip}, forwarding allowlisted zones to vmnet gateway ${_gw} (host-tracking)"
-    prlimit --as=$((256 * 1024 * 1024)) -- \
+    _with_as $((256 * 1024 * 1024)) \
       setpriv --reuid=acdns --regid=acdns --clear-groups \
               --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
       /opt/agentcage/dns-audit.sh \
@@ -441,7 +459,7 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
     _SF_STYLE=plain
     _SF_GW=""
     _render_servers_file || log "warn: could not render runtime servers-file"
-    prlimit --as=$((256 * 1024 * 1024)) -- \
+    _with_as $((256 * 1024 * 1024)) \
       setpriv --reuid=acdns --regid=acdns --clear-groups \
               --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
       /opt/agentcage/dns-audit.sh \
@@ -517,7 +535,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # /etc/hosts lookup happens. The LEGACY 3-service shape got this
   # split for free (dns sidecar and proxy were separate containers
   # with separate /etc/hosts files); v0.22 has to enforce it.
-  prlimit --as=$((256 * 1024 * 1024)) -- \
+  _with_as $((256 * 1024 * 1024)) \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /opt/agentcage/dns-audit.sh \
@@ -569,7 +587,7 @@ else
   # No allowlist staged (a cage whose `domains.mode` is not `allowlist`):
   # start dnsmasq with a minimal inline default, forwarding nothing.
   log "step B: no /etc/agentcage/dnsmasq.conf or dns-allowlist.conf — using inline defaults"
-  prlimit --as=$((256 * 1024 * 1024)) -- \
+  _with_as $((256 * 1024 * 1024)) \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /usr/sbin/dnsmasq -k \
@@ -604,12 +622,12 @@ ss -lnup 2>/dev/null | grep -q ':53 ' \
 # secret_injection rules, capture settings) is at
 # /etc/agentcage/config.yaml via bind-mount.
 #
-# `--as`: the address-space limit counts *reservations*, not resident
-# memory, and the egress reserves generously: every thread's stack (the
-# tokio workers plus its capped blocking pool, 2 MiB each), and every
-# fully buffered body up to the per-body cap (`egress.max_body_bytes`,
-# 256 MiB by default) with a decoded copy beside it while it is
-# inspected. The process-wide body budget (`egress.body_budget_bytes`,
+# The address-space limit (RLIMIT_AS, set by _with_as) counts
+# *reservations*, not resident memory, and the egress reserves
+# generously: every thread's stack (the tokio workers plus its capped
+# blocking pool, 2 MiB each), and every fully buffered body up to the
+# per-body cap (`egress.max_body_bytes`, 256 MiB by default) with a
+# decoded copy beside it while it is inspected. The process-wide body budget (`egress.body_budget_bytes`,
 # 1 GiB by default) keeps the sum of buffered bodies inside this
 # envelope, so a burst of large uploads waits or is refused instead of
 # failing an allocation and taking down the cage's only path to the
@@ -645,7 +663,7 @@ EGRESS_AS_BYTES=$(setpriv --reuid=acproxy --regid=acproxy --clear-groups \
 case "$EGRESS_AS_BYTES" in
   ''|*[!0-9]*) EGRESS_AS_BYTES=$((2 * 1024 * 1024 * 1024)) ;;
 esac
-log "step D: starting agentcage-egress (uid 200, CapBnd=0, prlimit --as=$EGRESS_AS_BYTES)"
+log "step D: starting agentcage-egress (uid 200, CapBnd=0, ulimit -v $EGRESS_AS_BYTES bytes)"
 
 # Reverse listeners for inbound port forwards: `<cage_ip>:<port>` is the
 # upstream, `0.0.0.0:<port>` the listen address. The backend stages them
@@ -662,7 +680,7 @@ if [ -n "${AGENTCAGE_INBOUND_PORTS:-}" ] && [ -n "${AGENTCAGE_CAGE_IP:-}" ]; the
 fi
 
 # shellcheck disable=SC2086  # REVERSE_FLAGS is intentionally word-split
-prlimit --as="$EGRESS_AS_BYTES" -- \
+_with_as "$EGRESS_AS_BYTES" \
   setpriv --reuid=acproxy --regid=acproxy --clear-groups \
           --no-new-privs --bounding-set=-all --inh-caps=-all -- \
   env HOME=/home/acproxy AGENTCAGE_CONFIG=/etc/agentcage/config.yaml \

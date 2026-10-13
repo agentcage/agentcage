@@ -373,7 +373,7 @@ fn engine() -> &'static Engine {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.consume_fuel(true);
-        // The egress runs under `prlimit --as` (2 GiB by default). The default 4 GiB
+        // The egress runs under `RLIMIT_AS` (2 GiB by default). The default 4 GiB
         // virtual reservation (plus guard region) per linear memory would
         // not fit even once, so memories are mapped at their real size and
         // bounds-checked explicitly; growth may move them.
