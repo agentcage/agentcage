@@ -125,6 +125,7 @@ fn build_basic() {
             "myimg:latest",
             "-f",
             "/path/Containerfile",
+            "--pull=newer",
             "/ctx",
         ],
     );
@@ -145,11 +146,15 @@ fn build_no_cache_without_a_containerfile() {
             },
         )
         .unwrap();
-    fake.assert_call(0, &["podman", "build", "-t", "img", "--no-cache", "/ctx"]);
+    fake.assert_call(
+        0,
+        &["podman", "build", "-t", "img", "--no-cache", "--pull=newer", "/ctx"],
+    );
     assert!(!fake.argv(0).iter().any(|a| a == "-f"));
 }
 
-/// `no_cache` and `pull` are independent. Each alone, and both together.
+/// `no_cache` and `pull` are independent. Each alone, and both together;
+/// without `pull` the build still asks for `--pull=newer`.
 #[test]
 fn build_no_cache_and_pull_are_independent() {
     let fake = FakeRunner::new();
@@ -169,7 +174,7 @@ fn build_no_cache_and_pull_are_independent() {
     }
     fake.assert_argv(&[
         &["podman", "build", "-t", "img", "--pull=always", "/ctx"],
-        &["podman", "build", "-t", "img", "--no-cache", "/ctx"],
+        &["podman", "build", "-t", "img", "--no-cache", "--pull=newer", "/ctx"],
         &[
             "podman",
             "build",
@@ -205,6 +210,7 @@ fn build_cap_add() {
             "build",
             "-t",
             "img",
+            "--pull=newer",
             "--cap-add",
             "CAP_CHOWN",
             "--cap-add",
@@ -243,6 +249,7 @@ fn build_args_keep_their_order_and_stay_adjacent() {
             "build",
             "-t",
             "img",
+            "--pull=newer",
             "--build-arg",
             "FOO=bar",
             "--build-arg",
@@ -253,7 +260,8 @@ fn build_args_keep_their_order_and_stay_adjacent() {
 }
 
 /// Every flag at once, in the fixed order: `-f`, `--no-cache`,
-/// `--pull=always`, caps, build args, context.
+/// `--pull=always` (`--pull=newer` without `pull`), caps, build args,
+/// context.
 #[test]
 fn build_flag_order_is_fixed() {
     let fake = FakeRunner::new();

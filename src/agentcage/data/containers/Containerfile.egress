@@ -18,8 +18,9 @@
 # the system trust store; nothing in the image relies on it.
 #
 # The base is a floating tag, not a digest pin, on purpose, so a rebuild
-# can pick up Alpine's security fixes. `alpine:3` follows Alpine's
-# current stable release.
+# picks up Alpine's security fixes: agentcage builds with podman's
+# --pull=newer (apple-container: only with `--pull`). `alpine:3` follows
+# Alpine's current stable release.
 FROM docker.io/library/alpine:3
 
 # Per-component users, created before any package so no package's own

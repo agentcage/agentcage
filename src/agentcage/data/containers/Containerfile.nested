@@ -1,5 +1,5 @@
 # The base is a floating tag, not a digest pin, on purpose, so a rebuild
-# can pick up its security fixes.
+# can pick up its security fixes (build it with --pull=newer).
 FROM docker.io/library/node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

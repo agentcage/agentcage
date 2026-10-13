@@ -139,6 +139,8 @@ fn the_deploy_sequence_is_pinned() {
             &tag,
             "-f",
             &containerfile,
+            // A floating base picks up its fixes on every rebuild.
+            "--pull=newer",
             // `setfcap` for dnsmasq's NET_BIND_SERVICE file capability;
             // the rest mirror the legacy proxy build.
             "--cap-add",
