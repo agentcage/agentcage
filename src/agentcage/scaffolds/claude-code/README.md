@@ -136,6 +136,42 @@ The scaffold also tmpfs-masks two executable-config surfaces under the workspace
 >
 > The masks do not depend on the host project being a git repo. When `${PROJECT_DIR}` is a git project, the `/workspace/.git/hooks/` tmpfs overlays the existing host `.git/hooks/` (the host's hooks stay untouched on the host FS). On a host project **without** a `.git/`, podman must still create the mount point inside the bind-mounted tree, so an empty `.git/hooks/` appears on the host while the cage runs. The cage quadlet records which mount points were absent immediately before start and removes exactly those on stop, provided they are still empty — a directory that already existed, or that something has written into, is always left in place (#320).
 
+### Image and updates
+
+The image is built on `debian:stable-slim` (the same base as the `debian`
+scaffold) and runs as the unprivileged `node` user (uid/gid 1000, home
+`/home/node`). It ships `git`, `curl`, `openssh-client`, `build-essential`,
+`python3`, `ripgrep` and `fd`, but **no Node.js or npm**: Claude Code is
+installed as Anthropic's self-contained native binary, not from npm.
+
+The `Containerfile` downloads that binary from `downloads.claude.ai` at build
+time and verifies it the way Anthropic documents: the release's
+`manifest.json` must carry a valid signature from the Claude Code release
+signing key (fingerprint `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`, pinned in
+the `Containerfile`), and the binary's SHA-256 must match the manifest. Nothing
+is piped into a shell, and no extra apt repository is added. The download
+tools (`gnupg`, `jq`) live in a throwaway build stage only.
+
+Two build arguments control it:
+
+- `CLAUDE_CODE_VERSION` — `latest` (default), `stable` (about a week behind,
+  skips releases with major regressions), or an exact version such as
+  `2.1.287`.
+- `CLAUDE_CODE_SIGNING_KEY_FPR` — the expected signing-key fingerprint.
+
+The binary is root-owned in `/usr/local/bin`, and the image sets
+`DISABLE_AUTOUPDATER=1`: Claude Code's in-cage auto-updater would download
+from `downloads.claude.ai`, which the cage allowlist does not include. To
+update Claude Code, rebuild the image without the layer cache (the version is
+resolved at build time):
+
+```bash
+agentcage cage update myagent --no-cache
+```
+
+If your workspace needs Node.js, add Debian's `nodejs npm` packages to the
+`apt-get install` line (Debian stable ships Node 20).
+
 ### Sandbox brief (introspection)
 
 The image bakes a short "you are running inside agentcage" brief into

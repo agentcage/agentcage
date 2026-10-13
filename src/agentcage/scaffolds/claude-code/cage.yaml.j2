@@ -152,8 +152,10 @@ domains:
     #- sentry.io
 
     # ── Package registries (commented out by default) ──
-    # Claude Code's deps are installed at image-build time (see Containerfile),
-    # so the running cage doesn't need access to public package indexes.
+    # Claude Code is a self-contained native binary baked in at image-build
+    # time (see Containerfile), so the running cage doesn't need access to
+    # public package indexes. The image has no Node.js/npm; add Debian's
+    # `nodejs npm` to the Containerfile if your workspace needs them.
     # Uncomment the ones you need if your agent installs packages at
     # runtime (e.g. `npm install` in /workspace, `pip install`, etc.).
     #- npmjs.org
