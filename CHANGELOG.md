@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-13
+
 ### Changed
 
 - **BREAKING: the cage user in the `claude-code`, `codex` and `pi` scaffold images, and in the nested-podman image, is now `agent` (home `/home/agent`) instead of `node` (home `/home/node`).** The user was only called `node` because the images used to build `FROM node:22-slim`, which ships one; with those images now on `debian:stable-slim` and without Node.js, the name only misled. The new user is `agent`, uid/gid 1000, home `/home/agent` (mode 0755), shell `/bin/bash`; there is no `/home/node` compatibility symlink. The scaffolds' commented-out mount examples, the agentcage brief and skill locations (`/home/agent/.claude`, `/home/agent/.codex`, `/home/agent/.pi`, `/home/agent/.agents`) and the nested image's rootless podman setup (`/etc/subuid`, `/etc/subgid`, `~/.config/containers`) follow the new name. The `openclaw` scaffold is unchanged: it builds from upstream's `ghcr.io/openclaw/openclaw` image, which ships its own `node` user. **Migration:** in a `cage.yaml` for one of these scaffolds, move every mount, named-volume and tmpfs target from `/home/node/...` to `/home/agent/...` (for example `~/.claude:/home/node/.claude:rw` becomes `~/.claude:/home/agent/.claude:rw`), and change any `HOME` or path in `env`, `exec_aliases` or scripts the same way, then `agentcage cage update <name>`. The uid stays 1000, so files a cage already wrote to the host keep the same owner and need no `chown`.
