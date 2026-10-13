@@ -44,7 +44,11 @@ const BRIEF_WIRING: [(&str, &str, &str); 3] = [
         "/home/agent/.claude/CLAUDE.md",
         "/home/agent/.claude",
     ),
-    ("codex", "/home/agent/.codex/AGENTS.md", "/home/agent/.codex"),
+    (
+        "codex",
+        "/home/agent/.codex/AGENTS.md",
+        "/home/agent/.codex",
+    ),
     ("pi", "/home/agent/.pi/agent/AGENTS.md", "/home/agent/.pi"),
 ];
 
