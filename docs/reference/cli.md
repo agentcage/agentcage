@@ -163,6 +163,11 @@ Opens the cage's stored `cage.yaml` in `$EDITOR` with automatic validation and a
 - Validates YAML schema before saving (rejected edits are saved to `cage.yaml.rejected`).
 - Backs up previous working configuration to `cage.yaml.bak`.
 - Auto-applies domain changes to `dnsmasq` via `SIGHUP` without restarting the cage.
+- Ends by naming the command that applies each change it could not apply live:
+  - **Live-applied**: proxy policy (`domains`, `inspectors`, `logging`, `capture`, `secret_injection`, `protocol_relays`, `agents`, …), which the egress reloads from `proxy-config.yaml` within about a second, and keys read on use (`exec_aliases`, `help`, `scaffold`).
+  - **Needs restart** (`agentcage cage restart NAME`): `egress`, whose address-space limit is set when the egress starts.
+  - **Needs update** (`agentcage cage update NAME`): everything rendered into the units: `container` (image, volumes, env, user, resources, …), `lifecycle`, `ports`, `dns_servers`, `secrets`, `apple_container_autostart`, and any other key. `cage restart` starts the units already installed and does not apply these; `cage update` re-renders them and notices the edit without `--force`.
+  - **Needs rebuild**: `isolation` and `vm`.
 
 ---
 
