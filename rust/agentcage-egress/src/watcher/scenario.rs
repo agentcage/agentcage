@@ -727,6 +727,59 @@ fn without_a_grant_store_removals_degrade_to_findings() {
         digest.get("current_granted"),
         Some(&Json::Array(Vec::new()))
     );
+    assert_eq!(digest.get("grant_provenance"), None);
+}
+
+#[test]
+fn the_digest_records_where_each_runtime_grant_came_from() {
+    // A grant made before the window has no policy_event in it; its
+    // overlay entry is the only record of why it exists.
+    let dom = domains(&["base.example"], &[]);
+    assert!(dom.grant_at(
+        "uploads.example",
+        "",
+        &format!("presigned upload target {}", "r".repeat(400)),
+        "decider:agent:test",
+        "2026-01-02T03:04:05+00:00",
+    ));
+    assert!(dom.grant_at(
+        "api.example",
+        "2026-02-01T00:00:00+00:00",
+        "",
+        "",
+        "2026-01-03T00:00:00+00:00",
+    ));
+    let mut h = harness("", vec![flow("base.example")], dom, true);
+    h.llm.ok(r#"{"findings": []}"#);
+    h.tick();
+    let digest = json::parse(&h.llm.calls()[0].user_content).unwrap();
+    let Some(Json::Array(grants)) = digest.get("grant_provenance") else {
+        panic!("no grant_provenance in {}", json::to_string(&digest));
+    };
+    let field = |i: usize, k: &str| grants[i].get(k).cloned();
+    // Sorted by domain, like current_granted.
+    assert_eq!(field(0, "domain"), Some(Json::string("api.example")));
+    assert_eq!(
+        field(0, "expires_at"),
+        Some(Json::string("2026-02-01T00:00:00+00:00"))
+    );
+    assert_eq!(field(0, "reason"), Some(Json::Null));
+    assert_eq!(field(1, "domain"), Some(Json::string("uploads.example")));
+    assert_eq!(
+        field(1, "granted_at"),
+        Some(Json::string("2026-01-02T03:04:05+00:00"))
+    );
+    assert_eq!(field(1, "expires_at"), Some(Json::Null));
+    assert_eq!(field(1, "source"), Some(Json::string("decider:agent:test")));
+    let Some(Json::Str(reason)) = field(1, "reason") else {
+        panic!("reason is not a string");
+    };
+    assert!(reason.starts_with("presigned upload target r"));
+    assert!(reason.ends_with("…[truncated]"));
+    assert_eq!(
+        reason.chars().count(),
+        super::scan::GRANT_REASON_CHARS + "…[truncated]".chars().count()
+    );
 }
 
 // ── Quiet scans, indicators, state ───────────────────────────

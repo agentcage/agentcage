@@ -16,6 +16,7 @@ use agentcage_core::har::datetime::DateTime;
 use rand::{Rng as _, SeedableRng as _, TryRngCore as _};
 
 use crate::audit::AuditSink;
+use crate::config::{Mapping, Value, mget};
 use crate::inspect::domain::DomainInspector;
 use crate::json::{self, Json};
 use crate::llm::{ToolCall, ToolCaller};
@@ -48,6 +49,11 @@ pub const FULL_SCAN_BUDGET_MULT: usize = 4;
 /// the capture file, so a chatty model or a long outage cannot fill the
 /// grants volume. One generation is kept.
 pub const FINDINGS_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// A grant's recorded rationale is cut to this many characters in the
+/// digest: enough to say what the grant was for, without letting a long
+/// decider reason crowd out the traffic it is checked against.
+pub const GRANT_REASON_CHARS: usize = 300;
 
 /// The audit ring, as the watcher uses it.
 ///
@@ -451,9 +457,16 @@ impl Watcher {
             .filter(|e| coerce::str_get(e, "kind", "").starts_with("policy_"))
             .cloned()
             .collect();
-        let granted = match (&refs.domains, &refs.grants) {
-            (Some(dom), Some(_)) => dom.granted_entries().into_iter().map(|(d, _)| d).collect(),
-            _ => Vec::new(),
+        let (granted, grants): (Vec<String>, Vec<Json>) = match (&refs.domains, &refs.grants) {
+            (Some(dom), Some(_)) => dom
+                .granted_entries()
+                .into_iter()
+                .map(|(d, entry)| {
+                    let record = grant_provenance(&d, &entry);
+                    (d, record)
+                })
+                .unzip(),
+            _ => (Vec::new(), Vec::new()),
         };
         let baseline = refs
             .domains
@@ -466,6 +479,7 @@ impl Watcher {
                 capture_samples: &read.samples,
                 policy_events: &policy_events,
                 granted: &granted,
+                grants: &grants,
                 baseline: &baseline,
                 max_flows: i64::try_from(self.cfg.max_flows).unwrap_or(i64::MAX),
                 dedup: self.cfg.dedup_samples,
@@ -964,6 +978,33 @@ impl Verdict {
             baseline_recommendations: objects(args.get("baseline_recommendations")),
         })
     }
+}
+
+/// A runtime grant as the digest's `grant_provenance` lists it:
+/// `{domain, granted_at, expires_at, source, reason}` from its overlay
+/// entry. A missing or empty field is `null` (an empty `expires_at` is a
+/// grant that never lapses), and `reason` is cut to
+/// [`GRANT_REASON_CHARS`].
+#[must_use]
+pub fn grant_provenance(domain: &str, entry: &Mapping) -> Json {
+    let field = |key: &str| match mget(entry, key) {
+        Some(Value::String(s)) if !s.is_empty() => Json::Str(s.clone()),
+        _ => Json::Null,
+    };
+    let reason = match field("reason") {
+        Json::Str(s) if s.chars().count() > GRANT_REASON_CHARS => {
+            let head: String = s.chars().take(GRANT_REASON_CHARS).collect();
+            Json::Str(format!("{head}…[truncated]"))
+        }
+        other => other,
+    };
+    json::object([
+        ("domain", Json::string(domain)),
+        ("granted_at", field("granted_at")),
+        ("expires_at", field("expires_at")),
+        ("source", field("source")),
+        ("reason", reason),
+    ])
 }
 
 /// A watcher-authored finding in the recorded shape.

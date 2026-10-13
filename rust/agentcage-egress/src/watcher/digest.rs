@@ -374,6 +374,11 @@ pub struct DigestInput<'a> {
     pub policy_events: &'a [Json],
     /// Live runtime grants.
     pub granted: &'a [String],
+    /// Where each live runtime grant came from (see
+    /// [`super::scan::grant_provenance`]), in `granted` order. The
+    /// window's `policy_events` hold only grants made inside it, so this
+    /// is the record of a standing grant's adjudication.
+    pub grants: &'a [Json],
     /// The operator's baseline allowlist.
     pub baseline: &'a [String],
     /// Newest samples kept after dedup (`x[-max_flows:]`, so 0 keeps all).
@@ -608,6 +613,9 @@ pub fn build_digest(input: &DigestInput<'_>, mut rng: Option<&mut ScanRng>) -> J
     }
     digest.set("policy_events", Json::Array(policy_events));
     digest.set("current_granted", sorted(input.granted));
+    if !input.grants.is_empty() {
+        digest.set("grant_provenance", Json::Array(input.grants.to_vec()));
+    }
     digest.set("current_baseline", sorted(input.baseline));
     digest.set("capture_samples", Json::Array(Vec::new()));
     digest.set(
@@ -737,6 +745,7 @@ mod tests {
                     capture_samples: &samples,
                     policy_events: &[],
                     granted: &[],
+                    grants: &[],
                     baseline: &[],
                     max_flows: 2000,
                     dedup: true,
