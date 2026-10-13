@@ -123,7 +123,7 @@ See [Troubleshooting](../../../../docs/how-to/troubleshooting.md) for diagnosing
 The scaffold mounts two paths from the host:
 
 - `${PROJECT_DIR}:/workspace:rw` -- your project directory (set by `agentcage init`)
-- `~/.claude:/home/node/.claude:rw` -- Claude auth tokens and settings (credentials at `~/.claude/.credentials.json` live here)
+- `~/.claude:/home/agent/.claude:rw` -- Claude auth tokens and settings (credentials at `~/.claude/.credentials.json` live here)
 
 The scaffold also tmpfs-masks two executable-config surfaces under the workspace bind-mount as defense-in-depth against cage→host and cage→cage pivots:
 
@@ -139,8 +139,8 @@ The scaffold also tmpfs-masks two executable-config surfaces under the workspace
 ### Image and updates
 
 The image is built on `debian:stable-slim` (the same base as the `debian`
-scaffold) and runs as the unprivileged `node` user (uid/gid 1000, home
-`/home/node`). It ships `git`, `curl`, `openssh-client`, `build-essential`,
+scaffold) and runs as the unprivileged `agent` user (uid/gid 1000, home
+`/home/agent`). It ships `git`, `curl`, `openssh-client`, `build-essential`,
 `python3`, `ripgrep` and `fd`, but **no Node.js or npm**: Claude Code is
 installed as Anthropic's self-contained native binary, not from npm.
 

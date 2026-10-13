@@ -117,14 +117,14 @@ See [Troubleshooting](../../../../docs/how-to/troubleshooting.md) for diagnosing
 
 The `Containerfile` builds on `debian:stable-slim`, the same base as the `debian` scaffold, and adds git, curl, an SSH client, `build-essential`, Python 3, ripgrep and fd. Pi itself comes from upstream's latest standalone Linux release (a single executable with the Bun runtime bundled), checked against the release's `SHA256SUMS` and installed under `/opt/pi`. To build a specific release, set the `PI_VERSION` build arg (e.g. `1.2.0`). `pi update` does not apply inside the image; rebuild it without the layer cache to pick up a new release.
 
-The image has no Node.js or npm. Debian stable's `nodejs` is older than the 22.19 Pi requires, and the standalone build doesn't need it. If your agent runs `npm install` in the workspace, or you install Pi packages from npm (`pi install npm:...`), add Node.js to the `Containerfile`. The agent runs as `node` (uid/gid 1000, home `/home/node`), the same user as on the earlier `node:22-slim` base.
+The image has no Node.js or npm. Debian stable's `nodejs` is older than the 22.19 Pi requires, and the standalone build doesn't need it. If your agent runs `npm install` in the workspace, or you install Pi packages from npm (`pi install npm:...`), add Node.js to the `Containerfile`. The agent runs as `agent` (uid/gid 1000, home `/home/agent`). Images built before this release ran as `node` with home `/home/node`; the uid is unchanged, but mount targets move to `/home/agent/...`.
 
 ### Volumes
 
 The scaffold mounts two paths from the host:
 
 - `${PROJECT_DIR}:/workspace:rw` -- your project directory (set by `agentcage init`)
-- `~/.pi:/home/node/.pi:rw` -- Pi global config, auth, and session state
+- `~/.pi:/home/agent/.pi:rw` -- Pi global config, auth, and session state
 
 Remove the `~/.pi` mount to fully isolate the cage from host state. Git config and SSH known hosts mounts are commented out in `cage.yaml` -- uncomment them if you need git push.
 

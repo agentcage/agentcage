@@ -2,11 +2,11 @@
 # can pick up its security fixes (build it with --pull=newer).
 FROM docker.io/library/debian:stable-slim
 
-# The unprivileged user nested podman runs as, with the ids and home the
-# former node:22-slim base gave it: uid/gid 1000, /home/node.
-RUN groupadd -g 1000 node \
- && useradd -m -d /home/node -u 1000 -g 1000 -s /bin/bash node \
- && chmod 0755 /home/node
+# The unprivileged user nested podman runs as: `agent`, uid/gid 1000,
+# home /home/agent (the uid the former node:22-slim base's `node` user had).
+RUN groupadd -g 1000 agent \
+ && useradd -m -d /home/agent -u 1000 -g 1000 -s /bin/bash agent \
+ && chmod 0755 /home/agent
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         podman \
@@ -17,15 +17,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         passt \
     && rm -rf /var/lib/apt/lists/*
 
-# Allow rootless podman for the node user (uid 1000). Debian's useradd
-# already allocates node:100000:65536; add it only if it did not, since a
+# Allow rootless podman for the agent user (uid 1000). Debian's useradd
+# already allocates agent:100000:65536; add it only if it did not, since a
 # second, overlapping range makes newuidmap fail.
-RUN grep -q "^node:" /etc/subuid || echo "node:100000:65536" >> /etc/subuid; \
-    grep -q "^node:" /etc/subgid || echo "node:100000:65536" >> /etc/subgid
+RUN grep -q "^agent:" /etc/subuid || echo "agent:100000:65536" >> /etc/subuid; \
+    grep -q "^agent:" /etc/subgid || echo "agent:100000:65536" >> /etc/subgid
 
 # Create user-level containers config so rootless podman uses the
 # bind-mounted /var/lib/containers volume instead of ~/.local/share
-RUN mkdir -p /home/node/.config/containers \
+RUN mkdir -p /home/agent/.config/containers \
  && printf '[storage]\ndriver = "overlay"\ngraphroot = "/var/lib/containers/storage"\nrunroot = "/run/containers/storage"\n\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
-    > /home/node/.config/containers/storage.conf \
- && chown -R node:node /home/node/.config
+    > /home/agent/.config/containers/storage.conf \
+ && chown -R agent:agent /home/agent/.config

@@ -99,7 +99,7 @@ See [Troubleshooting](../../../../docs/how-to/troubleshooting.md) for diagnosing
 The scaffold mounts two paths from the host:
 
 - `${PROJECT_DIR}:/workspace:rw` -- your project directory (set by `agentcage init`)
-- `~/.codex:/home/node/.codex:rw` -- Codex settings and state
+- `~/.codex:/home/agent/.codex:rw` -- Codex settings and state
 
 Remove the `~/.codex` mount to fully isolate the cage from host state. Git config and SSH known hosts mounts are commented out in `cage.yaml` -- uncomment them if you need git push.
 
@@ -118,9 +118,11 @@ which you can check on the host with `cosign verify-blob`.
 
 Codex's own update prompt does not apply inside the cage: to update Codex,
 rebuild the image without the layer cache (`agentcage cage update --pull
---no-cache`, which also refreshes the Debian base). The image runs as `node`
-(UID/GID 1000, home `/home/node`), the same user the earlier `node:22-slim`
-base provided, so existing `~/.codex:/home/node/.codex` mounts keep working.
+--no-cache`, which also refreshes the Debian base). The image runs as `agent`
+(UID/GID 1000, home `/home/agent`). Images built before this release ran as
+`node` with home `/home/node`; the uid is the same, so host file ownership
+carries over, but mount targets such as `~/.codex:/home/node/.codex` must
+move to `/home/agent/...`.
 It also has `git`, `curl`, `openssh-client`, `build-essential`, `python3`,
 `ripgrep` and `fd`. If your workflow needs Node.js, add Debian's `nodejs` and
 `npm` packages to the `apt-get install` line.

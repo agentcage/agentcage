@@ -11,7 +11,7 @@
 #   A — Interactive login inside the cage (subscription providers):
 #     agentcage cage exec {{ name }} -- pi
 #     # then type /login at the prompt
-#     # credentials are saved under /home/node/.pi in the cage's writable
+#     # credentials are saved under /home/agent/.pi in the cage's writable
 #     # layer. To persist them across image rebuilds, uncomment the ~/.pi
 #     # host mount in `volumes` below — see security note there.
 #
@@ -51,10 +51,10 @@ container:
     # across sessions. Disabled by default: the host ~/.pi tree contains
     # credentials and per-session state that the cage shouldn't see or be
     # able to mutate. Prefer in-cage `/login` (volume-backed).
-    #- "~/.pi:/home/node/.pi:rw"
+    #- "~/.pi:/home/agent/.pi:rw"
   #  # Git config (uncomment to enable)
-  #  - "~/.gitconfig:/home/node/.gitconfig:ro"
-  #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
+  #  - "~/.gitconfig:/home/agent/.gitconfig:ro"
+  #  - "~/.ssh/known_hosts:/home/agent/.ssh/known_hosts:ro"
 
   # Map host UID into container so mounted files have correct ownership
   userns: "keep-id"
