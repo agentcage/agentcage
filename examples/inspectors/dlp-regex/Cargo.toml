@@ -17,3 +17,6 @@ agentcage-inspector-sdk = { path = "../../../rust/agentcage-inspector-sdk" }
 # Linear-time matching: no pattern can be turned into a CPU bomb by the
 # traffic it scans, which matters under the egress's per-call fuel budget.
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+
+[lints.rust]
+unsafe_code = "forbid"

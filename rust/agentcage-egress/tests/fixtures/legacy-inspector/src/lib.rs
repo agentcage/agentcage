@@ -10,6 +10,11 @@ mod bindings {
         path: "wit",
         world: "inspector",
     });
+
+    // Inside this module so the `extern "C"` entry points it expands to
+    // fall under the `unsafe_code` allow above.
+    use super::Legacy;
+    export!(Legacy with_types_in crate::bindings);
 }
 
 use bindings::agentcage::inspector::types as abi;
@@ -38,5 +43,3 @@ impl bindings::Guest for Legacy {
         flag("response", &ctx)
     }
 }
-
-bindings::export!(Legacy with_types_in bindings);

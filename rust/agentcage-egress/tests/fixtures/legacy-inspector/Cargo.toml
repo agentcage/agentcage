@@ -16,3 +16,6 @@ crate-type = ["cdylib", "rlib"]
 # SDK (which follows the live world): the component this builds has the
 # exports a 1.0.0 plugin has, and no `phases`.
 wit-bindgen = { version = "0.62", default-features = false, features = ["macros", "realloc"] }
+
+[lints.rust]
+unsafe_code = "deny"
