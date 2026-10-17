@@ -366,17 +366,17 @@ fn replace_tree(
     dest: &Path,
     build: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), ExitCode> {
-    if dest.exists() {
-        if let Err(error) = std::fs::remove_dir_all(dest) {
-            eprintln!("error: {}: {error}", dest.display());
-            return Err(ExitCode::from(EXIT_FAILURE));
-        }
+    if dest.exists()
+        && let Err(error) = std::fs::remove_dir_all(dest)
+    {
+        eprintln!("error: {}: {error}", dest.display());
+        return Err(ExitCode::from(EXIT_FAILURE));
     }
-    if let Some(parent) = dest.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            eprintln!("error: {}: {error}", parent.display());
-            return Err(ExitCode::from(EXIT_FAILURE));
-        }
+    if let Some(parent) = dest.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("error: {}: {error}", parent.display());
+        return Err(ExitCode::from(EXIT_FAILURE));
     }
     build(dest).map_err(|error| {
         eprintln!("error: {}: {error}", dest.display());

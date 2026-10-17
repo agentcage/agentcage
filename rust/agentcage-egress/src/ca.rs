@@ -45,16 +45,16 @@ pub const CA_KEY_FILE: &str = "ca-key.pem";
 pub const CA_CERT_FILE: &str = "ca-cert.pem";
 
 /// How long the CA is valid for, counted from [`VALIDITY_OFFSET`] ago.
-const CA_VALIDITY: Duration = Duration::from_secs(10 * 365 * 86_400);
+const CA_VALIDITY: Duration = Duration::from_hours(87600);
 /// How long a leaf is valid for, counted from [`VALIDITY_OFFSET`] ago.
-const LEAF_VALIDITY: Duration = Duration::from_secs(199 * 86_400);
+const LEAF_VALIDITY: Duration = Duration::from_hours(4776);
 /// Backdating, for clients whose clock runs behind.
-const VALIDITY_OFFSET: Duration = Duration::from_secs(2 * 86_400);
+const VALIDITY_OFFSET: Duration = Duration::from_hours(48);
 /// Leaves kept in the cache; the oldest-used one is evicted past this.
 const LEAF_CACHE_CAP: usize = 100;
 /// A cached leaf is re-minted after this long, well inside its validity,
 /// so a long-running egress never serves an expired certificate.
-const LEAF_REFRESH: Duration = Duration::from_secs(7 * 86_400);
+const LEAF_REFRESH: Duration = Duration::from_hours(168);
 /// The X.509 upper bound on a common name (`ub-common-name`).
 const CN_MAX: usize = 64;
 

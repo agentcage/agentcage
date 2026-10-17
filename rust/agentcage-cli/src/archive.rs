@@ -257,10 +257,10 @@ pub fn write_targz(dest: &Path, members: &[Member]) -> io::Result<()> {
     }
     let raw = tar.into_inner()?;
 
-    if let Some(parent) = dest.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = dest.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
     let file = fs::File::create(dest)?;
     // `mtime(0)` and no filename: the two fields a gzip header carries

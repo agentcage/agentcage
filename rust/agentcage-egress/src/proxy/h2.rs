@@ -118,13 +118,13 @@ pub(crate) fn request_from_h2(
     conn: &ConnInfo,
 ) -> Request {
     let mut headers = to_headers(&head.headers);
-    if let Some(authority) = head.uri.authority() {
-        if !headers.contains("host") {
-            headers.0.insert(
-                0,
-                (b"host".to_vec(), authority.as_str().as_bytes().to_vec()),
-            );
-        }
+    if let Some(authority) = head.uri.authority()
+        && !headers.contains("host")
+    {
+        headers.0.insert(
+            0,
+            (b"host".to_vec(), authority.as_str().as_bytes().to_vec()),
+        );
     }
     let (host, port) = match &conn.server_addr {
         Some(addr) => (addr.host.clone(), addr.port),

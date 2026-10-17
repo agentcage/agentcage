@@ -138,6 +138,9 @@ fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Found>) {
             panic!("could not read an entry of {}: {err}", dir.display());
         });
         let path = entry.path();
+        // Keep the escaped `Debug` form: a lossy `Display` rendering would
+        // hide the very bytes that make the name non-UTF-8.
+        #[allow(clippy::unnecessary_debug_formatting)]
         let name = entry
             .file_name()
             .into_string()

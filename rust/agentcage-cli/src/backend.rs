@@ -345,15 +345,15 @@ impl<'a> ContainerBackend<'a> {
             format!("{name}-certs-volume.service"),
             format!("{name}-public-certs-volume.service"),
         ] {
-            if let Err(error) = self.units.restart(&unit) {
-                if !quiet {
-                    let what = if unit.ends_with("-net-network.service") {
-                        "network service"
-                    } else {
-                        "volume service"
-                    };
-                    eprintln!("warning: failed to restart {what}: {error}");
-                }
+            if let Err(error) = self.units.restart(&unit)
+                && !quiet
+            {
+                let what = if unit.ends_with("-net-network.service") {
+                    "network service"
+                } else {
+                    "volume service"
+                };
+                eprintln!("warning: failed to restart {what}: {error}");
             }
         }
         if self.units.has_podman_storage_volume(name) {

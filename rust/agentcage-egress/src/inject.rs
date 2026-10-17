@@ -504,7 +504,7 @@ fn rewrite_base64(mut data: Vec<u8>, core: &[u8], raw: &[u8], ph_raw: &[u8]) -> 
             // Re-encoded padded if the blob was, and when it needed no
             // padding (a multiple of four characters): standard base64 is
             // padded (`Authorization: Basic`), URL-safe usually not (JWT).
-            let padded = pad_end > end || (!urlsafe && (end - start) % 4 == 0);
+            let padded = pad_end > end || (!urlsafe && (end - start).is_multiple_of(4));
             if let Some(new) = replace_in_base64(&data[start..end], raw, ph_raw, urlsafe, padded) {
                 let mut out = data[..start].to_vec();
                 out.extend_from_slice(&new);
@@ -659,18 +659,18 @@ impl SecretForms {
     fn redact_derived<'a>(&self, data: Cow<'a, [u8]>) -> (Cow<'a, [u8]>, bool) {
         let mut data = data;
         let mut found = false;
-        if let Some(pattern) = &self.pattern {
-            if self.anchor.as_deref().is_none_or(|a| contains(&data, a)) {
-                let mut n = 0usize;
-                let replaced = pattern.replace_all(&data, |caps: &Captures<'_>| {
-                    n += 1;
-                    self.placeholder_for(&caps[0])
-                });
-                if n > 0 {
-                    let replaced = replaced.into_owned();
-                    data = Cow::Owned(replaced);
-                    found = true;
-                }
+        if let Some(pattern) = &self.pattern
+            && self.anchor.as_deref().is_none_or(|a| contains(&data, a))
+        {
+            let mut n = 0usize;
+            let replaced = pattern.replace_all(&data, |caps: &Captures<'_>| {
+                n += 1;
+                self.placeholder_for(&caps[0])
+            });
+            if n > 0 {
+                let replaced = replaced.into_owned();
+                data = Cow::Owned(replaced);
+                found = true;
             }
         }
         for core in &self.b64_cores {
@@ -1573,11 +1573,11 @@ impl Injector {
             }
             found |= redact_headers(&mut req.headers, &forms);
             let content = body.get(&req.headers, &req.body)?;
-            if !content.is_empty() {
-                if let Some(new) = forms.redact(content) {
-                    body.set(new);
-                    found = true;
-                }
+            if !content.is_empty()
+                && let Some(new) = forms.redact(content)
+            {
+                body.set(new);
+                found = true;
             }
             if found && !names.contains(&forms.name) {
                 names.push(forms.name.clone());
@@ -1621,11 +1621,11 @@ impl Injector {
             for forms in self.redaction_forms() {
                 let mut found = redact_headers(&mut resp.headers, &forms);
                 let content = body.get(&resp.headers, &resp.body)?;
-                if !content.is_empty() {
-                    if let Some(new) = forms.redact(content) {
-                        body.set(new);
-                        found = true;
-                    }
+                if !content.is_empty()
+                    && let Some(new) = forms.redact(content)
+                {
+                    body.set(new);
+                    found = true;
                 }
                 if found && !names.contains(&forms.name) {
                     names.push(forms.name.clone());

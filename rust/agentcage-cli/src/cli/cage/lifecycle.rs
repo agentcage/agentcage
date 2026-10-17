@@ -434,17 +434,16 @@ pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 
     // Remove a pre-rework grants watcher BEFORE stopping the cage, so a
     // vm cage's in-guest cleanup can still run.
-    if ctx.paths.deployment_exists(&name) {
-        if let Ok(config) = ctx
+    if ctx.paths.deployment_exists(&name)
+        && let Ok(config) = ctx
             .paths
             .load_deployment_config(&name, &agentcage_cli::hostenv::RealHost)
-        {
-            agentcage_cli::legacy_watcher::remove_legacy_grants_watcher(
-                ctx.runner.as_ref(),
-                &config.name,
-                &config.isolation,
-            );
-        }
+    {
+        agentcage_cli::legacy_watcher::remove_legacy_grants_watcher(
+            ctx.runner.as_ref(),
+            &config.name,
+            &config.isolation,
+        );
     }
 
     let removed = destroy_cage(ctx, &name, keep_secrets, true);

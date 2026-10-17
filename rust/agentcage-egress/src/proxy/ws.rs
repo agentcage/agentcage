@@ -91,11 +91,11 @@ pub(crate) async fn relay<H: FlowHandler>(
             }
             Message::Frame(_) => None,
         };
-        if let Some(outgoing) = outgoing {
-            if let Err(e) = dst.send(outgoing).await {
-                let _ = src.close(None).await;
-                break FlowEnd::Aborted(format!("WebSocket error: {e}"));
-            }
+        if let Some(outgoing) = outgoing
+            && let Err(e) = dst.send(outgoing).await
+        {
+            let _ = src.close(None).await;
+            break FlowEnd::Aborted(format!("WebSocket error: {e}"));
         }
     };
     shared.handler.flow_end(conn, flow, end);

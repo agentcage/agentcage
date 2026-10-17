@@ -475,10 +475,10 @@ impl<'a> VmBackend<'a> {
 
     /// The guest's `$HOME`, cached per cage name.
     fn guest_home(&self, name: &str) -> Result<String, ExecError> {
-        if let Ok(cache) = self.guest_home.lock() {
-            if let Some(home) = cache.get(name) {
-                return Ok(home.clone());
-            }
+        if let Ok(cache) = self.guest_home.lock()
+            && let Some(home) = cache.get(name)
+        {
+            return Ok(home.clone());
         }
         let home = self.probe_guest_home(name)?;
         if let Ok(mut cache) = self.guest_home.lock() {
@@ -1039,10 +1039,11 @@ impl<'a> VmBackend<'a> {
             if !enabled {
                 continue;
             }
-            if let Some((_, var)) = api_key.split_once(':') {
-                if !var.is_empty() && !wanted.iter().any(|name| name == var) {
-                    wanted.push(var.to_owned());
-                }
+            if let Some((_, var)) = api_key.split_once(':')
+                && !var.is_empty()
+                && !wanted.iter().any(|name| name == var)
+            {
+                wanted.push(var.to_owned());
             }
         }
 
@@ -1656,22 +1657,22 @@ impl<'a> VmBackend<'a> {
         drop(phase);
         built?;
 
-        if let Some(config) = config {
-            if !config.container.image.is_empty() {
-                if config.container.build.containerfile.is_empty() {
-                    println!("Pulling {} inside VM...", config.container.image);
-                    let phase = crate::timing::Phase::start("pull.cage", Some(deploy_name));
-                    let _ = instance.exec(
-                        &["podman", "pull", &config.container.image].map(str::to_string),
-                        false,
-                    );
-                    drop(phase);
-                } else {
-                    let phase = crate::timing::Phase::start("build.cage", Some(deploy_name));
-                    let built = self.build_cage_image_in_vm(&instance, config, deploy_name, &flags);
-                    drop(phase);
-                    built?;
-                }
+        if let Some(config) = config
+            && !config.container.image.is_empty()
+        {
+            if config.container.build.containerfile.is_empty() {
+                println!("Pulling {} inside VM...", config.container.image);
+                let phase = crate::timing::Phase::start("pull.cage", Some(deploy_name));
+                let _ = instance.exec(
+                    &["podman", "pull", &config.container.image].map(str::to_string),
+                    false,
+                );
+                drop(phase);
+            } else {
+                let phase = crate::timing::Phase::start("build.cage", Some(deploy_name));
+                let built = self.build_cage_image_in_vm(&instance, config, deploy_name, &flags);
+                drop(phase);
+                built?;
             }
         }
 

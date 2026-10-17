@@ -618,15 +618,15 @@ impl AppleBackend<'_> {
                 .map(|_| ())
                 .map_err(|error| error.to_string())
             });
-        if let Err(error) = refreshed {
-            if !quiet {
-                output::echo_err(&format!(
-                    "warning: could not refresh DNS config for {name} from the \
+        if let Err(error) = refreshed
+            && !quiet
+        {
+            output::echo_err(&format!(
+                "warning: could not refresh DNS config for {name} from the \
                      current host resolver ({error}); starting with the existing \
                      rendered config — if DNS fails inside the cage, run \
                      `agentcage cage update {name}`"
-                ));
-            }
+            ));
         }
 
         // Clear any stale readiness marker before the first run. The

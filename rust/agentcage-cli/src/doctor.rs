@@ -397,17 +397,17 @@ pub fn check_podman_rootless(runner: &dyn CommandRunner) -> CheckResult {
         .args(["info", "--format", "{{.Host.Security.Rootless}}"])
         .captured()
         .timeout(PODMAN_TIMEOUT);
-    if let Ok(out) = runner.run(&cmd) {
-        if out.success() {
-            if out.stdout_text().trim().to_lowercase() == "true" {
-                return CheckResult::pass("Podman rootless mode");
-            }
-            return CheckResult::new(
-                Level::Warn,
-                "Podman running as root (rootless recommended)",
-                "run podman as a regular user, not root",
-            );
+    if let Ok(out) = runner.run(&cmd)
+        && out.success()
+    {
+        if out.stdout_text().trim().to_lowercase() == "true" {
+            return CheckResult::pass("Podman rootless mode");
         }
+        return CheckResult::new(
+            Level::Warn,
+            "Podman running as root (rootless recommended)",
+            "run podman as a regular user, not root",
+        );
     }
     CheckResult::warn("Could not verify Podman rootless mode")
 }

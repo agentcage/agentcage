@@ -405,7 +405,7 @@ impl Watcher {
         // An infinite interval is a deformed config; sleep "forever"
         // rather than panic on the conversion.
         std::time::Duration::try_from_secs_f64(secs)
-            .unwrap_or(std::time::Duration::from_secs(10 * 365 * 86_400))
+            .unwrap_or(std::time::Duration::from_hours(87600))
     }
 
     /// One scan with a fresh OS seed at the current time.
@@ -549,7 +549,7 @@ impl Watcher {
         self.consec_failures += 1;
         let flows = entries.len();
         self.deps.ring.push_back(entries);
-        if self.consec_failures == 1 || self.consec_failures % 10 == 0 {
+        if self.consec_failures == 1 || self.consec_failures.is_multiple_of(10) {
             let detail = format!(
                 "the watcher agent's LLM call failed (error, timeout, or unusable response); this \
                  window was NOT analyzed and is queued for retry ({} consecutive failures). \

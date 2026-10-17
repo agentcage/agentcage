@@ -89,11 +89,9 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     if had_store {
         let _ = podman.secret_remove(&full);
     }
-    if had_cred {
-        if let Err(error) = std::fs::remove_file(&cred) {
-            eprintln!("error: {}: {error}", cred.display());
-            return Err(ExitCode::from(EXIT_FAILURE));
-        }
+    if had_cred && let Err(error) = std::fs::remove_file(&cred) {
+        eprintln!("error: {}: {error}", cred.display());
+        return Err(ExitCode::from(EXIT_FAILURE));
     }
     if had_at_rest {
         let store = at_rest.as_ref().expect("checked above");

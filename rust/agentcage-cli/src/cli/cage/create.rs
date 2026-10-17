@@ -283,11 +283,11 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 fn resolve_config_argument(matches: &ArgMatches) -> Result<PathBuf, ExitCode> {
     let positional = matches.get_one::<String>("config_pos");
     let flag = matches.get_one::<String>("config_path");
-    if let (Some(positional), Some(flag)) = (positional, flag) {
-        if positional != flag {
-            eprintln!("error: config given both positionally and with -c; specify it once");
-            return Err(ExitCode::from(EXIT_FAILURE));
-        }
+    if let (Some(positional), Some(flag)) = (positional, flag)
+        && positional != flag
+    {
+        eprintln!("error: config given both positionally and with -c; specify it once");
+        return Err(ExitCode::from(EXIT_FAILURE));
     }
     let Some(path) = flag.or(positional) else {
         eprintln!(

@@ -174,11 +174,11 @@ impl StreamRedactor {
         if data.is_empty() {
             return;
         }
-        if let Some(ac) = &self.triggers {
-            if !ac.is_match(&data[..]) {
-                out.push(data);
-                return;
-            }
+        if let Some(ac) = &self.triggers
+            && !ac.is_match(&data[..])
+        {
+            out.push(data);
+            return;
         }
         // Exactly the body half of `Injector::redact_response_body`.
         let mut content: Option<Vec<u8>> = None;
