@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-17
+
+### Fixed
+
+- **`cage destroy --keep-secrets` now actually keeps the cage's secrets at rest.** The whole deployment directory was removed unconditionally, taking `creds/<KEY>.cred` — the container backend's encrypted systemd-creds store — with it, so only the podman secret survived. A later `cage create` re-adopted that secret, but the at-rest store the flag exists to preserve was gone. The directory is now pruned instead, keeping `creds/`, `secret_keys.json` and `pending_secrets.json`; the stored `cage.yaml` still goes, so the leftover directory is not an addressable cage and a recreate re-adopts the kept values.
+
+### Security
+
+- **`rustls` and `wasmtime` are upgraded for RustSec advisories published after the last release.** `rustls` 0.23.45 → 0.23.46 fixes RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349; `wasmtime` 49.0.2 → 49.0.3 fixes RUSTSEC-2026-0353 through RUSTSEC-2026-0364, with `cranelift-*` 0.136.2 → 0.136.3. No `deny.toml` ignores were added. The egress binary changes, so the next `cage update` rebuilds the egress image.
+
 ## [0.52.0] - 2026-10-13
 
 ### Changed
