@@ -51,7 +51,7 @@ exclude = ["rust/agentcage-egress/fuzz"]
 # scripts/check-version.sh exists to notice exactly this kind of drift
 # (against the CHANGELOG too). Keep VERSION as the thing you edit; this follows.
 [workspace.package]
-version = "0.52.1"
+version = "0.52.2"
 edition = "2024"
 # The floor is wasmtime 49, a dependency of agentcage-egress, which needs 1.96.
 rust-version = "1.96"

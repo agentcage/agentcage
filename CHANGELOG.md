@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.2] - 2026-10-17
+
 ### Changed
 
 - **The declared MSRV is now Rust 1.96, matching what the workspace actually needs.** `rust-version` said 1.85, but `wasmtime 49` (a dependency of `agentcage-egress`) requires 1.96, so the resolver under the old floor would have downgraded `time` and other crates to an older tree than the one the workspace builds. The declaration, `install.sh`'s minimum-toolchain check and the install docs now say 1.96.
+
+- **Dependencies are refreshed to the latest Rust 1.96-compatible versions.** With the MSRV floor corrected, a plain `cargo update` no longer downgrades crates to fit a floor the workspace cannot meet. Notable jumps: `pem` 3.0.6 → 4.0.0, `yasna` 0.5.2 → 0.6.0, `wit-bindgen` 0.46.0 → 0.57.1, `wasip2` 1.0.1 → 1.0.4, `time` 0.3.47 → 0.3.55 and `rcgen` 0.14.7 → 0.14.10, alongside patch bumps across the tree. No `deny.toml` ignores were added. The egress binary changes, so the next `cage update` rebuilds the egress image.
 
 ## [0.52.1] - 2026-10-17
 
