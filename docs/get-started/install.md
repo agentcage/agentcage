@@ -11,7 +11,7 @@ agentcage is a single command-line binary, built from source with Rust's `cargo`
 | **Linux Runtime** | Podman 4.4+ (rootless), cgroups v2, systemd | `systemd` 250+ enables encrypted secret storage via `systemd-creds`. |
 | **macOS (Apple Silicon, 26+)** | Apple `container` CLI | Default and fastest backend on modern Apple Silicon Macs (`brew install container`). |
 | **macOS (Intel / Older)** | Lima 0.19+ | MicroVM isolation using Lima (`brew install lima`). |
-| **Rust toolchain** | Rust 1.85+ and a C linker | Build-time only. The installer sets up a minimal toolchain with rustup if none is found. |
+| **Rust toolchain** | Rust 1.96+ and a C linker | Build-time only. The installer sets up a minimal toolchain with rustup if none is found. |
 | **Disk Space** | ≥ 2 GB free in `$HOME` | Used for base container images and per-cage persistent volumes. |
 
 agentcage has no runtime dependencies of its own: once built, the binary needs no interpreter and no Rust toolchain. The network-facing components (the `agentcage-egress` proxy and `dnsmasq`) run inside the isolated egress container image, which agentcage builds automatically on first use. That image is `alpine:3` plus a few utilities and the static `agentcage-egress` binary, which the host binary carries inside it for its own architecture. There is no interpreter anywhere in the product.
@@ -28,7 +28,7 @@ The official installer script inspects your operating system and installed packa
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-If no Rust toolchain is found, the installer sets up a minimal one with [rustup](https://rustup.rs) (into `~/.rustup` and `~/.cargo`, without editing your shell profile). An existing toolchain older than 1.85 is left alone and the installer stops and asks you to run `rustup update stable`. The build takes a few minutes.
+If no Rust toolchain is found, the installer sets up a minimal one with [rustup](https://rustup.rs) (into `~/.rustup` and `~/.cargo`, without editing your shell profile). An existing toolchain older than 1.96 is left alone and the installer stops and asks you to run `rustup update stable`. The build takes a few minutes.
 
 The host binary embeds the static linux-musl `agentcage-egress` binary that goes into each cage's egress image. For a release, the installer downloads the release's prebuilt egress binary for your architecture, checks it against its published SHA-256, and builds the host around it, so the result works out of the box. For a branch (`AGENTCAGE_REF`), there is no release asset, so it builds the egress from source when the musl tooling is available (see [Building from a clone](#building-from-a-clone)), and otherwise stops with an error that says what is missing.
 
@@ -52,7 +52,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ### Option 2: `cargo install` from GitHub
 
-With Rust 1.85+ already installed, build and install the CLI directly. It is not published to crates.io; `cargo` fetches it from the repository:
+With Rust 1.96+ already installed, build and install the CLI directly. It is not published to crates.io; `cargo` fetches it from the repository:
 
 ```bash
 cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.50.0 agentcage-cli

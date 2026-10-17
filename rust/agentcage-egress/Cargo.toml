@@ -120,8 +120,8 @@ clap = { version = "4", features = ["derive", "env"] }
 # runtime, the Cranelift compiler and the component model: no compile
 # cache, no WAT parser, no GC proposals, no async, no profiling, no
 # parallel compilation -- each of those is size or attack surface the
-# egress has no use for. wasmtime 49 needs rustc 1.96, above the
-# workspace's declared 1.85 floor; rust-toolchain.toml tracks stable.
+# egress has no use for. wasmtime 49 needs rustc 1.96, which sets the
+# workspace's declared `rust-version`; rust-toolchain.toml tracks stable.
 wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 
 # Digest of a relay's resolved credentials, so a reload notices a

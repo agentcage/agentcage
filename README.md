@@ -161,7 +161,7 @@ curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.
 ```
 
 It builds agentcage from source with `cargo` (setting up a minimal Rust
-toolchain via rustup if you have none). Or, with Rust 1.85+ installed:
+toolchain via rustup if you have none). Or, with Rust 1.96+ installed:
 
 ```bash
 cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.50.0 agentcage-cli

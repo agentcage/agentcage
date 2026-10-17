@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The declared MSRV is now Rust 1.96, matching what the workspace actually needs.** `rust-version` said 1.85, but `wasmtime 49` (a dependency of `agentcage-egress`) requires 1.96, so the resolver under the old floor would have downgraded `time` and other crates to an older tree than the one the workspace builds. The declaration, `install.sh`'s minimum-toolchain check and the install docs now say 1.96.
+
 ## [0.52.1] - 2026-10-17
 
 ### Fixed
