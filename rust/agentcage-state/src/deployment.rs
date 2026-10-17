@@ -24,7 +24,7 @@
 //! stopped by settings it is about to discard.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use agentcage_core::config::{
     Config, HostProbe, fill_raw_placeholders, placeholder_for, validate_agents_document,
@@ -216,6 +216,37 @@ impl Paths {
     ///
     /// [`StateError::Io`] if the tree exists and cannot be removed.
     pub fn remove_deployment(&self, name: &str) -> Result<()> {
+        self.remove_deployment_inner(name, &[])
+    }
+
+    /// `state.remove_deployment` with the secrets left at rest, for
+    /// `cage destroy --keep-secrets`.
+    ///
+    /// The deployment directory survives carrying only the secret-at-rest
+    /// files — `creds/`, `secret_keys.json`, `pending_secrets.json` — so a
+    /// later `cage create` reads the values it kept. Everything else goes,
+    /// including the staged `cage.yaml`, which is what makes
+    /// [`Paths::deployment_exists`] false afterwards: a cage that is only a
+    /// directory is not addressable.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::Io`] if the tree exists and cannot be pruned.
+    pub fn remove_deployment_keeping_secrets(&self, name: &str) -> Result<()> {
+        let keep = [
+            self.creds_dir(name),
+            self.secret_keys_path(name),
+            self.pending_secrets_path(name),
+        ];
+        self.remove_deployment_inner(name, &keep)
+    }
+
+    /// The shared teardown behind [`Paths::remove_deployment`] and
+    /// [`Paths::remove_deployment_keeping_secrets`].
+    ///
+    /// `keep` names paths that survive; an empty slice removes the whole
+    /// directory, which is the default and cheapest path.
+    fn remove_deployment_inner(&self, name: &str, keep: &[PathBuf]) -> Result<()> {
         // The staged inspector plugins are part of the deployment, not
         // of the data the cage produced (capture, grants), so they go
         // with it.
@@ -228,7 +259,25 @@ impl Paths {
         if !dir.is_dir() {
             return Ok(());
         }
-        fs::remove_dir_all(&dir).map_err(|e| StateError::io(&dir, "remove directory", e))
+        if keep.is_empty() {
+            return fs::remove_dir_all(&dir)
+                .map_err(|e| StateError::io(&dir, "remove directory", e));
+        }
+        let entries = fs::read_dir(&dir).map_err(|e| StateError::io(&dir, "read directory", e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| StateError::io(&dir, "read directory", e))?;
+            let path = entry.path();
+            if keep.iter().any(|kept| kept == &path) {
+                continue;
+            }
+            let result = if path.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+            result.map_err(|e| StateError::io(&path, "remove path", e))?;
+        }
+        Ok(())
     }
 
     /// `state.fill_placeholders` — mint a token for every injection
@@ -407,6 +456,49 @@ mod tests {
         assert!(!paths.deployment_exists("x"));
         // A second removal is not an error.
         paths.remove_deployment("x").unwrap();
+    }
+
+    #[test]
+    fn remove_deployment_keeping_secrets_leaves_the_secret_store() {
+        let (_dir, paths) = sandbox();
+        write_cage(&paths, "x", "name: x\n");
+        let dir = paths.deployment_dir("x");
+        // The secret-at-rest files `--keep-secrets` must preserve.
+        fs::create_dir_all(paths.creds_dir("x")).unwrap();
+        fs::write(
+            paths.cred_path("x", "OPENROUTER_API_KEY"),
+            b"encrypted blob",
+        )
+        .unwrap();
+        fs::write(paths.secret_keys_path("x"), "[\"OPENROUTER_API_KEY\"]").unwrap();
+        fs::write(paths.pending_secrets_path("x"), "[]").unwrap();
+        // Deploy-time state that must go.
+        fs::write(dir.join("metadata.json"), "{}").unwrap();
+        fs::create_dir_all(dir.join("cage-env")).unwrap();
+        fs::write(dir.join("cage-env/placeholders.env"), "X=1\n").unwrap();
+
+        paths.remove_deployment_keeping_secrets("x").unwrap();
+
+        assert!(
+            !paths.deployment_exists("x"),
+            "the stored cage.yaml must go"
+        );
+        assert!(paths.cred_path("x", "OPENROUTER_API_KEY").is_file());
+        assert!(paths.secret_keys_path("x").is_file());
+        assert!(paths.pending_secrets_path("x").is_file());
+        assert!(!dir.join("metadata.json").exists());
+        assert!(!dir.join("cage-env").exists());
+        // The directory survives, but with no `cage.yaml` it is not a cage.
+        assert_eq!(paths.list_deployments().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn remove_deployment_keeping_secrets_is_idempotent() {
+        let (_dir, paths) = sandbox();
+        write_cage(&paths, "x", "name: x\n");
+        paths.remove_deployment_keeping_secrets("x").unwrap();
+        paths.remove_deployment_keeping_secrets("x").unwrap();
+        assert!(!paths.deployment_exists("x"));
     }
 
     #[test]
