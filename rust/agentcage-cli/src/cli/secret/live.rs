@@ -303,12 +303,11 @@ pub(crate) fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<()
     //
     // Best-effort: a guest that cannot be reached is a reason to do
     // less, not to report that the secret was not stored.
-    if config.isolation == "vm" {
-        if let Some(vm) = backend.as_vm() {
-            if let Err(error) = vm.push_quadlets(cage) {
-                eprintln!("warning: could not push converged units into the guest: {error}");
-            }
-        }
+    if config.isolation == "vm"
+        && let Some(vm) = backend.as_vm()
+        && let Err(error) = vm.push_quadlets(cage)
+    {
+        eprintln!("warning: could not push converged units into the guest: {error}");
     }
     Ok(())
 }

@@ -239,12 +239,12 @@ pub(crate) fn validate_framing(
                 "unexpected HTTP transfer-encoding {shown:?} for {version}"
             ));
         }
-        if let Some(code) = status {
-            if (100..=199).contains(&code) || code == 204 {
-                return Err(format!(
-                    "unexpected HTTP transfer-encoding {shown:?} for response with status code {code}"
-                ));
-            }
+        if let Some(code) = status
+            && ((100..=199).contains(&code) || code == 204)
+        {
+            return Err(format!(
+                "unexpected HTTP transfer-encoding {shown:?} for response with status code {code}"
+            ));
         }
         let parsed = parse_transfer_encoding(te[0])?;
         if status.is_none() && !parsed.ends_with("chunked") {

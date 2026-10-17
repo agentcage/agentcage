@@ -277,11 +277,11 @@ fn staged_asset_sources(containerfile: &Path, scaffold: &str) -> Vec<(String, Ca
     if scaffold.is_empty() {
         return out;
     }
-    if let Some(bytes) = canonical("AGENTS.md") {
-        if copy_references(containerfile, "AGENTS.md") && !context_ships(containerfile, "AGENTS.md")
-        {
-            out.push(("AGENTS.md".to_owned(), Canonical::File(bytes)));
-        }
+    if let Some(bytes) = canonical("AGENTS.md")
+        && copy_references(containerfile, "AGENTS.md")
+        && !context_ships(containerfile, "AGENTS.md")
+    {
+        out.push(("AGENTS.md".to_owned(), Canonical::File(bytes)));
     }
     let files = canonical_skill();
     if files.iter().any(|(path, _)| path == "SKILL.md")

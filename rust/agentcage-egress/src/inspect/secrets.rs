@@ -399,10 +399,11 @@ impl Inspector for SecretsInspector {
         let mut targets: Vec<&str> = Vec::with_capacity(ctx.headers.len() + 2);
         targets.push(&ctx.url);
         targets.extend(ctx.headers.iter().map(|(_, v)| v.as_str()));
-        if let Some(text) = ctx.body_text.as_deref() {
-            if !text.is_empty() && !is_binary_body_content_type(&ctx.content_type) {
-                targets.push(text);
-            }
+        if let Some(text) = ctx.body_text.as_deref()
+            && !text.is_empty()
+            && !is_binary_body_content_type(&ctx.content_type)
+        {
+            targets.push(text);
         }
         let host = ctx.host.to_lowercase();
         for (name, matcher) in &self.patterns {

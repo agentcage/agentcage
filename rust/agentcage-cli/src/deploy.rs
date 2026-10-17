@@ -41,16 +41,16 @@ pub fn image_identity(inspect: Option<&serde_json::Value>) -> String {
         return "unavailable".to_owned();
     };
     for key in ["RepoDigests", "repoDigests"] {
-        if let Some(serde_json::Value::Array(values)) = map.get(key) {
-            if !values.is_empty() {
-                let mut strings: Vec<String> = values.iter().map(value_to_str).collect();
-                strings.sort();
-                // Spaced JSON, as earlier releases wrote it into
-                // `fingerprint.json`: a space after each comma.
-                return serde_json::to_string(&strings)
-                    .unwrap_or_default()
-                    .replace("\",\"", "\", \"");
-            }
+        if let Some(serde_json::Value::Array(values)) = map.get(key)
+            && !values.is_empty()
+        {
+            let mut strings: Vec<String> = values.iter().map(value_to_str).collect();
+            strings.sort();
+            // Spaced JSON, as earlier releases wrote it into
+            // `fingerprint.json`: a space after each comma.
+            return serde_json::to_string(&strings)
+                .unwrap_or_default()
+                .replace("\",\"", "\", \"");
         }
     }
     for key in ["Digest", "digest", "Id", "ID", "id"] {
@@ -114,12 +114,11 @@ pub fn containerfile_text_image_refs(
 ) -> BTreeSet<String> {
     let mut args: Vec<(String, String)> = resolved_args.to_vec();
     for line in content.lines() {
-        if let Some((name, default)) = parse_arg(line) {
-            if !args.iter().any(|(key, _)| key == &name) {
-                if let Some(default) = default {
-                    args.push((name, default));
-                }
-            }
+        if let Some((name, default)) = parse_arg(line)
+            && !args.iter().any(|(key, _)| key == &name)
+            && let Some(default) = default
+        {
+            args.push((name, default));
         }
     }
 

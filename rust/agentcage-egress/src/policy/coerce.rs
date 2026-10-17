@@ -275,10 +275,10 @@ fn decode_json_bytes(b: &[u8]) -> Option<String> {
 }
 
 fn utf16(b: &[u8], big_endian: bool) -> Option<String> {
-    if b.len() % 2 != 0 {
+    if !b.len().is_multiple_of(2) {
         return None;
     }
-    let units = b.chunks_exact(2).map(|c| {
+    let units = b.as_chunks::<2>().0.iter().map(|c| {
         if big_endian {
             u16::from_be_bytes([c[0], c[1]])
         } else {
@@ -291,10 +291,12 @@ fn utf16(b: &[u8], big_endian: bool) -> Option<String> {
 }
 
 fn utf32(b: &[u8], big_endian: bool) -> Option<String> {
-    if b.len() % 4 != 0 {
+    if !b.len().is_multiple_of(4) {
         return None;
     }
-    b.chunks_exact(4)
+    b.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| {
             let code = if big_endian {
                 u32::from_be_bytes([c[0], c[1], c[2], c[3]])

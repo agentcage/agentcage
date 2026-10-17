@@ -244,7 +244,7 @@ pub fn redact_stream(data: &[u8]) {
         .collect();
     let inj = injector(secrets);
     let mut headers = Headers::new();
-    if input.byte() % 4 == 0 {
+    if input.byte().is_multiple_of(4) {
         let value = &values[input.below(values.len())];
         headers.add("X-Echo", spelling(value, input.byte()));
     }

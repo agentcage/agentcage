@@ -100,10 +100,10 @@ pub fn resolve_scaffold_build_args(
 /// `registry._resolve_one(current, current, resolver)`.
 fn resolve_one_declared(runner: &dyn CommandRunner, current: &str) -> String {
     // `if ":" in scaffold_val and scaffold_tag` — the author's pin.
-    if let Some((_, tag)) = current.rsplit_once(':') {
-        if !tag.is_empty() {
-            return current.to_owned();
-        }
+    if let Some((_, tag)) = current.rsplit_once(':')
+        && !tag.is_empty()
+    {
+        return current.to_owned();
     }
     // `scaffold_val.split(":", 1)[0]` — everything before the first
     // colon, which for a trailing-colon value drops the colon too.
@@ -120,10 +120,10 @@ fn resolve_one_declared(runner: &dyn CommandRunner, current: &str) -> String {
 fn resolve_one(runner: &dyn CommandRunner, current: &str) -> String {
     // `_, _, tag = current.rpartition(":")` then `if ":" in current and
     // tag` — a trailing colon is *not* a pin.
-    if let Some((_, tag)) = current.rsplit_once(':') {
-        if !tag.is_empty() {
-            return current.to_owned();
-        }
+    if let Some((_, tag)) = current.rsplit_once(':')
+        && !tag.is_empty()
+    {
+        return current.to_owned();
     }
     if !current.contains('/') {
         return current.to_owned();

@@ -109,10 +109,10 @@ pub fn publish_env(name: &str, value: &str) {
 /// `os.environ.get(name)`, overlay first.
 #[must_use]
 pub fn env_var(name: &str) -> Option<String> {
-    if let Ok(map) = overlay().lock() {
-        if let Some(value) = map.get(name) {
-            return Some(value.clone());
-        }
+    if let Ok(map) = overlay().lock()
+        && let Some(value) = map.get(name)
+    {
+        return Some(value.clone());
     }
     std::env::var(name).ok()
 }

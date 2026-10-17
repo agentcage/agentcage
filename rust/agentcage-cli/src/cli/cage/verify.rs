@@ -232,10 +232,9 @@ fn blocked_domain_status(podman: &Podman<'_>, cage: &str) -> Option<String> {
              .then(r=>console.log(r.status))\
              .catch(()=>console.log('000'))",
         ]),
-    ) {
-        if let Some(status) = non_empty(output.trim()) {
-            return Some(status);
-        }
+    ) && let Some(status) = non_empty(output.trim())
+    {
+        return Some(status);
     }
 
     if let Ok((0, output)) = podman.container_exec(

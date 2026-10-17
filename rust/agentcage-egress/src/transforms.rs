@@ -478,10 +478,10 @@ impl Transform for GoogleJwtBearer {
         let now = self.clock.wall();
         #[allow(clippy::cast_precision_loss)]
         let margin = self.refresh_margin as f64;
-        if let Some(token) = &state.cached_token {
-            if now + margin < state.cached_expiry {
-                return Ok(token.clone());
-            }
+        if let Some(token) = &state.cached_token
+            && now + margin < state.cached_expiry
+        {
+            return Ok(token.clone());
         }
         let allowed = self
             .bucket

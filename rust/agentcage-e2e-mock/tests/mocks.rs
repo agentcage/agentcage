@@ -181,11 +181,11 @@ fn smtp_session(addr: &str, script: &[&str], abort_after_data: Option<&str>) -> 
     for cmd in script {
         w.write_all(format!("{cmd}\r\n").as_bytes()).unwrap();
         replies.push(read_reply(&mut r));
-        if *cmd == "DATA" {
-            if let Some(partial) = abort_after_data {
-                w.write_all(partial.as_bytes()).unwrap();
-                return replies;
-            }
+        if *cmd == "DATA"
+            && let Some(partial) = abort_after_data
+        {
+            w.write_all(partial.as_bytes()).unwrap();
+            return replies;
         }
     }
     replies

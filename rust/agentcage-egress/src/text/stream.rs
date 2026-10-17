@@ -310,10 +310,10 @@ impl StreamDecoder {
         trailer.extend_from_slice(&input[..take]);
         if trailer.len() < need {
             // A gzip CRC is checked as soon as it is complete.
-            if let Check::Gzip(crc, _) = &check {
-                if trailer.len() >= 4 {
-                    self.check_crc(crc, &trailer)?;
-                }
+            if let Check::Gzip(crc, _) = &check
+                && trailer.len() >= 4
+            {
+                self.check_crc(crc, &trailer)?;
             }
             return Ok((State::Trailer(trailer, check), take));
         }

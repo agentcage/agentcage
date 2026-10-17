@@ -1001,10 +1001,10 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         if let Err(error) = backend.destroy_resources(&target, false) {
             eprintln!("warning: {error}");
         }
-        if ctx.paths.deployment_exists(&target) {
-            if let Err(error) = ctx.paths.remove_deployment(&target) {
-                eprintln!("warning: {error}");
-            }
+        if ctx.paths.deployment_exists(&target)
+            && let Err(error) = ctx.paths.remove_deployment(&target)
+        {
+            eprintln!("warning: {error}");
         }
     }
 
@@ -1200,10 +1200,10 @@ fn restore_apple(
         if let Err(error) = backend.destroy_resources(target, false) {
             eprintln!("warning: {error}");
         }
-        if ctx.paths.deployment_exists(target) {
-            if let Err(error) = ctx.paths.remove_deployment(target) {
-                eprintln!("warning: {error}");
-            }
+        if ctx.paths.deployment_exists(target)
+            && let Err(error) = ctx.paths.remove_deployment(target)
+        {
+            eprintln!("warning: {error}");
         }
     }
 
@@ -1244,10 +1244,10 @@ fn restore_apple(
     }
     for sub in ["capture", "audit"] {
         let source = backup_dir.join(format!("{sub}/{sub}.jsonl"));
-        if source.is_file() {
-            if let Err(error) = std::fs::copy(&source, logs_dir.join(format!("{sub}.jsonl"))) {
-                eprintln!("warning: could not restore {sub}.jsonl: {error}");
-            }
+        if source.is_file()
+            && let Err(error) = std::fs::copy(&source, logs_dir.join(format!("{sub}.jsonl")))
+        {
+            eprintln!("warning: could not restore {sub}.jsonl: {error}");
         }
     }
 
@@ -1582,10 +1582,10 @@ fn copy_restored_entry(source: &Path, dest: &Path) {
         return;
     }
 
-    if meta.is_file() {
-        if let Err(error) = std::fs::copy(source, dest) {
-            eprintln!("warning: could not restore {}: {error}", dest.display());
-        }
+    if meta.is_file()
+        && let Err(error) = std::fs::copy(source, dest)
+    {
+        eprintln!("warning: could not restore {}: {error}", dest.display());
     }
 }
 
@@ -1948,11 +1948,11 @@ fn restore_capture(ctx: &Ctx, target: &str, backup_dir: &Path) {
     let dest = ctx.paths.capture_file(target);
     // `state.capture_dir` creates the directory on the way past; the
     // Rust `Paths` accessor is pure, so the mkdir is explicit.
-    if let Some(parent) = dest.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            eprintln!("warning: could not restore capture.jsonl: {error}");
-            return;
-        }
+    if let Some(parent) = dest.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("warning: could not restore capture.jsonl: {error}");
+        return;
     }
     if let Err(error) = std::fs::copy(&source, &dest) {
         eprintln!("warning: could not restore capture.jsonl: {error}");

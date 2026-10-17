@@ -306,18 +306,16 @@ pub(crate) async fn exchange<H: FlowHandler>(
     if resp.status != 101
         && h1::response_has_body(&req.method, resp.status)
         && h1::plain_transfer_coding(&resp.headers)
-    {
-        if let Some(stream) = handler
+        && let Some(stream) = handler
             .response_head(conn, &mut flow, &mut req, &mut resp)
             .await
-        {
-            return Exchanged::Stream {
-                resp,
-                flow,
-                stream,
-                body,
-            };
-        }
+    {
+        return Exchanged::Stream {
+            resp,
+            flow,
+            stream,
+            body,
+        };
     }
     match body.read_all(max, resp_budget).await {
         Ok(bytes) => resp.body = bytes,
@@ -668,10 +666,10 @@ async fn passthrough_decision<H: FlowHandler>(
             names.push(parse_authority(header).0);
         }
     }
-    if let Some(sni) = &info.sni {
-        if handler.is_passthrough(info, &format!("{sni}:{}", server.port)) {
-            names.push(sni.clone());
-        }
+    if let Some(sni) = &info.sni
+        && handler.is_passthrough(info, &format!("{sni}:{}", server.port))
+    {
+        names.push(sni.clone());
     }
     if names.is_empty() {
         return None;

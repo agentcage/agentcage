@@ -185,10 +185,10 @@ impl Scaffolds {
     /// first.
     #[must_use]
     pub fn source(&self, name: &str) -> Source {
-        if let Some(project) = &self.project {
-            if project.join(name).join("cage.yaml.j2").exists() {
-                return Source::Local;
-            }
+        if let Some(project) = &self.project
+            && project.join(name).join("cage.yaml.j2").exists()
+        {
+            return Source::Local;
         }
         if self.user.join(name).join("cage.yaml.j2").exists() {
             return Source::User;
@@ -227,10 +227,10 @@ impl Scaffolds {
     /// `init._scaffold_search_dirs` — the directory roots, in order.
     fn search_dirs(&self) -> Vec<&Path> {
         let mut dirs: Vec<&Path> = Vec::new();
-        if let Some(project) = self.project.as_deref() {
-            if project.is_dir() {
-                dirs.push(project);
-            }
+        if let Some(project) = self.project.as_deref()
+            && project.is_dir()
+        {
+            dirs.push(project);
         }
         if self.user.is_dir() {
             dirs.push(&self.user);

@@ -439,15 +439,15 @@ fn unquote_ascii(run: &str) -> String {
     let mut bytes = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' {
-            if let (Some(hi), Some(lo)) = (
+        if b[i] == b'%'
+            && let (Some(hi), Some(lo)) = (
                 b.get(i + 1).and_then(|c| (*c as char).to_digit(16)),
                 b.get(i + 2).and_then(|c| (*c as char).to_digit(16)),
-            ) {
-                bytes.push(u8::try_from(hi * 16 + lo).unwrap_or_default());
-                i += 3;
-                continue;
-            }
+            )
+        {
+            bytes.push(u8::try_from(hi * 16 + lo).unwrap_or_default());
+            i += 3;
+            continue;
         }
         bytes.push(b[i]);
         i += 1;

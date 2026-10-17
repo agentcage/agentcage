@@ -388,10 +388,9 @@ fn decode_zstd(input: &[u8]) -> Result<Vec<u8>, String> {
         if let (Some(want), Some(got)) = (
             frame_decoder.get_checksum_from_data(),
             frame_decoder.get_calculated_checksum(),
-        ) {
-            if want != got {
-                return Err("checksum mismatch".into());
-            }
+        ) && want != got
+        {
+            return Err("checksum mismatch".into());
         }
         out.extend(frame);
         rest = cursor;
@@ -851,10 +850,10 @@ fn decode_with_codec(content: &[u8], codec: &str) -> Option<String> {
 }
 
 fn decode_utf16(content: &[u8], big: bool) -> Option<String> {
-    if content.len() % 2 != 0 {
+    if !content.len().is_multiple_of(2) {
         return None;
     }
-    let units = content.chunks_exact(2).map(|p| {
+    let units = content.as_chunks::<2>().0.iter().map(|p| {
         if big {
             u16::from_be_bytes([p[0], p[1]])
         } else {
@@ -867,11 +866,13 @@ fn decode_utf16(content: &[u8], big: bool) -> Option<String> {
 }
 
 fn decode_utf32(content: &[u8], big: bool) -> Option<String> {
-    if content.len() % 4 != 0 {
+    if !content.len().is_multiple_of(4) {
         return None;
     }
     content
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|q| {
             let q = [q[0], q[1], q[2], q[3]];
             char::from_u32(if big {

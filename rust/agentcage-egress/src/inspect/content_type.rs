@@ -103,48 +103,48 @@ impl Inspector for ContentTypeInspector {
             }
         }
 
-        if let Some(entropy) = ctx.body_entropy {
-            if entropy > self.entropy_ceiling.value {
+        if let Some(entropy) = ctx.body_entropy
+            && entropy > self.entropy_ceiling.value
+        {
+            let mut v = Verdict::new(
+                NAME,
+                self.action,
+                format!(
+                    "content-type mismatch: {ct} declared but body entropy is {entropy:.2} (expected <{})",
+                    self.entropy_ceiling.text
+                ),
+                Severity::Error,
+            );
+            v.metadata = vec![
+                ("content_type".to_owned(), Json::string(ct)),
+                ("entropy".to_owned(), Json::Float(entropy)),
+                ("ceiling".to_owned(), self.entropy_ceiling.json.clone()),
+            ];
+            return Some(v);
+        }
+
+        if self.detect_base64
+            && let Some(m) = BASE64_RE.find(text)
+        {
+            // `len(match.group())`: code points.
+            let len = m.as_str().chars().count();
+            #[allow(clippy::cast_precision_loss)] // a body length, far below 2^53
+            let long_enough = len as f64 >= self.base64_min_len.value;
+            if long_enough {
                 let mut v = Verdict::new(
                     NAME,
                     self.action,
-                    format!(
-                        "content-type mismatch: {ct} declared but body entropy is {entropy:.2} (expected <{})",
-                        self.entropy_ceiling.text
-                    ),
-                    Severity::Error,
+                    format!("large base64 blob ({len} chars) in {ct} body"),
+                    Severity::Warning,
                 );
                 v.metadata = vec![
                     ("content_type".to_owned(), Json::string(ct)),
-                    ("entropy".to_owned(), Json::Float(entropy)),
-                    ("ceiling".to_owned(), self.entropy_ceiling.json.clone()),
+                    (
+                        "base64_length".to_owned(),
+                        Json::Int(i64::try_from(len).unwrap_or(i64::MAX)),
+                    ),
                 ];
                 return Some(v);
-            }
-        }
-
-        if self.detect_base64 {
-            if let Some(m) = BASE64_RE.find(text) {
-                // `len(match.group())`: code points.
-                let len = m.as_str().chars().count();
-                #[allow(clippy::cast_precision_loss)] // a body length, far below 2^53
-                let long_enough = len as f64 >= self.base64_min_len.value;
-                if long_enough {
-                    let mut v = Verdict::new(
-                        NAME,
-                        self.action,
-                        format!("large base64 blob ({len} chars) in {ct} body"),
-                        Severity::Warning,
-                    );
-                    v.metadata = vec![
-                        ("content_type".to_owned(), Json::string(ct)),
-                        (
-                            "base64_length".to_owned(),
-                            Json::Int(i64::try_from(len).unwrap_or(i64::MAX)),
-                        ),
-                    ];
-                    return Some(v);
-                }
             }
         }
         None

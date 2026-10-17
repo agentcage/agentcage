@@ -431,7 +431,7 @@ impl Scrubber {
     reason = "each shift-and-mask yields one byte by construction"
 )]
 fn base64_decode(blob: &str) -> Option<Vec<u8>> {
-    if blob.len() % 4 != 0 || blob.is_empty() {
+    if !blob.len().is_multiple_of(4) || blob.is_empty() {
         return None;
     }
     let value = |c: u8| -> Option<u32> {

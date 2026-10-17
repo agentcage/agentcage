@@ -23,12 +23,12 @@ pub fn config(data: &[u8]) {
 
     // The host's PyYAML-compatible loader and emitter: a dumped value
     // loads back to one that dumps the same.
-    if let Ok(value) = yaml::load(&text) {
-        if let Ok(dumped) = yaml::dump(&value) {
-            let back = yaml::load(&dumped).expect("the emitter's output loads");
-            let again = yaml::dump(&back).expect("a loaded dump dumps");
-            assert_eq!(again, dumped, "the emitter is not stable");
-        }
+    if let Ok(value) = yaml::load(&text)
+        && let Ok(dumped) = yaml::dump(&value)
+    {
+        let back = yaml::load(&dumped).expect("the emitter's output loads");
+        let again = yaml::dump(&back).expect("a loaded dump dumps");
+        assert_eq!(again, dumped, "the emitter is not stable");
     }
 
     let Ok(cfg) = Config::parse("fuzz", &text) else {

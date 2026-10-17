@@ -230,10 +230,10 @@ impl State {
                 continue;
             }
             let mut exp = self.config.expires.get(suffix).cloned().unwrap_or_default();
-            if exp.is_empty() {
-                if let Some(entry) = self.granted.get(suffix) {
-                    exp = entry_expiry(entry);
-                }
+            if exp.is_empty()
+                && let Some(entry) = self.granted.get(suffix)
+            {
+                exp = entry_expiry(entry);
             }
             if exp.is_empty() {
                 // A permanent entry allows the host whatever else expired.

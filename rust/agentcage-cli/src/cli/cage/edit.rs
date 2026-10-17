@@ -554,10 +554,10 @@ fn edit_text(text: &str) -> Result<Option<String>, String> {
 /// worth an assertion.
 fn resolve_editor(env: &dyn Fn(&str) -> Option<String>) -> String {
     for key in ["VISUAL", "EDITOR"] {
-        if let Some(value) = env(key) {
-            if !value.is_empty() {
-                return value;
-            }
+        if let Some(value) = env(key)
+            && !value.is_empty()
+        {
+            return value;
         }
     }
     for candidate in ["sensible-editor", "vim", "nano"] {
