@@ -492,7 +492,12 @@ fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<St
         });
 
     if ctx.paths.deployment_exists(name) {
-        if let Err(error) = ctx.paths.remove_deployment(name) {
+        let removal = if keep_secrets {
+            ctx.paths.remove_deployment_keeping_secrets(name)
+        } else {
+            ctx.paths.remove_deployment(name)
+        };
+        if let Err(error) = removal {
             eprintln!("warning: {error}");
         } else {
             removed.push(format!("state:{name}"));
