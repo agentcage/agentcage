@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.3] - 2026-10-18
+
+### Security
+
+- **The egress proxy now redacts and policy-matches percent-encoded spellings of a secret.** A value whose bytes are all URL-unreserved (`A-Za-z0-9-._`, e.g. `sk-or-v1-…`) got no escape pattern, so a server echo that percent-encoded those bytes (`%73%6B…`) survived response redaction and decoded back to the secret, and the same encoded spelling slipped past the outbound secret-policy check to a host outside the rule's `inject_to`. Every byte now carries a `%XX` alternative and the response/policy prefilters fire on the literal anchor *or* any `%`. Double percent-encoding (`%25%37…`) is still not matched. The egress binary changes, so the next `cage update` rebuilds the egress image.
+
+### Fixed
+
+- **The fuzz workspace's `Cargo.lock` is refreshed and guarded against drift.** It still pinned `rustls` 0.23.45 and `wasmtime` 49.0.2 (RUSTSEC-2026-0346…0349 and RUSTSEC-2026-0353…0364), which the root lock had already moved past; the fuzz lock now matches the root (`rustls` 0.23.46, `wasmtime` 49.0.3, `cranelift-*` 0.136.3). Because `cargo-fuzz` shells out to a plain `cargo build` with no `--locked`, `.github/workflows/fuzz.yml` now fails the job when the lock is stale before the build or rewritten by it.
+
 ## [0.52.2] - 2026-10-17
 
 ### Changed
