@@ -92,12 +92,19 @@ fn alphabet(forms: &[Arc<SecretForms>]) -> [bool; 256] {
 /// (it may occur anywhere, so every segment goes through redaction).
 fn triggers(forms: &[Arc<SecretForms>]) -> Option<AhoCorasick> {
     let mut needles: Vec<&[u8]> = Vec::new();
+    let mut any_pattern = false;
     for f in forms {
         needles.push(f.raw());
         if f.pattern.is_some() {
+            // A `%XX`-encoded spelling has no literal anchor, so the
+            // prefilter must fire on any `%` (mirrors `may_occur`).
+            any_pattern = true;
             needles.push(f.anchor.as_deref()?);
         }
         needles.extend(f.b64_cores.iter().map(Vec::as_slice));
+    }
+    if any_pattern {
+        needles.push(b"%");
     }
     // Building only fails past the automaton's size limits, far beyond a
     // handful of secrets; redacting every segment is the safe fallback.

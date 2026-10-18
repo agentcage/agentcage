@@ -363,21 +363,28 @@ fn hex_class(number: u32, width: usize) -> String {
 
 /// The regex for one character of a secret, every way it may be spelled,
 /// and whether it has a spelling besides the literal.
+///
+/// Every byte may be spelled `%XX` (either hex case), not only the bytes a
+/// common encoder would escape: percent-encoding a value's unreserved
+/// bytes (`A-Za-z0-9-._`) still decodes to the secret, so the literal-only
+/// spelling is not enough. Bytes that have further spellings also keep
+/// their `+`, `\uXXXX` and short escapes.
 fn char_pattern(ch: char) -> (String, bool) {
     let mut buf = [0u8; 4];
     let raw = ch.encode_utf8(&mut buf).as_bytes();
     let literal = regex::escape(ch.encode_utf8(&mut [0u8; 4]));
+    let percent = raw.iter().fold(String::new(), |mut out, &b| {
+        out.push('%');
+        out.push_str(&hex_class(u32::from(b), 2));
+        out
+    });
     if raw.len() == 1 && unescaped(raw[0]) {
-        return (literal, false);
+        // Anything but the literal begins with `%`, so a run of these
+        // bytes still serves as a prefilter anchor: a match either spells
+        // the run literally or contains a `%`.
+        return (format!("(?:{literal}|{percent})"), true);
     }
-    let mut alts = vec![
-        literal,
-        raw.iter().fold(String::new(), |mut out, &b| {
-            out.push('%');
-            out.push_str(&hex_class(u32::from(b), 2));
-            out
-        }),
-    ];
+    let mut alts = vec![literal, percent];
     if ch == ' ' {
         alts.push(r"\+".into());
     }
@@ -533,9 +540,11 @@ static LOWER_HEX_ESCAPE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|
 /// * escaped: every character either literal or as one of its escapes —
 ///   `%XX` per UTF-8 byte (either hex case), `+` for a space, a JSON
 ///   `\uXXXX` (a surrogate pair past the BMP) or JSON short escape.
-///   Letters, digits and `-._`, which no common encoder escapes, match only
-///   literally; that makes the value's longest run of them an anchor
-///   every match contains, so the pattern only runs on content holding it.
+///   *Every* byte — including letters, digits and `-._` — may also be
+///   spelled `%XX`, so a fully percent-encoded echo of the value matches.
+///   The longest run of bytes that get no escape other than `%XX` is an
+///   anchor every match without a `%` contains, so the pattern only runs
+///   on content holding that anchor or any `%`.
 /// * base64: the value at any byte offset of a standard or URL-safe blob,
 ///   padded or not, found by the three alignment cores, for values of at
 ///   least 8 bytes.
@@ -569,7 +578,8 @@ impl SecretForms {
         if parts.iter().any(|(_, escapable)| *escapable) {
             let source: String = parts.iter().map(|(p, _)| p.as_str()).collect();
             pattern = Some(Regex::new(&source).expect("escaped secret pattern"));
-            // The first longest run of never-escaped characters.
+            // The longest run of bytes whose only escape is `%XX`; any
+            // match spelling none of them with `%` contains it literally.
             let mut best: &[u8] = b"";
             for run in raw.split(|&b| !unescaped(b)) {
                 if run.len() > best.len() {
@@ -623,8 +633,23 @@ impl SecretForms {
         self.pattern.is_some() || !self.b64_cores.is_empty()
     }
 
-    /// The placeholder in the encoding of an escaped-form match `m`.
+    /// Whether `data` can hold a match of the character pattern: the
+    /// anchor (or, because a `%XX`-encoded spelling has no literal anchor
+    /// but always contains `%`, any `%`) when the value has one, and
+    /// anything when it has none.
+    fn escaped_may_occur(&self, data: &[u8]) -> bool {
+        self.anchor
+            .as_deref()
+            .is_none_or(|a| contains(data, a) || contains(data, b"%"))
+    }
+
+    /// The placeholder in the encoding of an escaped-form match `m`. A
+    /// match equal to the value is the literal, and takes the literal
+    /// placeholder whatever bytes it holds.
     fn placeholder_for(&self, m: &[u8]) -> Vec<u8> {
+        if m == self.raw() {
+            return self.ph_raw().to_vec();
+        }
         let plus_for_space = contains(self.raw(), b" ")
             && !contains(m, b" ")
             && !contains(&m.to_ascii_uppercase(), b"%20")
@@ -656,11 +681,16 @@ impl SecretForms {
 
     /// `data` with every derived form replaced, and whether any was.
     /// Borrowed data is copied only once a form is found in it.
+    ///
+    /// The character pattern spells the literal too (each byte's literal
+    /// is one alternative), so a single pass covers the literal and every
+    /// escape at once; a replacement is never rescanned, so a placeholder
+    /// that itself contains the value is not redacted again.
     fn redact_derived<'a>(&self, data: Cow<'a, [u8]>) -> (Cow<'a, [u8]>, bool) {
         let mut data = data;
         let mut found = false;
         if let Some(pattern) = &self.pattern
-            && self.anchor.as_deref().is_none_or(|a| contains(&data, a))
+            && self.escaped_may_occur(&data)
         {
             let mut n = 0usize;
             let replaced = pattern.replace_all(&data, |caps: &Captures<'_>| {
@@ -695,7 +725,7 @@ impl SecretForms {
             || self
                 .pattern
                 .as_ref()
-                .is_some_and(|_| self.anchor.as_deref().is_none_or(|a| contains(data, a)))
+                .is_some_and(|_| self.escaped_may_occur(data))
             || self.b64_cores.iter().any(|core| contains(data, core))
     }
 
@@ -707,7 +737,10 @@ impl SecretForms {
             return None;
         }
         let mut found = false;
-        let mut out = if contains(data, self.raw()) {
+        // The pattern, when there is one, matches the literal as well, so
+        // the literal is only replaced on its own for a value with no
+        // pattern (an empty value, which no form ever holds).
+        let mut out = if self.pattern.is_none() && contains(data, self.raw()) {
             found = true;
             Cow::Owned(replace_all(data, self.raw(), self.ph_raw()))
         } else {
@@ -726,7 +759,7 @@ impl SecretForms {
     #[cfg(test)]
     fn redact_unfiltered(&self, data: &[u8]) -> Option<Vec<u8>> {
         let mut found = false;
-        let mut out = if contains(data, self.raw()) {
+        let mut out = if self.pattern.is_none() && contains(data, self.raw()) {
             found = true;
             Cow::Owned(replace_all(data, self.raw(), self.ph_raw()))
         } else {
