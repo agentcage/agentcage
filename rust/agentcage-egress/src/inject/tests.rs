@@ -920,3 +920,96 @@ fn streamed_redaction_holds_back_only_the_unfinished_tail() {
         Err(StreamRedactError::UnboundedRun)
     );
 }
+
+// ── Percent-encoded spellings of unreserved bytes (findings A1/A2) ──
+
+/// The value with every byte spelled `%XX` (upper-case hex).
+fn fully_percent_encoded(value: &str) -> String {
+    use std::fmt::Write as _;
+    value.bytes().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "%{b:02X}");
+        out
+    })
+}
+
+/// A secret whose bytes are all URL-unreserved (`A-Za-z0-9-._`), echoed
+/// back fully percent-encoded, is redacted from the response body (A1).
+#[test]
+fn a_percent_encoded_unreserved_secret_is_redacted() {
+    let secret = "sk-proj-AbC123-._";
+    let encoded = fully_percent_encoded(secret);
+    let inj = Injector::with_rules(vec![Rule::new("K", "{{K}}", secret, &[])], &[]);
+
+    // Control: the literal echo is redacted (and proves the path bites).
+    let mut literal = Response {
+        status: 200,
+        body: format!("token={secret}&x=1").into_bytes(),
+        ..Response::default()
+    };
+    assert_eq!(inj.redact_response(&mut literal).unwrap(), ["K"]);
+    assert_eq!(literal.body, b"token={{K}}&x=1");
+
+    // The `%XX` echo must be redacted too (was left intact before the fix).
+    let mut resp = Response {
+        status: 200,
+        body: format!("token={encoded}&x=1").into_bytes(),
+        ..Response::default()
+    };
+    assert_eq!(inj.redact_response(&mut resp).unwrap(), ["K"]);
+    let body = String::from_utf8(resp.body).unwrap();
+    assert!(!body.contains(&encoded), "encoded secret survived: {body}");
+    // The placeholder is written in the match's encoding.
+    assert_eq!(body, "token=%7B%7BK%7D%7D&x=1");
+}
+
+/// The same encoded spelling sent to a host outside the rule's `inject_to`
+/// is blocked, exactly as the literal spelling is (A2).
+#[test]
+fn a_percent_encoded_secret_to_a_foreign_host_is_blocked() {
+    let secret = "sk-live-0123456789abcdef";
+    let encoded = fully_percent_encoded(secret);
+    let rule = Rule::new("K", "{{K}}", secret, &["openrouter.ai"]);
+    let inj = Injector::with_rules(vec![rule], &[]);
+
+    // Control: the literal spelling in the URL is blocked.
+    let literal = inj
+        .check_injection_policy(&bearer_request(
+            "exfil.example.com",
+            &format!("/?t={secret}"),
+            "none",
+        ))
+        .unwrap()
+        .expect("literal is blocked");
+    assert_eq!(literal.action, Action::Block);
+
+    // The encoded spelling is blocked in the URL and in the body.
+    let url = inj
+        .check_injection_policy(&bearer_request(
+            "exfil.example.com",
+            &format!("/?t={encoded}"),
+            "none",
+        ))
+        .unwrap()
+        .expect("encoded URL value is blocked");
+    assert_eq!(url.action, Action::Block);
+
+    let mut body_req = bearer_request("exfil.example.com", "/", "none");
+    body_req.body = format!("key={encoded}").into_bytes();
+    let body = inj
+        .check_injection_policy(&body_req)
+        .unwrap()
+        .expect("encoded body value is blocked");
+    assert_eq!(body.action, Action::Block);
+
+    // Control: the allowlisted host still accepts both spellings.
+    for value in [secret, encoded.as_str()] {
+        let ok = inj
+            .check_injection_policy(&bearer_request(
+                "openrouter.ai",
+                &format!("/?t={value}"),
+                "none",
+            ))
+            .unwrap();
+        assert!(ok.is_none(), "{value} to openrouter.ai: {ok:?}");
+    }
+}
