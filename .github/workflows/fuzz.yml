@@ -78,8 +78,21 @@ jobs:
           restore-keys: |
             fuzz-corpus-
 
+      # cargo-fuzz shells out to plain `cargo build` and exposes no
+      # `--locked`/`--frozen` flag, so a stale fuzz/Cargo.lock would be
+      # silently rewritten instead of failing the job. `--locked` metadata
+      # rejects a lock that disagrees with the manifests; the diff check
+      # after the build catches any rewrite the build still attempts.
+      - name: Verify the fuzz lockfile is current
+        run: |
+          cargo +"$NIGHTLY" metadata --locked \
+            --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
+
       - name: Build the targets
         run: cargo +"$NIGHTLY" fuzz build
+
+      - name: Fail if the build rewrote the fuzz lockfile
+        run: git diff --exit-code -- fuzz/Cargo.lock
 
       - name: Run every target
         env:
