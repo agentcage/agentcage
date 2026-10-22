@@ -31,19 +31,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
 
+      # Cached like rust.yml's jobs; see the comment there.
       - name: Cache cargo registry and target/
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: >-
-            cargo-e2e-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
-            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-e2e-${{ runner.os }}-
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build the egress, then agentcage embedding it
         env:

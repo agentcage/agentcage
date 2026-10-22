@@ -48,24 +48,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nightly and cargo-fuzz
+      - name: Install nightly
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal
           cargo +"$NIGHTLY" --version
-          cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
 
-      - name: Cache cargo registry and the fuzz build
-        uses: actions/cache@v4
+      # Cached like rust.yml's jobs; see the comment there. The key
+      # covers every installed toolchain, the pinned nightly included.
+      # ~/.cargo/bin is cached too, so on a hit the install below finds
+      # cargo-fuzz already there instead of compiling it.
+      - name: Cache cargo registry, cargo-fuzz and the fuzz build
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            rust/agentcage-egress/fuzz/target
-          key: >-
-            fuzz-build-${{ runner.os }}-${{ env.NIGHTLY }}-${{
-            hashFiles('rust/agentcage-egress/fuzz/Cargo.lock') }}
-          restore-keys: |
-            fuzz-build-${{ runner.os }}-${{ env.NIGHTLY }}-
+          workspaces: rust/agentcage-egress/fuzz -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Install cargo-fuzz
+        run: cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
 
       # The corpus each run grows, carried to the next (a cache entry is
       # immutable, so every run saves a new one and restores the newest).

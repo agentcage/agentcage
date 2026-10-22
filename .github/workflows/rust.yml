@@ -62,24 +62,19 @@ jobs:
           cargo clippy --version
           cargo fmt --version
 
+      # Swatinem/rust-cache keys on the rustc actually installed, not on
+      # rust-toolchain.toml: that file says only `stable`, so each runner
+      # image brings its own release, and a key on the file restored
+      # artifacts the newer compiler then rebuilt from scratch. It also
+      # adds the job id, so jobs that build different things do not
+      # share an entry, and prunes target/ to the current dependencies
+      # before saving, so entries stop growing. Only master saves: a
+      # PR's entry is visible to that PR alone, and it crowds master's
+      # out of the repository's 10 GB.
       - name: Cache cargo registry and target/
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          # Cargo.lock is committed (this workspace produces a binary),
-          # so it identifies the dependency set exactly. The manifests
-          # are in the key too because a profile or lint change
-          # invalidates every artifact in target/ without touching the
-          # lockfile.
-          key: >-
-            cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
-            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Formatting first: it needs no build, so a misformatted PR fails
       # in seconds instead of after a full compile.
@@ -152,19 +147,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
 
+      # Cached like the rust job above.
       - name: Cache cargo registry and target/
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: >-
-            cargo-embed-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
-            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-embed-${{ runner.os }}-
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build the egress for linux-musl
         env:
