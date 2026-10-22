@@ -17,11 +17,12 @@ on:
 # What a release produces is four host binaries and their checksums,
 # attached to the GitHub release that `install.sh`, the Homebrew formula
 # and the AUR PKGBUILD all read. Each one carries the linux-musl
-# agentcage-egress for its architecture, built by the `egress` job. The
-# two egress binaries are attached too (`agentcage-egress-<version>-<arch>
-# -unknown-linux-musl`, each with a `.sha256`): `install.sh` builds the
-# host from source and embeds the released egress rather than building
-# one, which would need a musl C toolchain on the installing machine.
+# agentcage-egress for its architecture, built by the `egress` job.
+# `install.sh` installs the tarball for its platform by default; with
+# `--build` it builds both binaries from source instead. The two egress
+# binaries are attached too (`agentcage-egress-<version>-<arch>
+# -unknown-linux-musl`, each with a `.sha256`), for anyone embedding the
+# released egress in a host built elsewhere.
 
 permissions:
   contents: read
@@ -95,7 +96,7 @@ jobs:
           path: target/${{ matrix.target }}/release/agentcage-egress
           if-no-files-found: error
 
-      # The same binary as a release asset, for install.sh:
+      # The same binary as a release asset:
       #   agentcage-egress-<version>-<target> (+ .sha256)
       - name: Package as a release asset
         run: |
