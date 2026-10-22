@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **apple-container fails clearly on a base without `capsh`.** A custom image with neither apt nor apk (busybox, distroless) used to die at cage-init stage D with a misleading `getent: not found` / "no uid-1000 user"; it now says the base is not supported on apple-container and points to a Debian, Ubuntu or Alpine image, or `--isolation vm`.
 
+### Fixed
+
+- **The `debian` scaffold starts on apple-container.** Its start command copied the egress CA into `/usr/local/share/ca-certificates` as the uid-1000 workload and exited on the `Permission denied`; the copy is now best-effort, as `ubuntu`'s has been since #140. cage-init has already installed the CA.
+
 ### Changed
 
 - **`install.sh` installs the release's prebuilt binary by default, and `--build` builds from source.** The default downloads `agentcage-<version>-<target>.tar.gz` (egress embedded), checks its sha256 and installs no Rust toolchain, C linker or musl. `--build`, and any branch build (`AGENTCAGE_REF`, which has no release assets), builds the host *and* the egress it embeds from source at the same ref, adding the musl Rust target with rustup and a C toolchain for it: `musl-gcc` from the distro on Linux; on macOS, rustup's `rust-lld` and `llvm-tools` with Xcode's `clang`, so branch builds now work on macOS too.
@@ -33,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The egress proxy now redacts and policy-matches percent-encoded spellings of a secret.** A value whose bytes are all URL-unreserved (`A-Za-z0-9-._`, e.g. `sk-or-v1-…`) got no escape pattern, so a server echo that percent-encoded those bytes (`%73%6B…`) survived response redaction and decoded back to the secret, and the same encoded spelling slipped past the outbound secret-policy check to a host outside the rule's `inject_to`. Every byte now carries a `%XX` alternative and the response/policy prefilters fire on the literal anchor *or* any `%`. Double percent-encoding (`%25%37…`) is still not matched. The egress binary changes, so the next `cage update` rebuilds the egress image.
 
+
 ### Fixed
 
 - **The fuzz workspace's `Cargo.lock` is refreshed and guarded against drift.** It still pinned `rustls` 0.23.45 and `wasmtime` 49.0.2 (RUSTSEC-2026-0346…0349 and RUSTSEC-2026-0353…0364), which the root lock had already moved past; the fuzz lock now matches the root (`rustls` 0.23.46, `wasmtime` 49.0.3, `cranelift-*` 0.136.3). Because `cargo-fuzz` shells out to a plain `cargo build` with no `--locked`, `.github/workflows/fuzz.yml` now fails the job when the lock is stale before the build or rewritten by it.
@@ -46,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dependencies are refreshed to the latest Rust 1.96-compatible versions.** With the MSRV floor corrected, a plain `cargo update` no longer downgrades crates to fit a floor the workspace cannot meet. Notable jumps: `pem` 3.0.6 → 4.0.0, `yasna` 0.5.2 → 0.6.0, `wit-bindgen` 0.46.0 → 0.57.1, `wasip2` 1.0.1 → 1.0.4, `time` 0.3.47 → 0.3.55 and `rcgen` 0.14.7 → 0.14.10, alongside patch bumps across the tree. No `deny.toml` ignores were added. The egress binary changes, so the next `cage update` rebuilds the egress image.
 
 ## [0.52.1] - 2026-10-17
+
 
 ### Fixed
 
@@ -75,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`agentcage scaffold create` starts new scaffolds from `debian:stable-slim`.** The starter template built from `alpine:3.21`; its `Containerfile` is now `FROM docker.io/library/debian:stable-slim` with `ca-certificates` and `curl` from apt, a floating tag so rebuilds pick up security updates. The starter's exec alias and help use `bash` instead of `sh`, and its build step adds the capabilities apt needs to drop to the `_apt` user. Existing scaffolds are not changed.
 
+
 ### Fixed
 
 - **`cage edit` now points a `container:` change at `agentcage cage update`, not `agentcage cage restart`.** Every key `cage edit` could not apply live was reported as "Needs restart", but `cage restart` only rewrites `proxy-config.yaml` and the DNS allowlist and starts the units already installed; it never re-renders the units from `cage.yaml`. So a changed volume, image, env var, user, memory or CPU limit, tmpfs or command was saved, the operator ran the suggested restart, and the cage came back with the old setting. Keys rendered into the units (`container`, `lifecycle`, `ports`, `dns_servers`, `secrets`, `apple_container_autostart`, and any key `cage edit` does not know) are now listed under "Needs update" with `agentcage cage update NAME`, which re-renders them; its change detection covers the stored `cage.yaml`, so no `--force` is needed. "Needs restart" now lists only `egress`, which a restart does apply. `exec_aliases`, `help`, `scaffold` and `log_allowed` are reported as live: nothing has to be restarted for them.
@@ -87,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.51.2] - 2026-10-12
 
+
 ### Fixed
 
 - **Stopping or restarting a cage no longer fails its egress unit.** The egress supervisor had no SIGTERM handler, so on every stop the shell died of the signal and the container exited 143: systemd marked `<name>-egress.service` failed (`Result=exit-code`) and fired any `OnFailure=` alert, on every routine `cage stop`, `cage restart` or `cage update`. The supervisor now passes SIGTERM on to the egress and dnsmasq, waits for them, and exits 0. The egress image changes, so the next `cage update` rebuilds it and restarts the egress once.
@@ -96,6 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Documented: since 0.51.0 an agent's `timeout_seconds` bounds the whole LLM reply.** The decider and watcher calls are bounded per step (connect, send, response headers, whole reply body); the previous egress bounded each socket read, so a provider that sent its headers at once and kept the connection busy while a reasoning model thought never timed out. A reasoning model that takes longer than the default (decider 15 s, watcher 30 s) to finish now fails with `llm error: timeout: receive body`, which denies the domain request or skips the scan. Raise `agents.decider.timeout_seconds` / `agents.watcher.timeout_seconds` for such a model. The configuration reference and the code comment that said otherwise are corrected.
+
 
 ### Fixed
 
@@ -139,6 +148,7 @@ What to expect when you upgrade:
 - **Custom Python inspectors.** A `.py` path under `inspectors:` is refused; build the inspector as a WebAssembly component instead.
 - **The Python test suite and its tooling** (`pyproject.toml`, `uv.lock`, the pytest suite, `scripts/check-invariants.py`, `scripts/update-deps.py`, `scripts/gen-packaging.py`). Everything is tested with `cargo test --workspace` and the e2e shell suite; repository checks run as `cargo xtask check-invariants`, digest updates as `cargo xtask update-deps`, packaging as `cargo xtask gen-packaging`. The egress corpora under `tests/fixtures/egress/` stay as golden files asserted by the Rust tests.
 
+
 ### Fixed
 
 - **A new cage no longer inherits the domain grants and traffic-watcher state of a destroyed cage with the same name.** `cage destroy` keeps the cage's data directory (capture history, the policy audit trail), and that included `grants/`, so a cage created again under the same name started with the earlier cage's unexpired Policy API grants and listed its watcher findings. `cage create`, `run` and `cage restore` now remove a leftover `grants/` directory before deploying, with a notice, the same way they already remove a leftover CA. Capture history and the policy audit trail are kept.
@@ -171,6 +181,7 @@ What to expect when you upgrade:
 - **The `cage har` fixture replays against the current version** instead of requiring the recorded version to match, so a version bump no longer needs the fixture regenerated.
 - `RUST-PORT-PLAN.md` moved to `docs/history/rust-port-plan.md`, marked historical; code comments that cite it for design reasoning now point there.
 - **The cage's CA certificate is now `/certs/agentcage-ca.pem`.** The cage's `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`, `cage verify`, the cage unit's readiness probe (which now waits for the *public* cert the egress publishes), nested-container `containers.conf`, apple-container `cage-init.sh` and the arch/debian/ubuntu/openclaw scaffolds all use the new name. The egress keeps writing `/certs/mitmproxy-ca-cert.pem` too, as a temporary alias that will be removed when the egress engine is replaced. **A custom image or config that copies the old path should switch to `/certs/agentcage-ca.pem` now.** Inside the egress, the private CA store is mounted at `/home/acproxy/ca` instead of `/home/acproxy/.mitmproxy`. The volume contents don't change, so an existing cage keeps its CA through the next `cage update`. That update rewrites the cage's units and rebuilds the egress image once. Host-side names follow suit: `MITMDUMP_RESERVED_PORTS` is now `EGRESS_RESERVED_PORTS`, and the validation errors for ports 8080/8443 name "the egress proxy" / "the egress forward proxy" / "the egress transparent proxy".
+
 
 ### Fixed
 
@@ -319,6 +330,7 @@ have not changed, only its name.
   creates the named volumes), `_level_grep_pattern` and
   `collect_image_artifacts` on the Python, and eleven Rust-only items with no
   Python counterpart.
+
 
 ### Fixed
 
@@ -624,6 +636,7 @@ have not changed, only its name.
 
 - **`agentcage doctor` no longer checks for Python.** It was dropped rather than ported: the host does not need an interpreter, so a check for one would fail on exactly the machines this design exists to support. Nothing depended on its result — it contributed one `pass` line on any host that could have run the old CLI at all.
 
+
 ### Fixed
 
 - **`update-deps.py containers` had been checking nothing.** Its hardcoded list named `Containerfile.proxy` and `Containerfile.dns`, which v0.22 unified into `Containerfile.egress`, so it died on the first missing file and never reached any of them — including the egress image's own mitmproxy pin, which is the one thing that tool exists to keep current. The list is globbed now and cannot go stale the same way. With it fixed, both remaining base images report as out of date; bumping them is a separate change with its own rebuild.
@@ -645,6 +658,7 @@ have not changed, only its name.
 
 - **BREAKING: `cage har --since` rejects a value it cannot parse instead of exporting everything.** An unparseable `--since` fell through to `since_dt = None`, which is not "no offset" but "no time filter at all" — so a narrowing flag that was wrong silently widened the export to the entire capture. `cage audit` had always refused the same input explicitly, with the message `error: could not parse --since '<value>' (use 1h, 30m, 7d, or an ISO date)`; `cage har` now prints it too and exits non-zero. **Migration:** a script that passed a malformed `--since` and relied on getting a full export must drop the flag to keep that behaviour.
 
+
 ### Fixed
 
 - **e2e assertion 7.21 asserted a path inside the guest that agentcage never creates there.** `limactl shell "$VM" -- ls ~/.config/containers/systemd/` looks like it asks the guest about its own home, but `~` is expanded by the *host* shell before `limactl` is called, so it was asking for `/home/<you>/.config/containers/systemd` — a host path that `lima.yaml.j2` does not mount and should not, since the template deliberately mounts two named directories rather than the whole home. It had been red since that narrowing. The quadlets live in the *guest's* home (`/home/<you>.guest`), which `backends/vm.py` creates through a guest-side shell. Rewriting the surrounding block to use the guest home would have been worse: 7.17 ("SSH keys NOT accessible") would then find Lima's own `authorized_keys` and fail. The isolation assertions keep asking about host paths — which is the property they actually mean — and 7.21 now asks the guest about `$HOME`, single-quoted so the host shell leaves it alone. Phase 7 is 33/33.
@@ -664,6 +678,7 @@ have not changed, only its name.
 - **`container.env` values are expanded against the host's environment, and now say so.** `os.path.expandvars` has been applied to every value since 0.1.0 and the apple-container backend mirrors it deliberately, but the configuration reference described the field as "Static environment variables" and mentioned none of it. Two consequences are now written down: a value containing `$NAME` for a name the host exports is rewritten and there is no escape (`$$` stays `$$`), and a `cage.yaml` you did not author can read your shell's environment — `env: { X: "${OPENAI_API_KEY}" }` copies that key into the cage and into the generated unit file on disk. Behaviour is unchanged; whether to keep it is a separate question from documenting it.
 ## [0.40.2] - 2026-09-25
 
+
 ### Fixed
 
 - **The apple-container egress never started, taking the whole cage's network with it.** `supervisor-egress.sh` hard-fails (exit 16) unless `/proc/sys/net/ipv4/ip_forward` reads `1`, and neither route that supplies it was available on this backend: the Quadlet `Sysctl=` directive is podman/systemd-only and this backend generates no Quadlets, and Apple's runtime mounts `/proc/sys` read-only, so the supervisor's own `sysctl -w` fails even as uid 0. `container run` has no `--sysctl`, so the value now arrives on the kernel command line (`--kernel-arg sysctl.net.ipv4.ip_forward=1`, honoured by Linux >= 5.8). Because the egress IP is both the cage's default gateway and its dnsmasq upstream, the failure presented as a total loss of connectivity inside the cage rather than as a proxy error. The change is scoped to the egress microVM alone — the cage VM gets no kernel arg, the FORWARD policy is still `DROP` with only enumerated ports accepted, and both failure modes (a `container` CLI without `--kernel-arg`, a pre-5.8 guest kernel) still fail loudly rather than leaving a half-configured egress passing traffic.
@@ -678,6 +693,7 @@ have not changed, only its name.
 
 ## [0.40.1] - 2026-09-07
 
+
 ### Fixed
 
 - **`cage exec` / `cage shell` now restore the host terminal after the session ends — however it ends.** A full-screen program inside the cage (pi, claude, vim, less) switches the operator's terminal into modes it undoes on exit: raw input, bracketed paste, the Kitty keyboard protocol, xterm `modifyOtherKeys`, hidden cursor. It can't undo any of that when the cage is stopped, destroyed, or rebuilt underneath it — the microVM/container is gone before the program can write its restore sequence, and the exec client just closes. The visible result, reported with pi on apple-container: after `cage stop`/`cage update` with a pi session open, every keystroke in iTerm2 echoes an escape sequence (pi pushes Kitty flags that include key-*release* reporting, and `reset` doesn't clear them). The CLI is the only party still alive to clean up, so interactive sessions now run as a child of `agentcage` instead of replacing it via `os.execvp`; when the child exits the CLI restores the saved termios state and writes a fixed restore sequence (Kitty pop + flags-to-zero, `modifyOtherKeys` off, bracketed paste/focus/mouse reporting off, cursor visible, SGR reset — each a no-op on a clean terminal). Ctrl-C is diverted in the parent for the duration so it still reaches the program in the cage. Non-interactive invocations (no tty on stdin) keep the previous exec/subprocess semantics; signal deaths now surface as shell-style `128+N` exit codes on every backend. Recovery on an already-mangled terminal, without upgrading: `printf '\e[<u\e[=0;1u\e[?2004l\e[>4;0m'`.
@@ -690,11 +706,13 @@ have not changed, only its name.
 
   **BREAKING migration:** `domains.auto:` and top-level `watcher:` are rejected even when empty, null, or disabled; `kind` (including `kind: agent`) and nested `decider:` / `agent:` wrappers are unsupported. There is no automatic migration or deprecation window. **Manually** move the old blocks to `agents.decider` / `agents.watcher`, flatten the LLM fields, and remove the old keys. Edit the stored `cage.yaml` directly and run `agentcage cage update <name>`, or replace it using `agentcage cage update <name> -c <converted.yaml>` with a complete, manually converted file; this replacement does not transform the old config. Update source copies too. **Rebuild/update the egress along with the config:** generated `proxy-config.yaml` contains canonical agent keys only, with no legacy shadows. Old egress images cannot read them; pushing the config live first can stop watcher monitoring. Stop affected cages before upgrading, then convert and rebuild before resuming workloads — this is not a live schema upgrade. See [the upgrade procedure](docs/how-to/upgrade-agentcage.md#upgrading-to-040-the-agents-namespace).
 
+
 ### Fixed
 
 - Agent `enable` switches now reject non-booleans consistently, including quoted `"false"`. Explicit invalid completion budgets and timeouts are no longer silently replaced with defaults.
 
 ## [0.39.0] - 2026-09-04
+
 
 ### Fixed
 
@@ -702,12 +720,14 @@ have not changed, only its name.
 
 ## [0.38.0] - 2026-09-04
 
+
 ### Fixed
 
 - **The decider's completion budget starved reasoning models, denying every domain request.** `PolicyApi` called the shared `llm_tool_call` without `max_tokens`, so every decision ran on the helper's 256-token default. A reasoning model spends its thinking tokens *inside* that budget before emitting the forced `decide` tool call, so the provider returned `finish_reason: length` with no tool call at all, `_parse_llm_verdict` fail-closed on it, and the cage saw `policy_request … decision: denied, reason: "llm returned no usable decision"` for **every** request — the Policy API silently reduced to a deny-everything gate while looking healthy in `watcher status` and `cage audit`. Hit in production on 2026-09-04 (a caged agent asking for `ui.com` to fetch a product datasheet, denied twice). Measured against the real decider payload — full adversarial system prompt plus the cage's baseline allowlist — `z-ai/glm-5.2`, `z-ai/glm-5.3-flash` and `google/gemini-3.8-flash` **all** fail at 256 and **all** succeed at 1024 (600–1000 completion tokens typical), so this was never a single bad model: 256 was simply below the floor for the current generation. The decider now sends a configurable budget defaulting to **8192**, and the watcher's identical call — which hard-coded 2048 and showed the same symptom as intermittent "watcher scan failed" findings — takes the same setting. `max_tokens` is a ceiling, not a reservation (providers bill tokens actually generated, so the headroom is nearly free), and `validate_config` now rejects anything below the measured 1024 floor on both `domains.auto.decider.agent.max_tokens` and `watcher.agent.max_tokens` rather than letting a hand-tuned config reintroduce the starvation silently.
 
 ### Added
 - **A standard `agentcage` skill for caged agents.** agentcage now ships one canonical skill (`scaffolds/skills/agentcage/SKILL.md`, Agent Skills standard) that teaches the agent the Policy API on `agentcage.local`: check `/v1/health`, reflect on the effective allowlist with `GET /v1/allowlist` (and read the operator's `context`), request a new egress domain with a justification the decider will accept via `POST /v1/allowlist/requests`, and give a grant back via `POST /v1/allowlist/removals` — plus rules of engagement (one request per domain, a denial is an answer, never route around a block, never put a placeholder in a reason). The `pi`, `claude-code` and `codex` scaffolds install it into the agent's skills directory (`~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`); downstream templates that set `scaffold:` get it by adding `COPY skills/agentcage <skills-dir>/agentcage` to their Containerfile. Staged into the build context by `scaffold_brief.stage_scaffold_assets` alongside the `AGENTS.md` brief, which now points at the skill.
+
 
 ### Fixed
 - **Stale brief after upgrade.** The staged `AGENTS.md` brief in a cage's build context was never refreshed once written, so a cage created on an old release kept the old brief (e.g. one that never mentioned the Policy API) through every `cage update`. Staging now refreshes agentcage's own copy when the canonical file changes; a context that ships its own `AGENTS.md` (or `skills/agentcage/`) next to its Containerfile still always wins.
@@ -726,6 +746,7 @@ have not changed, only its name.
 
 ## [0.36.0] - 2026-09-04
 
+
 ### Fixed
 
 - **The traffic watcher no longer sends injected secret values to its model, and no longer drops evidence on a large capture backlog.** Eight defects from a follow-up review of #340. (1) **Secret leak (highest severity):** `_sample_capture` excerpted the capture entry's top-level `path` into the digest, but that field is snapshotted in `addon.request()` *after* `injector.inject_request` runs — and an `inject_body: true` rule rewrites the placeholder inside `flow.request.url`, the documented `?key=` query-string case — so a real API key could ride to a third-party model, breaking the feature's own "secret NAMES may appear, values never" invariant. The path now comes from the INBOUND (pre-injection, placeholder-safe) snapshot, falling back to a query-stripped path when no inbound url was recorded. (2) The oversized-line guard measured the whole accumulated read instead of the un-terminated line, so any backlog larger than `_MAX_LINE_BYTES` ended its read mid-line, looked "oversized" at every chunk boundary, and silently discarded one COMPLETE entry per tick with a false warning — 25% of a 60-entry file in the regression test. The chase loop now only extends when the read produced no complete line at all, and the drop guard measures the line. (3) The reset cursor was cleared inside `_read_capture`, which only *stages* an offset, so the last catch-up tick of a multi-tick reset dropped the `window_seconds` filter even when its scan then failed and the retry re-read the same bytes unfiltered; `_commit_capture` retires it alongside the offset now. (4) `auto_revoke: false` discarded the model's `allowlist_removals` with no record at all, though the field's own documentation says they "degrade to findings" — the posture operators are told to start with threw away each scan's most actionable output; they are now recorded as "revocation recommended" findings. (5) `cage edit` classified `watcher` as live-only and never refreshed the units, but the grants volume its findings are written to and the `Secret=` directive for its api_key are both decided at unit-generation time — so a freshly enabled watcher on a cage with `domains.auto` off wrote findings into the container's ephemeral layer and `watcher findings` reported the silent all-clear the feature exists to prevent. (6) **Blocklist mode is now rejected:** there `DomainInspector._baseline` IS the block list, so the digest presented blocked domains as the allowlist and a baseline recommendation would have told the operator to run `domain rm` — removing a block and WIDENING egress from a narrowing-only auditor. Guarded at config time and re-checked in-egress against a hot reload. (7) `max_tokens` was in the anthropic request body only, so the shared bound was silently ignored on openai and openrouter. (8) `services.expected_secrets` never learned about either egress agent's api_key, so `agentcage secret set <cage> WATCHER_LLM_KEY` — the command the docs prescribe — called the key an "orphan" and `check_secrets` gave no preflight warning when an agent-enabled cage was deployed without it.
@@ -738,6 +759,7 @@ have not changed, only its name.
 
 ## [0.35.1] - 2026-09-02
 
+
 ### Fixed
 
 - **Hot reload no longer resets `inspectors:`-section configs to defaults.** `_maybe_reload` reconfigured built-in inspectors from the legacy top-level key map only, so a builtin configured exclusively via the explicit `inspectors:` section — the documented style — was silently reset to defaults on every proxy-config mtime bump. For a cage whose content-type `host_exempt_content_types` live in that section, the first `domain add`/`domain rm` or domains.auto grant after egress start wiped the exemptions in place, and legitimate multipart uploads started 403ing on body entropy; hit in production on 2026-09-01 as "ElevenLabs audio transcription failed (HTTP 403): content-type mismatch: multipart/form-data declared but body entropy is 7.80" — a voice-note STT upload whose exemption had been erased by the previous day's domain churn, reproduced live as pass→reload→block. The reload now re-applies the `inspectors:` section after the legacy map, mirroring the initial-load precedence (legacy first, explicit section wins), and `_load_custom_inspectors` is reload-safe: builtin and path-based entries alike are reconfigured in place, never appended twice (a duplicate would have run the inspector twice per request). Two documented limits: a path-based inspector's *file* is not re-imported on reload (a changed implementation needs an egress restart), and an entry removed from the section keeps its last config until restart — consistent with the other sections, where removal is not a live-reload operation.
@@ -747,6 +769,7 @@ have not changed, only its name.
 ### Added
 
 - **`POST /v1/allowlist/removals` — the caged agent can give back a runtime grant it no longer needs.** The Policy API could widen (request → decider → grant) but the only narrowing paths were operator-side (`agentcage domain rm`, TTL expiry), so a cage that requested a domain for a one-off task kept that egress forever unless the operator noticed. The new control-host endpoint is the request endpoint's mirror image in trust terms: a removal only ever **shrinks** the agent's own egress, so no decider is involved and no justification is required (an optional `reason` lands in the `policy_removal` audit line). Scope is deliberately **live runtime grants only** — a grant the host reconcile already promoted into the static baseline is indistinguishable from a domain the operator added by hand, and the egress never edits the baseline (the same immutability invariant that routes promotion through the host-side `domain add` machinery), so those return `403` naming `agentcage domain rm`; a domain that is not a grant at all returns `404`, and a removed grant whose domain still suffix-matches the baseline says so via `still_allowed_by_baseline: true` rather than letting the agent believe it narrowed more than it did. Removal takes effect the way a grant does, in reverse: the domain leaves the in-memory L7 allow set immediately, the shrunk zone list is republished so the supervisor drops it from dnsmasq within ~1s, and the overlay entry is deleted so the removal survives an egress restart. No host-side changes were needed: the reconcile's merge-on-write already computes `on-disk − this-tick's-removals`, so a cage-side removal landing mid-tick simply stays absent; the residual race (a concurrent reconcile promotes the grant first) resolves to "operator-owned, 403 on retry" — narrowing converges to the operator's explicit state, never silently widens. Removal is not a ban: the agent can re-request the domain later and the decider adjudicates fresh. Shares the request endpoint's per-cage rate-limit bucket, rides the same `auto.enable` master switch, and is reported in `/v1/health`'s features as `removal`.
+
 
 ### Fixed
 
@@ -761,6 +784,7 @@ have not changed, only its name.
 - **`agentcage domain add --expires-in` — time-limited static grants.** `domain add` gained `--expires-in`, and `cage.yaml` domain entries gained `expires`, so a static allowlist entry can be temporary — expiring on its own instead of waiting for someone to remember to remove it. The static baseline and the runtime grants overlay now share one TTL model, so a promoted grant keeps the expiry it was granted with.
 
 ## [0.33.0] - 2026-08-29
+
 
 ### Fixed
 
@@ -789,6 +813,7 @@ have not changed, only its name.
 
 - **Protocol relays can now reach an upstream whose certificate no public CA signed, via `upstream.ca_file`.** The relay built its upstream TLS context from the proxy container's system CA store with no override, so a relay could only ever point at a publicly-trusted mail host — a self-hosted server behind a private CA, or a local decrypting daemon like Proton Mail Bridge that mints its own self-signed certificate, was unreachable. `upstream.ca_file` is a path on the host (`~` and `$VARS` expanded); the CLI reads it at deploy time and hands the proxy the contents, because the relay runs inside the proxy container where a host path means nothing. proxy-config.yaml is rewritten on every deploy and restart path, so a regenerated certificate is picked up by `cage restart` with no config edit. A missing or non-PEM file fails the deploy rather than surfacing later as `certificate verify failed`. `upstream.ca_pem` accepts the same certificate inline for self-contained config; setting both is an error rather than a silent precedence rule. The certificate is **added** to the system store rather than replacing it, so one relay's private CA is never the reason another relay can't reach a normal mail host. `upstream.tls_servername` supplies the name checked against the certificate when the relay dials an IP literal that no certificate can name. Verification and hostname checking stay on in every configuration — there is deliberately no "skip verification" mode, since the relay hands the upstream real credentials. Any of these alongside `tls: false` is rejected at config load rather than silently ignored.
 
+
 ### Fixed
 
 - **`cage audit` no longer returns nothing when podman puts the egress on a file log driver.** The audit reader was hard-wired to `journalctl --user -u <cage>-egress`, but podman only selects the `journald` driver when it can actually write there — which requires a conmon built with journald support — and falls back to `k8s-file` silently otherwise. Under that fallback the proxy stayed healthy, kept detecting and recording, and `cage audit` printed an empty stream: silent audit loss, with nothing anywhere to indicate the trail had gone missing. The container backend now reads back the driver podman actually chose and reads `podman logs` when the journal never received the output, keeping `journalctl` (which spans container recreation) wherever journald is in use. `--since` is applied post-parse on this path, matching how apple-container's tail-based reader has always handled it. `cage logs` hits the same wall and now warns, naming the `podman logs` command to use, rather than printing a near-empty stream. Surfaced by e2e `1.4b`/`8.8b` failing on GitHub's runners after their image stopped preinstalling podman.
@@ -799,11 +824,13 @@ have not changed, only its name.
 
 - **The `secrets` inspector now defaults to `flag` on HTTP egress (was an unconditional hard block).** A leaked-credential pattern in an outbound HTTP request is now recorded in the audit log and forwarded rather than blocked with a 403. **Protocol relays (SMTP) still default to `block`** — an email body is a deliberate, operator-invisible exfil channel — and an explicit `secrets.action` in config overrides both defaults everywhere. Operators who relied on the old hard-block behavior on HTTP should set `secrets: { action: block }`. Unrecognized `action` values fall back to `flag`.
 
+
 ### Fixed
 
 - **`agentcage secret rm` no longer bricks the next boot.** Removing a secret deleted the podman store entry but regenerated quadlets kept rendering `Secret=<cage>.<KEY>,type=env`, so the next egress start failed with `no secret with name or ID …` (start-limit-hit) until the value was re-set. `Secret=` emission is now store-aware at generation time: a directive is skipped only when the store entry is absent and nothing materializes it before container start. The same gate covers protocol-relay credentials and the cage container's direct `podman_secrets`.
 
 ## [0.29.1] - 2026-07-07
+
 
 ### Fixed
 
@@ -827,6 +854,7 @@ have not changed, only its name.
 
 ## [0.27.1] - 2026-06-29
 
+
 ### Fixed
 
 - **`agentcage run` now injects `--set-secret` values on apple-container.** `agentcage run` (and its `cage run` alias) staged apple-container secrets to the legacy `pending_secrets.json` plaintext file, but the apple-container backend re-stages secrets at `start()` from the cage's configured at-rest store — the macOS keychain under the default `auto` backend — and never reads `pending_secrets.json` unless the cage opted into the plaintext backend. With an unlocked login keychain the typed value was orphaned: the start-time lookup returned nothing and the cage warned `secret_injection env '…' not provided via --set-secret; placeholder will NOT be substituted`, so the agent failed to authenticate. `agentcage cage create` was unaffected because it already persisted apple-container secrets through the keychain; `run` was never migrated off the pre-keychain code path. `run` now routes apple-container secrets through the same store as `create` (VM `pending_secrets.json` and container host-Podman paths are unchanged). ([#288](https://github.com/agentcage/agentcage/pull/288))
@@ -840,6 +868,7 @@ have not changed, only its name.
 ### Changed
 
 - **`container.add_capabilities` no longer emits a "silently has no effect on apple-container" warning.** The warning fired on every default apple-container cage: every stock package-manager scaffold (ubuntu/debian/arch/openclaw) sets `add_capabilities` unconditionally for the *container* backend's package-install path, so an operator running `agentcage run ubuntu` saw the noise without having opted into anything. The field is genuinely inert on apple-container — the cage workload always runs as uid 1000 with an empty capability set (`cage-init.sh` Stage D capsh-`--drop=all`s before exec, and the backend never threads `add_capabilities` into `container run`) — but that inertness is harmless rather than a misconfiguration, so it doesn't warrant a warning on the common path. This mirrors the earlier tuning of the `read_only` / `tmpfs` warnings, which were narrowed for the same reason. (The warning's old text also referenced a non-existent "stage 90" from the retired single-VM supervisor.)
+
 
 ### Fixed
 
@@ -856,11 +885,13 @@ have not changed, only its name.
 - **`--no-cache`/`--pull` now rebuild the egress image and the in-VM cage image, so the flags behave consistently across all three isolation backends.** Previously the `container` backend's `build_artifacts` accepted `--no-cache`/`--pull` but dropped them when building the shared `agentcage-egress` image, and the `vm` backend ignored them entirely (the egress build, the in-VM scaffold/cage build, and the direct image pull all ran cache-hot) — so `--no-cache`/`--pull` on those backends silently left stale egress/cage layers in place, contradicting their documented meaning. Both backends now forward the flags to every build/pull step inside their build path, matching what the `apple-container` backend already did. This affects `agentcage run`, `cage create`, and `cage update` alike.
 - **`agentcage run` now fails fast on a missing required secret instead of starting a half-configured cage.** A `run` cage whose scaffold declared a `secret_injection` rule (e.g. claude-code's `ANTHROPIC_API_KEY`) that wasn't supplied via `--set-secret` or resolvable from a configured `source:` (`env:`/`cmd:`/`systemd-creds:`) previously had that rule silently stripped — the cage came up, the egress proxy forwarded the unswapped placeholder, and the agent failed to authenticate with no clear signal. `run` now runs the same pre-flight secret check as `cage create` (before saving any state, ahead of the volume-dir and port checks) and aborts with the list of missing keys and a ready-to-paste `agentcage run <scaffold> -s KEY=VALUE` hint. Every scaffold-declared secret is mandatory — there is no "optional secret" concept — so an agent that would otherwise authenticate without a key (e.g. claude-code via interactive OAuth `/login`) must be given one, or be launched from a persistent cage created with `agentcage init` whose config can be edited. On `vm`/`apple-container` hosts without host podman there's no secret store to check against, so the check is skipped, exactly as in `create`.
 
+
 ### Fixed
 
 - **The egress — and with it the cage — crashed on every restart after the first, on hardened rootless podman (`default_capabilities = []`).** The egress quadlet ran an `ExecStartPre` that chowned the `agentcage-public-certs-<name>` volume mountpoint to `acproxy` (uid 200), mirroring the chown of the *private* certs volume. But unlike the private volume (written by mitmproxy *as* acproxy), the public-certs volume is written **only** by the supervisor, which runs as uid 0 and publishes the public CA cert with `install -m 0644` (`supervisor-egress.sh` Step E). On a host whose `containers.conf` sets `default_capabilities = []`, container uid 0 holds none of `CAP_DAC_OVERRIDE` / `CAP_FOWNER`, so once the directory was acproxy-owned the supervisor could no longer `unlink()` the existing cert to rewrite it — `install: cannot remove '/home/acproxy/public-certs/mitmproxy-ca-cert.pem': Permission denied`, exit 1, and systemd tore the dependent cage down. The first `cage create` came up (nothing to overwrite yet), but every subsequent `cage start` / `cage restart` / `cage update` (e.g. after editing a workspace mount path) failed. The chown is removed: the public-certs dir stays root-owned, the uid-0 supervisor overwrites it freely, and the `0644` cert is still world-readable for the cage's `:ro` `/certs` mount — so the cage→egress trust boundary (CTF F6/F9) is unaffected. The apple-container backend was never affected (it `chmod 1777`s the dir instead of chowning it). Regressed in 0.22.10 ([#211](https://github.com/agentcage/agentcage/issues/211)).
 
 ## [0.25.5] - 2026-06-26
+
 
 ### Fixed
 
@@ -868,11 +899,13 @@ have not changed, only its name.
 
 ## [0.25.4] - 2026-06-22
 
+
 ### Fixed
 
 - **Cages start again on macOS with Apple's `container` CLI v1.0.0.** The 1.0.0 release reshuffled the `container inspect` JSON: the run **state** and the **networks** list — previously top-level fields (`status` == `"running"`, top-level `networks`) — are now nested under a `status` object (`status.state`, `status.networks`). The apple-container backend read the old locations, so `_wait_supervisor_ready` compared a dict to `"running"` and aborted the deploy with a spurious *"egress sibling exited before becoming ready"* (while the printed status literally said `state: 'running'`), `_container_ip` found no `networks` and `start()` raised *"could not resolve IP of \<name\>-egress"*, and `is_running` always returned `False` so `cage status`/`verify` misreported. Schema knowledge is now centralized in two helpers (`container_state` / `container_networks`) that prefer the nested 1.0 location and fall back to the pre-1.0 top-level fields; all three call sites route through them. Pre-1.0 `container` installs are unaffected.
 
 ## [0.25.3] - 2026-06-22
+
 
 ### Fixed
 
@@ -880,11 +913,13 @@ have not changed, only its name.
 
 ## [0.25.2] - 2026-06-18
 
+
 ### Fixed
 
 - **`cage start` / `cage restart` on the apple-container backend now self-heal missing unit metadata instead of dying with misleading advice.** The apple-container unit metadata (`~/.config/agentcage/apple-container/<name>.json`) is the argv recipe `start()` reads to assemble `container run`, but it's a *derived* file only `cage create`/`update`/`import` ever wrote — neither `cage start` nor `cage restart` (which is stop + start) ever regenerated it. If that file went missing while the cage registry (`cages/<name>/cage.yaml`) and built image were still intact (e.g. an interrupted update, or an out-of-band cleanup of the `apple-container/` dir), `start()` hard-failed with `apple-container unit metadata missing … run \`agentcage cage create <name>\` first` — but `cage create` *refuses* on an existing cage (`error: cage already exists, use update`), so following the hint just produced a second error. Both `cage start` and `cage restart` now regenerate and reinstall the unit metadata from the stored `cage.yaml` before bringing the cage up, giving apple-container the same "edits made while stopped take effect on next start" reconcile the container/vm path already had, and self-healing the missing-file case. The fallback error message in `start()` now points at `cage update` (the command that actually works).
 
 ## [0.25.1] - 2026-06-16
+
 
 ### Fixed
 
@@ -898,6 +933,7 @@ have not changed, only its name.
 - **`AGENTCAGE_VERSION` is now injected into the cage on the apple-container backend too.** The container/vm backends already baked it into `cage.container.j2`; apple-container now also passes `-e AGENTCAGE_VERSION=<version>` to `container run`, so an agent can detect at runtime that it is inside a cage (and which version) regardless of isolation mode.
 
 ## [0.24.1] - 2026-06-16
+
 
 ### Fixed
 
@@ -927,11 +963,13 @@ have not changed, only its name.
 - **Secret material moved out of the quadlet unit files (zero-restart groundwork).** Cage placeholders are no longer baked `Environment=` lines: the cage quadlet now reads a derived env-file (`<state>/<name>/cage-env/placeholders.env`, regenerated together with `proxy-config.yaml` on every deploy and restart) via `EnvironmentFile=`, and bind-mounts the directory read-only at `/run/agentcage/env`. Podman re-reads the file at container creation, so **a placeholder change now applies with a plain `cage restart`** — previously it required a full `cage update` quadlet regeneration. On the egress side, declared secret values are additionally staged at every start as 0600 files in a per-cage tmpfs dir (`%t/agentcage/<name>/secrets`, i.e. `$XDG_RUNTIME_DIR`), mounted read-only into the egress **only** at `/home/acproxy/secrets` — the same path the proxy's existing file fallback (built for apple-container) already reads. This file channel is what upcoming releases use to apply `secret set` without restarting anything; staging is non-fatal on podman < 4.7 (no `secret inspect --showsecret`), where the `Secret=` env channel still carries boot-time values. The VM backend pushes a VM-local copy of `placeholders.env` (Lima's reverse-sshfs caching would hide host rewrites), and apple-container's `start()` now reads placeholders from the live stored config instead of the metadata snapshot — restart parity across all three backends. Existing cages keep working; the new delivery shape applies on their next `cage update`.
 - **Secret-injection placeholders are now entropic by default.** `secret_injection` rules may omit `placeholder:` — agentcage generates `{{placeholder_<env_lowercase>_<16 hex chars>}}` (64 bits of entropy) and persists it into the cage's stored config the first time the rule is deployed (`cage create`, `cage update -c`, `cage edit`, `agentcage run`). The token is carried over by `env` name on subsequent updates, so it stays stable for long-running cage processes. Rationale: the proxy substitutes placeholders as literal strings, so a guessable placeholder like `{{GH_TOKEN}}` is an accidental-substitution hazard — outbound content that legitimately contains that text (template files, docs, CI config) would get the real secret injected into it. Explicit `placeholder:` values remain fully supported (some clients validate credential format before sending); `validate_config` now warns when an explicit placeholder uses the bare `{{ENV_NAME}}` convention. All bundled scaffolds generate entropic placeholders at render time, and `agentcage secret list` grew a `PLACEHOLDER` column so the generated token is discoverable. Existing cages are untouched — their stored placeholders keep working as-is.
 
+
 ### Fixed
 
 - **`secret rm` now also deletes the systemd-creds blob.** On hosts where `secret set` auto-encrypts with systemd-creds, `secret rm` only removed the podman store entry and left the `.cred` blob in the state dir — the egress's decrypt `ExecStartPre` then resurrected the "removed" secret (store entry, staged value, active injection) on the next start. `secret rm` also no longer errors on a secret set live on a running cage whose store entry hasn't materialized yet (it only does so at egress start on creds hosts). Note: restarting a cage after `secret rm` without re-setting a value still fails to boot the egress (pre-existing, now tracked in #262); re-run `secret set` to recover.
 
 ## [0.22.22] - 2026-06-06
+
 
 ### Fixed
 
@@ -1026,6 +1064,7 @@ have not changed, only its name.
   (also adds the previously-missing `update` mapping). `agentcage --help`
   lists the aliases.
 
+
 ### Fixed
 
 - **`fix(egress/dns)`: container/vm egress no longer intermittently
@@ -1092,6 +1131,7 @@ have not changed, only its name.
 
 ## [0.22.15] - 2026-05-29
 
+
 ### Fixed
 
 - **apple-container `cage create`/`update` now honor `--no-cache` and
@@ -1108,6 +1148,7 @@ have not changed, only its name.
   freshness comes from the forced scaffold rebuild).
 
 ## [0.22.14] - 2026-05-29
+
 
 ### Fixed
 
@@ -1138,6 +1179,7 @@ have not changed, only its name.
   `busybox` for a minimal no-package-manager base. Scaffolds are discovered
   by directory listing, so removing the dir fully de-registers it from
   `agentcage run`, `--scaffold`, and the alias map.
+
 
 ### Fixed
 
@@ -1374,6 +1416,7 @@ have not changed, only its name.
 
 ## [0.22.5] - 2026-05-28
 
+
 ### Fixed
 
 - **Egress secret-injection now works on the apple-container backend.**
@@ -1393,6 +1436,7 @@ have not changed, only its name.
 
 ## [0.22.4] - 2026-05-28
 
+
 ### Fixed
 
 - **apple-container cage workload now sees `HOME=/home/<user>`, not
@@ -1409,6 +1453,7 @@ have not changed, only its name.
   wrapper does the same via a small `sh -c` shim around setpriv.
 
 ## [0.22.3] - 2026-05-28
+
 
 ### Fixed
 
@@ -1484,6 +1529,7 @@ have not changed, only its name.
 
 ## [0.22.1] - 2026-05-27
 
+
 ### Fixed
 
 - `agentcage cage list` no longer tags every newly-created cage as
@@ -1550,6 +1596,7 @@ have not changed, only its name.
   consumes them via `${VAR-default}` (preserves intentional empty
   config). Regression tests pinned in `test_quadlets.py`.
 
+
 ### Fixed
 
 - **`domain add` / `domain rm` SIGHUP path now actually fires.** The
@@ -1610,6 +1657,7 @@ have not changed, only its name.
 
 ## [0.21.18] - 2026-05-27
 
+
 ### Fixed
 
 - VM cages still couldn't start after v0.21.17: the proxy + dns quadlets
@@ -1631,6 +1679,7 @@ have not changed, only its name.
   updated allowlist.
 
 ## [0.21.17] - 2026-05-27
+
 
 ### Fixed
 
@@ -1744,6 +1793,7 @@ back with validation, atomic-write, backup, and auto-reload.
 
 Two apple-container parity fixes surfaced by the torture-mac plan against v0.21.13.
 
+
 ### Fixed
 
 - **apple-container honors `container.env:`.** The container backend wires `cc.env` to systemd Quadlet `Environment=` entries via `quadlets.py:338`, but the apple-container backend's `start()` never read `cfg.container.env` — every entry was silently dropped, and `validate_config`'s `_ac_silent_drops` list didn't include it either, so the operator got no warning. A cage.yaml with `container.env: {FOO: bar}` had `FOO` set on Linux/container and unset on apple-container. `generate_units` now persists `container.env` (with `$VAR` already expanded host-side, matching the quadlets behavior) into the per-cage unit JSON; `start()` reads it back and emits one `-e KEY=VAL` per entry to `container run`, sequenced before the `secret_injection` placeholder `-e` so the two never collide. Surfaced by torture-mac F1 against v0.21.13.
@@ -1754,6 +1804,7 @@ Two apple-container parity fixes surfaced by the torture-mac plan against v0.21.
 UX hardening pass driven by a live torture session against v0.21.13 on
 Linux (container + Lima VM). Four operator-visible papercuts closed,
 zero behavior changes for working setups.
+
 
 ### Fixed
 
@@ -1811,6 +1862,7 @@ Confirmed end-to-end on a Linux host running a Lima VM with the pi
 scaffold — `pi-ctf-vm` went from "degraded (2/3), cage timing out
 at 60s" to "running (3/3), cage active in <300s" after `cage update`.
 
+
 ### Fixed
 
 - **`fix(vm)`: `cage update` / `cage create` no longer silently
@@ -1859,6 +1911,7 @@ Bugfix release for the VM backend and `cage update` ergonomics. No security
 impact, no breaking changes. Affects every operator who has ever run a
 VM-mode cage on Linux with secrets or seen "cd: No such file or directory"
 chatter at start.
+
 
 ### Fixed
 
@@ -2001,6 +2054,7 @@ Re-release of 0.21.6 — GitHub Actions silently dropped the tag-push event for 
 
 Two apple-container fixes surfaced while running the agentcage-ctf prompt unattended via `agentcage run claude-code`. **Upgrade recommended for any apple-container user — pre-0.21.6 the `agentcage run` flow on apple-container effectively could not pass a prompt to claude code: the cage was raced and the prompt was mangled, producing a misleading "Invalid API key" error.**
 
+
 ### Fixed
 
 - **`agentcage cage create` / `agentcage run` on apple-container no longer return before the supervisor has finished booting** — race that caused the cage's next operator action to hit it before mitmproxy bound `127.0.0.1:8080`, iptables NAT applied, or secrets were re-staged into `/home/acproxy/secrets/`. Symptom: claude / curl gets "Invalid API key" or HTTP 401 going to `api.anthropic.com` because the literal `{{PLACEHOLDER}}` reaches upstream (the proxy that would substitute it isn't up yet). Apple's `container run -d` returns when the microVM boots — not when the user CMD (`supervisor.sh`) has progressed past its final stage. `AppleContainerBackend.start()` now polls a host-side virtiofs marker (`<logs_dir>/ready`) that supervisor.sh touches as the very last action before `exec capsh`. Stale markers from prior cage lifetimes are cleared before `container run -d`. If the cage exits before signaling ready (supervisor `die`d at some stage), `start()` raises immediately pointing at `container logs <name>` — no more silent "running but broken" cages. (#168)
@@ -2018,6 +2072,7 @@ Two cage-isolation fixes surfaced by an in-cage CTF red-team run on `claude-code
 ## [0.21.4] - 2026-05-26
 
 Bug fix follow-up to 0.21.3 — surfaced during the fresh-Mac verification of last release's security fixes.
+
 
 ### Fixed
 
@@ -2104,6 +2159,7 @@ Tag was force-updated to the post-#141 commit, but PyPI received the stale pre-#
 
 The intended 0.20.4 content (now shipping verbatim in 0.20.5) bundled the remaining apple-container regressions blocking `agentcage run ubuntu` on macOS 26+ Apple Silicon, plus a CI-only fix to the release-notes pipeline. `v0.20.3` was tagged but never reached PyPI (cancelled mid-workflow before upload); 0.20.5 supersedes both and is the first apple-container release where the full init → create → exec → apt-get install path works without crashing.
 
+
 ### Fixed
 - `agentcage run ubuntu` (and any other apple-container cage on a base image with a built-in uid-1000 user) no longer exits immediately at supervisor stage 90 with `User [cage] not known`. `capsh --user=` resolves by name (via `getpwnam`), and the wrapper Containerfile reuses the image's existing uid-1000 user (`ubuntu` on ubuntu:24.04, `node` on node:*, `claude` on claude-code) without creating a `cage` alias. The supervisor now resolves the uid-1000 name at runtime (`getent passwd 1000 | cut -d: -f1`) and passes it to capsh, so every popular base works. The ubuntu scaffold's `cp /certs/mitmproxy-ca-cert.pem ... && update-ca-certificates` was a secondary blocker — that pair runs as uid 1000 on apple-container and fails with EACCES (the supervisor has already installed the CA at stage 60), so the cage CMD exited non-zero and the container stopped before `sleep infinity` ever ran. Now wrapped in `{ ... } || true; exec sleep infinity` so EACCES is harmless. (#140)
 - `agentcage cage exec` / `cage shell` / `cage logs` / `cage verify` / `cage show` / `cage start` / `cage restart` no longer crash with `FileNotFoundError: 'podman'` on apple-container cages on macOS hosts without podman installed. Every subcommand other than `create`/`update`/`list`/`destroy` had a `cfg.isolation == "vm"` branch followed by a fall-through that assumed host podman existed. The fall-through now also gates on apple-container: `exec`/`shell` route through `container exec` (with `-it` autodetect and `--service proxy|dns` rejected with a clear message — proxy and dnsmasq run as in-process supervisors inside the one microVM), `logs` execs `container logs [-f]`, `verify` keeps the backend-agnostic service-status checks and prints an INFO line noting that deeper probes (CA / egress / nested) aren't wired up, `show` replaces the host-podman-backed secret count with an "expected (status not tracked)" line, and `start`/`restart` skip `_ensure_patches(Podman())` + `resolve_and_populate` (no host-podman secret store on apple-container). `audit`/`har`/`backup`/`restore` exit non-zero with `not yet implemented for apple-container backend (see issue #120)` instead of crashing on the first podman call. `_ensure_dns_quadlet_current` and `_update_dns_quadlet` are also gated. (#139)
@@ -2118,12 +2174,14 @@ The intended 0.20.4 content (now shipping verbatim in 0.20.5) bundled the remain
 
 ## [0.20.2] - 2026-05-25
 
+
 ### Fixed
 - `agentcage init <name> --scaffold <scaffold>` on macOS no longer crashes with `FileNotFoundError: [Errno 2] No such file or directory: 'podman'` when the host has no podman installed (the common case on Mac, where image builds happen inside Lima or via Apple's `container` CLI). `run_scaffold_setup` now takes the resolved isolation and only invokes host podman for `isolation: container`; for `vm`/`apple-container` it prints one explanation line and skips the host build loop (the backend still builds images at cage create time). Provision steps always run. Callers that don't pass `isolation` (none in tree) preserve the legacy behavior. (#138)
 - `agentcage run ubuntu` (and any other apple-container cage with a `container.command:` in cage.yaml) no longer exits immediately after start. The apple-container backend was resolving the cage's CMD by inspecting the user image's OCI config — for ubuntu that's `/bin/bash`, which exits instantly under `container run -d` with no TTY — completely ignoring cage.yaml's `command:`. cage.yaml now wins; the image's OCI CMD is the fallback only when the cage doesn't set one. Additionally, `supervisor.sh` stage 60 now mirrors the proxy CA into `/certs/mitmproxy-ca-cert.pem` (where the container backend bind-mounts it), so backend-agnostic cage.yaml commands that reference that path Just Work on apple-container without scaffold edits. (#136)
 - `agentcage cage create` on the apple-container backend no longer shows two spinners racing on the same terminal line (`⠼ Starting cage...⠹ [1/2] Fetching image [13s]`) during image pull. Apple's `container` CLI writes its own progress to stderr; agentcage's braille `Spinner` writes `\r <frame> <msg>` to the same line every 80 ms; the two writers overdrew each other and flickered. `Spinner` now exposes pause/resume; the streaming branch of `apple_container.cli.run` (capture_output=False) wraps the child `subprocess.run` in a `pause_active_spinner()` context manager, so Apple's CLI owns the terminal line for the duration of the call and our spinner resumes after. Same pattern would help Lima — filed as a separate follow-up. (#137)
 
 ## [0.20.1] - 2026-05-24
+
 
 ### Fixed
 - `agentcage run claude-code` no longer fails with `failed to exec [claude] Error Domain=NSPOSIXErrorDomain Code=8 "Exec format error"` (ENOEXEC) on the apple-container backend (and any other backend that exec()s the symlinked binary directly). Recent `@anthropic-ai/claude-code` npm releases switched from a JS-with-shebang `claude.exe` to a platform-native binary architecture where `bin/claude.exe` is a no-shebang error stub until the package's own `install.cjs` runs and replaces it with (or symlinks it to) the right `claude-code-linux-<arch>/claude` ELF. The scaffold's `npm install -g --ignore-scripts @anthropic-ai/claude-code` (defense-in-depth against transitive postinstalls) correctly skipped all postinstall hooks — but that also skipped claude-code's own install.cjs, so `claude.exe` stayed as the error stub. The kernel returned ENOEXEC because the stub had no shebang and was not an ELF. Fix: keep `--ignore-scripts` for the broad install, then run `node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs` explicitly afterward. Defense-in-depth is preserved (transitive postinstalls still don't run); claude-code's own setup runs. Verified on macOS 26.3.2 + ASi: `claude.exe` is now an ELF executable and `claude --version` prints `2.1.150 (Claude Code)`. (#132, #133)
@@ -2136,6 +2194,7 @@ Major release introducing the **apple-container** isolation backend on macOS 26+
 - New `isolation: "apple-container"` backend for macOS 26+ Apple Silicon, the new default on hosts where Apple's `container` CLI is installed (Lima stays the default on older macOS, Intel, and when `container` is missing; Linux is unchanged). Each cage runs in a single Apple `container` microVM — one kernel per cage with the hypervisor as the trust boundary, ~10-20× faster than Lima warm and ~3× less RAM per cage. The backend wraps the user's cage image with a security-critical supervisor that runs as PID 1 in the microVM and stands up a full egress filter before exec'ing the user's workload: dnsmasq (uid 201) forwards DNS to 1.1.1.1/8.8.8.8, mitmproxy (uid 200, official PyInstaller bundle pinned by SHA256) listens transparent on 127.0.0.1:8080, the mitmproxy CA is installed in the cage's trust store, and iptables REDIRECTs the cage's tcp/80 + tcp/443 to mitmproxy while DROPing everything else (IPv6 is killed at netfilter + sysctl so AAAA records can't bypass v4 NAT). A small mitmproxy addon enforces the cage's `domains.allow` list — non-listed requests get a 403 from the proxy, the upstream connection is never opened. The cage workload then runs as uid 1000 with `CapEff/Prm/Inh/Bnd` all zero, `NoNewPrivs=1`, and `hidepid=2` shielding it from other UIDs' processes. Two verification spikes documented in #120 grounded the design (Apple `container` 0.12.3 does not support multi-network attach; hardening primitives require `--cap-add CAP_SYS_ADMIN` for the supervisor to remount `/proc` and set up the egress filter). End-to-end verified on macOS 26.3.2 + Apple Silicon: allowlisted domains return 200, blocked return 403 from the proxy, raw IP literals return 403, non-80/443 ports + UDP DNS bypass timeout at iptables DROP, cage user cannot `iptables -F` or reach arbitrary loopback services. `agentcage doctor` reports apple-container readiness alongside Lima. User images must be glibc-based (debian/ubuntu) because the bundled mitmproxy is glibc-only; alpine/musl support is a v2 follow-up. Also deferred: server-side `{{SECRET:...}}` placeholder injection, `agentcage cage audit` integration with the proxy log, and the Backend protocol lift for `exec`/`logs`/`audit`. (#125)
 - New [Apple Container Isolation](docs/apple-container.md) docs page covering architecture, prerequisites, security model, deferred follow-ups, and troubleshooting. README and configuration reference updated to mention the third backend; security & threat model docs gain a third column comparing apple-container to container/vm across all threat dimensions.
 - `install.sh` auto-installs Apple's `container` CLI on macOS 26+ Apple Silicon and starts the apiserver (with `--enable-kernel-install`). Lima becomes optional on those hosts (still installed on demand via `--with-lima`). Older macOS / Intel Macs continue to install Lima automatically.
+
 
 ### Fixed
 - Minimal distro scaffolds (busybox / alpine / arch / ubuntu / debian) shipped in 0.17.8 didn't quite work out of the box: the cage ran as UID 1000 (no real user in any minimal base image, so `whoami` returned nothing and the prompt only showed `luca` because `$USER` bled through `podman exec`), the empty `domains.allow` meant package mirrors were blocked, no `add_capabilities` meant the package manager couldn't drop to its helper user (`_apt` etc.), and arch/ubuntu/debian's `pacman`/`apt` didn't read `SSL_CERT_FILE` so the MITM proxy CA was untrusted. All four package-manager scaffolds now run as root, pre-allowlist the distro's package mirrors, re-add the minimum capabilities (`CHOWN`, `FOWNER`, `DAC_OVERRIDE`, `SETUID`, `SETGID`) for package install, and (where the package manager doesn't honor `SSL_CERT_FILE`) install the agentcage MITM proxy CA into the system trust store at container startup. Verified end-to-end on every distro: `apk add curl` / `pacman -S curl` / `apt-get install -y curl` all succeed against the real upstream mirrors. busybox is unchanged — `busybox:latest` ships no package manager, so its README now documents the limitation and points users to alpine. "for testing agentcage primitives" stripped from all 15 description sites. (#130)
@@ -2161,10 +2220,12 @@ Major release introducing the **apple-container** isolation backend on macOS 26+
 
 ## [0.17.6] - 2026-05-24
 
+
 ### Fixed
 - `agentcage cage update <name>` no longer regenerates quadlets with a fresh network octet that doesn't match the existing `<name>-net` podman network. On a single-cage system the hash-based allocator could land on a different octet at update time than at create time (because the cage being updated was excluded from the "used" set, so create-time collision resolution didn't reproduce), causing the DNS sidecar to fail at start with `Error: requested static ip 10.89.X.10 not in any subnet on network <name>-net` and cascading to the cage + proxy as dependency failures. `cage update` now reads the persisted `network_octet` from the cage's `metadata.json` and pins the subnet to the original allocation. The fix threads a new `network_octet` parameter through `build_and_deploy → generate_units → generate_quadlets → cage_network_addrs`; when set, it bypasses hash-based allocation entirely. New regression tests in `test_cage_cli.py` cover the CLI, the renderer, and the `services.build_and_deploy` plumbing. (#126)
 
 ## [0.17.5] - 2026-05-24
+
 
 ### Fixed
 - `agentcage cage create` and `agentcage run` against a fresh Lima VM no longer wedge during cloud-init provisioning. The provision script called `loginctl enable-linger "$lima_user"`, which goes through systemd-logind over D-Bus; after the preceding `usermod -aG systemd-journal/adm` against the already-active Lima SSH user, that dbus call has been observed to time out at 25 s, after which logind sits at ~100 % CPU and every later `pam_systemd(sshd:session)` fails with `Connection timed out`. The agentcage `bridge_secrets` step's `podman secret rm` over SSH then falls back to the system bus and futex-deadlocks for tens of minutes before returning. The provision script now writes logind's linger sentinel file directly (`mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/$lima_user`) — same end state as `loginctl enable-linger`, no dbus round-trip, can't wedge. New regression test in `test_lima_provisioning.py` asserts no `loginctl` invocation in the rendered script. (#123)
@@ -2183,6 +2244,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.17.3] - 2026-05-22
 
+
 ### Fixed
 - `agentcage cage rm` on macOS no longer aborts mid-cleanup with `FileNotFoundError: 'systemctl'`, which leaked the cage's podman network, volumes, and scoped secrets. The container backend's `destroy_resources()` calls `systemd.daemon_reload()` unconditionally, but macOS has no `systemctl`. The four public functions in `systemd.py` (`daemon_reload`, `start_unit`, `stop_unit`, `restart_unit`) now check `shutil.which("systemctl")` and become no-ops when it is absent, so cleanup runs to completion on hosts without systemd.
 - `agentcage cage audit` and `cage logs` on a VM-backend cage no longer print `No journal files were opened due to insufficient permissions` and return nothing. Two causes, both in `cli.py`: the proxy/dns quadlets run as `systemd --user` units but conmon routes their container output to the *system* journal, so `journalctl --user -u` matched nothing — the commands now filter with `--user-unit`. And Lima establishes its persistent SSH ControlMaster before provisioning adds the VM user to the `systemd-journal` group, so the reused SSH session inherits stale groups and cannot read `system.journal`; the `journalctl` invocation is now wrapped in `sg systemd-journal -c` to re-fetch the group. No re-provisioning is required — the fix works on already-running VM cages.
@@ -2197,10 +2259,12 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 ### Changed
 - The `claude-code` scaffold now defaults to larger resources: the Lima VM gets 4 vCPUs / 8 GiB (was 2 / 4 GiB) and the cage container limits are raised to 4 CPUs / 8 GiB (was 2.0 / 2 GiB). Coding agents are memory-hungry — builds, language servers, and large repos pushed the old 2 GiB container limit. Both values are still plain scaffold defaults; edit `cage.yaml` to tune them per cage.
 
+
 ### Fixed
 - Claude Code (and any interactive cage TUI) on the VM backend no longer needs every keystroke pressed twice. The proxy-log monitor spawned `podman logs -f` without detaching stdin; on the VM backend that command is wrapped in `limactl shell` → `ssh`, and `ssh` reads its inherited stdin to forward to the remote side. With the interactive `podman exec -it` session sharing the same controlling terminal, two `ssh` processes raced for the user's keystrokes and roughly half were swallowed by the log monitor. The monitor's subprocess now runs with `stdin=subprocess.DEVNULL`. The container backend was unaffected because `podman logs` runs there directly, with no `ssh` in the path.
 
 ## [0.17.1] - 2026-05-21
+
 
 ### Fixed
 - `agentcage run claude-code` (and any VM-isolation cage with a single-file volume) no longer aborts with `limactl create` fatal `field mounts[N].location refers to a non-directory path`. The claude-code scaffold mounts `~/.claude.json` — a single file — but Lima's virtiofs can only share directories. The Lima-config generator emitted the file as a `mounts[].location` anyway, so `limactl create` rejected the whole config and the cage never built. `_extra_mounts_for_volumes` now skips volume sources that are not directories (with a warning), and `generate_quadlets` drops the matching bind-mount on the VM backend so the cage still starts without it. The container backend is unaffected — podman bind-mounts single files directly, so `~/.claude.json` is still shared there.
@@ -2217,6 +2281,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - `nanoclaw` scaffold — mirrored upstream nested-container framework; drifted from upstream and forced agentcage to track upstream container layout. Anyone using it can fork the scaffold dir from a previous release.
 - `picoclaw` scaffold — mirrored upstream lightweight gateway; same drift story. Anyone using it can fork the scaffold dir from a previous release.
 
+
 ### Fixed
 - The proxy quadlet's `systemd-creds decrypt` step now passes `--name`. `agentcage secret set` encrypts each `.cred` with `--name <ENV>`, but the proxy's `ExecStartPre` decrypted it without `--name` — and because the decrypted value is piped to stdout, `systemd-creds` could not derive the expected credential name from the output path and rejected the credential with `Name in credential doesn't match expectations` (exit 125). Any cage with a secret on the systemd-creds backend (the default) failed to start its proxy, and since the cage depends on the proxy the whole cage went down. The decrypt now passes `--name "<ENV>"` so it matches what `secret set` encrypted.
 - `agentcage run` no longer hangs on a hidden Lima prompt when it has to create the VM. `limactl create` shows an interactive "Proceed with the current configuration / Open an editor / Choose another template / Exit" survey whenever a TTY is attached, and agentcage's "Starting cage..." spinner was drawn on top of it — so the first interactive `agentcage run` on a fresh machine appeared to hang forever on the spinner. `LimaInstance.create()` now passes `--yes` to `limactl create`, which skips the survey. Headless runs were unaffected because Lima auto-proceeds when there is no TTY, which is also why this slipped through.
@@ -2225,6 +2290,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - `cage update` (without `-c`) no longer breaks rebuilds for cages whose Containerfile `COPY`s a directory tree. The build-context staging step copied sibling *files* into the cage state dir but skipped sibling *directories*, so a bare `cage update` — which rebuilds from the state dir — could not reproduce a build context that `cage update -c` (which builds from the original config dir) handled fine. The rebuild then failed inside `podman build` with `copier: stat: "...": no such file or directory`, and because the cage container is removed during the update the cage was left `stopped`. Staging now copies directories as well as files (skipping `__pycache__`, `.git`, `node_modules` and soft-deleted leftovers), across all four sites that snapshot a build context: `cage create`, `cage update -c`, `cage update`'s scaffold refresh, and scaffold init.
 
 ## [0.16.1] - 2026-05-20
+
 
 ### Fixed
 - The `openclaw` scaffold's nested container pulls work again. `podman run` inside the cage failed pulling an image because Docker Hub serves image blobs from a CDN host (`production.cloudfront.docker.com`) the scaffold's domain allowlist did not cover — the cage proxy returned 403. The allowlist now permits `docker.io` and `docker.com` with all subdomains, covering the registry, the token service, and whichever CDN edge Docker Hub redirects blob downloads to.
@@ -2269,6 +2335,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.15.4] - 2026-05-13
 
+
 ### Fixed
 - `brave_api_key` regex no longer false-positives on base64-encoded image bytes sent to `api.anthropic.com` (and other JSON or binary upload targets). The previous pattern `BSAI[a-zA-Z0-9_-]{20,255}` collided with random `BSAI...` substrings inside ~2 MB JPEGs at roughly a 40% hit rate, hard-blocking every Anthropic vision API batch with `{"blocked":true,"reason":"secret detected: brave_api_key"}`. Two-part fix: (1) the pattern is now `(?<![A-Za-z0-9_-])BSAI[a-zA-Z0-9_-]{28}(?![A-Za-z0-9_-])`, locked to Brave's documented 32-char total length and surrounded by negative lookbehind/lookahead on the base64 alphabet so a coincidental `BSAI...` substring inside a base64 blob no longer matches; (2) the secrets inspector now skips `body_text` scanning when the request's `Content-Type` is `image/*`, `audio/*`, `video/*`, `application/octet-stream`, or `application/pdf` — URL and headers are still scanned, so a real secret leaking through those still gets caught even on a binary-body request. Empirically reproduced on a production cage (a Matrix bot) image-tool batch that lost ~17 photo uploads in a row before the fix.
 
@@ -2287,6 +2354,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - The DNS sidecar's allowlist no longer lives on dnsmasq's command line. The per-domain `--server=/<domain>/<upstream>` flags that were rendered into `<cage>-dns.container` are gone; in their place, the quadlet mounts a new sidecar file at `/etc/dnsmasq-allow.conf` (host path: `~/.config/agentcage/cages/<name>/dns-allowlist.conf`) and runs dnsmasq with `--servers-file=/etc/dnsmasq-allow.conf`. The file is dnsmasq's native config-format — one `server=/<domain>/<upstream>` line per (allowed-domain × upstream-server) pair — and is written by a new `state.save_dns_allowlist(name)` helper. Net effect: the systemd unit content is now stable across domain edits, so `agentcage domain add` / `domain rm` and `agentcage cage start` / `cage restart` can apply allowlist changes with just a file rewrite plus `systemctl restart` — no `daemon-reload`, no unit-file churn, no surprise cascade beyond the existing `Requires=` chain. The `_update_dns_quadlet` helper still exists as the public reload contract for `domain add` / `domain rm` (and is what existing tests mock), but its implementation reduces to "write the sidecar file, run a cheap migration check, restart services if running."
 - One-time migration: existing cages have a quadlet that bakes the allowlist into the command line and lacks the new mount. The first `cage restart` (or the first `domain add` / `domain rm`) under this version detects the mismatch via the new `_ensure_dns_quadlet_current(cfg)` helper, rewrites the unit to the new shape, and runs one `daemon-reload`. From then on the quadlet stays untouched.
 
+
 ### Fixed
 - `agentcage cage start` and `agentcage cage restart` now regenerate `proxy-config.yaml` AND `dns-allowlist.conf` from `cage.yaml` before bouncing services. Pre-fix, the proxy container always read the on-disk `proxy-config.yaml` it was last given and dnsmasq always read the per-domain flags baked into the on-disk quadlet, so any divergence between `cage.yaml` (the source of truth) and either of those derived artifacts would survive a `cage restart` and a stop/start cycle. Symptom seen in the wild: domains added to `cage.yaml` (whether by a hand-edit, an out-of-process tool, or an older agentcage version that wrote `cage.yaml` without calling `save_proxy_config`) appeared in `agentcage domain list` and in `cage.yaml` on disk, but were rejected by both the proxy (`domain not in allowlist`) and the DNS sidecar (NXDOMAIN). Operators reasonably ran `cage restart` to apply the change and saw no effect — the restart just re-mounted the same stale derived state. Now restart and start are true "re-apply current cage.yaml" operations, and in the steady state they don't even touch systemd because the quadlet is data-stable.
 
@@ -2303,6 +2371,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Outbound ICMP echo-request is always permitted (`iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT`) so `ping` from inside a cage works for diagnostics. Replies ride the existing `ESTABLISHED,RELATED` rule. No config knob to disable.
 - `ip6tables -P FORWARD DROP` failsafe is installed on every cage. Today's podman networks are IPv4-only (`10.89.x.0/24`), so this is a latent-gap closure rather than active filtering — IPv6 traffic the cage might attempt is dropped at the proxy regardless.
 
+
 ### Fixed
 - `load_config` now structurally validates the nested `ports` shape. Pre-fix, a malformed config like `ports: "yes"` crashed with `AttributeError`, `ports.tcp: 443` crashed with `TypeError`, and most concerning, `ports.tcp: [80, 443, 8448]` (operator forgot the `allow:` key) silently parsed as the default `[80, 443]` — the operator's intent to allow port 8448 was dropped without any warning, and Matrix federation traffic would then be silently blocked by the new default-deny FORWARD policy. Each level (`ports`, `ports.tcp`, `ports.udp`) now requires a mapping; non-mappings raise a clean `ValueError` with a hint pointing the operator at the right shape.
 - `proxy.container.j2` now installs `iptables -P FORWARD DROP` as the first rule in the FORWARD chain, before any `-A FORWARD ... ACCEPT` rules. Pre-fix, the policy was set last via `&&`-chained `ExecStartPost`; if any earlier `iptables` invocation failed (kernel module missing, transient failure), the chain short-circuited before reaching the policy line and the kernel default ACCEPT remained — fail-open. The default-deny posture is the headline of this feature; the failure mode now matches.
@@ -2315,10 +2384,12 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.14.2] - 2026-05-04
 
+
 ### Fixed
 - SMTP relay: `send_rate_limit` now counts upstream-accepted deliveries, not raw DATA attempts. Pre-fix, the rate limiter reserved a slot before the inspector chain and upstream delivery, so an inspector-blocked or oversize-rejected message still consumed an hourly quota slot. A client that hit a content rule (e.g. himalaya tight-loop retrying a `text/plain` mail with a 600+ char base64 chunk that the `content-type` inspector flagged) could exhaust its hourly cap in seconds with zero successful sends, then be locked out for an hour. Now the rate limiter's `take()` is paired with a `release()` that's called on every failure path (oversize, inspector block, upstream error, DATA reception timeout) so only actual deliveries count against the quota. Caught in production on a long-running cage after the SMTP relay deploy.
 
 ## [0.14.1] - 2026-05-04
+
 
 ### Fixed
 - SMTP relay: EHLO response now advertises `AUTH PLAIN LOGIN`. Real-world clients (himalaya, msmtp) refuse to send mail when the server doesn't expose any auth method, even on a plaintext loopback where they don't strictly need to authenticate. The advertised AUTH is still intercepted and forged 235 by the relay — no credential bytes reach upstream — but the client now knows the channel is "authenticated" enough to proceed. Caught while running the first real himalaya-from-cage send through the relay.
@@ -2334,21 +2405,25 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - `Agentcage._start_protocol_relays` filters `DomainInspector` out of the chain it passes to relays — host-allowlist semantics don't translate to non-HTTP traffic, and the SMTP equivalent is `recipient_allowlist`.
 - Both relays support `policy.idle_timeout_seconds` to bound how long a session can sit silent. Defaults: SMTP=300 (RFC 5321 §4.5.3.2 floor), IMAP=1800 (lets RFC 2177 IDLE heartbeats through). The IMAP relay only enforces the timeout pre-bridge — once auth completes and bytes start flowing, IDLE legitimately sits quiet for ~29 minutes between heartbeats. SMTP enforces it on every readline (cage and upstream sides). On timeout the cage gets `421 4.4.2 idle timeout` (SMTP) or `* BYE upstream silent` (IMAP), and an audit entry is recorded.
 
+
 ### Fixed
 - SMTP relay: `_connect_upstream()` failures (TLS handshake, AUTH rejection) are now caught at the same level as `deliver()` failures. Pre-fix the cage's TCP connection just dropped with no SMTP response and no audit entry; post-fix the cage gets `451 4.4.0 upstream temporarily unavailable` and `audit.jsonl` records `kind: smtp_data, decision: upstream_error, error: <str>`. Mirrors the equivalent IMAP fix from the 0.13 series.
 - SMTP relay: `_connect_upstream()` no longer leaks the upstream socket when `handshake()` raises. Pre-fix, an AUTH-rejected handshake left the upstream's handler reading from a half-open connection until kernel TCP keepalive (~60s) detected it. Post-fix, the relay closes the writer in a `try/except/raise` block before propagating the error.
 
 ## [0.13.3] - 2026-05-04
 
+
 ### Fixed
 - dnsmasq now resolves `proxy.cage.local` to the proxy container's network IP. The 0.13.0 docs and `protocol_relays` examples all point cage clients at `proxy.cage.local:1143`, but the hostname was never wired into the DNS sidecar — under allowlist mode it fell through to the `198.51.100.1` placeholder, so the cage's IMAP client got connection timeouts. Now hard-coded as `--address=/proxy.cage.local/{ip_proxy}` in the dns.container template, applied in both allowlist and open-DNS modes.
 
 ## [0.13.2] - 2026-05-04
 
+
 ### Fixed
 - `Containerfile.proxy` now COPYs the new `proxy/relays/` directory into the proxy image. Without this the proxy container ships without the relay implementations, so the addon's `_start_protocol_relays()` raises `ModuleNotFoundError: No module named 'relays'` at startup and crashes the proxy. Mirrors the existing COPY for `transforms/`.
 
 ## [0.13.1] - 2026-05-04
+
 
 ### Fixed
 - `save_proxy_config` now passes the `protocol_relays` block through to the proxy container's filtered config. Without this the `_PROXY_KEYS` allowlist dropped it silently, so the addon's `_start_protocol_relays()` saw an empty list and the IMAP relay never bound its listener — the cage would hit "connection refused" on `proxy.cage.local:1143`. Caught while deploying the first real cage on top of 0.13.0.
@@ -2376,6 +2451,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.11.0] - 2026-05-03
 
+
 ### Fixed
 - e2e Phase 8: `8.4 self-restart SIGUSR1` rewritten for openclaw 2026.5+. The upstream change collapses the supervisor + `openclaw-gateway` worker into a single `openclaw` process and switches to in-process restart in containers (deliberate — `restart mode: in-process restart (container: use in-process restart to keep PID 1 alive)`), so the previous PID-delta witness can no longer fire. The new test sends SIGUSR1 to `^openclaw$`, asserts openclaw logs `received SIGUSR1; restarting` (proves the signal was authorized via `commands.restart`, which defaults to true), and probes the gateway readiness endpoint to confirm recovery.
 
@@ -2389,6 +2465,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - `agentcage domain add` now accepts multiple domains in a single invocation (e.g. `agentcage domain add my-cage foo.com bar.com baz.com`). Config is written and the cage is reloaded exactly once for the whole batch, replacing the previous one-reload-per-domain behavior. Single-domain calls are unchanged.
 
 ## [0.10.5] - 2026-04-21
+
 
 ### Fixed
 - openclaw scaffold: default `openclaw.json` now sets `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork: true`. openclaw's browser plugin refuses every navigation when `HTTP_PROXY`/`HTTPS_PROXY` is set (error: `Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set`). In agentcage, egress is already policed by the mitm proxy + domain allowlist + inspectors, so this guard is redundant and purely blocks the browser tool. Opting out restores browser-tool functionality; the cage's own egress controls remain authoritative.
@@ -2407,6 +2484,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - `_SCAFFOLD_IMAGES` hardcoded dict removed; scaffold.yaml is now the single source of truth for scaffold → upstream-image mapping.
 - `render_config()` and `run_scaffold_setup()` no longer thread an `image_tag` through call sites — tag resolution happens inside `run_scaffold_setup` via the shared helper.
 
+
 ### Fixed
 - Suppress the noisy `warning: could not resolve latest tag for localhost/...` that fired on every `cage update` for scaffold-built local image refs that never exist in a real registry.
 
@@ -2416,6 +2494,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - E2E test reliability: parallelize test phases, add local mock httpbin server, and fail-fast on first error
 
 ## [0.10.2] - 2026-03-22
+
 
 ### Fixed
 - OpenClaw container no longer crashes on SIGUSR1-based self-restart: tini is now PID 1 with a restart loop in `entrypoint.sh`, so config changes via the web UI don't kill the container
@@ -2430,6 +2509,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Three-tier scaffold resolution: project-local → user → built-in
 - `agentcage update` command: self-update the CLI from PyPI
 - `-i/--interactive-domains` flag on `agentcage run`: approve blocked domains interactively at runtime
+
 
 ### Fixed
 - Stabilize flaky E2E tests (4.3 domain hot-reload, 5.2 subnet isolation) with exponential backoff and proxy readiness checks
@@ -2446,6 +2526,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - `agentcage run` VM isolation support (`--isolation vm`)
 - Version banner on `agentcage` and `agentcage --help`
 
+
 ### Fixed
 - Build scaffold images inside VM instead of host Podman when using VM isolation
 
@@ -2454,6 +2535,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 ### Added
 - Modular E2E test suite (`tests/e2e/`) with 7 phases covering container and VM modes
 - E2E CI workflow — container tests (phases 1-6) run on every PR via GitHub Actions
+
 
 ### Fixed
 - `domain add`/`domain rm` crash: DNS quadlet regenerated with wrong subnet IP when hash collision shifted the octet at deploy time
@@ -2485,6 +2567,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Install script: macOS skips Podman and Podman machine (uses Lima instead)
 - Scaffold guides updated: create cage first, then set secrets
 
+
 ### Fixed
 - Shell injection in `_bridge_secrets` (piped via stdin)
 - Command injection in `os.system()` (`shlex.quote`)
@@ -2514,6 +2597,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Firecracker backend and all associated code (binaries, kernel, network, rootfs, secrets, vmconfig)
 - `agentcage firecracker setup` CLI command
 - TAP/bridge networking, `agentcage-nethelper`, root/sudo requirement for VM isolation
+
 
 ### Fixed
 - `cage shell` now checks `isatty()` before passing `-it` flags (fixes piped commands)
@@ -2545,6 +2629,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Update Firecracker binary from v1.14.2 to v1.15.0
 
 ## [0.7.1] - 2026-03-06
+
 
 ### Fixed
 - `brave_api_key` pattern used wrong prefix (`BSA` instead of `BSAI`), causing false positives on base64 text in POST bodies to `api.anthropic.com`
@@ -2582,6 +2667,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.6.3] - 2026-03-04
 
+
 ### Fixed
 - `cage create` no longer emits a spurious "Failed to restart" warning for the storage volume service when `nested_containers` is not enabled (#21)
 - `secret set` no longer leaks the podman secret ID to stdout (#20)
@@ -2596,10 +2682,12 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.6.2] - 2026-03-02
 
+
 ### Fixed
 - Fix 502 Bad Gateway on inbound reverse-proxy requests — the transparent-mode host rewrite was overwriting the configured upstream destination with the client's Host header, causing mitmproxy to connect to itself
 
 ## [0.6.1] - 2026-03-01
+
 
 ### Fixed
 - `cage verify` no longer reports a false egress `[FAIL]` on images without curl or node — adds python3 `urllib` as a third fallback and reports `[WARN]` when no HTTP client is available (#16)
@@ -2654,6 +2742,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
   - `next_steps`: templated post-init instructions shown to the user
 - PicoClaw scaffold now auto-builds the image and provisions `~/.picoclaw/config.json` during init
 
+
 ### Fixed
 - `~` in volume host paths (e.g. `~/.picoclaw/config.json:/app/config.json`) was not expanded, causing podman to create a named volume instead of a bind mount
 - `podman.build_image()` now accepts `containerfile=None` to auto-detect Dockerfile/Containerfile
@@ -2679,16 +2768,19 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.3.19] - 2026-02-26
 
+
 ### Fixed
 - OpenClaw scaffold: configure `gateway.controlUi.allowedOrigins` so the gateway starts without errors on newer OpenClaw versions that require explicit origin config for non-loopback binds
 - Add LAN access instructions (0.0.0.0 binding) to the scaffold template comments
 
 ## [0.3.18] - 2026-02-25
 
+
 ### Fixed
 - Reverse proxy forwarded `X-Forwarded-Proto: http` and rewrote `Origin` with `http://` even when the browser connected via HTTPS, causing 502 errors in upstream apps (e.g. OpenClaw WebSocket upgrades and origin validation)
 
 ## [0.3.17] - 2026-02-25
+
 
 ### Fixed
 - `cage update` no longer fails with "port already in use" when the running cage's own ports are bound
@@ -2697,6 +2789,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Stale `--list-presets` references in install script and README (renamed to `--list-scaffolds` in v0.3.14)
 
 ## [0.3.16] - 2026-02-25
+
 
 ### Fixed
 - Scaffold templates (`--scaffold openclaw/picoclaw`) rendered port as `None` when `--port` was not specified
@@ -2714,6 +2807,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Renamed `cage reload` to `cage restart` (`reload` kept as alias)
 - `domain add/rm` prints "Proxy updated." instead of restarting the cage
 
+
 ### Fixed
 - Proxy container startup failure under rootless Podman when cert volume was inaccessible due to `/home/mitmproxy` being root-owned mode 700 in the upstream mitmproxy image
 
@@ -2727,6 +2821,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 ### Changed
 - Renamed `--preset` / `--list-presets` CLI flags to `--scaffold` / `--list-scaffolds`
 - Renamed "preset" to "scaffold" in all user-facing text, docs, and template comments
+
 
 ### Fixed
 - `cage create` no longer fails with a cryptic rootlessport error when a host port is already in use — the conflict is detected early with actionable guidance
@@ -2749,6 +2844,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - OpenClaw preset: auto-configures `trustedProxies` in `openclaw.json` on first start
 - OpenClaw preset: `exec_aliases` and `help` fields for streamlined device pairing workflow
 
+
 ### Fixed
 - Reverse-proxy WebSocket frames were blocked by the domain inspector — the proxy now correctly identifies reverse-proxy WebSocket flows and skips domain checks, fixing "domain not in allowlist" errors for inbound WebSocket connections (e.g. OpenClaw Control UI)
 
@@ -2765,6 +2861,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.3.10] - 2026-02-21
 
+
 ### Fixed
 - Reverse proxy now preserves the browser's original `Host` header (`keep_host_header=true`), eliminating the need to whitelist internal container IPs in OpenClaw
 - Reverse proxy now sends `X-Forwarded-For` and `X-Forwarded-Proto` headers so upstream apps (e.g. OpenClaw `gateway.trustedProxies`) can identify real client IPs
@@ -2778,10 +2875,12 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 ### Added
 - HAR capture support for full request/response forensics (`capture.enable_har` config option)
 
+
 ### Fixed
 - Firecracker socat port-forward retries now scale with `timeout_start_sec` instead of hardcoded 90, preventing premature timeout for large images
 
 ## [0.3.8] - 2026-02-21
+
 
 ### Fixed
 - Literal secret values sent to authorized `inject_to` domains are no longer blocked — the policy check now recognizes that post-injection requests legitimately contain real values for their target domain (HTTP and WebSocket)
@@ -2802,6 +2901,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - `--list-presets` flag to discover available presets
 
 ## [0.3.6] - 2026-02-21
+
 
 ### Fixed
 - Install script: `sudo agentcage firecracker setup` fails on Ubuntu because sudo resets PATH — now uses the full binary path
@@ -2830,10 +2930,12 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 
 ## [0.3.3] - 2026-02-20
 
+
 ### Fixed
 - Secret placeholder policy violations are now flagged instead of blocked — the placeholder is left in place (preventing secret leakage) while the request continues through downstream inspectors
 
 ## [0.3.1] - 2026-02-20
+
 
 ### Fixed
 - DNS resolution fails on Ubuntu 24.04 and other systemd-resolved hosts — loopback nameservers (127.0.0.53) are now filtered from `/etc/resolv.conf` and real upstream servers are read from `/run/systemd/resolve/resolv.conf` instead (#5)
@@ -2864,6 +2966,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Firecracker commands require `sudo` directly (removed `agentcage-nethelper` setuid binary)
 - Reverse proxy binds to `0.0.0.0` and skips domain inspector for inbound flows
 
+
 ### Fixed
 - Secrets and startup failures in Firecracker VMs
 - Firecracker networking: dual-homed TAP, INPUT firewall rules for VM-to-host connectivity
@@ -2875,6 +2978,7 @@ Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cache
 - Updated architecture, security, and README to cover both isolation modes and threat model differences
 
 ## [0.1.2] - 2026-02-17
+
 
 ### Fixed
 - Cage DNS resolution: bind-mount resolv.conf pointing to dnsmasq instead of relying on `DNS=` directive (which was overridden by aardvark-dns) and `ExecStartPost` (which failed on read-only containers)
