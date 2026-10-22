@@ -387,20 +387,23 @@ predates_rust_egress() {
 
 # Put the egress binary this host will embed at $EGRESS_BIN.
 #
-# A release tag: the release's own `agentcage-egress-<version>-<target>`
-# asset, verified against its `.sha256`. A branch (AGENTCAGE_REF): there
-# is no release asset, so the egress is built from that branch, which
-# needs the musl target and musl-gcc; without them this stops and says
-# how to do the two steps by hand, rather than install a host that
-# cannot build a cage.
+# By default the egress is built from source at the same ref as the host
+# (a release tag or a branch), so nothing prebuilt is trusted. That needs
+# the musl Rust target and a musl C compiler (ring compiles C); both are
+# installed here if missing. Set AGENTCAGE_EGRESS_DOWNLOAD=1 to use the
+# release's `agentcage-egress-<version>-<target>` asset instead, verified
+# against its `.sha256` (release tags only).
 prepare_egress() {
     EGRESS_BIN=""
     egress_target
-    if [ "$REF_FLAG" = --tag ]; then
+
+    if [ "$REF_FLAG" = --tag ] && predates_rust_egress "${REF#v}"; then
+        return
+    fi
+
+    if [ "${AGENTCAGE_EGRESS_DOWNLOAD:-}" = 1 ]; then
+        [ "$REF_FLAG" = --tag ] || err "AGENTCAGE_EGRESS_DOWNLOAD=1 needs a release tag; a branch ($REF) has no egress asset"
         version="${REF#v}"
-        if predates_rust_egress "$version"; then
-            return
-        fi
         name="agentcage-egress-$version-$EGRESS_TARGET"
         base="https://github.com/$AGENTCAGE_REPO/releases/download/$REF"
         info "Downloading the egress ($name)..."
@@ -417,28 +420,65 @@ prepare_egress() {
         return
     fi
 
-    cc_var="CC_$(echo "$EGRESS_TARGET" | tr '-' '_')"
-    recipe="build both yourself in a checkout of $REF:
-    rustup target add $EGRESS_TARGET
-    $cc_var=musl-gcc cargo build --release --locked --target $EGRESS_TARGET -p agentcage-egress
-    AGENTCAGE_REQUIRE_EGRESS_BIN=1 cargo build --release --locked --bin agentcage"
-    if [ "$OS" != "linux" ]; then
-        err "a branch build ($REF) has no released egress to embed, and building one needs a Linux musl toolchain. Install a release instead (unset AGENTCAGE_REF), or $recipe"
-    fi
-    rustc_bin="$(dirname "$CARGO")/rustc"
-    [ -x "$rustc_bin" ] || rustc_bin=rustc
-    sysroot=$("$rustc_bin" --print sysroot 2>/dev/null || true)
-    if ! command -v musl-gcc >/dev/null 2>&1 || [ ! -d "$sysroot/lib/rustlib/$EGRESS_TARGET" ]; then
-        err "a branch build ($REF) has no released egress to embed; building one needs the $EGRESS_TARGET Rust target and musl-gcc. Install a release instead (unset AGENTCAGE_REF), or $recipe"
-    fi
-    info "Building the egress from $REF for $EGRESS_TARGET..."
-    env "$cc_var=musl-gcc" \
+    ensure_musl_toolchain
+
+    info "Building the egress from $REF for $EGRESS_TARGET — this takes a few minutes..."
+    env "CC_$EGRESS_TARGET_ENV_LC=$MUSL_CC" \
+        "CARGO_TARGET_${EGRESS_TARGET_ENV}_LINKER=$MUSL_CC" \
         "$CARGO" install --locked --quiet \
-        --git "https://github.com/$AGENTCAGE_REPO" --branch "$REF" \
+        --git "https://github.com/$AGENTCAGE_REPO" "$REF_FLAG" "$REF" \
         --target "$EGRESS_TARGET" --root "$tmp/egress-root" agentcage-egress \
         || err "building the egress from $REF failed"
     EGRESS_BIN="$tmp/egress-root/bin/agentcage-egress"
     [ -f "$EGRESS_BIN" ] || err "the egress build produced no binary"
+}
+
+# The musl Rust target and a musl C compiler, installed if missing.
+# Sets MUSL_CC, plus the target spelled the way cargo wants it in env var
+# names: lower-case for CC_*, upper-case for CARGO_TARGET_*.
+ensure_musl_toolchain() {
+    _t=$(echo "$EGRESS_TARGET" | tr '-' '_')
+    EGRESS_TARGET_ENV_LC="$_t"
+    EGRESS_TARGET_ENV=$(echo "$_t" | tr 'a-z' 'A-Z')
+
+    rustc_bin="$(dirname "$CARGO")/rustc"
+    [ -x "$rustc_bin" ] || rustc_bin=rustc
+    sysroot=$("$rustc_bin" --print sysroot 2>/dev/null || true)
+    if [ ! -d "$sysroot/lib/rustlib/$EGRESS_TARGET" ]; then
+        rustup_bin="$(dirname "$CARGO")/rustup"
+        [ -x "$rustup_bin" ] || rustup_bin=$(command -v rustup 2>/dev/null || true)
+        [ -n "$rustup_bin" ] || err "the $EGRESS_TARGET Rust target is missing and rustup is not available to add it. Run 'rustup target add $EGRESS_TARGET' (or install rustup) and re-run."
+        info "Adding the Rust target $EGRESS_TARGET..."
+        "$rustup_bin" target add "$EGRESS_TARGET" \
+            || err "rustup could not add $EGRESS_TARGET"
+    fi
+
+    if [ "$OS" = "macos" ]; then
+        # No native musl on macOS: use the musl-cross cross compiler.
+        case "$EGRESS_TARGET" in
+            x86_64-*)  MUSL_CC=x86_64-linux-musl-gcc ;;
+            aarch64-*) MUSL_CC=aarch64-linux-musl-gcc ;;
+        esac
+        if ! command -v "$MUSL_CC" >/dev/null 2>&1; then
+            info "Installing the musl cross compiler (musl-cross) with Homebrew..."
+            brew install FiloSottile/musl-cross/musl-cross \
+                || err "could not install musl-cross; install it from https://github.com/FiloSottile/homebrew-musl-cross and re-run."
+        fi
+    else
+        MUSL_CC=musl-gcc
+        if ! command -v musl-gcc >/dev/null 2>&1; then
+            info "Installing musl-gcc (needed to build the egress)..."
+            case "$DISTRO" in
+                arch)     run_pkg pacman -S --noconfirm --needed musl ;;
+                debian)   run_pkg apt-get update -qq && run_pkg apt-get install -y -qq musl-tools ;;
+                fedora)   run_pkg dnf install -y -q musl-gcc ;;
+                rhel)     run_pkg dnf install -y -q musl-gcc ;;
+                opensuse) run_pkg zypper install -y musl-devel ;;
+            esac
+        fi
+    fi
+    command -v "$MUSL_CC" >/dev/null 2>&1 \
+        || err "$MUSL_CC not found after install; install a musl C compiler and re-run."
 }
 
 install_agentcage() {
@@ -639,10 +679,10 @@ Builds agentcage from source with cargo, straight from the GitHub
 repository, and installs its prerequisite, Podman. If no Rust toolchain
 is found, a minimal one is installed with rustup (into ~/.rustup and
 ~/.cargo, without editing shell profiles). The build uses the committed
-Cargo.lock. The egress binary agentcage embeds is downloaded from the
-release and verified against its published sha256; a branch build
-(AGENTCAGE_REF) builds it instead, which needs the <arch>-unknown-linux-musl
-Rust target and musl-gcc (Linux only).
+Cargo.lock. The egress binary agentcage embeds is built from source too,
+which needs the <arch>-unknown-linux-musl Rust target and a musl C compiler;
+both are installed if missing. Set AGENTCAGE_EGRESS_DOWNLOAD=1 to download
+the release's prebuilt egress instead (verified against its sha256).
 
 On macOS 26+ Apple Silicon also installs Apple's 'container' CLI (the
 default isolation backend on that platform). On older macOS / Intel Macs
@@ -659,8 +699,10 @@ Options:
 
 Environment:
   AGENTCAGE_VERSION   Build this release tag instead of the latest release.
-  AGENTCAGE_REF       Build this branch instead (e.g. master); needs the
-                      linux-musl Rust target and musl-gcc for the egress.
+  AGENTCAGE_REF       Build this branch instead (e.g. master).
+  AGENTCAGE_EGRESS_DOWNLOAD=1
+                      Download the prebuilt egress from the release (release
+                      tags only) instead of building it.
   AGENTCAGE_BIN_DIR   Where to put the binary (default: ~/.local/bin).
   AGENTCAGE_REPO      Source repository (default: agentcage/agentcage).
 HELP
