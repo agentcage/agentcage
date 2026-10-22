@@ -6,7 +6,8 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
-  # Phase 7 only — see the e2e-vm job for why it is not on the PR path.
+  # Phases 7 and 8 only — see the e2e-vm and e2e-openclaw jobs for why
+  # they are not on the PR path.
   schedule:
     - cron: "17 4 * * *"
 
@@ -99,8 +100,12 @@ jobs:
       - name: Run E2E container tests
         run: bash tests/e2e/run.sh container
 
+  # Not on the pull_request path either: pulling the openclaw image and
+  # running phase 8 cost every PR about six minutes. It still runs on
+  # master, nightly and on demand.
   e2e-openclaw:
     name: E2E OpenClaw (Phase 8)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
