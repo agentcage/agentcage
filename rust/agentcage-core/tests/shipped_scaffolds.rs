@@ -366,15 +366,8 @@ fn claude_code_secret_injection_and_inactive_oauth_rule() {
 }
 
 /// Scaffolds that bind-mount `${PROJECT_DIR}:/workspace:rw`.
-const WORKSPACE_BINDMOUNT_SCAFFOLDS: [&str; 7] = [
-    "arch",
-    "busybox",
-    "claude-code",
-    "codex",
-    "debian",
-    "pi",
-    "ubuntu",
-];
+const WORKSPACE_BINDMOUNT_SCAFFOLDS: [&str; 6] =
+    ["arch", "claude-code", "codex", "debian", "pi", "ubuntu"];
 
 fn mask<'a>(cfg: &'a Value, target: &str) -> Option<&'a str> {
     tmpfs_targets(cfg)

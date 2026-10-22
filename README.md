@@ -285,7 +285,6 @@ Scaffolds package container definitions, volume mounts, and network policies tai
 | `ubuntu` | — | interactive | Clean Ubuntu Linux environment with package management. |
 | `debian` | — | interactive | Minimal Debian base sandbox. |
 | `arch` | — | interactive | Minimal Arch Linux sandbox with `pacman`. |
-| `busybox` | — | interactive | Ultra-lightweight container for testing egress rules and scripts. |
 
 Custom scaffolds can be created, edited, and shared across your team using `agentcage scaffold create my-scaffold --from claude-code`.
 

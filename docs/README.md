@@ -50,7 +50,7 @@ If you are new to agentcage, we suggest reading in this order:
 | **[Configuration Reference (`cage.yaml`)](reference/configuration.md)** | Exhaustive, field-by-field reference for every YAML configuration setting: container parameters, volumes, domain policies, secret injection rules, agent blocks, ports, logging, and capture limits. |
 | **[CLI Reference Manual](reference/cli.md)** | Complete manual of all CLI commands, subcommands, flags, options, and ergonomic top-level aliases (`run`, `exec`, `shell`, `ls`, `ps`, `logs`, `status`, `show`, `edit`, `rm`, `update`). |
 | **[Policy API Specification](reference/policy-api.md)** | Full HTTP/REST API specification for internal endpoints served on `https://agentcage.local` (`/v1/allowlist`, `/v1/allowlist/requests`, `/v1/allowlist/removals`), schemas, status codes, and security checks. |
-| **[Scaffolds Reference](reference/scaffolds.md)** | Catalog of pre-configured agent templates (`claude-code`, `codex`, `pi`, `openclaw`, `ubuntu`, `debian`, `arch`, `busybox`), scaffold resolution order, and authoring custom scaffolds. |
+| **[Scaffolds Reference](reference/scaffolds.md)** | Catalog of pre-configured agent templates (`claude-code`, `codex`, `pi`, `openclaw`, `ubuntu`, `debian`, `arch`), scaffold resolution order, and authoring custom scaffolds. |
 | **[Protocol Relays Reference](reference/protocol-relays.md)** | Every `protocol_relays` key for the IMAP and SMTP relays, their defaults, credentials, upstream TLS and audit records. |
 | **[Secrets Management Reference](reference/secrets.md)** | Complete specification of secret lifecycles: encrypted storage backends (`systemd-creds` / Keychain), 128-bit entropic decoy tokens (`agentcage:secret:NAME:<hex>`), wire injection, and rotation. |
 

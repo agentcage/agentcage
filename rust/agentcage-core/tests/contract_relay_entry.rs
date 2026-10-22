@@ -267,7 +267,7 @@ fn every_scaffold_renders_inspectors_the_validator_knows() {
          `agentcage init` produces a config `validate_config` warns about:\n{}",
         unknown.join("\n")
     );
-    assert_eq!(cases.len(), 9, "the scaffold roster changed");
+    assert_eq!(cases.len(), 8, "the scaffold roster changed");
     println!("{} scaffolds render only known inspectors", cases.len());
 }
 

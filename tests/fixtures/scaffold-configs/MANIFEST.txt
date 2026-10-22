@@ -1,5 +1,4 @@
 arch
-busybox
 claude-code
 codex
 debian

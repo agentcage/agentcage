@@ -19,7 +19,6 @@ agentcage includes hardened, pre-configured scaffolds for leading AI agent harne
 | **`ubuntu`** | — | `interactive` | Minimal Ubuntu Linux development environment with `apt` package management. |
 | **`debian`** | — | `interactive` | Minimal Debian Linux base container. |
 | **`arch`** | — | `interactive` | Minimal Arch Linux environment with `pacman`. |
-| **`busybox`** | — | `interactive` | Minimal 5 MB container for rapid egress testing and script validation. |
 
 ---
 
