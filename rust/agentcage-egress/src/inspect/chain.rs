@@ -545,6 +545,27 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_allowlist_still_loads_the_domain_inspector() {
+        // `allow: []` is a valid cage that may reach nothing; it must not
+        // read as "no domain policy". The scaffold_inspectors contract
+        // pinned this through the busybox scaffold until it was dropped.
+        let domain = Arc::new(DomainInspector::new());
+        let chain = build(
+            &domain,
+            "domains: {allow: []}\ninspectors:\n  - name: content-type\n",
+        )
+        .unwrap()
+        .commit();
+        assert_eq!(
+            chain.names(),
+            ["domain", "secrets", "body-size", "content-type"]
+        );
+        let mut c = ctx("example.com", "");
+        let out = run_chain(chain.inspectors(), &mut c, Phase::Request, &|_| false);
+        assert_eq!(out[0].action, Action::Block);
+    }
+
+    #[test]
     fn plugins_without_a_loader_fail_closed() {
         let domain = Arc::new(DomainInspector::new());
         let err = build(

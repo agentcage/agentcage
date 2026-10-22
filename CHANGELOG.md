@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The `busybox` scaffold.** It could not run on apple-container, the macOS default: the image has no package manager, so the wrapper cannot install `capsh`, and cage-init's privilege drop needs it (busybox's own `setpriv` cannot clear the bounding set). Existing busybox cages keep their staged Containerfile and still run on the container and vm backends; `agentcage init --scaffold busybox` now reports an unknown scaffold.
+
+### Changed
+
+- **apple-container fails clearly on a base without `capsh`.** A custom image with neither apt nor apk (busybox, distroless) used to die at cage-init stage D with a misleading `getent: not found` / "no uid-1000 user"; it now says the base is not supported on apple-container and points to a Debian, Ubuntu or Alpine image, or `--isolation vm`.
+
 ### Changed
 
 - **`install.sh` installs the release's prebuilt binary by default, and `--build` builds from source.** The default downloads `agentcage-<version>-<target>.tar.gz` (egress embedded), checks its sha256 and installs no Rust toolchain, C linker or musl. `--build`, and any branch build (`AGENTCAGE_REF`, which has no release assets), builds the host *and* the egress it embeds from source at the same ref, adding the musl Rust target with rustup and a C toolchain for it: `musl-gcc` from the distro on Linux; on macOS, rustup's `rust-lld` and `llvm-tools` with Xcode's `clang`, so branch builds now work on macOS too.

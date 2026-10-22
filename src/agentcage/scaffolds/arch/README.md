@@ -29,6 +29,6 @@ agentcage run arch
 
 ## Use cases
 
-- Testing agentcage behavior on a larger, more "real" Linux base than alpine/busybox.
+- Testing agentcage behavior on a larger, more "real" Linux base than alpine.
 - Confirming that blocked domains return 403 and allowed domains return 200.
 - Testing pacman-based package install flows under the proxy.

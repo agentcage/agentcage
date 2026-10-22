@@ -58,27 +58,6 @@
       ]
     },
     {
-      "id": "busybox",
-      "why": "the minimal scaffold: an EMPTY domains.allow, which must still load the domain inspector",
-      "scaffold": "busybox",
-      "inspector_config": {
-        "domains": {
-          "allow": []
-        },
-        "inspectors": [
-          {
-            "name": "content-type"
-          }
-        ]
-      },
-      "loaded_inspectors": [
-        "domain",
-        "secrets",
-        "body-size",
-        "content-type"
-      ]
-    },
-    {
       "id": "claude-code",
       "why": "an agent scaffold",
       "scaffold": "claude-code",

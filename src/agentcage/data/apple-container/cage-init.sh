@@ -361,6 +361,14 @@ if [ -n "${AGENTCAGE_TMPFS_COPYUP:-}" ]; then
 fi
 
 #-- Stage D. Drop privileges + exec the user's CMD ------------------------
+# capsh is the only privilege drop cage-init trusts (it empties the
+# bounding set before the setuid). The wrapper Containerfile installs it
+# with apt or apk; a base with neither (busybox, distroless) is not
+# supported on this backend, so say that rather than fail further down
+# on whatever else that base lacks.
+command -v capsh >/dev/null 2>&1 \
+  || die "no capsh in cage image — bases without apt or apk (busybox, distroless) are not supported on apple-container; use a Debian, Ubuntu or Alpine based image, or --isolation vm" 3
+
 # Resolve the cage user's NAME (capsh's --user= takes a name, not a uid;
 # the name varies by base image: ubuntu / node / agent / cage).
 CAGE_USER=$(getent passwd 1000 | cut -d: -f1)
