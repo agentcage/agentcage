@@ -317,6 +317,127 @@ fn default_bases_and_unknown_providers() {
     assert_eq!(default_base_url("gemini"), None);
 }
 
+// ── anthropic credentials: Console API key vs OAuth token ─────
+
+const OAUTH_TOKEN: &str = "sk-ant-oat01-FAKE-OAUTH-TOKEN-0123456789";
+const CONSOLE_KEY: &str = "sk-ant-api03-FAKE-CONSOLE-KEY-0123456789";
+
+fn anthropic_headers(key: &str) -> Vec<(String, String)> {
+    build_request(
+        "anthropic",
+        "m",
+        key,
+        "https://api.anthropic.com",
+        &decide_call(),
+    )
+    .headers
+}
+
+fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+    list.iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect()
+}
+
+#[test]
+fn an_anthropic_oauth_token_is_a_bearer_with_the_oauth_beta() {
+    assert_eq!(
+        anthropic_headers(OAUTH_TOKEN),
+        pairs(&[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {OAUTH_TOKEN}")),
+            ("anthropic-version", ANTHROPIC_VERSION),
+            ("anthropic-beta", "oauth-2025-04-20"),
+            ("User-Agent", USER_AGENT),
+        ])
+    );
+}
+
+#[test]
+fn an_anthropic_console_key_keeps_x_api_key() {
+    assert_eq!(
+        anthropic_headers(CONSOLE_KEY),
+        pairs(&[
+            ("Content-Type", "application/json"),
+            ("x-api-key", CONSOLE_KEY),
+            ("anthropic-version", ANTHROPIC_VERSION),
+            ("User-Agent", USER_AGENT),
+        ])
+    );
+}
+
+#[test]
+fn an_oauth_token_never_rides_x_api_key_and_a_key_never_rides_bearer() {
+    let oauth = anthropic_headers(OAUTH_TOKEN);
+    assert!(
+        !oauth
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("x-api-key"))
+    );
+    let console = anthropic_headers(CONSOLE_KEY);
+    assert!(
+        !console
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization")
+                || k.eq_ignore_ascii_case("anthropic-beta"))
+    );
+}
+
+#[test]
+fn oauth_detection_is_by_prefix_only() {
+    assert!(is_anthropic_oauth_token(OAUTH_TOKEN));
+    assert!(is_anthropic_oauth_token("sk-ant-oat02-future"));
+    assert!(!is_anthropic_oauth_token(CONSOLE_KEY));
+    assert!(!is_anthropic_oauth_token(""));
+    assert!(!is_anthropic_oauth_token("sk-or-v1-abc"));
+    // Not a substring match: the prefix has to lead.
+    assert!(!is_anthropic_oauth_token("x-sk-ant-oat01-abc"));
+}
+
+#[test]
+fn an_oauth_token_does_not_change_the_body_or_other_providers() {
+    let call = decide_call();
+    let with_token = build_request("anthropic", "m", OAUTH_TOKEN, "https://b", &call);
+    let with_key = build_request("anthropic", "m", CONSOLE_KEY, "https://b", &call);
+    assert_eq!(with_token.url, "https://b/v1/messages");
+    assert_eq!(with_token.body, with_key.body);
+    // Only the anthropic wire format looks at the prefix; the
+    // chat-completions providers send a bearer whatever the key is.
+    let openai = build_request("openai", "m", OAUTH_TOKEN, "https://b", &call);
+    assert!(
+        !openai
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("anthropic-beta"))
+    );
+}
+
+#[test]
+fn an_oauth_token_is_redacted_from_provider_errors() {
+    let transport = Scripted::new(Ok(HttpReply {
+        status: 401,
+        body: format!(r#"{{"error": "bad token {OAUTH_TOKEN}"}}"#).into_bytes(),
+    }));
+    let client = LlmClient::new(
+        "anthropic",
+        "m",
+        OAUTH_TOKEN,
+        "https://api.anthropic.com",
+        Duration::from_secs(15),
+        transport.clone(),
+    );
+    let err = client.call(&decide_call()).unwrap_err();
+    assert!(!err.message.contains(OAUTH_TOKEN), "{}", err.message);
+    assert!(err.message.contains("[redacted]"), "{}", err.message);
+    let seen = transport.seen.lock().unwrap();
+    assert!(
+        seen[0]
+            .0
+            .headers
+            .contains(&("Authorization".to_owned(), format!("Bearer {OAUTH_TOKEN}")))
+    );
+}
+
 // ── the real transport, against a loopback server ─────────────
 
 /// Serve one canned response on a loopback port; return the port and a

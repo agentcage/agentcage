@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The decider and the watcher can authenticate to Anthropic with a Claude OAuth token.** With `provider: anthropic`, an `api_key` that starts with `sk-ant-oat` (an OAuth access token from `claude setup-token`) is now sent as `Authorization: Bearer <token>` with `anthropic-beta: oauth-2025-04-20` instead of `x-api-key`; a Console API key (`sk-ant-api…`) is sent exactly as before. No config change is needed: the egress picks the header by the key's prefix. Whether a subscription or Enterprise OAuth token may be used outside Claude Code depends on your agreement with Anthropic. The egress binary changes, so the next `cage update` rebuilds the egress image.
+
 ### Removed
 
 - **The `busybox` scaffold.** It could not run on apple-container, the macOS default: the image has no package manager, so the wrapper cannot install `capsh`, and cage-init's privilege drop needs it (busybox's own `setpriv` cannot clear the bounding set). Existing busybox cages keep their staged Containerfile and still run on the container and vm backends; `agentcage init --scaffold busybox` now reports an unknown scaffold.

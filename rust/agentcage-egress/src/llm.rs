@@ -17,7 +17,10 @@
 //! Two wire formats:
 //!
 //! * `anthropic`: `POST {base}/v1/messages`, `x-api-key`,
-//!   `anthropic-version: 2023-06-01`, `tool_choice {type: tool}`.
+//!   `anthropic-version: 2023-06-01`, `tool_choice {type: tool}`. A Claude
+//!   OAuth access token (`sk-ant-oat…`, from `claude setup-token`) goes
+//!   as `Authorization: Bearer` with `anthropic-beta: oauth-2025-04-20`
+//!   instead of `x-api-key`; see [`is_anthropic_oauth_token`].
 //! * everything else is chat-completions: `POST {base}/v1/chat/completions`
 //!   (`openai`) or `{base}/chat/completions` (`openrouter`, whose base
 //!   already carries `/api/v1`), Bearer auth, `tool_choice {type:
@@ -100,6 +103,43 @@ pub const OPENROUTER_APP_NAME: &str = "agentcage";
 /// The `anthropic-version` header value.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// The prefix of an Anthropic OAuth access token (`sk-ant-oat01-…`, what
+/// `claude setup-token` prints). A Console API key is `sk-ant-api…`.
+pub const ANTHROPIC_OAUTH_TOKEN_PREFIX: &str = "sk-ant-oat";
+
+/// The `anthropic-beta` value the Messages API requires before it accepts
+/// an OAuth access token as a bearer credential.
+pub const ANTHROPIC_OAUTH_BETA: &str = "oauth-2025-04-20";
+
+/// Whether `api_key` is an Anthropic OAuth access token rather than a
+/// Console API key.
+///
+/// Detected by prefix, so the agent block needs no extra field: the same
+/// `api_key: env:NAME` carries either credential. Anything that is not an
+/// OAuth token keeps the `x-api-key` header it always had.
+#[must_use]
+pub fn is_anthropic_oauth_token(api_key: &str) -> bool {
+    api_key.starts_with(ANTHROPIC_OAUTH_TOKEN_PREFIX)
+}
+
+/// The authentication headers for an `anthropic` call: `x-api-key` for a
+/// Console API key; `Authorization: Bearer` plus the OAuth beta for an
+/// OAuth access token. `anthropic-version` rides both.
+fn anthropic_auth_headers(api_key: &str) -> Vec<(String, String)> {
+    if is_anthropic_oauth_token(api_key) {
+        vec![
+            ("Authorization".to_owned(), format!("Bearer {api_key}")),
+            ("anthropic-version".to_owned(), ANTHROPIC_VERSION.to_owned()),
+            ("anthropic-beta".to_owned(), ANTHROPIC_OAUTH_BETA.to_owned()),
+        ]
+    } else {
+        vec![
+            ("x-api-key".to_owned(), api_key.to_owned()),
+            ("anthropic-version".to_owned(), ANTHROPIC_VERSION.to_owned()),
+        ]
+    }
+}
+
 /// A provider's default base URL, used when the agent block sets no
 /// `base_url`. `None` for a provider without one: the caller fails closed
 /// (`no llm base url`) rather than guessing.
@@ -145,12 +185,9 @@ pub fn build_request(
 ) -> WireRequest {
     let tool = &call.tool;
     let (url, headers, body) = if provider == "anthropic" {
-        let headers = vec![
-            ("Content-Type".to_owned(), "application/json".to_owned()),
-            ("x-api-key".to_owned(), api_key.to_owned()),
-            ("anthropic-version".to_owned(), ANTHROPIC_VERSION.to_owned()),
-            ("User-Agent".to_owned(), USER_AGENT.to_owned()),
-        ];
+        let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
+        headers.extend(anthropic_auth_headers(api_key));
+        headers.push(("User-Agent".to_owned(), USER_AGENT.to_owned()));
         let body = object([
             ("model", Json::string(model)),
             ("max_tokens", Json::Int(i64::from(call.max_tokens))),
