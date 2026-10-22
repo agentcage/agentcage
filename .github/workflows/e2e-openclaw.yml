@@ -1,0 +1,84 @@
+# Phase 8: the OpenClaw scaffold against the floating
+# ghcr.io/openclaw/openclaw:latest image (tests/e2e/phase8_openclaw.md).
+#
+# Weekly rather than on every PR or master push: the image moves under
+# us, so a red run usually means upstream changed, not that the change
+# under review broke something. A weekly run still catches that rot, and
+# workflow_dispatch reruns it on demand after a fix.
+
+name: E2E OpenClaw
+
+on:
+  schedule:
+    # Mondays, 04:41 UTC.
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+# Like the e2e.yml jobs, this builds the musl egress first and the host
+# embeds it; tests/e2e/run.sh takes the binary under test from $AGENTCAGE.
+jobs:
+  e2e-openclaw:
+    name: E2E OpenClaw (Phase 8)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Rust toolchain, the musl target and musl-gcc
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+
+      - name: Cache cargo registry and target/
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: >-
+            cargo-e2e-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-e2e-${{ runner.os }}-
+
+      - name: Build the egress, then agentcage embedding it
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          AGENTCAGE_REQUIRE_EGRESS_BIN: "1"
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p agentcage-egress
+          cargo build --release --locked --bin agentcage
+          echo "AGENTCAGE=$PWD/target/release/agentcage" >> "$GITHUB_ENV"
+
+      - name: Install jq + skopeo
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq skopeo
+
+      - name: Setup rootless Podman
+        run: |
+          sudo apt-get install -y -qq podman uidmap slirp4netns
+          sudo loginctl enable-linger $(whoami)
+
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown $(whoami) "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+
+          podman info --format '{{.Host.Security.Rootless}}'
+
+      - name: Cache Podman images
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/containers/storage
+          key: podman-openclaw-${{ runner.os }}-${{ hashFiles('src/agentcage/scaffolds/openclaw/**') }}
+
+      - name: Pre-pull openclaw base image
+        run: |
+          podman image exists ghcr.io/openclaw/openclaw:latest \
+            || podman pull ghcr.io/openclaw/openclaw:latest
+
+      - name: Run phase 8
+        run: bash tests/e2e/run.sh openclaw

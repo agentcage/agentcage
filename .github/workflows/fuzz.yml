@@ -1,24 +1,19 @@
 # Fuzzing the egress's parsers of untrusted input (cargo-fuzz / libFuzzer).
 #
 # The targets live in rust/agentcage-egress/fuzz/ (a standalone, nightly-
-# only package); the harnesses are agentcage_egress::fuzz_api. Every
-# release tag runs each target for a short, bounded time on top of the
-# committed seeds and regression inputs; a weekly run goes longer and
-# keeps the corpus it grows (in the Actions cache) for the next run. Any crash,
-# invariant failure, timeout or out-of-memory fails the job, and the input
-# that caused it is uploaded as an artifact: drop it into
+# only package); the harnesses are agentcage_egress::fuzz_api. A weekly
+# run fuzzes each target on top of the committed seeds and regression
+# inputs and keeps the corpus it grows (in the Actions cache) for the
+# next run. Any crash, invariant failure, timeout or out-of-memory fails
+# the job, and the input that caused it is uploaded as an artifact: drop it into
 # fuzz/regressions/<target>/ with the fix, where `cargo test` replays it
 # on stable too.
 
 name: Fuzz
 
 on:
-  # Not on pull_request: eight targets at 90 s each, one after another,
-  # made this the longest check on every PR (14-21 min). A release tag
-  # gets the same smoke run instead; the weekly run is unchanged.
-  push:
-    tags:
-      - "v*"
+  # Weekly only, not on pull_request: eight targets at 90 s each, one
+  # after another, made this the longest check on every PR (14-21 min).
   schedule:
     # Mondays, 04:23 UTC.
     - cron: "23 4 * * 1"
@@ -100,11 +95,8 @@ jobs:
 
       - name: Run every target
         env:
-          # Release tags: a short smoke run per target. Scheduled: ten
-          # minutes each.
-          SECONDS_PER_TARGET: >-
-            ${{ github.event_name == 'push' && '90'
-            || inputs.seconds || '600' }}
+          # Scheduled: ten minutes each. A manual run can ask for less.
+          SECONDS_PER_TARGET: ${{ inputs.seconds || '600' }}
         run: |
           failed=()
           for target in $(cargo +"$NIGHTLY" fuzz list); do
