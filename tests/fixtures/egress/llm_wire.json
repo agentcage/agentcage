@@ -65,7 +65,7 @@
             "agentcage-policy-api"
           ]
         ],
-        "body": "{\"model\": \"model-x\", \"max_tokens\": 8192, \"system\": \"You decide.\\n\\nLine two with a \\\"quote\\\" and a \\\\ slash.\", \"messages\": [{\"role\": \"user\", \"content\": \"{\\\"domain_requested\\\": \\\"pypi.org\\\", \\\"agent_justification\\\": \\\"pip install\\\"}\"}], \"tools\": [{\"name\": \"decide\", \"description\": \"Grant or deny the egress request.\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"decision\": {\"type\": \"string\", \"enum\": [\"grant\", \"deny\"]}, \"reason\": {\"type\": \"string\"}, \"ttl_seconds\": {\"type\": \"integer\", \"enum\": [0, 600, 3600]}}, \"required\": [\"decision\", \"reason\"]}}], \"tool_choice\": {\"type\": \"tool\", \"name\": \"decide\"}}"
+        "body": "{\"model\": \"model-x\", \"max_tokens\": 8192, \"system\": \"You decide.\\n\\nLine two with a \\\"quote\\\" and a \\\\ slash.\", \"messages\": [{\"role\": \"user\", \"content\": \"{\\\"domain_requested\\\": \\\"pypi.org\\\", \\\"agent_justification\\\": \\\"pip install\\\"}\"}], \"tools\": [{\"name\": \"decide\", \"description\": \"Grant or deny the egress request.\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"decision\": {\"type\": \"string\", \"enum\": [\"grant\", \"deny\"]}, \"reason\": {\"type\": \"string\"}, \"ttl_seconds\": {\"type\": \"integer\", \"enum\": [0, 600, 3600]}}, \"required\": [\"decision\", \"reason\"]}}], \"tool_choice\": {\"type\": \"auto\"}}"
       }
     },
     {
@@ -391,7 +391,7 @@
             "agentcage-policy-api"
           ]
         ],
-        "body": "{\"model\": \"model-x\", \"max_tokens\": 4096, \"system\": \"Syst\\u00e8me: \\u00abr\\u00e8gles\\u00bb \\u2014 \\u2603 \\ud83d\\ude00 end\", \"messages\": [{\"role\": \"user\", \"content\": \"{\\\"samples\\\": [\\\"\\u00e9\\\", \\\"\\u2028\\\", \\\"\\\\u0000\\\"]}\"}], \"tools\": [{\"name\": \"review\", \"description\": \"Report findings \\u2014 na\\u00efve \\u201cquotes\\u201d and a \\u2603.\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\"}}, \"ratio\": {\"type\": \"number\", \"minimum\": 0.5}}, \"required\": [\"findings\"]}}], \"tool_choice\": {\"type\": \"tool\", \"name\": \"review\"}}"
+        "body": "{\"model\": \"model-x\", \"max_tokens\": 4096, \"system\": \"Syst\\u00e8me: \\u00abr\\u00e8gles\\u00bb \\u2014 \\u2603 \\ud83d\\ude00 end\", \"messages\": [{\"role\": \"user\", \"content\": \"{\\\"samples\\\": [\\\"\\u00e9\\\", \\\"\\u2028\\\", \\\"\\\\u0000\\\"]}\"}], \"tools\": [{\"name\": \"review\", \"description\": \"Report findings \\u2014 na\\u00efve \\u201cquotes\\u201d and a \\u2603.\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\"}}, \"ratio\": {\"type\": \"number\", \"minimum\": 0.5}}, \"required\": [\"findings\"]}}], \"tool_choice\": {\"type\": \"auto\"}}"
       }
     },
     {

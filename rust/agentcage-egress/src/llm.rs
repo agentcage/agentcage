@@ -17,7 +17,7 @@
 //! Two wire formats:
 //!
 //! * `anthropic`: `POST {base}/v1/messages`, `x-api-key`,
-//!   `anthropic-version: 2023-06-01`, `tool_choice {type: tool}`. A Claude
+//!   `anthropic-version: 2023-06-01`, `tool_choice {type: auto}`. A Claude
 //!   OAuth access token (`sk-ant-oat…`, from `claude setup-token`) goes
 //!   as `Authorization: Bearer` with `anthropic-beta: oauth-2025-04-20`
 //!   instead of `x-api-key`; see [`is_anthropic_oauth_token`].
@@ -246,13 +246,11 @@ pub fn build_request(
                     ("input_schema", tool.parameters.clone()),
                 ])]),
             ),
-            (
-                "tool_choice",
-                object([
-                    ("type", Json::string("tool")),
-                    ("name", Json::string(&tool.name)),
-                ]),
-            ),
+            // `auto`, not `{type: tool}`: current Claude models reject a
+            // forced tool with a 400. Both prompts already demand exactly
+            // one tool call, and a reply without one parses to `None`,
+            // so the caller still fails closed.
+            ("tool_choice", object([("type", Json::string("auto"))])),
         ]);
         (format!("{base_url}/v1/messages"), body)
     } else {

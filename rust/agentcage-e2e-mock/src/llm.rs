@@ -22,11 +22,13 @@ use crate::spaced_json;
 /// Default listen address (loopback in the egress's namespace).
 pub const ADDR: &str = "127.0.0.1:18089";
 
-/// The tool name forced by `tool_choice`, or `""`.
+/// The tool name forced by `tool_choice`, else the first offered tool's
+/// (anthropic sends `tool_choice: auto` with a single tool), or `""`.
 fn tool_name(request: &Value) -> &str {
     request
         .get("tool_choice")
         .and_then(|c| c.get("name"))
+        .or_else(|| request.pointer("/tools/0/name"))
         .and_then(Value::as_str)
         .unwrap_or("")
 }
@@ -255,6 +257,20 @@ mod tests {
             resp["content"][0]["input"],
             json!({"decision": "deny", "reason": "stub denies deny.example.org"})
         );
+    }
+
+    #[test]
+    fn auto_tool_choice_answers_the_offered_tool() {
+        let prompt = json!({"domain_requested": "example.net", "reason": "r"}).to_string();
+        let body = json!({
+            "tools": [{"name": "decide"}],
+            "tool_choice": {"type": "auto"},
+            "messages": [{"role": "user", "content": prompt}],
+        });
+        let (resp, log) = answer("/v1/messages", "k1", body.to_string().as_bytes());
+        assert!(log.contains(r#""tool": "decide""#), "{log}");
+        let resp: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(resp["content"][0]["input"]["decision"], "grant");
     }
 
     #[test]
