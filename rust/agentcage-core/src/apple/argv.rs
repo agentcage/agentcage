@@ -117,16 +117,29 @@ impl Service {
 
 /// The `sh -c` program the non-root cage session runs.
 ///
-/// `getent` is read twice rather than once because the cage user's
+/// The uid-1000 entry is read once and split, because the cage user's
 /// *name* and *home* are separate fields and the base image varies
-/// (ubuntu / node / agent / cage). `exec env …` replaces the shell, so
-/// nothing lingers between the operator's terminal and the command.
-const CAGE_SETPRIV_SCRIPT: &str = "CU=$(getent passwd 1000 | cut -d: -f1) && \
-CH=$(getent passwd 1000 | cut -d: -f6) && \
+/// (ubuntu / node / agent / cage). `getent` first, then /etc/passwd
+/// itself: busybox ships no `getent`, as cage-init.sh's stage D notes.
+/// `exec env …` replaces the shell, so nothing lingers between the
+/// operator's terminal and the command.
+///
+/// busybox's `setpriv` has no `--reuid`, which is what the probe tells
+/// apart. There the drop is busybox's own `setpriv --nnp` + `chpst -u`,
+/// the same fallback as PID 1's: uid 1000, no caps, no-new-privs, but
+/// the bounding set is left as the session got it.
+const CAGE_SETPRIV_SCRIPT: &str = "CP=$(getent passwd 1000 2>/dev/null \
+|| grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && \
+CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && \
+CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && \
+if setpriv --help 2>&1 | grep -q -- --reuid; then \
 exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" \
 setpriv --reuid=1000 --regid=1000 --clear-groups \
 --no-new-privs --bounding-set=-all --inh-caps=-all \
--- \"$@\"";
+-- \"$@\"; \
+fi; \
+exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" \
+setpriv --nnp chpst -u \"$CU\" \"$@\"";
 
 /// `container exec [-u <spec>] [-it] <target> [wrap…] [env…] <cmd…>`.
 ///

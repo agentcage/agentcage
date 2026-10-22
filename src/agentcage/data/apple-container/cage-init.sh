@@ -363,10 +363,16 @@ fi
 #-- Stage D. Drop privileges + exec the user's CMD ------------------------
 # Resolve the cage user's NAME (capsh's --user= takes a name, not a uid;
 # the name varies by base image: ubuntu / node / agent / cage).
-CAGE_USER=$(getent passwd 1000 | cut -d: -f1)
+#
+# `getent` first, then /etc/passwd itself: busybox ships no `getent`, and
+# inside a cage image the files source is the only NSS source there is
+# (the wrapper Containerfile's uid-1000 step falls back the same way).
+CAGE_PASSWD=$(getent passwd 1000 2>/dev/null \
+  || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1)
+CAGE_USER=$(printf '%s\n' "${CAGE_PASSWD}" | cut -d: -f1)
 [ -n "${CAGE_USER}" ] \
   || die "no uid-1000 user in cage image — wrapper Containerfile should have created one" 3
-CAGE_HOME=$(getent passwd 1000 | cut -d: -f6)
+CAGE_HOME=$(printf '%s\n' "${CAGE_PASSWD}" | cut -d: -f6)
 [ -n "${CAGE_HOME}" ] \
   || die "no home directory for uid 1000 — wrapper Containerfile useradd should have set one" 3
 
@@ -398,9 +404,23 @@ export LOGNAME="${CAGE_USER}"
 # rust/agentcage-cli/src/apple/wrapper.rs). No jq, no runtime
 # parsing, no shell-metacharacter risk; the argv is preserved verbatim
 # because each element was quote-escaped host-side.
-exec capsh \
-  --no-new-privs \
-  --drop=all \
-  --user="${CAGE_USER}" \
-  --shell=/bin/sh \
-  -- /opt/agentcage/cage-cmd.sh
+if command -v capsh >/dev/null 2>&1; then
+  exec capsh \
+    --no-new-privs \
+    --drop=all \
+    --user="${CAGE_USER}" \
+    --shell=/bin/sh \
+    -- /opt/agentcage/cage-cmd.sh
+fi
+
+# No capsh: a base the wrapper could not install libcap into (busybox has
+# no package manager). busybox's own applets still give the workload
+# uid/gid 1000 with empty CapInh/CapPrm/CapEff/CapAmb and no-new-privs,
+# but its setpriv cannot clear the bounding set, so CapBnd stays at the
+# container's default. With no-new-privs set, no setuid or file-cap
+# binary can raise a capability out of it.
+if ! command -v setpriv >/dev/null 2>&1 || ! command -v chpst >/dev/null 2>&1; then
+  die "neither capsh nor busybox setpriv + chpst in cage image — cannot drop privileges" 3
+fi
+log "stage D: no capsh in image; dropping with busybox setpriv --nnp + chpst (bounding set not cleared)"
+exec setpriv --nnp chpst -u "${CAGE_USER}" /opt/agentcage/cage-cmd.sh

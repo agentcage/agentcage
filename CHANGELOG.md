@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `debian` and `busybox` scaffolds start on apple-container.** debian's start command copied the egress CA into `/usr/local/share/ca-certificates` as the uid-1000 workload and exited on the `Permission denied`; the copy is now best-effort, as `ubuntu`'s has been since #140 (cage-init has already installed the CA). busybox died at stage D because cage-init found the cage user with `getent`, which busybox lacks; cage-init and `cage exec` now fall back to `/etc/passwd`. With no `capsh` in the image either, both drop privileges with busybox's `setpriv --nnp` and `chpst -u`: uid 1000, no capabilities and no-new-privs, but the bounding set is not cleared, as busybox's `setpriv` cannot do that. Images with `capsh` and util-linux `setpriv` are unchanged.
+
 ## [0.52.3] - 2026-10-18
 
 ### Security

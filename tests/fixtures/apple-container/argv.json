@@ -24,7 +24,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "ls",
         "-la"
@@ -49,7 +49,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "ls",
         "-la"
@@ -74,7 +74,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "ls",
         "-la"
@@ -188,7 +188,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "ls",
         "-la"
@@ -274,7 +274,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "env",
         "ANTHROPIC_API_KEY=agentcage:secret:ANTHROPIC_API_KEY:0001",
@@ -378,7 +378,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "env",
         "ANTHROPIC_API_KEY=agentcage:secret:ANTHROPIC_API_KEY:0001",
@@ -405,7 +405,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "ls",
         "-la"
@@ -430,7 +430,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "ls",
         "-la"
@@ -457,7 +457,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "git",
         "log",
@@ -485,7 +485,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "sh",
         "-c",
@@ -511,7 +511,7 @@
         "demo",
         "sh",
         "-c",
-        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "CP=$(getent passwd 1000 2>/dev/null || grep '^[^:]*:[^:]*:1000:' /etc/passwd | head -n 1) && CU=$(printf '%s\\n' \"$CP\" | cut -d: -f1) && CH=$(printf '%s\\n' \"$CP\" | cut -d: -f6) && if setpriv --help 2>&1 | grep -q -- --reuid; then exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"; fi; exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --nnp chpst -u \"$CU\" \"$@\"",
         "agentcage-exec-wrap",
         "bash"
       ]

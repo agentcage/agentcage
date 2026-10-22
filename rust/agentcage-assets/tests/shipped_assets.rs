@@ -421,13 +421,31 @@ fn egress_gets_the_agentcage_version() {
 // ── apple-container/cage-init.sh ─────────────────────────────────────────
 
 /// capsh's `--user=` takes a name, and the uid-1000 user's name varies by
-/// base image, so it is looked up at runtime.
+/// base image, so it is looked up at runtime: `getent`, or /etc/passwd
+/// on a base without one (busybox).
 #[test]
 fn cage_init_resolves_cage_user_dynamically() {
     let text = cage_init();
     assert!(text.contains("getent passwd 1000"));
+    assert!(text.contains("grep '^[^:]*:[^:]*:1000:' /etc/passwd"));
     assert!(text.contains("--user="));
     assert!(text.contains("${CAGE_USER}"));
+}
+
+/// A base with no capsh and no package manager to install it (busybox)
+/// still drops to uid 1000 with no-new-privs, through busybox's own
+/// applets, rather than dying at stage D; capsh stays the first choice.
+#[test]
+fn cage_init_drops_privileges_without_capsh() {
+    let text = cage_init();
+    let capsh = "if command -v capsh >/dev/null 2>&1; then";
+    let fallback = r#"exec setpriv --nnp chpst -u "${CAGE_USER}" /opt/agentcage/cage-cmd.sh"#;
+    assert!(text.contains(capsh));
+    assert!(text.contains(fallback));
+    assert!(
+        index_of(&text, capsh) < index_of(&text, fallback),
+        "capsh must be tried before the busybox fallback"
+    );
 }
 
 /// PID 1 of the cage microVM: route via the egress, environment for the
@@ -443,7 +461,7 @@ fn cage_init_boot_sequence() {
     assert!(text.contains(r#"export HOME="${CAGE_HOME}""#));
     assert!(text.contains(r#"export USER="${CAGE_USER}""#));
     assert!(text.contains(r#"export LOGNAME="${CAGE_USER}""#));
-    assert!(text.contains("CAGE_HOME=$(getent passwd 1000 | cut -d: -f6)"));
+    assert!(text.contains(r#"CAGE_HOME=$(printf '%s\n' "${CAGE_PASSWD}" | cut -d: -f6)"#));
     // Stage B': no TCP or UDP to the macOS host gateway, and only acdns
     // may emit UDP :53 (otherwise the in-cage dnsmasq scoping is
     // decorative).
