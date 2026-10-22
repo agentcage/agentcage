@@ -1,6 +1,6 @@
 #!/bin/sh
-# agentcage installer — builds agentcage from source and installs all
-# prerequisites.
+# agentcage installer — installs agentcage (the release binary, or built
+# from source with --build) and all prerequisites.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
@@ -257,15 +257,17 @@ install_podman() {
 # linux-musl agentcage-egress for this machine's architecture, which it
 # bakes into each cage's egress image.
 #
-# By default both are built here from source with cargo, straight from the
-# GitHub repository, so nothing prebuilt is trusted. With --download the
-# release's `agentcage-<version>-<target>.tar.gz` is installed instead,
-# checked against its published sha256: its host binary already embeds the
-# release's egress, and needs no Rust toolchain here. The sha256 sits on
-# the same release page as the tarball, so it guards against corruption,
-# not against a compromised release. The macOS binary is not notarized
-# (#413), but curl sets no quarantine attribute, so Gatekeeper does not
-# check it.
+# By default the release's `agentcage-<version>-<target>.tar.gz` is
+# installed, checked against its published sha256: its host binary already
+# embeds the release's egress, and needs no Rust toolchain here. The sha256
+# sits on the same release page as the tarball, so it guards against
+# corruption, not against a compromised release. The macOS binary is not
+# notarized (#413), but curl sets no quarantine attribute, so Gatekeeper
+# does not check it.
+#
+# With --build, or for a branch (AGENTCAGE_REF, which has no release
+# assets), both are built here from source with cargo instead, straight
+# from the GitHub repository, so nothing prebuilt is trusted.
 
 AGENTCAGE_REPO="${AGENTCAGE_REPO:-agentcage/agentcage}"
 
@@ -386,8 +388,8 @@ predates_rust_egress() {
 
 # Put the egress binary this host will embed at $EGRESS_BIN.
 #
-# By default the egress is built from source at the same ref as the host
-# (a release tag or a branch), so nothing prebuilt is trusted. That needs
+# The egress is built from source at the same ref as the host (a release
+# tag or a branch), so nothing prebuilt is trusted. That needs
 # the musl Rust target and a C toolchain for it (ring compiles C): musl-gcc
 # from the distro on Linux, rustup's rust-lld and llvm-tools with Xcode's
 # clang on macOS. All are installed here if missing.
@@ -507,14 +509,12 @@ build_agentcage() {
 # embedded, verified against its `.sha256`; sets $unpacked to the host
 # binary. Release tags only: a branch has no release assets.
 download_agentcage() {
-    [ "$REF_FLAG" = --tag ] \
-        || err "--download needs a release tag; a branch ($REF) has no prebuilt binaries. Drop --download to build it."
     case "$OS-$(uname -m)" in
         linux-x86_64|linux-amd64)   target=x86_64-unknown-linux-musl ;;
         linux-aarch64|linux-arm64)  target=aarch64-unknown-linux-musl ;;
         macos-x86_64)               target=x86_64-apple-darwin ;;
         macos-arm64|macos-aarch64)  target=aarch64-apple-darwin ;;
-        *) err "no prebuilt agentcage for $OS $(uname -m); drop --download to build it" ;;
+        *) err "no prebuilt agentcage for $OS $(uname -m); re-run with --build to build it from source" ;;
     esac
     need_cmd curl
     need_cmd tar
@@ -543,10 +543,13 @@ install_agentcage() {
     resolve_ref
     bindir="${AGENTCAGE_BIN_DIR:-$HOME/.local/bin}"
 
-    if [ "$DOWNLOAD" = true ]; then
-        download_agentcage
-    else
+    if [ "$BUILD" = true ]; then
         build_agentcage
+    elif [ "$REF_FLAG" = --branch ]; then
+        info "A branch ($REF) has no prebuilt binaries; building it from source."
+        build_agentcage
+    else
+        download_agentcage
     fi
     [ -f "$unpacked" ] || err "no agentcage binary at $unpacked"
 
@@ -704,7 +707,7 @@ install_lima() {
 
 parse_args() {
     WANT_LIMA=false
-    DOWNLOAD=false
+    BUILD=false
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -712,24 +715,25 @@ parse_args() {
                 WANT_LIMA=true
                 shift
                 ;;
-            --download)
-                DOWNLOAD=true
+            --build)
+                BUILD=true
                 shift
                 ;;
             --help|-h)
                 cat <<'HELP'
 agentcage installer
 
-Builds agentcage from source with cargo, straight from the GitHub
-repository, and installs its prerequisite, Podman. If no Rust toolchain
-is found, a minimal one is installed with rustup (into ~/.rustup and
-~/.cargo, without editing shell profiles). The build uses the committed
-Cargo.lock. The egress binary agentcage embeds is built from source too,
-which needs the <arch>-unknown-linux-musl Rust target and a C toolchain for
-it (musl-gcc on Linux; rustup's llvm-tools and Xcode's clang on macOS); all
-are installed if missing. Pass --download to install the release's prebuilt
-binary instead (egress embedded, verified against its sha256; no Rust
-toolchain needed).
+Installs the release's prebuilt agentcage binary (the egress it embeds
+included, verified against its sha256) and its prerequisite, Podman.
+
+With --build, or for a branch (AGENTCAGE_REF), agentcage is built from
+source with cargo instead, straight from the GitHub repository. If no
+Rust toolchain is found, a minimal one is installed with rustup (into
+~/.rustup and ~/.cargo, without editing shell profiles). The build uses
+the committed Cargo.lock. The egress binary agentcage embeds is built from
+source too, which needs the <arch>-unknown-linux-musl Rust target and a C
+toolchain for it (musl-gcc on Linux; rustup's llvm-tools and Xcode's clang
+on macOS); all are installed if missing.
 
 On macOS 26+ Apple Silicon also installs Apple's 'container' CLI (the
 default isolation backend on that platform). On older macOS / Intel Macs
@@ -738,18 +742,18 @@ falls back to installing Lima (the only isolation option there).
 Usage:
   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
   curl -fsSL ... | sh -s -- --with-lima
-  curl -fsSL ... | sh -s -- --download
+  curl -fsSL ... | sh -s -- --build
 
 Options:
   --with-lima   Also install Lima (required for isolation: vm mode).
                 Auto-set on macOS hosts where apple-container is unavailable.
-  --download    Install the release's prebuilt binary instead of building
-                from source (release tags only, not AGENTCAGE_REF).
+  --build       Build agentcage and its egress from source instead of
+                installing the release's prebuilt binary.
   --help, -h    Show this help message
 
 Environment:
-  AGENTCAGE_VERSION   Build this release tag instead of the latest release.
-  AGENTCAGE_REF       Build this branch instead (e.g. master).
+  AGENTCAGE_VERSION   Install this release tag instead of the latest release.
+  AGENTCAGE_REF       Build this branch from source instead (e.g. master).
   AGENTCAGE_BIN_DIR   Where to put the binary (default: ~/.local/bin).
   AGENTCAGE_REPO      Source repository (default: agentcage/agentcage).
 HELP
