@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`install.sh` installs the release's prebuilt binary by default, and `--build` builds from source.** The default downloads `agentcage-<version>-<target>.tar.gz` (egress embedded), checks its sha256 and installs no Rust toolchain, C linker or musl. `--build`, and any branch build (`AGENTCAGE_REF`, which has no release assets), builds the host *and* the egress it embeds from source at the same ref, adding the musl Rust target with rustup and a C toolchain for it: `musl-gcc` from the distro on Linux; on macOS, rustup's `rust-lld` and `llvm-tools` with Xcode's `clang`, so branch builds now work on macOS too.
 
+- **The fuzz targets and the OpenClaw E2E phase now run weekly only.** `.github/workflows/fuzz.yml` ran eight targets for 90 s each, one after another, on every pull request, which made it the slowest PR check (14-21 min); it now runs only in its existing Monday run, at ten minutes per target. `E2E OpenClaw (Phase 8)` tests against the floating `ghcr.io/openclaw/openclaw:latest` image, so it moved out of `.github/workflows/e2e.yml` (pull requests, master and nightly) into its own `.github/workflows/e2e-openclaw.yml`, which runs on Mondays. Both can still be started by hand with `workflow_dispatch`.
+
 ### Security
 
 - **`rustls-webpki` 0.103.16, `wasmtime` 49.0.4 and `webpki-roots` 1.0.10** (RUSTSEC-2026-0382, RUSTSEC-2026-0378, RUSTSEC-2026-0379, RUSTSEC-2026-0381), in the root and fuzz lockfiles. The egress binary changes, so the next `cage update` rebuilds the egress image.
