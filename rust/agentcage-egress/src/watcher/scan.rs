@@ -650,6 +650,7 @@ impl Watcher {
         // a dead provider only doubles the bill.
         let digest_text = json::to_string(digest);
         let mut call = ToolCall {
+            system_prefix: cfg.system_prefix.clone(),
             system: prompt::system_prompt(&cfg.context),
             user_content: digest_text.clone(),
             tool: prompt::review_tool(),

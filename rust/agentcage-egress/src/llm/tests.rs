@@ -42,6 +42,11 @@ fn run_request(input: &Json) -> (String, Vec<(String, String)>, String) {
         panic!("max_tokens")
     };
     let call = ToolCall {
+        system_prefix: input
+            .get("system_prefix")
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_owned(),
         system: s(input, "system").to_owned(),
         user_content: s(input, "user_content").to_owned(),
         tool: tool_from(input.get("tool").unwrap()),
@@ -155,6 +160,7 @@ const KEY: &str = "sk-or-FAKE-DECIDER-KEY-0123456789";
 
 fn decide_call() -> ToolCall {
     ToolCall {
+        system_prefix: String::new(),
         system: "sys".into(),
         user_content: "{}".into(),
         tool: ToolSpec {
@@ -409,6 +415,51 @@ fn an_oauth_token_does_not_change_the_body_or_other_providers() {
             .headers
             .iter()
             .any(|(k, _)| k.eq_ignore_ascii_case("anthropic-beta"))
+    );
+}
+
+fn body_of(provider: &str, call: &ToolCall) -> Json {
+    let req = build_request(provider, "m", CONSOLE_KEY, "https://b", call);
+    json::parse(std::str::from_utf8(&req.body).unwrap()).unwrap()
+}
+
+#[test]
+fn a_system_prefix_is_the_first_anthropic_system_block() {
+    let call = ToolCall {
+        system_prefix: "PREFIX".into(),
+        ..decide_call()
+    };
+    assert_eq!(
+        json::to_string(body_of("anthropic", &call).get("system").unwrap()),
+        r#"[{"type": "text", "text": "PREFIX"}, {"type": "text", "text": "sys"}]"#
+    );
+}
+
+#[test]
+fn a_system_prefix_is_the_first_chat_completions_message() {
+    let call = ToolCall {
+        system_prefix: "PREFIX".into(),
+        ..decide_call()
+    };
+    for provider in ["openai", "openrouter"] {
+        assert_eq!(
+            json::to_string(body_of(provider, &call).get("messages").unwrap()),
+            r#"[{"role": "system", "content": "PREFIX"}, {"role": "system", "content": "sys"}, {"role": "user", "content": "{}"}]"#,
+            "{provider}"
+        );
+    }
+}
+
+#[test]
+fn no_system_prefix_leaves_the_body_unchanged() {
+    let call = decide_call();
+    assert_eq!(
+        json::to_string(body_of("anthropic", &call).get("system").unwrap()),
+        r#""sys""#
+    );
+    assert_eq!(
+        json::to_string(body_of("openai", &call).get("messages").unwrap()),
+        r#"[{"role": "system", "content": "sys"}, {"role": "user", "content": "{}"}]"#
     );
 }
 

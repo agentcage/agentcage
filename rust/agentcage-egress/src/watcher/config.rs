@@ -67,6 +67,8 @@ pub struct WatcherConfig {
     pub max_tokens: i64,
     /// Provider base URL override, trailing slashes stripped.
     pub base_url: String,
+    /// Operator text sent ahead of the system prompt; empty = none.
+    pub system_prefix: String,
     /// The longest capture line the tail will wait for: four body slots of
     /// `capture.max_body_size`, base64-inflated, plus slack — never below
     /// [`MIN_LINE_CAP`]. A fixed cap sat below what capture legitimately
@@ -137,6 +139,7 @@ impl WatcherConfig {
             timeout_seconds: timeout,
             max_tokens,
             base_url: text("base_url").trim_end_matches('/').to_owned(),
+            system_prefix: text("system_prefix"),
             line_cap: line_cap(cfg),
             block,
         }

@@ -275,6 +275,7 @@ Keys both agents take:
 | `timeout_seconds` | decider `15`, watcher `30` | Finite and greater than 0. Bounds each step of the LLM call separately: connecting, sending, waiting for the response headers, and receiving the whole reply. A reasoning model can take longer than the default to finish its reply; a call that runs out fails with `llm error: timeout: receive body`, which denies the request (decider) or skips the scan (watcher). Raise it for such a model. |
 | `max_tokens` | `8192` | At least `1024`. The budget includes a reasoning model's thinking tokens, so a smaller value can leave no room for the answer. Providers bill tokens generated, not this ceiling. |
 | `context` | `""` (off) | A string of at most 4096 characters after trimming. It is added to the agent's system prompt as trusted operator guidance. It does not override the never-grant floor or the rate limit. |
+| `system_prefix` | `""` (off) | A string of at most 4096 characters after trimming, sent verbatim *before* the agent's own system prompt and kept separate from it: the first text block of `system` with `provider: anthropic`, the first `system` message otherwise. Use it when a provider or gateway expects particular text first in the system prompt. Unlike `context`, it is not framed as operator guidance. Empty leaves the request exactly as it was. |
 
 `agents.decider` only:
 

@@ -331,7 +331,7 @@ fn validate_llm_client(
             ));
         }
     }
-    Ok(())
+    validate_context(&client.system_prefix, &format!("{label}.system_prefix"))
 }
 
 /// `_validate_agent_max_tokens` — reject a completion budget that would
@@ -422,7 +422,7 @@ pub fn require_api_key_shape<'a>(api_key: &'a str, label: &str) -> Checked<(&'a 
     Ok((scheme, argument))
 }
 
-/// The 4096-character cap both `context` fields share.
+/// The 4096-character cap both `context` fields and `system_prefix` share.
 ///
 /// The context rides in every call's system prompt and through
 /// `proxy-config.yaml`, so a huge blob is a prompt-bloat/abuse surface.
@@ -678,6 +678,38 @@ mod tests {
         assert_eq!(thousands(100_000), "100,000");
         assert_eq!(thousands(500_000), "500,000");
         assert_eq!(thousands(-12_345), "-12,345");
+    }
+
+    fn decider_with(extra: &str) -> crate::config::Config {
+        let host = FixedHost::linux(&["192.0.2.53"]);
+        let document = format!(
+            "name: c\ncontainer:\n  image: alpine\ndomains:\n  allow: [example.com]\n\
+             agents:\n  decider:\n    enable: true\n    provider: anthropic\n    model: m\n    \
+             api_key: env:K\n{extra}"
+        );
+        load("<test>", &document, &host).expect("parse")
+    }
+
+    #[test]
+    fn a_system_prefix_is_parsed_and_handed_to_the_egress_only_when_set() {
+        let config = decider_with("    system_prefix: \"You are a test.\"\n");
+        assert_eq!(config.agents.decider.llm.system_prefix, "You are a test.");
+        validate_agents(&config).expect("valid");
+        assert!(crate::config::to_json(&config).contains(r#""system_prefix": "You are a test.""#));
+
+        let config = decider_with("");
+        assert_eq!(config.agents.decider.llm.system_prefix, "");
+        assert!(!crate::config::to_json(&config).contains("system_prefix"));
+    }
+
+    #[test]
+    fn a_system_prefix_shares_the_context_cap() {
+        let config = decider_with(&format!("    system_prefix: \"{}\"\n", "x".repeat(4097)));
+        assert_eq!(
+            validate_agents(&config).expect_err("refused").message(),
+            "agents.decider.system_prefix is too long (4097 chars, max 4096) — trim it or move \
+             details into a shorter summary"
+        );
     }
 
     #[test]

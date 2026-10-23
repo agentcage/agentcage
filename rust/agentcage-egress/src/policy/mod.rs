@@ -891,6 +891,7 @@ impl PolicyApi {
             self.env.transport(),
         );
         let call = ToolCall {
+            system_prefix: s.system_prefix.clone(),
             system: system_prompt(&s.context),
             user_content: prompt::user_message(domain, reason, dom),
             tool: decide_tool(),

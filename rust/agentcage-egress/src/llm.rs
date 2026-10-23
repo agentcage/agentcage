@@ -49,6 +49,9 @@ pub struct ToolSpec {
 /// One forced-tool-call request.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCall {
+    /// The operator's `system_prefix`, sent verbatim before `system` as
+    /// its own block or message; empty = none.
+    pub system_prefix: String,
     /// The system prompt.
     pub system: String,
     /// The single user message.
@@ -188,10 +191,20 @@ pub fn build_request(
         let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
         headers.extend(anthropic_auth_headers(api_key));
         headers.push(("User-Agent".to_owned(), USER_AGENT.to_owned()));
+        // A prefix is its own first text block, not concatenated: some
+        // providers match the first block exactly. Without one, `system`
+        // stays a plain string, byte for byte as before.
+        let system = if call.system_prefix.is_empty() {
+            Json::string(&call.system)
+        } else {
+            let block =
+                |text: &str| object([("type", Json::string("text")), ("text", Json::string(text))]);
+            Json::Array(vec![block(&call.system_prefix), block(&call.system)])
+        };
         let body = object([
             ("model", Json::string(model)),
             ("max_tokens", Json::Int(i64::from(call.max_tokens))),
-            ("system", Json::string(&call.system)),
+            ("system", system),
             (
                 "messages",
                 Json::Array(vec![object([
@@ -235,22 +248,22 @@ pub fn build_request(
                 OPENROUTER_APP_NAME.to_owned(),
             ));
         }
+        let message = |role: &str, content: &str| {
+            object([
+                ("role", Json::string(role)),
+                ("content", Json::string(content)),
+            ])
+        };
+        let mut messages = Vec::with_capacity(3);
+        if !call.system_prefix.is_empty() {
+            messages.push(message("system", &call.system_prefix));
+        }
+        messages.push(message("system", &call.system));
+        messages.push(message("user", &call.user_content));
         let body = object([
             ("model", Json::string(model)),
             ("max_tokens", Json::Int(i64::from(call.max_tokens))),
-            (
-                "messages",
-                Json::Array(vec![
-                    object([
-                        ("role", Json::string("system")),
-                        ("content", Json::string(&call.system)),
-                    ]),
-                    object([
-                        ("role", Json::string("user")),
-                        ("content", Json::string(&call.user_content)),
-                    ]),
-                ]),
-            ),
+            ("messages", Json::Array(messages)),
             (
                 "tools",
                 Json::Array(vec![object([

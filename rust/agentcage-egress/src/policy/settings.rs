@@ -61,6 +61,7 @@ pub(crate) struct Settings {
     pub(crate) provider: String,
     pub(crate) model: String,
     pub(crate) base_url: String,
+    pub(crate) system_prefix: String,
     pub(crate) api_key_name: String,
     pub(crate) rate_rps: f64,
     pub(crate) rate_burst: f64,
@@ -271,6 +272,7 @@ impl Settings {
             base_url: str_or_empty(get(cfg, "base_url"))
                 .trim_end_matches('/')
                 .to_owned(),
+            system_prefix: str_or_empty(get(cfg, "system_prefix")),
             api_key_name,
             rate_rps,
             #[allow(clippy::cast_precision_loss)]
