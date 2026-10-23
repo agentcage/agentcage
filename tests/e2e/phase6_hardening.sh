@@ -65,7 +65,7 @@ assert_cmd_ok "6.7" "Log severity filtering" \
   "$AGENTCAGE" cage logs "$CAGE" -l error -n 50
 
 # 6.8: Invalid config rejected
-BAD_CONFIG=$(mktemp /tmp/e2e-bad-XXXXXX.yaml)
+BAD_CONFIG=$(e2e_mktemp e2e-bad .yaml)
 cat > "$BAD_CONFIG" <<'EOF'
 name: "INVALID NAME"
 container:
@@ -82,7 +82,7 @@ assert_cmd_fail "6.8" "Invalid config rejected" \
 rm -f "$BAD_CONFIG"
 
 # 6.9: Port conflict detected
-CONFLICT_CONFIG=$(mktemp /tmp/e2e-conflict-XXXXXX.yaml)
+CONFLICT_CONFIG=$(e2e_mktemp e2e-conflict .yaml)
 cat > "$CONFLICT_CONFIG" <<EOF
 name: e2e-conflict
 container:

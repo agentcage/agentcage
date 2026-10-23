@@ -353,7 +353,7 @@ fi
 
 # 3.11: Source validation catches typos at parse time
 e2e_timer_start
-TMPYAML=$(mktemp /tmp/e2e-bad-source-XXXXXX.yaml)
+TMPYAML=$(e2e_mktemp e2e-bad-source .yaml)
 cat > "$TMPYAML" <<'YAML'
 name: e2e-bad-source
 container:
@@ -378,7 +378,7 @@ e2e_timer_start
 if command -v systemd-creds >/dev/null 2>&1 && echo probe | systemd-creds encrypt --name _probe - - >/dev/null 2>&1; then
   CAGE_CREDS="e2e-secrets-creds"
   destroy_cage "$CAGE_CREDS" 2>/dev/null || true
-  TMPYAML=$(mktemp /tmp/e2e-creds-XXXXXX.yaml)
+  TMPYAML=$(e2e_mktemp e2e-creds .yaml)
   cat > "$TMPYAML" <<YAML
 name: $CAGE_CREDS
 container:

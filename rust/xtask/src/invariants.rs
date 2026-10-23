@@ -116,7 +116,7 @@ pub(crate) fn run(root: &Path, verbose: bool) -> Result<ExitCode, String> {
         .filter(|rel| root.join(rel).symlink_metadata().is_ok())
         .collect();
     let repo = Checkout { root, files };
-    let checks: [(&str, Check); 4] = [
+    let checks: [(&str, Check); 5] = [
         ("Rust does not shell out to Python", rust_has_no_python),
         (
             "no shipped image installs an interpreter",
@@ -124,6 +124,7 @@ pub(crate) fn run(root: &Path, verbose: bool) -> Result<ExitCode, String> {
         ),
         ("no Python in the repository", no_python_files),
         ("no live file names the replaced egress", no_old_egress_name),
+        ("no mktemp template has a suffix", no_suffixed_mktemp),
     ];
     let mut failed = 0;
     for (title, check) in checks {
@@ -349,13 +350,62 @@ fn no_old_egress_name(repo: &dyn Repo) -> Vec<String> {
     problems
 }
 
+/// Check 5: no shell `mktemp` template with text after its `X`s.
+///
+/// BSD `mktemp` (macOS) only randomises `X`s at the very end, so
+/// `mktemp /tmp/a-XXXXXX.yaml` is one literal name on every call there and
+/// parallel callers collide. `tests/e2e/lib.sh` has `e2e_mktemp NAME
+/// SUFFIX` for a temp file that needs a suffix.
+fn no_suffixed_mktemp(repo: &dyn Repo) -> Vec<String> {
+    let mut problems = Vec::new();
+    for rel in repo.files() {
+        if Path::new(rel).extension().is_none_or(|ext| ext != "sh") {
+            continue;
+        }
+        let Some(bytes) = repo.read(rel) else {
+            continue;
+        };
+        for (index, line) in lines(&bytes).iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with('#') || !code.contains("mktemp") {
+                continue;
+            }
+            if has_suffixed_template(code) {
+                problems.push(format!(
+                    "{rel}:{}: a mktemp template must end in its Xs (BSD mktemp leaves them \
+                     literal otherwise); use e2e_mktemp NAME SUFFIX\n    {code}",
+                    index + 1
+                ));
+            }
+        }
+    }
+    problems
+}
+
+/// A run of three or more `X`s followed by a file-name character.
+fn has_suffixed_template(line: &str) -> bool {
+    let mut run = 0;
+    for b in line.bytes() {
+        if b == b'X' {
+            run += 1;
+            continue;
+        }
+        if run >= 3 && (b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')) {
+            return true;
+        }
+        run = 0;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        OLD_EGRESS_NAME, Repo, installs_interpreter, no_old_egress_name, no_python_files,
-        rust_has_no_python, shipped_images_have_no_interpreter,
+        OLD_EGRESS_NAME, Repo, has_suffixed_template, installs_interpreter, no_old_egress_name,
+        no_python_files, no_suffixed_mktemp, rust_has_no_python,
+        shipped_images_have_no_interpreter,
     };
 
     /// An in-memory repository.
@@ -512,5 +562,25 @@ mod tests {
         // Without the anchor heading the exemption cannot be located.
         let repo = Fake::new(&[("CHANGELOG.md", "## [Unreleased]\n")]);
         assert_eq!(no_old_egress_name(&repo).len(), 1);
+    }
+
+    #[test]
+    fn a_mktemp_template_with_a_suffix_is_refused() {
+        let repo = Fake::new(&[
+            (
+                "tests/e2e/a.sh",
+                "# mktemp /tmp/x-XXXXXX.yaml in a comment is fine\n\
+                 ok=$(mktemp /tmp/x-XXXXXX)\n\
+                 dir=$(mktemp -d \"/tmp/x-XXXXXX\")\n\
+                 bad=$(mktemp /tmp/x-XXXXXX.yaml)\n",
+            ),
+            // Only shell scripts are scanned.
+            ("docs/a.md", "mktemp /tmp/x-XXXXXX.yaml\n"),
+        ]);
+        let problems = no_suffixed_mktemp(&repo);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].starts_with("tests/e2e/a.sh:4:"));
+        assert!(!has_suffixed_template("mktemp /tmp/a-XXXXXX)"));
+        assert!(has_suffixed_template("mktemp /tmp/a-XXXXXX.tar.gz)"));
     }
 }

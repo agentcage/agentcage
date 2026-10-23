@@ -211,7 +211,7 @@ run_phase() {
   local phase="$1"; shift
   local script="${PHASE_SCRIPTS[$phase]}"
   local outfile
-  outfile=$(mktemp /tmp/e2e-phase${phase}-XXXXXX.log)
+  outfile=$(mktemp "/tmp/e2e-phase${phase}-XXXXXX")
 
   local start end elapsed rc
   start=$(date +%s)

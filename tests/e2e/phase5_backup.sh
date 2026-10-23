@@ -10,7 +10,7 @@ BASE="http://localhost:3000"
 CONFIGS="$(dirname "$0")/configs"
 SECOND_PORT="${E2E_PORT_SECOND:-19083}"
 BASE2="http://localhost:$SECOND_PORT"
-BACKUP_FILE=$(mktemp /tmp/e2e-backup-XXXXXX.tar.gz)
+BACKUP_FILE=$(e2e_mktemp e2e-backup .tar.gz)
 
 # Ensure the basic cage is running
 if ! curl -sf "$BASE/" >/dev/null 2>&1; then

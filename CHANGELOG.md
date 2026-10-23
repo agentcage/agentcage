@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The e2e suite no longer races on its temp files on macOS.** Several scripts asked `mktemp` for `/tmp/NAME-XXXXXX.yaml`-style names, but BSD `mktemp` only randomises `X`s at the very end, so every call got the same literal file and tests running in parallel failed with `mkstemp failed … File exists` (`harness_diagnostics::create_cage_success_stays_quiet` most often). They now use `e2e_mktemp NAME SUFFIX` from `tests/e2e/lib.sh`, and `cargo xtask check-invariants` refuses a suffixed `mktemp` template in a shell script.
+
 - **The `debian` scaffold starts on apple-container.** Its start command copied the egress CA into `/usr/local/share/ca-certificates` as the uid-1000 workload and exited on the `Permission denied`; the copy is now best-effort, as `ubuntu`'s has been since #140. cage-init has already installed the CA.
 
 - **OpenRouter requests now report the app name as `agentcage`.** The decider and watcher sent only `X-Title`, filled with the `User-Agent` value (`agentcage-policy-api`), so OpenRouter showed the app as `Unknown`: app attribution requires `HTTP-Referer`, and `X-Title` alone creates no app entry. Requests now send `HTTP-Referer: https://agentcage.ai` and `X-OpenRouter-Title: agentcage`, the current attribution headers; the descriptive `User-Agent` is unchanged. The egress binary changes, so the next `cage update` rebuilds the egress image.

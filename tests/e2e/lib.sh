@@ -33,6 +33,20 @@ export AGENT_DIR="$REPO_ROOT/tests/e2e/fixtures/agent"
 # same definition because it does not source this file.
 export AGENTCAGE="${AGENTCAGE:-agentcage}"
 
+# A unique temp file that ends in SUFFIX: e2e_mktemp NAME SUFFIX.
+#
+# `mktemp /tmp/NAME-XXXXXX.yaml` is not portable. GNU mktemp randomises the
+# last run of Xs wherever it sits; BSD mktemp (macOS) only randomises Xs at
+# the very end, so with a suffix every caller got the literal
+# `/tmp/NAME-XXXXXX.yaml` and tests running in parallel raced on it
+# ("mkstemp failed … File exists"). Make a random name with the Xs last,
+# then add the suffix.
+e2e_mktemp() {
+  local base
+  base=$(mktemp "/tmp/$1-XXXXXX") || return 1
+  mv "$base" "$base$2" && printf '%s\n' "$base$2"
+}
+
 # ── output ───────────────────────────────────────────────────────────
 
 _test_id() { printf "%d.%d" "$E2E_PHASE" "$1"; }
@@ -399,7 +413,7 @@ create_cage() {
   local config="$1"
   shift
   local tmpconfig
-  tmpconfig=$(mktemp /tmp/e2e-config-XXXXXX.yaml)
+  tmpconfig=$(e2e_mktemp e2e-config .yaml)
   envsubst < "$config" > "$tmpconfig"
   local rc=0 output
   output=$(AGENT_DIR="$AGENT_DIR" "$AGENTCAGE" cage create -c "$tmpconfig" "$@" 2>&1) || rc=$?
