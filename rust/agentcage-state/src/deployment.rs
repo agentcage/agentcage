@@ -558,6 +558,30 @@ mod tests {
     }
 
     #[test]
+    fn save_raw_config_text_writes_the_bytes_and_refuses_bad_yaml() {
+        let (_dir, paths) = sandbox();
+        write_cage(&paths, "x", "name: x\n");
+        let text = "# keep me\nname: x\ncommand: [\"sleep\", \"infinity\"]\n";
+        paths.save_raw_config_text("x", text).unwrap();
+        assert_eq!(
+            fs::read_to_string(paths.stored_config_path("x")).unwrap(),
+            text
+        );
+
+        // Not YAML, or two documents: refused, and the file is untouched.
+        for bad in ["name: [x\n", "name: x\n---\nname: y\n"] {
+            assert!(matches!(
+                paths.save_raw_config_text("x", bad),
+                Err(StateError::Yaml { .. })
+            ));
+            assert_eq!(
+                fs::read_to_string(paths.stored_config_path("x")).unwrap(),
+                text
+            );
+        }
+    }
+
+    #[test]
     fn fill_placeholders_mints_only_for_rules_that_omit_one() {
         let (_dir, paths) = sandbox();
         write_cage(

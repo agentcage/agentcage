@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cage edit` keeps the comments and formatting of the stored `cage.yaml`.** A one-value edit used to re-render the whole document through the YAML emitter, dropping every comment and the operator's quoting and flow-style lists (#523). The edited text is now validated and saved as written; the document is re-rendered only when `cage edit` itself has to add a generated `secret_injection` placeholder. Other commands that change `cage.yaml` (`domain add/rm`, `secret set --declare`, `secret rotate`, `cage grants`) still re-render it.
+
 ## [0.53.0] - 2026-10-24
 
 ### Added
