@@ -249,7 +249,7 @@ Relays write structured records to the egress audit stream, the same one HTTP de
 | `relay_init_failed` | none | The relay could not be built, for example because a credential did not resolve. `error` says why. |
 | `relay_start_failed` | none | The listener could not start: port in use, or a malformed `listen`. |
 | `imap_command` | `intercepted` | The cage sent `LOGIN` / `AUTHENTICATE`. |
-| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list, or because of its form: `reason` is `invalid tag`, `bare CR in command line`, `NUL in command line`, `malformed literal` or `literal too large`. Carries `command`, `reason`, and `mailbox` for folder refusals. |
+| `imap_command` | `blocked` | A command was refused by `write_mode` or a folder list, or because of its form: `reason` is `invalid tag`, `bare CR in command line`, `NUL in command line`, `malformed literal` or `literal too large`. Carries `command` (`invalid tag` carries an empty one: the line need not be a command), `reason`, and `mailbox` for folder refusals. |
 | `imap_command` | `allowed` | A forwarded command, recorded only while allowed-request logging is on (`logging.allowed_requests`, off by default). |
 | `imap_upstream_unreachable` | none | The upstream connection failed. Carries `upstream` and `error`. |
 | `smtp_command` | `intercepted` | The cage sent `AUTH`. |

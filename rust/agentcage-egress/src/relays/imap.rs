@@ -168,6 +168,11 @@ const SERVER_MAILBOX_COMMANDS: &[&str] = &[
 const BARE_CR: &str = "bare CR in command line";
 const NUL: &str = "NUL in command line";
 
+/// The `command` an audit record carries when the line names none: a line
+/// whose tag is invalid need not be a command at all (a bare base64 SASL
+/// line reads as one), so its second word is the cage's text.
+const NO_COMMAND: &str = "";
+
 /// Longest mailbox name read ahead from a literal to judge it.
 const MAX_MAILBOX_LITERAL: u64 = 1024;
 
@@ -1639,14 +1644,16 @@ impl Inner {
         if !valid_tag(tag) {
             // Answered untagged, and logged by length only: a bare base64
             // SASL line reads as an invalid tag, and its text is a
-            // credential.
+            // credential. The record names no command for the same reason:
+            // with the tag invalid, the second word is payload, not a
+            // command the audit can repeat.
             relay_log!(
                 warning,
                 LOGGER,
                 "imap relay {name}: blocked line with invalid tag ({} bytes)",
                 tag.len()
             );
-            self.blocked(&command_name(line), "invalid tag");
+            self.blocked(NO_COMMAND, "invalid tag");
             return Some(Decision {
                 tag: b"*".to_vec(),
                 reason: "invalid command tag".to_owned(),

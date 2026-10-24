@@ -695,6 +695,34 @@ async fn an_overlong_command_line_is_refused_not_fatal() {
     task.abort();
 }
 
+/// A line whose tag is invalid is refused untagged, and the audit record
+/// carries no command: its second word is the cage's text, and a bare
+/// base64 SASL line reads this way, so it may be a credential.
+#[tokio::test]
+async fn an_invalid_tag_keeps_the_cages_text_out_of_the_audit() {
+    const SECOND_WORD: &str = "U0VDUkVULVBBWUxPQUQ";
+    let (relay, sink, mut c, task, rec) = plain_session("{}").await;
+    let _ = c
+        .writer
+        .write_all(format!("* {SECOND_WORD}\r\n").as_bytes())
+        .await;
+    // Refused all the same: the request never reaches the upstream.
+    assert_eq!(c.line().await, b"* BAD invalid command tag\r\n");
+    let got = c.command(&[b"a2 NOOP\r\n".to_vec()]).await.unwrap();
+    assert_eq!(got, [b"a2 OK NOOP completed\r\n".to_vec()]);
+    assert_eq!(rec.lock().unwrap().commands[1..], [b"a2 NOOP\r\n".to_vec()]);
+    let records = json::to_string(&audit_json(&sink));
+    assert!(!records.contains(SECOND_WORD), "{records}");
+    assert!(
+        !records.to_lowercase().contains(&SECOND_WORD.to_lowercase()),
+        "{records}"
+    );
+    assert!(records.contains(r#""reason": "invalid tag""#), "{records}");
+    assert!(records.contains(r#""command": """#), "{records}");
+    relay.stop().await;
+    task.abort();
+}
+
 /// Stopping a relay (reload removed it, or the egress shuts down) tells
 /// an idle session goodbye rather than cutting the connection.
 #[tokio::test]

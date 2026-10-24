@@ -1255,7 +1255,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -1278,7 +1278,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -1301,7 +1301,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -2722,7 +2722,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -2745,7 +2745,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -2768,7 +2768,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -4081,7 +4081,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -4104,7 +4104,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -4127,7 +4127,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -5176,7 +5176,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -5199,7 +5199,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -5222,7 +5222,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "invalid tag"
     }
@@ -81021,7 +81021,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP",
+      "command": "",
       "decision": "blocked",
       "reason": "invalid tag"
      }
@@ -81067,7 +81067,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP",
+      "command": "",
       "decision": "blocked",
       "reason": "invalid tag"
      }
@@ -81113,7 +81113,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP",
+      "command": "",
       "decision": "blocked",
       "reason": "invalid tag"
      }
