@@ -1462,7 +1462,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -1485,7 +1485,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -1508,7 +1508,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "EXPUNGE",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -1531,7 +1531,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP\u0000B",
+     "command": "",
      "decision": "blocked",
      "reason": "NUL in command line"
     }
@@ -1577,7 +1577,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP\u0000",
+     "command": "",
      "decision": "blocked",
      "reason": "NUL in command line"
     }
@@ -1622,7 +1622,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -2929,7 +2929,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -2952,7 +2952,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -2975,7 +2975,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "EXPUNGE",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -2998,7 +2998,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP\u0000B",
+     "command": "",
      "decision": "blocked",
      "reason": "NUL in command line"
     }
@@ -3044,7 +3044,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP\u0000",
+     "command": "",
      "decision": "blocked",
      "reason": "NUL in command line"
     }
@@ -3089,7 +3089,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -4288,7 +4288,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -4311,7 +4311,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -4334,7 +4334,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "EXPUNGE",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -4357,7 +4357,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP\u0000B",
+     "command": "",
      "decision": "blocked",
      "reason": "NUL in command line"
     }
@@ -4403,7 +4403,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP\u0000",
+     "command": "",
      "decision": "blocked",
      "reason": "NUL in command line"
     }
@@ -4448,7 +4448,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -5371,7 +5371,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -5394,7 +5394,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -5417,7 +5417,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "EXPUNGE",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -5440,7 +5440,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP\u0000B",
+     "command": "",
      "decision": "blocked",
      "reason": "NUL in command line"
     }
@@ -5486,7 +5486,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP\u0000",
+     "command": "",
      "decision": "blocked",
      "reason": "NUL in command line"
     }
@@ -5531,7 +5531,7 @@
     {
      "kind": "imap_command",
      "relay": "test-imap",
-     "command": "NOOP",
+     "command": "",
      "decision": "blocked",
      "reason": "bare CR in command line"
     }
@@ -81570,7 +81570,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP",
+      "command": "",
       "decision": "blocked",
       "reason": "bare CR in command line"
      }
@@ -81618,7 +81618,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP",
+      "command": "",
       "decision": "blocked",
       "reason": "bare CR in command line"
      }
@@ -81666,7 +81666,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP",
+      "command": "",
       "decision": "blocked",
       "reason": "bare CR in command line"
      }
@@ -81714,7 +81714,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "EXPUNGE",
+      "command": "",
       "decision": "blocked",
       "reason": "bare CR in command line"
      }
@@ -81762,7 +81762,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "SELECT",
+      "command": "",
       "decision": "blocked",
       "reason": "bare CR in command line"
      }
@@ -81810,7 +81810,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP",
+      "command": "",
       "decision": "blocked",
       "reason": "bare CR in command line"
      }
@@ -81858,7 +81858,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP\u0000B",
+      "command": "",
       "decision": "blocked",
       "reason": "NUL in command line"
      }
@@ -81906,7 +81906,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "SELECT",
+      "command": "",
       "decision": "blocked",
       "reason": "NUL in command line"
      }
@@ -82002,7 +82002,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "SELECT",
+      "command": "",
       "decision": "blocked",
       "reason": "NUL in command line"
      }
@@ -82050,7 +82050,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP\u0000",
+      "command": "",
       "decision": "blocked",
       "reason": "NUL in command line"
      }
@@ -82100,7 +82100,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP",
+      "command": "",
       "decision": "blocked",
       "reason": "bare CR in command line"
      }
@@ -82192,7 +82192,7 @@
      {
       "kind": "imap_command",
       "relay": "test-imap",
-      "command": "NOOP\u0000B",
+      "command": "",
       "decision": "blocked",
       "reason": "NUL in command line"
      }
