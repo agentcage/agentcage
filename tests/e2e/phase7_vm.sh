@@ -99,7 +99,7 @@ assert_output_contains "7.14" "Audit filter (blocked)" '"blocked"' \
 
 # HAR
 e2e_timer_start
-HAR_FILE=$(mktemp /tmp/e2e-vm-har-XXXXXX.har)
+HAR_FILE=$(e2e_mktemp e2e-vm-har .har)
 if "$AGENTCAGE" cage har "$CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then
   e2e_pass "7.15" "HAR export (VM)"
 else

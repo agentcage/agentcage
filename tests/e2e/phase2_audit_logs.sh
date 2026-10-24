@@ -88,7 +88,7 @@ if wait_ready "$HAR_BASE" 120; then
     sleep 1
   done
 
-  HAR_FILE=$(mktemp /tmp/e2e-har-XXXXXX.har)
+  HAR_FILE=$(e2e_mktemp e2e-har .har)
   if "$AGENTCAGE" cage har "$HAR_CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then
     if jq -e 'type == "object"' "$HAR_FILE" >/dev/null 2>&1; then
       e2e_pass "2.8" "HAR export (inbound)"

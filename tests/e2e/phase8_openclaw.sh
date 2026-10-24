@@ -116,7 +116,7 @@ echo "Creating cage (scaffold build may take several minutes cold)..."
 # atomically alongside the cage; `agentcage secret set` requires the
 # cage to exist, which would be a chicken-and-egg problem here.
 e2e_timer_start
-CREATE_LOG=$(mktemp /tmp/phase8-create-XXXXXX.log)
+CREATE_LOG=$(e2e_mktemp phase8-create .log)
 if ! "$AGENTCAGE" cage create -c cage.yaml \
      -s "OPENCLAW_GATEWAY_PASSWORD=$GATEWAY_PW" \
      -s "ANTHROPIC_API_KEY=$SENTINEL" >"$CREATE_LOG" 2>&1; then
