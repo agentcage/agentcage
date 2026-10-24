@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cage backup` no longer silently skips a `vm` cage's named volumes.** They live in the Lima guest and still cannot be exported, but the backup now warns once per declared `container.named_volumes` entry and records the names under a new, optional `named_volumes_skipped` key in `manifest.json`; `cage restore` repeats the warning, so an empty volume is expected rather than discovered after the cage starts. A `container` backup of a declared volume that did not exist records it there too. `FORMAT_VERSION` stays at 1: the key is additive and written only when non-empty, so other manifests are unchanged (#419).
+
 ## [0.53.0] - 2026-10-24
 
 ### Added

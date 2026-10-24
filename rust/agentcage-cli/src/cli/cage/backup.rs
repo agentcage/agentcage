@@ -1748,8 +1748,8 @@ fn volumes_to_import(
     Ok(import)
 }
 
-/// The reason, by backend, that a cage's named volumes cannot travel in
-/// a backup. One sentence, shared by both halves so that a backup and
+/// The reason, by backend, that a cage's named volumes did not travel
+/// in a backup. One sentence, shared by both halves so that a backup and
 /// the restore of its archive say the same thing about the same
 /// volumes.
 fn volumes_not_in_backup_reason(isolation: &str) -> &'static str {
@@ -1758,6 +1758,9 @@ fn volumes_not_in_backup_reason(isolation: &str) -> &'static str {
             "a vm cage's named volumes live in its Lima guest, and \
              `cage backup` cannot export them"
         }
+        // The only reason a `container` backup records a volume as
+        // skipped: it was declared but absent when the backup ran.
+        "container" => "it did not exist when the backup ran",
         APPLE_CONTAINER => "apple-container has no named volumes",
         _ => "`cage backup` could not export this cage's named volumes",
     }
@@ -4822,7 +4825,10 @@ secret_injection:
         // is expected rather than discovered after the cage starts.
         let stderr = restore_stderr(&out);
         assert!(
-            stderr.contains("volume 'acme-agent-workspace' is not in the archive"),
+            stderr.contains(
+                "volume 'acme-agent-workspace' is not in the archive: it did not exist \
+                 when the backup ran"
+            ),
             "{stderr:?}"
         );
     }
