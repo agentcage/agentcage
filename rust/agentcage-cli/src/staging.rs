@@ -306,14 +306,14 @@ fn would_stage(containerfile: &Path, relative: &str, scaffold: &str) -> bool {
 ///
 /// The Containerfile itself, plus every sibling [`stage_build_context`]
 /// would stage that the Containerfile actually `COPY`s, through the one
-/// definition of a build-context reference in [`copy_references`].
+/// definition of a build-context reference in `copy_references`.
 ///
 /// Everything else a scaffold dir holds is deliberately absent: a
 /// scaffold's `README.md` is staged for the operator to read and the
 /// build never opens it, so an operator's own README stays theirs.
 ///
 /// Regular files only, for the reason on `_scaffold_build_inputs`: a
-/// `COPY`ed sibling *directory* is staged through [`is_ignored`], so a
+/// `COPY`ed sibling *directory* is staged through `is_ignored`, so a
 /// staged copy legitimately lacks the `node_modules` its source has and
 /// would compare as different forever. No scaffold ships one.
 #[must_use]
@@ -556,8 +556,8 @@ fn remove_path(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_inputs, canonical, is_ignored, line_copies, parent_dir, stage_build_context,
-        stage_conflicts,
+        SKILL_CONTEXT_PATH, build_inputs, canonical, canonical_skill, is_ignored, line_copies,
+        parent_dir, stage_build_context, stage_conflicts, stage_scaffold_assets,
     };
     use std::path::Path;
 
@@ -732,6 +732,208 @@ mod tests {
         )
         .unwrap();
         assert!(stage_conflicts(&containerfile, dest.path(), "demo").is_empty());
+    }
+
+    /// One file from the embedded skill tree.
+    fn canonical_skill_file(relative: &str) -> &'static [u8] {
+        canonical_skill()
+            .into_iter()
+            .find(|(path, _)| path == relative)
+            .unwrap_or_else(|| panic!("the embedded skill has no {relative}"))
+            .1
+    }
+
+    /// A scaffold dir whose Containerfile `COPY`s both canonical assets.
+    fn asset_scaffold_dir(name: &str) -> agentcage_state::TestDir {
+        let dir = agentcage_state::TestDir::new(name);
+        let src = dir.path();
+        std::fs::write(
+            src.join("Containerfile"),
+            b"FROM scaffold\nCOPY AGENTS.md /home/agent/AGENTS.md\n\
+              COPY skills/agentcage /home/agent/skills/agentcage\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("entry.sh"), b"#!/bin/sh\nscaffold\n").unwrap();
+        dir
+    }
+
+    /// The whole point of `stage_scaffold_assets`: scaffolds do not ship
+    /// these, so a `COPY AGENTS.md` only resolves once they have been
+    /// dropped into the build context.
+    #[test]
+    fn the_brief_and_the_skill_are_staged_for_a_scaffold_build() {
+        let source = asset_scaffold_dir("assets-src");
+        let dest = agentcage_state::TestDir::new("assets-dst");
+        let containerfile = source.path().join("Containerfile");
+
+        assert!(stage_scaffold_assets(
+            &containerfile,
+            dest.path(),
+            "openclaw"
+        ));
+
+        assert_eq!(
+            std::fs::read(dest.path().join("AGENTS.md")).unwrap(),
+            canonical("AGENTS.md").expect("the embedded brief")
+        );
+        let skill = dest.path().join(SKILL_CONTEXT_PATH);
+        for (relative, bytes) in canonical_skill() {
+            assert_eq!(
+                std::fs::read(skill.join(&relative)).unwrap(),
+                bytes,
+                "{relative}"
+            );
+        }
+
+        // Nothing changed, so a second call has nothing to write.
+        assert!(!stage_scaffold_assets(
+            &containerfile,
+            dest.path(),
+            "openclaw"
+        ));
+    }
+
+    /// Two of the three gates: no scaffold, or a Containerfile that does
+    /// not `COPY` the asset. Either way nothing is written.
+    #[test]
+    fn nothing_is_staged_without_a_scaffold_or_a_copy_line() {
+        let source = asset_scaffold_dir("assets-gates-src");
+        let containerfile = source.path().join("Containerfile");
+
+        let no_scaffold = agentcage_state::TestDir::new("assets-no-scaffold");
+        assert!(!stage_scaffold_assets(
+            &containerfile,
+            no_scaffold.path(),
+            ""
+        ));
+        assert!(!no_scaffold.path().join("AGENTS.md").exists());
+        assert!(!no_scaffold.path().join(SKILL_CONTEXT_PATH).exists());
+
+        let plain = agentcage_state::TestDir::new("assets-plain-src");
+        std::fs::write(
+            plain.path().join("Containerfile"),
+            b"FROM scaffold\nCOPY entry.sh /usr/bin/entry\n",
+        )
+        .unwrap();
+        let dest = agentcage_state::TestDir::new("assets-plain-dst");
+        assert!(!stage_scaffold_assets(
+            &plain.path().join("Containerfile"),
+            dest.path(),
+            "openclaw"
+        ));
+        assert!(!dest.path().join("AGENTS.md").exists());
+        assert!(!dest.path().join(SKILL_CONTEXT_PATH).exists());
+    }
+
+    /// The third gate: the Containerfile's own directory already ships
+    /// the asset, so staging must leave that project's copy alone. A
+    /// stale copy in the *destination* is a different thing — it is a
+    /// previous stage, and always refreshed.
+    #[test]
+    fn a_context_that_ships_its_own_assets_defers_but_a_stale_stage_is_refreshed() {
+        let shipping = asset_scaffold_dir("assets-own-src");
+        std::fs::write(shipping.path().join("AGENTS.md"), b"project brief\n").unwrap();
+        std::fs::create_dir_all(shipping.path().join(SKILL_CONTEXT_PATH)).unwrap();
+        std::fs::write(
+            shipping.path().join(SKILL_CONTEXT_PATH).join("SKILL.md"),
+            b"project skill\n",
+        )
+        .unwrap();
+        let dest = agentcage_state::TestDir::new("assets-own-dst");
+        assert!(!stage_scaffold_assets(
+            &shipping.path().join("Containerfile"),
+            dest.path(),
+            "openclaw"
+        ));
+        assert!(!dest.path().join("AGENTS.md").exists());
+        assert!(!dest.path().join(SKILL_CONTEXT_PATH).exists());
+
+        let source = asset_scaffold_dir("assets-stale-src");
+        let stale = agentcage_state::TestDir::new("assets-stale-dst");
+        std::fs::write(stale.path().join("AGENTS.md"), b"stale brief\n").unwrap();
+        std::fs::create_dir_all(stale.path().join(SKILL_CONTEXT_PATH)).unwrap();
+        std::fs::write(
+            stale.path().join(SKILL_CONTEXT_PATH).join("SKILL.md"),
+            b"stale skill\n",
+        )
+        .unwrap();
+        assert!(stage_scaffold_assets(
+            &source.path().join("Containerfile"),
+            stale.path(),
+            "openclaw"
+        ));
+        assert_eq!(
+            std::fs::read(stale.path().join("AGENTS.md")).unwrap(),
+            canonical("AGENTS.md").expect("the embedded brief")
+        );
+        assert_eq!(
+            std::fs::read(stale.path().join(SKILL_CONTEXT_PATH).join("SKILL.md")).unwrap(),
+            canonical_skill_file("SKILL.md")
+        );
+    }
+
+    /// Every top-level entry matches, but a nested file from an older
+    /// stage does not: the refresh has to walk the staged tree to notice,
+    /// and replace the tree whole so the extra does not survive.
+    #[test]
+    fn a_skill_refresh_descends_into_the_staged_tree() {
+        let source = asset_scaffold_dir("assets-nested-src");
+        let dest = agentcage_state::TestDir::new("assets-nested-dst");
+        let staged = dest.path().join(SKILL_CONTEXT_PATH);
+        // The brief is current, so its stage is a no-op and the only
+        // reason to refresh is the skill.
+        std::fs::write(
+            dest.path().join("AGENTS.md"),
+            canonical("AGENTS.md").expect("the embedded brief"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(staged.join("references")).unwrap();
+        std::fs::write(staged.join("SKILL.md"), canonical_skill_file("SKILL.md")).unwrap();
+        std::fs::write(staged.join("references/old.md"), b"gone next refresh\n").unwrap();
+
+        assert!(stage_scaffold_assets(
+            &source.path().join("Containerfile"),
+            dest.path(),
+            "openclaw"
+        ));
+
+        assert!(!staged.join("references").exists());
+        assert_eq!(
+            std::fs::read(staged.join("SKILL.md")).unwrap(),
+            canonical_skill_file("SKILL.md")
+        );
+    }
+
+    /// The destination is not ours to trust: a directory where the brief
+    /// belongs, and a file where the skill's directory belongs, are both
+    /// replaced rather than treated as an error.
+    #[test]
+    fn a_squatter_on_the_target_name_is_replaced() {
+        let source = asset_scaffold_dir("assets-squat-src");
+        let dest = agentcage_state::TestDir::new("assets-squat-dst");
+        std::fs::create_dir_all(dest.path().join("AGENTS.md")).unwrap();
+        std::fs::write(dest.path().join("AGENTS.md/squatter"), b"not a brief\n").unwrap();
+        std::fs::create_dir_all(dest.path().join("skills")).unwrap();
+        std::fs::write(dest.path().join(SKILL_CONTEXT_PATH), b"not a skill\n").unwrap();
+
+        assert!(stage_scaffold_assets(
+            &source.path().join("Containerfile"),
+            dest.path(),
+            "openclaw"
+        ));
+
+        assert!(dest.path().join("AGENTS.md").is_file());
+        assert_eq!(
+            std::fs::read(dest.path().join("AGENTS.md")).unwrap(),
+            canonical("AGENTS.md").expect("the embedded brief")
+        );
+        assert!(dest.path().join(SKILL_CONTEXT_PATH).is_dir());
+        assert!(
+            dest.path()
+                .join(SKILL_CONTEXT_PATH)
+                .join("SKILL.md")
+                .is_file()
+        );
     }
 
     /// `scaffold` empty means "not a scaffold build", so the canonical

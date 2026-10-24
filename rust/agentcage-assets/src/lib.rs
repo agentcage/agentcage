@@ -7,7 +7,7 @@
 //! supervisor, the apple-container assets), quadlets and the Lima config
 //! are rendered from templates, and `agentcage init` renders scaffolds.
 //! So the binary carries those trees and materializes them on disk
-//! before any image build. That is I/O, which [`agentcage_core`] is not
+//! before any image build. That is I/O, which `agentcage_core` is not
 //! allowed, hence a crate of its own.
 //!
 //! # The three jobs
@@ -26,7 +26,7 @@
 //!   content always yields a tag a host cannot already hold.
 //!
 //! This crate is where the extraction and hashing live because both are
-//! I/O, and [`agentcage_core`] is not allowed any. `agentcage-core` is
+//! I/O, and `agentcage_core` is not allowed any. `agentcage-core` is
 //! handed the *results*.
 //!
 //! # Dependencies

@@ -78,6 +78,27 @@ missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 
+# ── Rustdoc lints ───────────────────────────────────────────
+#
+# Denied here where the rustc lints above are only warned about, because
+# the trade is different: rustdoc lints never run during `cargo build`,
+# so a new rustdoc release cannot break a contributor's build the way a
+# new rustc lint can. `cargo doc` is a deliberate act, and its warnings
+# are always a doc comment that does not say what it looks like it says.
+#
+# `broken_intra_doc_links` is the one this exists for: these doc comments
+# carry the Python↔Rust mapping tables, and a link that quietly renders
+# as literal text is a table row that no longer points at anything.
+# `private_intra_doc_links` is denied with it rather than allowed, because
+# a public doc linking to a private helper renders as literal text too —
+# the two are the same defect, and the sites that existed were few enough
+# to de-link once here rather than leave a lint allowed forever.
+# `.github/workflows/rust.yml` runs `cargo doc` with `RUSTDOCFLAGS=-D
+# warnings`, so a doc warning no workspace member inherits still fails CI.
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }

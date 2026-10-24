@@ -134,7 +134,7 @@ impl Paths {
     /// `state.resolve_relay_ca_files` — inline each relay's CA.
     ///
     /// (Custom inspector paths get the same treatment for the same
-    /// reason, by [`rewrite_plugin_paths`].)
+    /// reason, by `rewrite_plugin_paths`.)
     ///
     /// The relay runs inside the proxy container, where a host path
     /// means nothing. Rather than bind-mount the file — which pins an

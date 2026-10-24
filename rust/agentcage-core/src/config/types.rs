@@ -6,26 +6,22 @@
 //!
 //! # Where a default is not what [`Default`] says
 //!
-//! Four of these defaults are never the value a real config gets,
+//! Three of these defaults are never the value a real config gets,
 //! because the loader ([`super::load`]) computes something else before
 //! the struct is built. They are listed on the fields, and collected
-//! here because a reader who trusts `Default` alone will be wrong about all four:
+//! here because a reader who trusts `Default` alone will be wrong about all three:
 //!
 //! | Field | `Default` | what the loader actually does |
 //! | :-- | :-- | :-- |
 //! | [`Config::isolation`] | `"container"` | the host probe — Linux `container`, macOS `vm` or `apple-container` |
 //! | [`Config::dns_servers`] | empty | the host's non-loopback resolvers, read from `resolv.conf` |
-//! | [`ContainerConfig::timeout_start_sec`] | `600` | **`120`** — the type default is dead code |
 //! | [`SecretsConfig::scope`] | `"auto"` | stays `"auto"` here; `secret_resolver` resolves it at deploy time |
 //!
-//! The third is not a subtlety, it is a long-standing discrepancy: the
-//! type's default is `timeout_start_sec = 600`, but the loader fills a
-//! missing key with `120`. Since the loader is the only way a
-//! `Config` is ever built from a file, 120 is the number users get,
-//! and the golden corpus records 120. Both are kept — `Default` keeps
-//! 600 and the parser keeps 120, which is what deployed cages have
-//! always got. Do not "fix" one to match the other without
-//! deciding to change what existing configs deploy.
+//! [`ContainerConfig::timeout_start_sec`] used to be a fourth row: the
+//! type default said 600 while the loader filled a missing key with
+//! 120, so 600 was dead code. Both are now `120` (#415), and
+//! `timeout_start_sec_defaults_to_120` plus its parser-side twin keep
+//! them from drifting apart again.
 
 use indexmap::IndexMap;
 
@@ -158,8 +154,8 @@ pub struct ContainerConfig {
     pub restart: String,
     /// systemd `RestartSec=`.
     pub restart_sec: i64,
-    /// systemd `TimeoutStartSec=`. **`load_config` defaults this to
-    /// 120, not to the 600 below** — see the module docs.
+    /// systemd `TimeoutStartSec=`. Both this default and the
+    /// loader's missing-key fallback are 120 — see the module docs.
     pub timeout_start_sec: i64,
     /// systemd `TimeoutStopSec=`.
     pub timeout_stop_sec: i64,
@@ -189,7 +185,7 @@ impl Default for ContainerConfig {
             build: BuildConfig::default(),
             restart: "on-failure".to_owned(),
             restart_sec: 10,
-            timeout_start_sec: 600,
+            timeout_start_sec: 120,
             timeout_stop_sec: 30,
         }
     }
@@ -1030,11 +1026,11 @@ mod tests {
         assert_eq!(config.ports.tcp.allow, [80, 443]);
     }
 
-    /// The one field whose `Default` and whose parsed default disagree,
-    /// pinned so the discrepancy cannot be quietly "tidied".
+    /// One number, both paths. `parse.rs` has the twin that asserts the
+    /// loader's missing-key fallback is the same value (#415).
     #[test]
-    fn timeout_start_sec_keeps_the_dead_dataclass_default() {
-        assert_eq!(ContainerConfig::default().timeout_start_sec, 600);
+    fn timeout_start_sec_defaults_to_120() {
+        assert_eq!(ContainerConfig::default().timeout_start_sec, 120);
     }
 
     #[test]

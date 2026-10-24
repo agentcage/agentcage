@@ -168,6 +168,11 @@ const SERVER_MAILBOX_COMMANDS: &[&str] = &[
 const BARE_CR: &str = "bare CR in command line";
 const NUL: &str = "NUL in command line";
 
+/// The `command` an audit record carries when the line names none: a line
+/// refused before a command is parsed need not be one at all (a bare base64
+/// SASL line reads as a tag), so its second word is the cage's text.
+const NO_COMMAND: &str = "";
+
 /// Longest mailbox name read ahead from a literal to judge it.
 const MAX_MAILBOX_LITERAL: u64 = 1024;
 
@@ -500,6 +505,19 @@ pub fn command_name(line: &[u8]) -> String {
         };
     }
     cmd
+}
+
+/// The `command` an audit record may carry for `line`: only a whole line
+/// whose tag parses names one. A faulted line may hold payload where the
+/// command word would be (a bare base64 SASL line reads as a tag, and a
+/// NUL can sit inside the second word), and a line refused for its length
+/// was never parsed; neither names a command.
+fn audited_command(line: &[u8], whole: bool) -> String {
+    let tag = split_ws(line, Some(1)).first().copied().unwrap_or(b"");
+    if !whole || line_fault(line).is_some() || !valid_tag(tag) {
+        return NO_COMMAND.to_owned();
+    }
+    command_name(line)
 }
 
 /// Quote an IMAP string (RFC 3501 §4.3 `quoted`).
@@ -1307,7 +1325,7 @@ impl Inner {
         self.emit(vec![
             ("kind", s("imap_command")),
             ("relay", s(&self.cfg.name)),
-            ("command", s(command_name(head))),
+            ("command", s(audited_command(head, false))),
             ("decision", s("blocked")),
             ("reason", s("line too long")),
         ]);
@@ -1620,7 +1638,7 @@ impl Inner {
         if let Some(fault) = line_fault(line) {
             let tag = split_ws(line, Some(1)).first().copied().unwrap_or(b"");
             relay_log!(warning, LOGGER, "imap relay {name}: blocked {fault}");
-            self.blocked(&command_name(line), fault);
+            self.blocked(&audited_command(line, true), fault);
             return Some(Decision {
                 tag: if valid_tag(tag) {
                     tag.to_vec()
@@ -1639,14 +1657,16 @@ impl Inner {
         if !valid_tag(tag) {
             // Answered untagged, and logged by length only: a bare base64
             // SASL line reads as an invalid tag, and its text is a
-            // credential.
+            // credential. The record names no command for the same reason:
+            // with the tag invalid, the second word is payload, not a
+            // command the audit can repeat.
             relay_log!(
                 warning,
                 LOGGER,
                 "imap relay {name}: blocked line with invalid tag ({} bytes)",
                 tag.len()
             );
-            self.blocked(&command_name(line), "invalid tag");
+            self.blocked(&audited_command(line, true), "invalid tag");
             return Some(Decision {
                 tag: b"*".to_vec(),
                 reason: "invalid command tag".to_owned(),

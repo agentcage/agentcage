@@ -3,7 +3,7 @@
 //! `egress.max_body_bytes` and `egress.body_budget_bytes` (parsed by
 //! [`EgressConfig::from_yaml`], the host's own parser) are applied on
 //! every config (re)load: the cap by storing new
-//! [`TransportSettings`](crate::proxy::TransportSettings), the budget by
+//! [`TransportSettings`], the budget by
 //! [`BodyBudget::set_limit`]. Both take effect for the next body; nothing
 //! in flight is cut.
 //!

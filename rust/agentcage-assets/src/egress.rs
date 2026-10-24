@@ -187,7 +187,7 @@ impl Context for Embedded {
 ///
 /// An overlay file shadows a base file of the same path, which is what
 /// staging it into an extracted tree does too, so [`content_hash_with`]
-/// and [`content_hash_from_dir_with`] agree.
+/// and [`content_hash_from_dir`] agree.
 struct Overlay<'a> {
     /// What the files are laid over.
     base: &'a dyn Context,
@@ -440,6 +440,7 @@ pub fn content_hash_with(extra: &[(&str, &[u8])]) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
         BINARY_REL, CONTAINERFILE_REL, TAG_HASH_LEN, UNKNOWN_HASH, build_inputs,
@@ -657,6 +658,55 @@ mod tests {
         let empty = std::env::temp_dir().join("agentcage-b3-no-such-context");
         assert_eq!(content_hash_from_dir(&empty), UNKNOWN_HASH);
         assert!(build_inputs_from_dir(&empty).is_empty());
+    }
+
+    /// A scratch directory no other test can collide with. Labels make a
+    /// leak say which test leaked it.
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "agentcage-assets-{label}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    /// `COPY ../x` names a path outside the build context, and joining it
+    /// would let a Containerfile pull a sibling of the context into the
+    /// hash (the old `test_context_escape_is_dropped`). Both spellings
+    /// that climb out are dropped; an ordinary sibling is still an input.
+    #[test]
+    fn a_copy_that_escapes_the_context_is_dropped() {
+        let root = scratch_dir("escape");
+        let _ = std::fs::remove_dir_all(&root);
+        let context = root.join("context");
+        std::fs::create_dir_all(context.join("containers")).expect("context dir");
+        std::fs::write(
+            context.join(CONTAINERFILE_REL),
+            b"FROM x\nCOPY ../secret.txt /out\nCOPY a/../../secret.txt /out2\n\
+              COPY entry.sh /entry\n",
+        )
+        .expect("containerfile");
+        std::fs::write(root.join("secret.txt"), b"outside the context\n").expect("secret");
+        std::fs::write(context.join("entry.sh"), b"#!/bin/sh\n").expect("entrypoint");
+
+        let inputs = build_inputs_from_dir(&context);
+        let paths: Vec<&str> = inputs.iter().map(|(rel, _)| rel.as_str()).collect();
+        assert_eq!(inputs[0].0, CONTAINERFILE_REL);
+        assert!(
+            !paths
+                .iter()
+                .any(|rel| rel.contains("..") || *rel == "secret.txt"),
+            "an escape reached the hash inputs: {inputs:?}"
+        );
+        assert_eq!(
+            inputs.len(),
+            2,
+            "the escaping sources are dropped and entry.sh is still an input: {inputs:?}"
+        );
+        assert_eq!(inputs[1].0, "entry.sh");
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
     }
 
     /// Continuation joining, as `containerfile_logical_lines` does it.

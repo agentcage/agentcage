@@ -6,7 +6,7 @@
 //!
 //! # Why the tag carries a hash
 //!
-//! [`egress_build_argv`] is only ever reached when the tag is *not*
+//! [`egress_build_argv`](crate::apple::image::egress_build_argv) is only ever reached when the tag is *not*
 //! already present locally: the build probes with
 //! `container image inspect` and skips the build when it hits. Nothing
 //! about the image's contents took part in that decision while the tag

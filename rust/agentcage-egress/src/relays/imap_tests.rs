@@ -689,7 +689,92 @@ async fn an_overlong_command_line_is_refused_not_fatal() {
     let blocked = audit_json(&sink);
     assert_eq!(
         json::to_string(&blocked),
-        r#"[{"kind": "imap_command", "relay": "test-imap", "command": "SEARCH", "decision": "blocked", "reason": "line too long"}]"#
+        r#"[{"kind": "imap_command", "relay": "test-imap", "command": "", "decision": "blocked", "reason": "line too long"}]"#
+    );
+    relay.stop().await;
+    task.abort();
+}
+
+/// A line refused for its length names no command: its second word can be
+/// a kibibyte of the cage's text, and the record cannot repeat it.
+#[tokio::test]
+async fn an_overlong_line_does_not_name_its_payload_as_a_command() {
+    const LEAK: &str = "AKIAIOSFODNN7EXAMPLE";
+    let (relay, sink, mut c, task, rec) = plain_session(r#"{"write_mode": "full"}"#).await;
+    let mut long = format!("a1 {LEAK}").into_bytes();
+    long.resize(CLIENT_LINE_LIMIT + 10, b'x');
+    long.extend_from_slice(b"\r\n");
+    let _ = c.writer.write_all(&long).await;
+    assert_eq!(c.line().await, b"a1 BAD line too long\r\n");
+    let got = c.command(&[b"a2 NOOP\r\n".to_vec()]).await.unwrap();
+    assert_eq!(got, [b"a2 OK NOOP completed\r\n".to_vec()]);
+    assert_eq!(rec.lock().unwrap().commands[1..], [b"a2 NOOP\r\n".to_vec()]);
+    let records = json::to_string(&audit_json(&sink));
+    assert!(!records.contains(LEAK), "{records}");
+    assert_eq!(
+        records,
+        r#"[{"kind": "imap_command", "relay": "test-imap", "command": "", "decision": "blocked", "reason": "line too long"}]"#
+    );
+    relay.stop().await;
+    task.abort();
+}
+
+/// A line whose tag is invalid is refused untagged, and the audit record
+/// carries no command: its second word is the cage's text, and a bare
+/// base64 SASL line reads this way, so it may be a credential.
+#[tokio::test]
+async fn an_invalid_tag_keeps_the_cages_text_out_of_the_audit() {
+    const SECOND_WORD: &str = "U0VDUkVULVBBWUxPQUQ";
+    let (relay, sink, mut c, task, rec) = plain_session("{}").await;
+    let _ = c
+        .writer
+        .write_all(format!("* {SECOND_WORD}\r\n").as_bytes())
+        .await;
+    // Refused all the same: the request never reaches the upstream.
+    assert_eq!(c.line().await, b"* BAD invalid command tag\r\n");
+    let got = c.command(&[b"a2 NOOP\r\n".to_vec()]).await.unwrap();
+    assert_eq!(got, [b"a2 OK NOOP completed\r\n".to_vec()]);
+    assert_eq!(rec.lock().unwrap().commands[1..], [b"a2 NOOP\r\n".to_vec()]);
+    let records = json::to_string(&audit_json(&sink));
+    assert!(!records.contains(SECOND_WORD), "{records}");
+    assert!(
+        !records.to_lowercase().contains(&SECOND_WORD.to_lowercase()),
+        "{records}"
+    );
+    assert!(records.contains(r#""reason": "invalid tag""#), "{records}");
+    assert!(records.contains(r#""command": """#), "{records}");
+    relay.stop().await;
+    task.abort();
+}
+
+/// A faulted line names no command either: its second word can be payload,
+/// whether the tag parses (the NUL input) or not (the bare base64 input).
+#[tokio::test]
+async fn a_faulted_line_keeps_the_cages_text_out_of_the_audit() {
+    const SASL: &str = "U0VDUKVULVBBWUxPQUQ";
+    const AWS: &str = "AKIAIOSFODNN7EXAMPLE";
+    let (relay, sink, mut c, task, rec) = plain_session("{}").await;
+    let _ = c
+        .writer
+        .write_all(format!("* {SASL}\r\r\n").as_bytes())
+        .await;
+    assert_eq!(c.line().await, b"* BAD bare CR in command line\r\n");
+    let _ = c
+        .writer
+        .write_all(format!("a1 {AWS}\x00\r\n").as_bytes())
+        .await;
+    assert_eq!(c.line().await, b"a1 BAD NUL in command line\r\n");
+    // Refused all the same: neither line reaches the upstream, and the
+    // session goes on.
+    let got = c.command(&[b"a2 NOOP\r\n".to_vec()]).await.unwrap();
+    assert_eq!(got, [b"a2 OK NOOP completed\r\n".to_vec()]);
+    assert_eq!(rec.lock().unwrap().commands[1..], [b"a2 NOOP\r\n".to_vec()]);
+    let records = json::to_string(&audit_json(&sink));
+    assert!(!records.contains(SASL), "{records}");
+    assert!(!records.contains(AWS), "{records}");
+    assert_eq!(
+        records,
+        r#"[{"kind": "imap_command", "relay": "test-imap", "command": "", "decision": "blocked", "reason": "bare CR in command line"}, {"kind": "imap_command", "relay": "test-imap", "command": "", "decision": "blocked", "reason": "NUL in command line"}]"#
     );
     relay.stop().await;
     task.abort();

@@ -5,7 +5,7 @@
 //! anything a command did not ask it to, and nothing in it decides
 //! whether to exit.
 //!
-//! The one function the whole PR is about is [`build_and_deploy`].
+//! The one function the whole PR is about is [`build_and_deploy`](crate::services::build_and_deploy).
 
 use std::collections::BTreeSet;
 use std::fs;
