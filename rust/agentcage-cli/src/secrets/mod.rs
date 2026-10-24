@@ -2,9 +2,9 @@
 //!
 //! Two halves that only make sense together:
 //!
-//! - [`resolver`] -- read a value out of a `source:` scheme, and drive
+//! - [`resolver`](crate::secrets::resolver) -- read a value out of a `source:` scheme, and drive
 //!   `systemd-creds`
-//! - [`store`] -- the four at-rest backends, and the fail-closed choice
+//! - [`store`](crate::secrets::store) -- the four at-rest backends, and the fail-closed choice
 //!   between them
 //!
 //! The parse-time checks are *not* here: `validate_env_name`,
@@ -73,22 +73,22 @@
 //! The rule extends past argv, because a credential leaks just as well
 //! through a `Debug` impl, a log line or a panic message. So:
 //!
-//! * [`resolver::Resolution::Resolved`] carries the cleartext and prints
+//! * [`resolver::Resolution::Resolved`](crate::secrets::resolver::Resolution::Resolved) carries the cleartext and prints
 //!   as `<redacted N bytes>`.
-//! * [`SecretError`] is built from names, paths and exit codes. No
+//! * [`SecretError`](crate::secrets::SecretError) is built from names, paths and exit codes. No
 //!   variant is constructed from a secret value, and
 //!   `tests/secrets_redaction.rs` walks every error path to check it.
-//! * [`resolver::Environment`]'s test double prints its keys, not its
+//! * [`resolver::Environment`](crate::secrets::resolver::Environment)'s test double prints its keys, not its
 //!   values.
 //!
 //! # What holds the pieces together
 //!
-//! [`resolver::SecretHost`] is the host's secret facilities: the
+//! [`resolver::SecretHost`](crate::secrets::resolver::SecretHost) is the host's secret facilities: the
 //! `CommandRunner` to shell out with, the environment to read, whether
 //! the invoker is root, and the two memoized capability answers
 //! (`detect_default_backend`, `detect_default_scope`). The stores borrow one.
 //!
-//! [`store::resolve_store`] is the fail-closed choice between the four
+//! [`store::resolve_store`](crate::secrets::store::resolve_store) is the fail-closed choice between the four
 //! backends. It is the function to read first if you are trying to work
 //! out which store a given `cage.yaml` gets.
 

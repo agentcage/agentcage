@@ -5,7 +5,7 @@
 //!
 //! | Half | What | Checked by |
 //! | :-- | :-- | :-- |
-//! | Generation A | image naming, the egress content-hash wiring, [`egress_config`], [`volumes`] | `tests/fixtures/apple-container/`, recorded from an earlier release |
+//! | Generation A | image naming, the egress content-hash wiring, [`egress_config`](crate::apple::egress_config), [`volumes`](crate::apple::volumes) | `tests/fixtures/apple-container/`, recorded from an earlier release |
 //! | Generation B | `generate_units`, the launchd plist, `exec_argv` / `logs_argv` / `audit_argv` | a golden unit + plist diff |
 //! | Execution | `start`/`stop`, secret staging, mask-mountpoint record/cleanup, waiting for the supervisor | `phase_apple.sh`, manually, on a Mac |
 //!

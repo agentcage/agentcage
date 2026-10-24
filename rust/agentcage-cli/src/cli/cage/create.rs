@@ -480,7 +480,7 @@ pub(crate) fn build_container_image(
 /// `KEY=VALUE` or a bare `KEY`, which prompts. The prompt is
 /// `click.prompt(..., hide_input=True)`: a terminal read with echo off.
 ///
-/// The storing itself is [`SecretWriter`], shared with `secret set` —
+/// The storing itself is [`SecretWriter`](crate::cli::secret::set::SecretWriter), shared with `secret set` —
 /// it is `cli._store_secret`, and the two call sites have to agree
 /// about which backend takes a value and what happens when it refuses.
 ///

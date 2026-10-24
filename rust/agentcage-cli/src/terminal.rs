@@ -20,7 +20,7 @@
 //!
 //! # Restoration is the whole point, so it is a guard
 //!
-//! [`RestoredTerminal`] snapshots the terminal on construction and puts
+//! [`RestoredTerminal`](crate::terminal::RestoredTerminal) snapshots the terminal on construction and puts
 //! it back in `Drop`. Not a `restore()` the caller must remember, and
 //! not a cleanup at the end of a function: a `Drop` is the only form
 //! that also runs when the block exits by `?`, by an early return, or by
@@ -37,7 +37,7 @@
 //! outright: `SIGKILL`, or `SIGTERM` with no handler. There is no
 //! portable, async-signal-safe way to restore a terminal from there, so
 //! this does not try. `SIGINT` *is* covered, because it is
-//! the one a user actually sends — see [`RestoredTerminal::new`].
+//! the one a user actually sends — see [`RestoredTerminal::new`](crate::terminal::RestoredTerminal::new).
 //!
 //! # No TUI crate
 //!
@@ -238,7 +238,7 @@ impl Drop for SigintDiversion {
 /// Restores the termios attributes (raw mode, echo, …) and writes
 /// [`RESTORE_SEQUENCE`] to undo terminal-application modes, whether the
 /// scope exits normally, by `?`, or by a panic. SIGINT is diverted for
-/// the lifetime of the guard — see [`SigintDiversion`].
+/// the lifetime of the guard — see `SigintDiversion`.
 ///
 /// This is the `restored_terminal()` context manager, with the `yield`
 /// replaced by the caller's scope.

@@ -10,7 +10,7 @@
 //! bare secret values, and an archived `cage.yaml` equal by parsed value
 //! to the one in the state tree. Backups taken by earlier releases have
 //! to keep restoring, and
-//! [`tests::an_earlier_release_backup_restores_onto_the_state_fixtures`]
+//! `tests::an_earlier_release_backup_restores_onto_the_state_fixtures`
 //! is where that is checked.
 //!
 //! The container format itself — deterministic writing, traversal-safe

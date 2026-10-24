@@ -13,14 +13,14 @@
 //!
 //! Step 3 before step 4 is not an ordering convenience: the address is
 //! populated asynchronously and can still be absent *after* the marker
-//! appears, which is why step 4 polls (see [`AppleBackend::container_ip`]).
+//! appears, which is why step 4 polls (see [`AppleBackend::container_ip`](crate::apple::backend::AppleBackend::container_ip)).
 //!
 //! # What is different about this backend, and must stay different
 //!
 //! * **Secrets are staged to persistent disk.** The container backend
 //!   stages into a tmpfs under `$XDG_RUNTIME_DIR`; macOS has neither.
 //!   The mitigation is temporal rather than spatial —
-//!   [`AppleBackend::wipe_staged_secrets`] removes the cleartext as
+//!   `AppleBackend::wipe_staged_secrets` removes the cleartext as
 //!   soon as the egress is ready, and the durable copy lives in the
 //!   keychain — and it must not be "fixed" toward the Linux shape.
 //! * **The cage VM never sees the secrets directory.** That is the
@@ -30,7 +30,7 @@
 //! * **There is no unit manager.** `install_units` writes a JSON
 //!   document, `start` reads it back, and the mask-mountpoint
 //!   bookkeeping the quadlet backend does in `ExecStartPre` /
-//!   `ExecStopPost` happens here instead (see [`super::masks`]).
+//!   `ExecStopPost` happens here instead (see [`super::masks`](crate::apple::masks)).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1738,9 +1738,9 @@ impl AppleBackend<'_> {
     ///    `dnsmasq --test`, and on failure put the old file back, so a
     ///    malformed allowlist cannot silently break DNS;
     /// 2. make the egress pick up the new baseline
-    ///    ([`EGRESS_RELOAD_SH`]);
+    ///    (`EGRESS_RELOAD_SH`);
     /// 3. regenerate and SIGHUP the **cage-local** dnsmasq
-    ///    ([`CAGE_RELOAD_SH`]) — the load-bearing one, since the
+    ///    (`CAGE_RELOAD_SH`) — the load-bearing one, since the
     ///    workload resolves through `127.0.0.1:53` inside the cage;
     /// 4. nothing for `proxy-config.yaml`: the egress polls its mtime
     ///    every second and hot-reloads itself.
@@ -1824,7 +1824,7 @@ impl AppleBackend<'_> {
 
 // ── the image store, for `cage update` ───────────────────────
 
-/// Apple's image store, as an [`ImageInspector`].
+/// Apple's image store, as an [`ImageInspector`](agentcage_exec::tools::podman::ImageInspector).
 ///
 /// `cage update` fingerprints the digests of every image that can
 /// affect a deployment, and on this backend those images are in
@@ -1869,10 +1869,77 @@ impl agentcage_exec::tools::podman::ImageInspector for AppleImages<'_> {
 
 #[cfg(test)]
 mod tests {
-    use agentcage_exec::FakeRunner;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use agentcage_exec::{Command, CommandRunner, ExecError, FakeRunner, LineStream, Output};
     use agentcage_state::{Paths, TestDir};
 
     use super::AppleBackend;
+
+    /// A runner that reads a file at the moment each command is issued,
+    /// then answers from the fake.
+    ///
+    /// `reload_domains` rewrites the bind-mounted servers file **in
+    /// place** and then signals the two daemons, so the argv sequence
+    /// alone cannot tell "regenerated before SIGHUP" from "regenerated
+    /// afterwards" — both leave the executed argv identical. Reading
+    /// the file from inside the seam is what makes the ordering
+    /// observable: at signal time it holds whatever the daemons would
+    /// read when they reload.
+    #[derive(Debug)]
+    struct SnapshottingRunner<'a> {
+        inner: &'a FakeRunner,
+        file: PathBuf,
+        /// One entry per call, in call order.
+        snapshots: Mutex<Vec<Option<String>>>,
+    }
+
+    impl SnapshottingRunner<'_> {
+        fn snapshot(&self) {
+            let bytes = std::fs::read_to_string(&self.file).ok();
+            self.snapshots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(bytes);
+        }
+
+        fn snapshots(&self) -> Vec<Option<String>> {
+            self.snapshots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl CommandRunner for SnapshottingRunner<'_> {
+        fn run(&self, command: &Command) -> Result<Output, ExecError> {
+            self.snapshot();
+            self.inner.run(command)
+        }
+
+        fn stream(&self, command: &Command) -> Result<Box<dyn LineStream>, ExecError> {
+            self.snapshot();
+            self.inner.stream(command)
+        }
+
+        fn which(&self, program: &str) -> Option<PathBuf> {
+            self.inner.which(program)
+        }
+    }
+
+    /// The answer the daemons must have read when they were signalled.
+    fn assert_rewritten(servers: Option<&str>, at: &str) {
+        let servers = servers.expect("the servers file exists at signal time");
+        assert!(
+            servers.contains("server=/api.example.com/192.0.2.53"),
+            "{at}: the daemons would reload the old allowlist: {servers}"
+        );
+        assert!(
+            !servers.contains("stale.example.com"),
+            "{at}: the stale entry survived: {servers}"
+        );
+    }
 
     /// A deployed apple cage whose store is the plaintext file store.
     ///
@@ -1977,6 +2044,157 @@ mod tests {
         let backend = AppleBackend::new(&paths, &runner, "0.0.0");
 
         assert!(backend.forget_secrets("demo").is_empty());
+    }
+
+    /// `reload_domains` — `domain add` against a running apple cage.
+    ///
+    /// The bind-mounted servers file is regenerated *before* either daemon
+    /// is signalled, and both signals go out: the egress supervisor's
+    /// reload flag, and the cage-local dnsmasq's SIGHUP. The cage-local
+    /// one is the load-bearing one; the workload resolves through it.
+    #[test]
+    fn reloading_domains_rewrites_the_servers_file_and_signals_both_daemons() {
+        let dir = TestDir::new("apple-reload-domains");
+        let paths = Paths::under(dir.path());
+        let input = dir.join("cage.yaml");
+        std::fs::write(
+            &input,
+            "name: demo\nisolation: apple-container\ncontainer:\n  image: node:22-slim\n\
+             domains:\n  allow:\n    - api.example.com\ndns_servers:\n  - 192.0.2.53\n",
+        )
+        .expect("input config");
+        paths
+            .save_deployment("demo", &input)
+            .expect("the stored config");
+        let config = paths
+            .load_deployment_config("demo", &crate::hostenv::RealHost)
+            .expect("the stored config loads");
+
+        // What a previous reload left behind. The point of the first step
+        // is that it does not survive.
+        let egress_config = paths.apple_egress_config_dir("demo");
+        std::fs::create_dir_all(&egress_config).expect("egress config dir");
+        std::fs::write(
+            egress_config.join("dns-allowlist.conf"),
+            b"server=/stale.example.com/203.0.113.1\n",
+        )
+        .expect("stale servers file");
+
+        let runner = FakeRunner::new();
+        runner.assume_installed();
+        let running = || agentcage_exec::Reply::ok(r#"{"status":{"state":"running"}}"#);
+        runner.on(["/usr/bin/container", "inspect", "demo-egress"], running());
+        runner.on(["/usr/bin/container", "inspect", "demo"], running());
+        runner.on(
+            [
+                "/usr/bin/container",
+                "exec",
+                "demo-egress",
+                "dnsmasq",
+                "--test",
+            ],
+            agentcage_exec::Reply::success(),
+        );
+        runner.on(
+            ["/usr/bin/container", "exec", "demo-egress", "sh", "-c"],
+            agentcage_exec::Reply::success(),
+        );
+        runner.on(
+            ["/usr/bin/container", "exec", "demo", "sh", "-c"],
+            agentcage_exec::Reply::success(),
+        );
+        // The fake, seen through a runner that reads the servers file
+        // at the instant each command is issued. That is the only way to
+        // tell "regenerated before the signals" from "regenerated after
+        // them": the argv is identical either way.
+        let observant = SnapshottingRunner {
+            inner: &runner,
+            file: egress_config.join("dns-allowlist.conf"),
+            snapshots: Mutex::new(Vec::new()),
+        };
+        let backend = AppleBackend::new(&paths, &observant, "0.0.0");
+
+        backend
+            .reload_domains(&config, "demo")
+            .expect("the reload succeeds");
+
+        let servers = std::fs::read_to_string(egress_config.join("dns-allowlist.conf"))
+            .expect("the regenerated servers file");
+        assert!(
+            servers.contains("server=/api.example.com/192.0.2.53"),
+            "{servers}"
+        );
+        assert!(!servers.contains("stale.example.com"), "{servers}");
+
+        let calls = runner.argv_sequence();
+        let snapshots = observant.snapshots();
+        assert_eq!(snapshots.len(), calls.len(), "one read per call");
+        assert_eq!(calls.len(), 5, "{calls:?}");
+        assert_eq!(calls[0], ["/usr/bin/container", "inspect", "demo-egress"]);
+        // The full argv: dropping `--servers-file=` would leave dnsmasq
+        // validating whichever file it defaults to, not the one that was
+        // just rewritten.
+        assert_eq!(
+            calls[1],
+            [
+                "/usr/bin/container",
+                "exec",
+                "demo-egress",
+                "dnsmasq",
+                "--test",
+                "--servers-file=/etc/agentcage/dns-allowlist.conf"
+            ]
+        );
+        // What dnsmasq validated, and what the egress supervisor was then
+        // told to reload, is the *new* file — not the stale one from the
+        // previous reload.
+        assert_rewritten(snapshots[1].as_deref(), "dnsmasq --test");
+        assert_rewritten(snapshots[2].as_deref(), "the egress reload");
+
+        assert_daemons_signalled(&calls);
+    }
+
+    /// The two signals, by what the scripts they carry actually do.
+    ///
+    /// The egress one raises the supervisor's reload flag; the
+    /// cage-local one regenerates the cage's servers file from the
+    /// baseline (re-pointing the upstream at the VM's gateway) and then
+    /// SIGHUPs its pidfile. A cage-local script that only signals — or
+    /// one that signals a different file than it rewrites — leaves
+    /// dnsmasq serving the old allowlist, even though argv is unchanged.
+    fn assert_daemons_signalled(calls: &[Vec<String>]) {
+        assert_eq!(
+            calls[2][..5],
+            ["/usr/bin/container", "exec", "demo-egress", "sh", "-c"]
+        );
+        let egress_reload = &calls[2][5];
+        assert!(
+            egress_reload.contains("/home/acproxy/dns/reload"),
+            "the egress reload flag moved: {egress_reload}"
+        );
+        assert_eq!(calls[3], ["/usr/bin/container", "inspect", "demo"]);
+        assert_eq!(
+            calls[4][..5],
+            ["/usr/bin/container", "exec", "demo", "sh", "-c"]
+        );
+
+        let cage_reload = &calls[4][5];
+        assert!(
+            cage_reload.contains("/etc/agentcage/dns-allowlist.conf"),
+            "the cage reload does not read the baseline allowlist: {cage_reload}"
+        );
+        assert!(
+            cage_reload.contains("/run/agentcage/dns-allowlist.cage.conf"),
+            "the cage reload does not rewrite the cage-local servers file: {cage_reload}"
+        );
+        assert!(
+            cage_reload.contains("/run/agentcage/dnsmasq.pid"),
+            "the cage reload does not use the dnsmasq pidfile: {cage_reload}"
+        );
+        assert!(
+            cage_reload.contains("kill -HUP"),
+            "the cage reload never signals dnsmasq: {cage_reload}"
+        );
     }
 
     /// The apple-container half of "a relay or agent credential is the

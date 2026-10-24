@@ -163,7 +163,7 @@ fn shell_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
 /// Two things differ from the container path. The probe and the session are both `limactl shell
 /// --workdir / <instance> -- podman exec …`, because the containers
 /// live in the guest; and `--workdir /` is spelled out here rather than
-/// coming from [`LimaInstance::shell_command`], since the session argv
+/// coming from [`LimaInstance::shell_command`](agentcage_exec::tools::limactl::LimaInstance::shell_command), since the session argv
 /// is handed to `execvp` and bypasses that helper. Without it the guest
 /// shell tries to `cd` into a host path it cannot see and prints a
 /// spurious `No such file or directory` before the command runs.
