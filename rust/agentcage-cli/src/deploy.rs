@@ -531,6 +531,30 @@ pub fn update_fingerprint(
     Ok(Computed { fingerprint, units })
 }
 
+/// The fingerprint `cage update` compares against, computed and saved.
+///
+/// Both commands that finish a deploy end here: re-inspect the image
+/// identities the build or pull may just have moved, then write
+/// `fingerprint.json`. One function rather than two copies of the same
+/// two steps, because the copy that drifts is the one whose fingerprint
+/// never matches again — and a `cage create` that writes no fingerprint
+/// is what makes the first `cage update` rebuild a cage nothing has
+/// changed (issue #417).
+///
+/// # Errors
+///
+/// [`BackendError`] if the gather or the state write fails.
+pub fn record_fingerprint(
+    backend: &AnyBackend<'_>,
+    paths: &Paths,
+    request: FingerprintRequest<'_>,
+) -> Result<(), BackendError> {
+    let name = request.name.to_owned();
+    let computed = update_fingerprint(backend, paths, request)?;
+    paths.save_fingerprint(&name, &computed.fingerprint.to_json())?;
+    Ok(())
+}
+
 /// Whether the stored config parses under the agent schema.
 ///
 /// `cage update -c` reads the *previous* document with the schema check
