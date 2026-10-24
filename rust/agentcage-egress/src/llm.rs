@@ -21,7 +21,8 @@
 //! * everything else is chat-completions: `POST {base}/v1/chat/completions`
 //!   (`openai`) or `{base}/chat/completions` (`openrouter`, whose base
 //!   already carries `/api/v1`), Bearer auth, `tool_choice {type:
-//!   function}`, `temperature: 0`, and an `X-Title` on OpenRouter.
+//!   function}`, `temperature: 0`, and an `X-Title` naming the app on
+//!   OpenRouter.
 //!
 //! `max_tokens` rides every format: it is the cost and truncation guard,
 //! and a guard on one wire format only is not one.
@@ -90,6 +91,9 @@ pub trait ToolCaller: Send + Sync + std::fmt::Debug {
 /// The `User-Agent` both agents send.
 pub const USER_AGENT: &str = "agentcage-policy-api";
 
+/// The app name OpenRouter attributes calls to (`X-Title`).
+pub const OPENROUTER_APP_NAME: &str = "agentcage";
+
 /// The `anthropic-version` header value.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -127,7 +131,7 @@ pub struct WireRequest {
 /// `base_url` is used as given (the caller resolves the default and
 /// strips a trailing `/`). Any provider other than `anthropic` speaks
 /// chat-completions; only `openrouter` gets the bare `/chat/completions`
-/// path and the `X-Title` header.
+/// path and the `X-Title` app-name header.
 #[must_use]
 pub fn build_request(
     provider: &str,
@@ -184,8 +188,8 @@ pub fn build_request(
             ("User-Agent".to_owned(), USER_AGENT.to_owned()),
         ];
         if provider == "openrouter" {
-            // OpenRouter's attribution header; optional but cheap.
-            headers.push(("X-Title".to_owned(), USER_AGENT.to_owned()));
+            // OpenRouter's app-attribution header; optional but cheap.
+            headers.push(("X-Title".to_owned(), OPENROUTER_APP_NAME.to_owned()));
         }
         let body = object([
             ("model", Json::string(model)),
