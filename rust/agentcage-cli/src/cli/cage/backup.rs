@@ -370,6 +370,12 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
                     volume_names.push(volume.clone());
                 } else {
                     eprintln!("warning: volume '{volume}' does not exist, skipping");
+                    // Recorded as well as printed: it is genuinely not
+                    // in the archive, and a restore that only read
+                    // `named_volumes` would create the volume empty
+                    // without a word — the #419 silence, on the
+                    // backend that otherwise carries its volumes.
+                    skipped_volumes.push(volume.clone());
                 }
             }
         }
@@ -442,9 +448,11 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ),
     ];
     // Appended, and only when there is something to say, so a container
-    // manifest is byte-identical to the one earlier releases wrote. A
-    // reader that does not know the key ignores it, which is why this
-    // is additive and `FORMAT_VERSION` stays at 1.
+    // manifest whose declared volumes all existed is byte-identical to
+    // the one earlier releases wrote (one whose volume was absent now
+    // records it: see the volume step above). A reader that does not
+    // know the key ignores it, which is why this is additive and
+    // `FORMAT_VERSION` stays at 1.
     if !skipped_volumes.is_empty() {
         fields.push((
             "named_volumes_skipped".to_owned(),
@@ -998,8 +1006,12 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     let volumes = importable_volumes(&manifest.isolation, volumes, &tarball);
     // What the backup could not carry, said again here: a restore that
     // only reports the volumes it *found* in the manifest leaves the
-    // operator believing an empty archive was an empty cage.
-    for line in volumes_not_in_backup(&manifest.isolation, &manifest.named_volumes_skipped) {
+    // operator believing an empty archive was an empty cage. Only the
+    // names the archive cannot contradict — see
+    // [`volumes_skipped_to_report`] for why a manifest's own claim is
+    // not enough.
+    let skipped = volumes_skipped_to_report(&manifest, &backup_dir);
+    for line in volumes_not_in_backup(&manifest.isolation, &skipped) {
         eprintln!("{line}");
     }
     // In the preflight, so a refusal comes before `--force` destroys
@@ -1633,6 +1645,27 @@ fn copy_restored_entry(source: &Path, dest: &Path) {
     }
 }
 
+/// The `volumes/<name>.tar` members of the extracted archive, as
+/// `(name, path)` pairs in name order.
+fn archive_volumes(backup_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut carried: Vec<(String, PathBuf)> = std::fs::read_dir(backup_dir.join("volumes"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tar"))
+        .map(|path| {
+            let volume = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (volume, path)
+        })
+        .collect();
+    carried.sort();
+    carried
+}
+
 /// The named volumes a restore imports, as `(volume, tar)` pairs, in
 /// name order.
 ///
@@ -1689,21 +1722,7 @@ fn volumes_to_import(
             return Err(refusal(format!("manifest.json lists '{volume}'"), reason));
         }
     }
-    let mut carried: Vec<(String, PathBuf)> = std::fs::read_dir(backup_dir.join("volumes"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "tar"))
-        .map(|path| {
-            let volume = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (volume, path)
-        })
-        .collect();
-    carried.sort();
+    let carried = archive_volumes(backup_dir);
     let mut import = Vec::new();
     for (volume, path) in carried {
         if let Some(reason) = reserved_volume(&volume) {
@@ -1748,8 +1767,9 @@ fn volumes_not_in_backup_reason(isolation: &str) -> &'static str {
 ///
 /// Returned rather than printed so both callers — the backup, which
 /// knows the list from the config, and the restore, which reads it out
-/// of `named_volumes_skipped` — use the same words, and so the tests
-/// can assert them without a stderr pipe.
+/// of `named_volumes_skipped` — use the same words. The tests assert
+/// what the command *prints*, not this return value: a test of the
+/// return value alone passes with the restore's print loop deleted.
 fn volumes_not_in_backup(isolation: &str, volumes: &[String]) -> Vec<String> {
     let reason = volumes_not_in_backup_reason(isolation);
     volumes
@@ -1760,6 +1780,97 @@ fn volumes_not_in_backup(isolation: &str, volumes: &[String]) -> Vec<String> {
                  A restore leaves it empty"
             )
         })
+        .collect()
+}
+
+/// The names in `manifest.named_volumes_skipped` a restore may repeat
+/// to the operator.
+///
+/// `named_volumes_skipped` is the one array a restore prints without
+/// the archive having to agree with it, and a manifest is the part of
+/// a backup a person can edit. So a restore repeats a name only when
+/// every part of the claim can be true for *this* archive:
+///
+/// * **The backend's backups can write the key.** `vm` does (it has no
+///   volume verbs), and `container` now does too (a declared volume
+///   that did not exist at backup time), but `apple-container` never
+///   does: [`backup_apple`] hardcodes `named_volumes: []` and does not
+///   write `named_volumes_skipped`, and "apple-container has no named
+///   volumes" is not a reason a named volume could be missing from its
+///   archive. An unknown backend is refused later by
+///   [`require_known_backend`]; nothing it claims about volumes is
+///   worth repeating first.
+/// * **The archived config declares it.** `cage backup` skips a volume
+///   only because `container.named_volumes` names it
+///   ([`declared_named_volumes`]), so an entry the archived `cage.yaml`
+///   does not declare was not written by `cage backup` either.
+/// * **The name is one podman could have.** [`is_valid_volume_name`]
+///   is the rule [`volumes_to_import`] already applies to
+///   `named_volumes`. A name carrying a newline, a quote or an ANSI
+///   escape was not written by `cage backup`; echoing it would let the
+///   archive write its own lines to the operator's terminal.
+/// * **The archive does not contradict the claim.** A name also listed
+///   in `named_volumes`, or carried as `volumes/<name>.tar`, is in the
+///   archive: `cage restore` imports it (or warns that it is not
+///   listed), and calling it skipped as well is the self-contradiction
+///   a forged archive used to produce.
+///
+/// Duplicates collapse to one line.
+fn volumes_skipped_to_report(manifest: &Manifest, backup_dir: &Path) -> Vec<String> {
+    // The two backends whose `cage backup` can write the key, and the
+    // two `cage restore` implements. Written as a list rather than as
+    // `isolation != "container"`: the literal negation would include
+    // apple-container, whose reason sentence is the nonsense this gate
+    // exists to keep off the terminal, and exclude container, which now
+    // writes the key for a volume that was absent at backup time.
+    if !matches!(manifest.isolation.as_str(), "container" | "vm") {
+        return Vec::new();
+    }
+    let carried: BTreeSet<String> = archive_volumes(backup_dir)
+        .into_iter()
+        .map(|(volume, _)| volume)
+        .collect();
+    let declared = declared_named_volumes(backup_dir);
+    let mut reported: Vec<String> = Vec::new();
+    for volume in &manifest.named_volumes_skipped {
+        if !is_valid_volume_name(volume)
+            || !declared.contains(volume)
+            || manifest.named_volumes.contains(volume)
+            || carried.contains(volume)
+            || reported.contains(volume)
+        {
+            continue;
+        }
+        reported.push(volume.clone());
+    }
+    reported
+}
+
+/// The volume names the archived `cage.yaml` declares under
+/// `container.named_volumes`, whatever its `isolation:` says.
+///
+/// `cage backup` skips exactly this list, so a `named_volumes_skipped`
+/// entry the archived config does not declare was not written by it.
+/// From the raw document, like [`host_volumes`], so no `~`/`$VAR`
+/// expansion or secret resolution is involved; empty when it does not
+/// parse, which `save_deployment` refuses later anyway.
+fn declared_named_volumes(backup_dir: &Path) -> BTreeSet<String> {
+    use agentcage_core::yaml::Value;
+
+    let Ok(text) = std::fs::read_to_string(backup_dir.join("config/cage.yaml")) else {
+        return BTreeSet::new();
+    };
+    let Ok(document) = agentcage_core::yaml::load(&text) else {
+        return BTreeSet::new();
+    };
+    document
+        .get("container")
+        .and_then(|container| container.get("named_volumes"))
+        .and_then(Value::as_mapping)
+        .into_iter()
+        .flat_map(|mapping| mapping.keys())
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
         .collect()
 }
 
@@ -2140,11 +2251,12 @@ fn file_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Manifest, ROOT, backup_inner, build_context_included, carried_containerfile,
-        check_restore_build_context, clone_volume_collisions, file_timestamp, host_volumes,
-        importable_volumes, is_valid_cage_name, is_valid_volume_name, merge_at_rest_keys,
-        restore_build_context, restore_capture, restore_config, restore_inner, restore_secrets,
-        stage_backup_config, volumes_not_in_backup, volumes_to_import,
+        APPLE_CONTAINER, Manifest, ROOT, backup_inner, build_context_included,
+        carried_containerfile, check_restore_build_context, clone_volume_collisions,
+        file_timestamp, host_volumes, importable_volumes, is_valid_cage_name, is_valid_volume_name,
+        merge_at_rest_keys, restore_build_context, restore_capture, restore_config, restore_inner,
+        restore_secrets, stage_backup_config, volumes_not_in_backup, volumes_skipped_to_report,
+        volumes_to_import,
     };
     use crate::cli::context::Ctx;
     use agentcage_cli::archive::{self, Member};
@@ -4638,13 +4750,18 @@ secret_injection:
         assert!(volume_verbs.is_empty(), "{volume_verbs:?}");
     }
 
-    /// The container half is **unchanged**: no new manifest key, no
-    /// warning about skipped volumes, and the empty `volumes/` member
-    /// earlier releases emitted for a declared-but-absent volume. Only
-    /// a non-container backend has something to say here.
+    /// **A container volume missing at backup time is recorded too.**
+    /// `podman volume export` is the only path that carries one, and a
+    /// declared volume that does not exist got a backup-time warning but
+    /// went into neither manifest array: its restore created the volume
+    /// empty without saying so — the #419 silence, one backend over.
+    ///
+    /// The empty `volumes/` member stays, as earlier releases wrote it.
+    /// A container manifest whose declared volumes all existed is still
+    /// byte-identical to theirs: the key is appended only when non-empty.
     #[test]
-    fn a_container_backup_manifests_no_skipped_volumes() {
-        let dir = TestDir::new("container-backup-no-skipped-volumes");
+    fn a_container_backup_records_a_volume_missing_at_backup_time() {
+        let dir = TestDir::new("container-backup-missing-volume");
         let fake = FakeRunner::new();
         fake.assume_installed();
         // `podman secret ls` — empty — then `volume exists` for the
@@ -4680,13 +4797,17 @@ secret_injection:
         assert!(backup_inner(&ctx, &matches).is_ok());
 
         let text = manifest_text(&out);
-        assert!(
-            !text.contains("named_volumes_skipped"),
-            "a container manifest grew the vm-only key: {text}"
-        );
         let manifest = Manifest::parse(&text).unwrap();
-        assert!(manifest.named_volumes_skipped.is_empty());
+        // In the skipped list, because it genuinely is not in the
+        // archive, so the restore can say it instead of leaving the
+        // operator to find an empty volume.
+        assert_eq!(
+            manifest.named_volumes_skipped,
+            ["acme-agent-workspace"],
+            "{text}"
+        );
         assert!(manifest.named_volumes.is_empty());
+        assert!(text.contains("\"named_volumes_skipped\""), "{text}");
         // The `volumes/` directory is still emitted, empty, exactly as
         // earlier releases did.
         assert!(
@@ -4696,6 +4817,67 @@ secret_injection:
                 .any(|name| name == "agentcage-backup/volumes"),
             "{text}"
         );
+
+        // And the restore of that archive says it, so the empty volume
+        // is expected rather than discovered after the cage starts.
+        let stderr = restore_stderr(&out);
+        assert!(
+            stderr.contains("volume 'acme-agent-workspace' is not in the archive"),
+            "{stderr:?}"
+        );
+    }
+
+    /// Run `cage restore` on an archive in a child process, returning
+    /// its stderr.
+    ///
+    /// The observation is a child process of this test binary: on this
+    /// toolchain libtest captures `eprintln!` into its own buffer for
+    /// the whole process, so redirecting fd 2 inside a test captures
+    /// nothing (a spawned thread is captured too). Run with
+    /// `--nocapture`, the child's real stderr is what an operator's
+    /// terminal receives, and [`std::process::Command`] reads it back.
+    ///
+    /// The earlier version asserted [`volumes_not_in_backup`]'s return
+    /// value instead, and kept passing with the restore's print loop
+    /// deleted.
+    fn restore_stderr(tarball: &Path) -> String {
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args([
+                "--exact",
+                "cli::cage::backup::tests::restore_skipped_volumes_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("AGENTCAGE_RESTORE_CHILD_TARBALL", tarball)
+            .output()
+            .expect("spawn the test binary");
+        assert!(
+            output.status.success(),
+            "the child restore failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    /// The restore [`restore_stderr`] runs in a child process, exactly
+    /// as `cage restore` would in an operator's shell. Ignored, so a
+    /// plain `cargo test` does not run it twice; the environment
+    /// variable is the only way in.
+    #[test]
+    #[ignore = "child process used by several backup tests"]
+    fn restore_skipped_volumes_child() {
+        let Ok(tarball) = std::env::var("AGENTCAGE_RESTORE_CHILD_TARBALL") else {
+            return;
+        };
+        let dir = TestDir::new("restore-skipped-volumes-child");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(["podman", "volume", "exists"], Reply::status(1));
+        fake.on(["podman", "volume"], Reply::success());
+        fake.default_reply(Reply::status(1));
+        let ctx = ctx(&dir, fake);
+        let matches = leaf_matches(&["agentcage", "cage", "restore", &tarball, "--no-start"]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
     }
 
     /// **The restore repeats it.** An archive whose manifest records
@@ -4715,33 +4897,109 @@ secret_injection:
                 .unwrap();
         assert!(manifest.named_volumes.is_empty());
         assert_eq!(manifest.named_volumes_skipped, ["vm-cage-workspace"]);
-        let warnings = volumes_not_in_backup(&manifest.isolation, &manifest.named_volumes_skipped);
-        assert_eq!(warnings.len(), 1);
-        assert!(
-            warnings[0].contains("volume 'vm-cage-workspace' is not in the archive"),
-            "{warnings:?}"
-        );
 
-        // Through the command: the restore succeeds, imports nothing,
-        // and asks podman nothing about the volume.
-        let fake = FakeRunner::new();
-        fake.assume_installed();
-        fake.default_reply(Reply::status(1));
-        let ctx = ctx(&dir, fake.clone());
-        let matches = leaf_matches(&[
-            "agentcage",
-            "cage",
-            "restore",
-            &tarball.display().to_string(),
-            "--no-start",
-        ]);
-        assert!(restore_inner(&ctx, &matches).is_ok());
-        assert!(ctx.paths.deployment_exists(RICH));
+        // Through the command, and through the operator's eyes: what
+        // the restore writes to real stderr, in a child process — see
+        // [`restore_stderr`].
+        let stderr = restore_stderr(&tarball);
         assert!(
-            named_volume_calls(&fake).is_empty(),
-            "{:?}",
-            fake.argv_sequence()
+            stderr.contains("warning: volume 'vm-cage-workspace' is not in the archive"),
+            "the restore did not repeat the warning: {stderr:?}"
         );
+    }
+
+    /// **A forged `named_volumes_skipped` is not printed.** The manifest
+    /// is the part of a backup a person can edit, and this was the one
+    /// array a restore repeated without the archive agreeing: a
+    /// hand-edited container archive made a restore import a volume and
+    /// call it skipped in the next line, an apple-container archive got
+    /// "apple-container has no named volumes" said about a volume, and
+    /// a name carrying a newline or an escape sequence reached stderr
+    /// verbatim. Only a name the archived config declares, that podman
+    /// could have made, that `named_volumes` does not list, and that no
+    /// `volumes/<name>.tar` carries, is repeated.
+    #[test]
+    fn a_restore_does_not_repeat_a_skipped_volume_the_archive_contradicts() {
+        let dir = TestDir::new("restore-forged-skipped-volumes");
+        let tarball = dir.join("backup.tar.gz");
+        // A container archive carrying two tars, whose skipped list
+        // claims five things: one it also imports (and carries), one it
+        // carries without listing, one that is genuinely absent but
+        // declared, one the archived config never declared, and a name
+        // no `cage backup` could have written.
+        let cage_yaml = format!(
+            "{CAGE_YAML_NO_BUILD}  named_volumes:\n    \
+             acme-agent-workspace: /workspace\n    \
+             carried-but-unlisted: /unlisted\n    \
+             truly-missing: /missing\nisolation: container\n"
+        );
+        let members = vec![
+            Member::Dir(format!("{ROOT}/config")),
+            Member::File(format!("{ROOT}/config/cage.yaml"), cage_yaml.into_bytes()),
+            Member::File(
+                format!("{ROOT}/manifest.json"),
+                format!(
+                    "{{\"format_version\": 1, \"cage_name\": \"{RICH}\", \
+                      \"isolation\": \"container\", \
+                      \"named_volumes\": [\"acme-agent-workspace\"], \
+                      \"named_volumes_skipped\": [\"acme-agent-workspace\", \
+                      \"carried-but-unlisted\", \"truly-missing\", \
+                      \"truly-missing\", \"undeclared\", \
+                      \"x'\\nwarning: forged\", \
+                      \"\\u001b[31mred\"]}}\n"
+                )
+                .into_bytes(),
+            ),
+            Member::Dir(format!("{ROOT}/volumes")),
+            Member::File(
+                format!("{ROOT}/volumes/acme-agent-workspace.tar"),
+                Vec::new(),
+            ),
+            Member::File(
+                format!("{ROOT}/volumes/carried-but-unlisted.tar"),
+                Vec::new(),
+            ),
+        ];
+        archive::write_targz(&tarball, &members).unwrap();
+
+        let stderr = restore_stderr(&tarball);
+
+        // The one name the archive does not contradict is repeated, and
+        // its duplicate collapsed to a single line.
+        assert_eq!(stderr.matches("truly-missing").count(), 1, "{stderr:?}");
+        for contradicted in ["acme-agent-workspace", "carried-but-unlisted", "undeclared"] {
+            assert!(
+                !stderr.contains(&format!("volume '{contradicted}' is not in the archive")),
+                "{contradicted} was reported skipped: {stderr:?}"
+            );
+        }
+        // Nothing from the forged name reached the terminal.
+        assert!(!stderr.contains("forged"), "{stderr:?}");
+        assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
+
+        // The backend gate: `apple-container` cannot write the key (its
+        // backup hardcodes `named_volumes: []`), and its reason sentence
+        // is not one a named volume can have, so nothing is repeated
+        // there — nor for a backend `cage restore` refuses anyway, even
+        // when the archived config does declare the volume.
+        let gate_dir = dir.join("gate");
+        fs::create_dir_all(gate_dir.join("config")).unwrap();
+        fs::write(
+            gate_dir.join("config/cage.yaml"),
+            format!(
+                "{CAGE_YAML_NO_BUILD}  named_volumes:\n    \
+                 forged-volume: /data\nisolation: apple-container\n"
+            ),
+        )
+        .unwrap();
+        let mut apple = manifest_with(false);
+        apple.isolation = APPLE_CONTAINER.to_owned();
+        apple.named_volumes_skipped = vec!["forged-volume".to_owned()];
+        assert!(volumes_skipped_to_report(&apple, &gate_dir).is_empty());
+        let mut unknown = manifest_with(false);
+        unknown.isolation = "no-such-backend".to_owned();
+        unknown.named_volumes_skipped = vec!["forged-volume".to_owned()];
+        assert!(volumes_skipped_to_report(&unknown, &gate_dir).is_empty());
     }
 
     /// **A vm restore writes its secrets to the host store**, which is
