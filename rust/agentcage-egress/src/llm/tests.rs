@@ -196,6 +196,28 @@ fn a_good_reply_yields_the_tool_arguments() {
 }
 
 #[test]
+fn openrouter_reports_the_app_name_as_agentcage() {
+    let request = build_request(
+        "openrouter",
+        "m",
+        KEY,
+        "https://openrouter.ai/api/v1",
+        &decide_call(),
+    );
+    let header = |name: &str| {
+        request
+            .headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    };
+    assert_eq!(header("HTTP-Referer"), Some("https://agentcage.ai"));
+    assert_eq!(header("X-OpenRouter-Title"), Some("agentcage"));
+    assert_eq!(header("X-Title"), None, "the legacy header is not needed");
+    assert_eq!(header("User-Agent"), Some(USER_AGENT));
+}
+
+#[test]
 fn a_reply_without_the_tool_is_an_empty_object_not_an_error() {
     let transport = Scripted::new(Ok(HttpReply {
         status: 200,

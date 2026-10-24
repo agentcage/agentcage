@@ -191,8 +191,12 @@
             "agentcage-policy-api"
           ],
           [
-            "X-title",
-            "agentcage-policy-api"
+            "HTTP-Referer",
+            "https://agentcage.ai"
+          ],
+          [
+            "X-OpenRouter-Title",
+            "agentcage"
           ]
         ],
         "body": "{\"model\": \"model-x\", \"max_tokens\": 8192, \"messages\": [{\"role\": \"system\", \"content\": \"You decide.\\n\\nLine two with a \\\"quote\\\" and a \\\\ slash.\"}, {\"role\": \"user\", \"content\": \"{\\\"domain_requested\\\": \\\"pypi.org\\\", \\\"agent_justification\\\": \\\"pip install\\\"}\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"decide\", \"description\": \"Grant or deny the egress request.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"decision\": {\"type\": \"string\", \"enum\": [\"grant\", \"deny\"]}, \"reason\": {\"type\": \"string\"}, \"ttl_seconds\": {\"type\": \"integer\", \"enum\": [0, 600, 3600]}}, \"required\": [\"decision\", \"reason\"]}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"decide\"}}, \"temperature\": 0}"
@@ -258,8 +262,12 @@
             "agentcage-policy-api"
           ],
           [
-            "X-title",
-            "agentcage-policy-api"
+            "HTTP-Referer",
+            "https://agentcage.ai"
+          ],
+          [
+            "X-OpenRouter-Title",
+            "agentcage"
           ]
         ],
         "body": "{\"model\": \"z-ai/glm-5.3-flash\", \"max_tokens\": 16384, \"messages\": [{\"role\": \"system\", \"content\": \"You decide.\\n\\nLine two with a \\\"quote\\\" and a \\\\ slash.\"}, {\"role\": \"user\", \"content\": \"{\\\"domain_requested\\\": \\\"pypi.org\\\", \\\"agent_justification\\\": \\\"pip install\\\"}\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"decide\", \"description\": \"Grant or deny the egress request.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"decision\": {\"type\": \"string\", \"enum\": [\"grant\", \"deny\"]}, \"reason\": {\"type\": \"string\"}, \"ttl_seconds\": {\"type\": \"integer\", \"enum\": [0, 600, 3600]}}, \"required\": [\"decision\", \"reason\"]}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"decide\"}}, \"temperature\": 0}"
@@ -500,8 +508,12 @@
             "agentcage-policy-api"
           ],
           [
-            "X-title",
-            "agentcage-policy-api"
+            "HTTP-Referer",
+            "https://agentcage.ai"
+          ],
+          [
+            "X-OpenRouter-Title",
+            "agentcage"
           ]
         ],
         "body": "{\"model\": \"model-x\", \"max_tokens\": 8192, \"messages\": [{\"role\": \"system\", \"content\": \"\"}, {\"role\": \"user\", \"content\": \"{\\\"domain_requested\\\": \\\"pypi.org\\\", \\\"agent_justification\\\": \\\"pip install\\\"}\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"decide\", \"description\": \"Grant or deny the egress request.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"decision\": {\"type\": \"string\", \"enum\": [\"grant\", \"deny\"]}, \"reason\": {\"type\": \"string\"}, \"ttl_seconds\": {\"type\": \"integer\", \"enum\": [0, 600, 3600]}}, \"required\": [\"decision\", \"reason\"]}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"decide\"}}, \"temperature\": 0}"
