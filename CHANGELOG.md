@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The first `cage update` after `cage create` no longer rebuilds an unchanged cage.** `cage create` wrote no `fingerprint.json`, so the first `cage update` found nothing to compare against, treated the cage as changed and rebuilt and restarted it. `cage create` now records the same fingerprint `cage update` writes after a successful deploy, so that first update reports `already up to date`. A failed create still records none, and `cage update` retries it in full.
+
 ## [0.53.0] - 2026-10-24
 
 ### Added

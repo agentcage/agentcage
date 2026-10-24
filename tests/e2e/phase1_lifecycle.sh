@@ -33,13 +33,14 @@ else
     "first=${CA_FIRST:-<none>} second=${CA_SECOND:-<none>}"
 fi
 
-# `cage create` now records the fingerprint of what it built, so this
-# update reports "already up to date" instead of rebuilding (issue
-# #417). It used to be the workaround that took that one mandatory
-# rebuild before the mock was patched in. Kept, because removing it
-# changes the phase's sequence and that needs an e2e run to confirm;
-# it is now a no-op and costs one preflight.
-"$AGENTCAGE" cage update "$CAGE" --no-pull >/dev/null 2>&1 || true
+# 1.0c: `cage create` records the fingerprint of what it built, so the
+# first `cage update` on an untouched cage is a no-op (issue #417). It
+# used to find no fingerprint and rebuild; this call was then the
+# workaround that took that rebuild before the mock was patched in, so
+# 1.9-1.11 below still see a cage whose inputs are recorded either way.
+assert_output_contains "1.0c" "First update after create is a no-op" \
+  "already up to date" \
+  "$AGENTCAGE" cage update "$CAGE" --no-pull
 
 echo "Starting mock server..."
 start_mock "$CAGE" httpbin.org example.com
