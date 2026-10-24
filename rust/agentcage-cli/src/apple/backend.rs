@@ -1872,7 +1872,7 @@ mod tests {
     use agentcage_exec::FakeRunner;
     use agentcage_state::{Paths, TestDir};
 
-    use super::AppleBackend;
+    use super::{AppleBackend, CAGE_RELOAD_SH, EGRESS_RELOAD_SH};
 
     /// A deployed apple cage whose store is the plaintext file store.
     ///
@@ -1977,6 +1977,119 @@ mod tests {
         let backend = AppleBackend::new(&paths, &runner, "0.0.0");
 
         assert!(backend.forget_secrets("demo").is_empty());
+    }
+
+    /// `reload_domains` — `domain add` against a running apple cage.
+    ///
+    /// The bind-mounted servers file is regenerated *before* either daemon
+    /// is signalled, and both signals go out: the egress supervisor's
+    /// reload flag, and the cage-local dnsmasq's SIGHUP. The cage-local
+    /// one is the load-bearing one; the workload resolves through it.
+    #[test]
+    fn reloading_domains_rewrites_the_servers_file_and_signals_both_daemons() {
+        let dir = TestDir::new("apple-reload-domains");
+        let paths = Paths::under(dir.path());
+        let input = dir.join("cage.yaml");
+        std::fs::write(
+            &input,
+            "name: demo\nisolation: apple-container\ncontainer:\n  image: node:22-slim\n\
+             domains:\n  allow:\n    - api.example.com\ndns_servers:\n  - 192.0.2.53\n",
+        )
+        .expect("input config");
+        paths
+            .save_deployment("demo", &input)
+            .expect("the stored config");
+        let config = paths
+            .load_deployment_config("demo", &crate::hostenv::RealHost)
+            .expect("the stored config loads");
+
+        // What a previous reload left behind. The point of the first step
+        // is that it does not survive.
+        let egress_config = paths.apple_egress_config_dir("demo");
+        std::fs::create_dir_all(&egress_config).expect("egress config dir");
+        std::fs::write(
+            egress_config.join("dns-allowlist.conf"),
+            b"server=/stale.example.com/203.0.113.1\n",
+        )
+        .expect("stale servers file");
+
+        let runner = FakeRunner::new();
+        runner.assume_installed();
+        let running = || agentcage_exec::Reply::ok(r#"{"status":{"state":"running"}}"#);
+        runner.on(["/usr/bin/container", "inspect", "demo-egress"], running());
+        runner.on(["/usr/bin/container", "inspect", "demo"], running());
+        runner.on(
+            [
+                "/usr/bin/container",
+                "exec",
+                "demo-egress",
+                "dnsmasq",
+                "--test",
+            ],
+            agentcage_exec::Reply::success(),
+        );
+        runner.on(
+            ["/usr/bin/container", "exec", "demo-egress", "sh", "-c"],
+            agentcage_exec::Reply::success(),
+        );
+        runner.on(
+            ["/usr/bin/container", "exec", "demo", "sh", "-c"],
+            agentcage_exec::Reply::success(),
+        );
+        let backend = AppleBackend::new(&paths, &runner, "0.0.0");
+
+        backend
+            .reload_domains(&config, "demo")
+            .expect("the reload succeeds");
+
+        let servers = std::fs::read_to_string(egress_config.join("dns-allowlist.conf"))
+            .expect("the regenerated servers file");
+        assert!(
+            servers.contains("server=/api.example.com/192.0.2.53"),
+            "{servers}"
+        );
+        assert!(!servers.contains("stale.example.com"), "{servers}");
+
+        let calls = runner.argv_sequence();
+        assert_eq!(calls.len(), 5, "{calls:?}");
+        assert_eq!(calls[0], ["/usr/bin/container", "inspect", "demo-egress"]);
+        assert_eq!(
+            calls[1][..5],
+            [
+                "/usr/bin/container",
+                "exec",
+                "demo-egress",
+                "dnsmasq",
+                "--test"
+            ]
+        );
+        assert_eq!(
+            calls[2],
+            [
+                "/usr/bin/container",
+                "exec",
+                "demo-egress",
+                "sh",
+                "-c",
+                EGRESS_RELOAD_SH
+            ]
+        );
+        assert!(
+            EGRESS_RELOAD_SH.contains("/home/acproxy/dns/reload"),
+            "the egress reload flag moved: {EGRESS_RELOAD_SH}"
+        );
+        assert_eq!(calls[3], ["/usr/bin/container", "inspect", "demo"]);
+        assert_eq!(
+            calls[4],
+            [
+                "/usr/bin/container",
+                "exec",
+                "demo",
+                "sh",
+                "-c",
+                CAGE_RELOAD_SH
+            ]
+        );
     }
 
     /// The apple-container half of "a relay or agent credential is the

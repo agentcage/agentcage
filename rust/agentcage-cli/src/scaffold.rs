@@ -833,7 +833,8 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::{
-        RenderRequest, Scaffolds, Source, render_config, render_config_with, valid_scaffold_name,
+        Build, RenderRequest, Scaffolds, SetupOptions, Source, build_one, render_config,
+        render_config_with, valid_scaffold_name,
     };
     use std::path::PathBuf;
 
@@ -899,6 +900,77 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o111, 0o111, "mode {mode:o}");
+    }
+
+    /// `init --scaffold`'s build call site: `build_one` hands podman a
+    /// *staged copy* of the scaffold directory, never the directory
+    /// itself, so the canonical assets `stage_scaffold_assets` drops in
+    /// are in the context the `COPY` lines resolve against. What that
+    /// copy contains is pinned in `staging`; this pins the call site.
+    #[test]
+    fn a_scaffold_build_stages_the_context_before_building_it() {
+        use agentcage_exec::tools::Elevation;
+        use agentcage_exec::tools::podman::Podman;
+        use agentcage_exec::{FakeRunner, Reply};
+
+        let source = agentcage_state::TestDir::new("scaffold-build-src");
+        std::fs::write(
+            source.path().join("Containerfile"),
+            b"FROM scratch\nCOPY AGENTS.md /home/agent/AGENTS.md\n",
+        )
+        .unwrap();
+        std::fs::write(source.path().join("entry.sh"), b"#!/bin/sh\n").unwrap();
+
+        let runner = FakeRunner::new();
+        runner.on(["podman", "image", "exists"], Reply::status(1));
+        runner.on(["podman", "build"], Reply::success());
+        let podman = Podman::with_elevation(&runner, Elevation::none());
+        let scaffolds = builtin_only();
+        let entry = Build {
+            image: "localhost/test:latest".to_owned(),
+            containerfile: Some("Containerfile".to_owned()),
+            ..Build::default()
+        };
+        let options = SetupOptions {
+            isolation: Some("container"),
+            quiet: true,
+            no_cache: false,
+            pull: false,
+        };
+        let echo = |_: &str| {};
+
+        build_one(
+            &scaffolds,
+            &runner,
+            &podman,
+            source.path(),
+            "openclaw",
+            &entry,
+            &options,
+            &echo,
+        )
+        .expect("the build succeeds");
+
+        let argv = runner.argv(1);
+        assert_eq!(
+            argv[..5],
+            ["podman", "build", "-t", "localhost/test:latest", "-f"]
+        );
+        let containerfile = PathBuf::from(&argv[5]);
+        let context = PathBuf::from(argv.last().expect("a context directory"));
+        assert_eq!(containerfile, context.join("Containerfile"));
+        assert_ne!(
+            context,
+            source.path(),
+            "the build must not use the scaffold dir itself"
+        );
+        assert!(
+            context
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("agentcage-scaffold-")),
+            "unexpected staging directory: {}",
+            context.display()
+        );
     }
 
     #[test]
@@ -1011,6 +1083,44 @@ mod tests {
         )
         .expect("openclaw renders");
         assert!(pinned.contains("19999"), "{pinned}");
+    }
+
+    /// The openclaw template's `isolation: vm` branch. The custom-port
+    /// case next door (`the_openclaw_default_port_survives_a_none_port`)
+    /// already covers `--port`; this is the other render the Python tests
+    /// had and the Rust port did not.
+    #[test]
+    fn the_openclaw_vm_isolation_renders_its_vm_block() {
+        let scaffolds = builtin_only();
+        let text = render_config(
+            &scaffolds,
+            &RenderRequest {
+                name: "oc",
+                image: "",
+                isolation: "vm",
+                scaffold: Some("openclaw"),
+                port: None,
+            },
+        )
+        .expect("openclaw renders");
+        assert!(text.contains("isolation: vm"), "{text}");
+        assert!(text.contains("vm:\n  vcpus: 4\n  mem_mb: 8192"), "{text}");
+
+        // The container render must not carry a vm section: the template
+        // gates the whole block on the isolation.
+        let container = render_config(
+            &scaffolds,
+            &RenderRequest {
+                name: "oc",
+                image: "",
+                isolation: "container",
+                scaffold: Some("openclaw"),
+                port: None,
+            },
+        )
+        .expect("openclaw renders");
+        assert!(!container.contains("isolation: vm"), "{container}");
+        assert!(!container.contains("vm:"), "{container}");
     }
 
     /// Each render mints fresh entropy — two cages must not share a
