@@ -229,7 +229,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
                 // identities the fingerprint covers; record them, or
                 // the next update would see "changed inputs" and
                 // restart for nothing.
-                let fingerprint = deploy::update_fingerprint(
+                deploy::record_fingerprint(
                     &backend,
                     &ctx.paths,
                     deploy::FingerprintRequest {
@@ -242,9 +242,6 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
                     },
                 )
                 .map_err(|error| backend_error(&error))?;
-                ctx.paths
-                    .save_fingerprint(&name, &fingerprint.fingerprint.to_json())
-                    .map_err(|error| state_error(&error))?;
                 println!("cage '{name}' up to date");
                 return Ok(());
             }
@@ -300,7 +297,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     // succeeded, and re-inspect the image identities: a Containerfile
     // build may have moved the target image since the preflight
     // snapshot.
-    let final_fingerprint = deploy::update_fingerprint(
+    deploy::record_fingerprint(
         &backend,
         &ctx.paths,
         deploy::FingerprintRequest {
@@ -313,9 +310,6 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         },
     )
     .map_err(|error| backend_error(&error))?;
-    ctx.paths
-        .save_fingerprint(&name, &final_fingerprint.fingerprint.to_json())
-        .map_err(|error| state_error(&error))?;
     println!("Updated cage '{name}'");
 
     if !config.help.is_empty() {
