@@ -42,6 +42,11 @@ fn run_request(input: &Json) -> (String, Vec<(String, String)>, String) {
         panic!("max_tokens")
     };
     let call = ToolCall {
+        system_prefix: input
+            .get("system_prefix")
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_owned(),
         system: s(input, "system").to_owned(),
         user_content: s(input, "user_content").to_owned(),
         tool: tool_from(input.get("tool").unwrap()),
@@ -155,6 +160,7 @@ const KEY: &str = "sk-or-FAKE-DECIDER-KEY-0123456789";
 
 fn decide_call() -> ToolCall {
     ToolCall {
+        system_prefix: String::new(),
         system: "sys".into(),
         user_content: "{}".into(),
         tool: ToolSpec {
@@ -315,6 +321,172 @@ fn default_bases_and_unknown_providers() {
         Some("https://openrouter.ai/api/v1")
     );
     assert_eq!(default_base_url("gemini"), None);
+}
+
+// ── anthropic credentials: Console API key vs OAuth token ─────
+
+const OAUTH_TOKEN: &str = "sk-ant-oat01-FAKE-OAUTH-TOKEN-0123456789";
+const CONSOLE_KEY: &str = "sk-ant-api03-FAKE-CONSOLE-KEY-0123456789";
+
+fn anthropic_headers(key: &str) -> Vec<(String, String)> {
+    build_request(
+        "anthropic",
+        "m",
+        key,
+        "https://api.anthropic.com",
+        &decide_call(),
+    )
+    .headers
+}
+
+fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+    list.iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect()
+}
+
+#[test]
+fn an_anthropic_oauth_token_is_a_bearer_with_the_oauth_beta() {
+    assert_eq!(
+        anthropic_headers(OAUTH_TOKEN),
+        pairs(&[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {OAUTH_TOKEN}")),
+            ("anthropic-version", ANTHROPIC_VERSION),
+            ("anthropic-beta", "oauth-2025-04-20"),
+            ("User-Agent", USER_AGENT),
+        ])
+    );
+}
+
+#[test]
+fn an_anthropic_console_key_keeps_x_api_key() {
+    assert_eq!(
+        anthropic_headers(CONSOLE_KEY),
+        pairs(&[
+            ("Content-Type", "application/json"),
+            ("x-api-key", CONSOLE_KEY),
+            ("anthropic-version", ANTHROPIC_VERSION),
+            ("User-Agent", USER_AGENT),
+        ])
+    );
+}
+
+#[test]
+fn an_oauth_token_never_rides_x_api_key_and_a_key_never_rides_bearer() {
+    let oauth = anthropic_headers(OAUTH_TOKEN);
+    assert!(
+        !oauth
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("x-api-key"))
+    );
+    let console = anthropic_headers(CONSOLE_KEY);
+    assert!(
+        !console
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization")
+                || k.eq_ignore_ascii_case("anthropic-beta"))
+    );
+}
+
+#[test]
+fn oauth_detection_is_by_prefix_only() {
+    assert!(is_anthropic_oauth_token(OAUTH_TOKEN));
+    assert!(is_anthropic_oauth_token("sk-ant-oat02-future"));
+    assert!(!is_anthropic_oauth_token(CONSOLE_KEY));
+    assert!(!is_anthropic_oauth_token(""));
+    assert!(!is_anthropic_oauth_token("sk-or-v1-abc"));
+    // Not a substring match: the prefix has to lead.
+    assert!(!is_anthropic_oauth_token("x-sk-ant-oat01-abc"));
+}
+
+#[test]
+fn an_oauth_token_does_not_change_the_body_or_other_providers() {
+    let call = decide_call();
+    let with_token = build_request("anthropic", "m", OAUTH_TOKEN, "https://b", &call);
+    let with_key = build_request("anthropic", "m", CONSOLE_KEY, "https://b", &call);
+    assert_eq!(with_token.url, "https://b/v1/messages");
+    assert_eq!(with_token.body, with_key.body);
+    // Only the anthropic wire format looks at the prefix; the
+    // chat-completions providers send a bearer whatever the key is.
+    let openai = build_request("openai", "m", OAUTH_TOKEN, "https://b", &call);
+    assert!(
+        !openai
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("anthropic-beta"))
+    );
+}
+
+fn body_of(provider: &str, call: &ToolCall) -> Json {
+    let req = build_request(provider, "m", CONSOLE_KEY, "https://b", call);
+    json::parse(std::str::from_utf8(&req.body).unwrap()).unwrap()
+}
+
+#[test]
+fn a_system_prefix_is_the_first_anthropic_system_block() {
+    let call = ToolCall {
+        system_prefix: "PREFIX".into(),
+        ..decide_call()
+    };
+    assert_eq!(
+        json::to_string(body_of("anthropic", &call).get("system").unwrap()),
+        r#"[{"type": "text", "text": "PREFIX"}, {"type": "text", "text": "sys"}]"#
+    );
+}
+
+#[test]
+fn a_system_prefix_is_the_first_chat_completions_message() {
+    let call = ToolCall {
+        system_prefix: "PREFIX".into(),
+        ..decide_call()
+    };
+    for provider in ["openai", "openrouter"] {
+        assert_eq!(
+            json::to_string(body_of(provider, &call).get("messages").unwrap()),
+            r#"[{"role": "system", "content": "PREFIX"}, {"role": "system", "content": "sys"}, {"role": "user", "content": "{}"}]"#,
+            "{provider}"
+        );
+    }
+}
+
+#[test]
+fn no_system_prefix_leaves_the_body_unchanged() {
+    let call = decide_call();
+    assert_eq!(
+        json::to_string(body_of("anthropic", &call).get("system").unwrap()),
+        r#""sys""#
+    );
+    assert_eq!(
+        json::to_string(body_of("openai", &call).get("messages").unwrap()),
+        r#"[{"role": "system", "content": "sys"}, {"role": "user", "content": "{}"}]"#
+    );
+}
+
+#[test]
+fn an_oauth_token_is_redacted_from_provider_errors() {
+    let transport = Scripted::new(Ok(HttpReply {
+        status: 401,
+        body: format!(r#"{{"error": "bad token {OAUTH_TOKEN}"}}"#).into_bytes(),
+    }));
+    let client = LlmClient::new(
+        "anthropic",
+        "m",
+        OAUTH_TOKEN,
+        "https://api.anthropic.com",
+        Duration::from_secs(15),
+        transport.clone(),
+    );
+    let err = client.call(&decide_call()).unwrap_err();
+    assert!(!err.message.contains(OAUTH_TOKEN), "{}", err.message);
+    assert!(err.message.contains("[redacted]"), "{}", err.message);
+    let seen = transport.seen.lock().unwrap();
+    assert!(
+        seen[0]
+            .0
+            .headers
+            .contains(&("Authorization".to_owned(), format!("Bearer {OAUTH_TOKEN}")))
+    );
 }
 
 // ── the real transport, against a loopback server ─────────────

@@ -705,6 +705,11 @@ pub struct LlmAgentConfig {
     pub max_tokens: i64,
     /// Override the provider's base URL; must be https.
     pub base_url: String,
+    /// Operator text sent verbatim ahead of the agent's own system
+    /// prompt, as a separate first system block (anthropic) or message
+    /// (chat-completions). Empty = off, and the request is unchanged.
+    /// Same 4096-char cap as `context`.
+    pub system_prefix: String,
 }
 
 impl Default for LlmAgentConfig {
@@ -716,6 +721,7 @@ impl Default for LlmAgentConfig {
             timeout_seconds: 15.0,
             max_tokens: 8192,
             base_url: String::new(),
+            system_prefix: String::new(),
         }
     }
 }

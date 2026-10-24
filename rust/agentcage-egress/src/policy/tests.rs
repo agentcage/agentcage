@@ -472,6 +472,41 @@ fn grant_reply() -> Json {
 }
 
 #[test]
+fn the_system_prefix_reaches_the_wire_ahead_of_the_prompt() {
+    let tmp = TempDir::new("prefix");
+    let paths = PolicyPaths::new(tmp.0.join("grants"), tmp.0.join("dns/granted"));
+    let env = TestEnv::new(
+        HashMap::from([("K".to_owned(), "sk-test".to_owned())]),
+        "0.0.0",
+        vec![grant_reply()],
+    );
+    let config = Config::parse(
+        "t",
+        "domains: {allow: [a.com]}\nagents:\n  decider: {enable: true, provider: openrouter, \
+         model: m, api_key: 'env:K', system_prefix: 'You are a test.'}\n",
+    )
+    .unwrap();
+    let dom = Arc::new(DomainInspector::from_config(&domains_section(&config)).unwrap());
+    let api = PolicyApi::new(&config, dom, paths, env.clone()).unwrap();
+    assert_eq!(request(&api, "x.com").status, 200);
+    let seen = lock(&env.transport.seen);
+    let body = json::parse(std::str::from_utf8(&seen[0].body).unwrap()).unwrap();
+    let Some(Json::Array(messages)) = body.get("messages") else {
+        panic!("messages")
+    };
+    assert_eq!(
+        messages[0].get("content").and_then(Json::as_str),
+        Some("You are a test.")
+    );
+    assert!(
+        messages[1]
+            .get("content")
+            .and_then(Json::as_str)
+            .is_some_and(|s| s.starts_with("You are a senior cybersecurity expert"))
+    );
+}
+
+#[test]
 fn a_non_object_reply_is_a_deny_not_a_crash() {
     let reply = object([("status", Json::Int(200)), ("body", Json::string("[]"))]);
     let (_tmp, api, _env) = simple_api("nonobject", vec![reply], "{requests_per_second: 0}");

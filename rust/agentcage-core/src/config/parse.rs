@@ -997,6 +997,7 @@ fn llm_client(
             None => 8192,
         },
         base_url: or_string(block.get("base_url"), "", label)?,
+        system_prefix: or_string(block.get("system_prefix"), "", label)?,
     };
 
     // The `source:NAME` split. The *shape* check that rejects a bare

@@ -492,7 +492,7 @@ fn a_network_error_is_not_retried_and_a_compliant_reply_is_one_call() {
 #[test]
 fn the_call_carries_the_prompt_tool_budget_and_agent() {
     let mut h = harness(
-        "    context: payments recon suite\n    max_tokens: 1234\n",
+        "    context: payments recon suite\n    max_tokens: 1234\n    system_prefix: You are a test.\n",
         vec![flow("a.example")],
         domains(&[], &[]),
         true,
@@ -507,6 +507,7 @@ fn the_call_carries_the_prompt_tool_budget_and_agent() {
     assert!(call.system.ends_with("enforced gate."));
     assert_eq!(call.tool.name, "review");
     assert_eq!(call.max_tokens, 1234);
+    assert_eq!(call.system_prefix, "You are a test.");
     let agent = h.llm.agents.lock().unwrap()[0].clone();
     assert_eq!(agent.base_url, "https://api.openai.com");
     assert_eq!(agent.model, "gpt-test");

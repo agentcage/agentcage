@@ -301,6 +301,11 @@ fn with_llm(llm: &LlmAgentConfig, own: Vec<(String, Json)>) -> Json {
         ("max_tokens".to_owned(), Json::Int(llm.max_tokens)),
         ("base_url".to_owned(), Json::string(&llm.base_url)),
     ];
+    // Only when set, so every recorded layout without one is unchanged;
+    // the egress reads an absent key as empty.
+    if !llm.system_prefix.is_empty() {
+        fields.push(("system_prefix".to_owned(), Json::string(&llm.system_prefix)));
+    }
     fields.extend(own);
     Json::Object(fields)
 }
