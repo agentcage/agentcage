@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cage restore --name` sees `$VAR`-expanded `container.volumes` sources.** The clone volume-collision check read the raw `cage.yaml`, so a source such as `${VOL}:/data` named no volume and a clone could go ahead and mount a volume another cage owns or that already holds data. A source's `$VAR` and `${VAR}` references are now expanded against the host environment first, as the quadlet renderer does, in the archived config and in each deployed cage's; an unset variable is left in place and so names no volume, as before. Refs #464.
+
 ## [0.53.0] - 2026-10-24
 
 ### Added
