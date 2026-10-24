@@ -1855,11 +1855,18 @@ fn clone_volume_collisions(
 /// that is a bare volume name, which podman mounts the same way.
 ///
 /// From the raw document rather than a loaded [`Config`], because
-/// loading expands `~` and `$VAR` against this host and resolves
-/// secrets, and a refusal here should not depend on either. So a
-/// source that only becomes a volume name after expansion is not seen.
-/// A name podman would not accept ([`is_valid_volume_name`]) is
-/// skipped: it is not a volume, and it must not reach podman's argv.
+/// loading expands `~` against this host and resolves secrets, and a
+/// refusal here should not depend on either. `$VAR` is the exception:
+/// a source is expanded first, so `${VOL}:/data` is seen as the volume
+/// named by `VOL` — podman mounts the expanded name, and that is the
+/// name a clone would share. The substitution is
+/// [`agentcage_state::path_expand`]'s CPython-compatible one, against
+/// the environment config validation's `env_var_is_set` reads
+/// ([`agentcage_cli::hostenv::env_var`]), so an unset variable is left
+/// in place, as validation and the renderer leave it, and the literal
+/// `$` makes it no volume name at all. A name podman would not accept
+/// ([`is_valid_volume_name`]) is skipped: it is not a volume, and it
+/// must not reach podman's argv.
 ///
 /// Empty for a config whose `isolation` is not `container`, since a vm
 /// cage's volumes are in its Lima guest and apple-container has none;
@@ -1883,17 +1890,24 @@ fn host_volumes(cage_yaml: &str) -> BTreeSet<String> {
         .and_then(Value::as_mapping)
         .into_iter()
         .flat_map(|mapping| mapping.keys())
-        .filter_map(Value::as_str);
+        .filter_map(Value::as_str)
+        .map(str::to_owned);
     let sources = container
         .get("volumes")
         .and_then(Value::as_sequence)
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .map(|spec| agentcage_core::volume_mounts::split_volume_spec(spec).0);
+        .map(|spec| {
+            // Split first, then expand the source: the renderer does
+            // the same, so a value containing `:` cannot move the
+            // target or the options.
+            let (source, _target, _options) =
+                agentcage_core::volume_mounts::split_volume_spec(spec);
+            agentcage_state::path_expand::expandvars_with(source, &agentcage_cli::hostenv::env_var)
+        });
     keys.chain(sources)
         .filter(|name| is_valid_volume_name(name))
-        .map(str::to_owned)
         .collect()
 }
 
@@ -3513,6 +3527,50 @@ container:
         );
     }
 
+    /// A `container.volumes` source that becomes a volume name only
+    /// after `$VAR` expansion collides too: podman mounts the expanded
+    /// name, so that is the volume the clone would share with the cage
+    /// that mounts it. The archived config says
+    /// `${AGENTCAGE_TEST_RESTORE_VOL}:/cache`, and another cage mounts
+    /// the name it expands to. Before the check expanded the declared
+    /// environment, the source had no valid volume name and was
+    /// invisible, so the restore went ahead.
+    #[test]
+    fn a_clone_refuses_an_expanded_volume_source() {
+        agentcage_cli::hostenv::publish_env("AGENTCAGE_TEST_RESTORE_VOL", "expanded-cache");
+        let dir = TestDir::new("restore-clone-collision-expanded");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::status(1));
+        let ctx = ctx(&dir, fake.clone());
+        deploy(
+            &ctx,
+            &dir,
+            "other-cage",
+            "name: other-cage\ncontainer:\n  image: docker.io/library/node:22-slim\n  \
+             named_volumes:\n    expanded-cache: /cache\nisolation: container\n",
+        );
+        let tarball = dir.join("backup.tar.gz");
+        backup_with_config(
+            &tarball,
+            "container",
+            &format!(
+                "{CAGE_YAML_NO_BUILD}  volumes:\n  - ${{AGENTCAGE_TEST_RESTORE_VOL}}:/cache\n\
+                 isolation: container\n"
+            ),
+            &[],
+            &[],
+        );
+        let matches = restore_matches(&tarball, &["--name", "acme-clone", "--no-start"]);
+        assert!(restore_inner(&ctx, &matches).is_err());
+        assert!(!ctx.paths.deployment_exists("acme-clone"));
+        assert!(
+            non_probe_calls(&fake).is_empty(),
+            "{:?}",
+            fake.argv_sequence()
+        );
+    }
+
     /// A clone onto a host where nothing has the volumes (the original
     /// is gone, and so are its volumes) goes ahead, creating and filling
     /// them as any `--no-start` restore does. So does a vm clone,
@@ -3657,11 +3715,17 @@ container:
 
     /// What [`host_volumes`] reads off a `cage.yaml`: the
     /// `named_volumes` keys and the bare volume names among the
-    /// `container.volumes` sources; not paths, not names that only
-    /// appear after expansion, not names podman would refuse. And none
-    /// at all for a cage whose volumes are not the host's.
+    /// `container.volumes` sources, `$VAR`-expanded in both spellings
+    /// as podman mounts them; not paths, not names podman would refuse,
+    /// and not a source whose variable is unset, which is left in place
+    /// (validation's rule for an unset reference) and so is no name at
+    /// all. And none at all for a cage whose volumes are not the host's.
     #[test]
-    fn host_volumes_reads_named_volumes_and_bare_volume_sources() {
+    fn host_volumes_reads_named_volumes_and_expanded_volume_sources() {
+        // Through the overlay, the lookup validation and the renderer
+        // use: `std::env::set_var` is `unsafe` in Rust 2024, so a test
+        // cannot plant one in the process environment.
+        agentcage_cli::hostenv::publish_env("AGENTCAGE_TEST_HOST_VOL", "expanded-cache");
         let cage_yaml = "\
 name: acme-agent
 container:
@@ -3673,14 +3737,19 @@ container:
   - shared-cache:/cache:ro
   - ./src:/src
   - /etc/hosts:/etc/hosts
-  - ${VOL}:/data
+  - $AGENTCAGE_TEST_HOST_VOL:/data
+  - ${AGENTCAGE_TEST_HOST_VOL}:/more
+  - ${AGENTCAGE_TEST_HOST_VOL_UNSET}:/unset
   - ~/notes:/notes
 ";
         let names: Vec<String> = host_volumes(cage_yaml).into_iter().collect();
-        assert_eq!(names, ["acme-agent-workspace", "shared-cache"]);
+        assert_eq!(
+            names,
+            ["acme-agent-workspace", "expanded-cache", "shared-cache"]
+        );
         assert_eq!(
             host_volumes(&format!("{cage_yaml}isolation: container\n")).len(),
-            2
+            3
         );
         for isolation in ["vm", "apple-container"] {
             assert!(
