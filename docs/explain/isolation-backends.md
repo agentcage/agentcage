@@ -130,6 +130,10 @@ To migrate an existing cage from one backend to another (e.g. moving from `vm` t
    ```bash
    agentcage cage destroy my-agent -y
    ```
+   This keeps the cage's data directory, minus the staged `inspectors/` that go with the deployment; on `apple-container` the capture log lives under `~/.config/agentcage/apple-container/my-agent/logs/` and goes with that state tree. The `Kept:` block the command prints names the directory and what survived in it. Remove it by hand if the new backend should start without it, using that printed path:
+   ```bash
+   rm -rf '<the path on the data: line>'
+   ```
 3. **Edit the Isolation Setting**:
    Extract `cage.yaml` from the archive or update your local file to change `isolation: apple-container`.
 4. **Restore or Recreate**:

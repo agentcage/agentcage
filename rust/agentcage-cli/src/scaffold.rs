@@ -5,7 +5,7 @@
 //!
 //! They are embedded in the binary by
 //! `agentcage-assets` and extracted, byte- and mode-identical, into a
-//! digest-keyed cache directory. [`Scaffolds::system`] resolves that
+//! digest-keyed cache directory. [`Scaffolds::system`](crate::scaffold::Scaffolds::system) resolves that
 //! once and then everything below is ordinary path work — which matters,
 //! because a scaffold is not just a template: `run_scaffold_setup`
 //! builds a *podman build context* out of the directory, and a
@@ -833,9 +833,64 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::{
-        RenderRequest, Scaffolds, Source, render_config, render_config_with, valid_scaffold_name,
+        Build, RenderRequest, Scaffolds, SetupOptions, Source, build_one, copy_tree, render_config,
+        render_config_with, valid_scaffold_name,
     };
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use agentcage_exec::{Command, CommandRunner, ExecError, FakeRunner, LineStream, Output};
+
+    /// A runner that copies the build context out at the moment `podman
+    /// build` is issued, then answers from the fake.
+    ///
+    /// `build_one` deletes its staging `TempDir` on the way out, so the
+    /// only moment the staged tree exists is inside the build call.
+    /// Copying it then lets the assertions run against the exact files
+    /// the build was handed — argv alone would still pass with the
+    /// staging step removed.
+    #[derive(Debug)]
+    struct CapturingBuild<'a> {
+        inner: &'a FakeRunner,
+        copy_to: PathBuf,
+        captured: Mutex<Option<PathBuf>>,
+    }
+
+    impl CapturingBuild<'_> {
+        fn capture(&self, command: &Command) {
+            let argv = command.argv();
+            if argv.first().map(String::as_str) != Some("podman")
+                || argv.get(1).map(String::as_str) != Some("build")
+            {
+                return;
+            }
+            let Some(context) = argv.last() else {
+                return;
+            };
+            let _ = std::fs::remove_dir_all(&self.copy_to);
+            copy_tree(std::path::Path::new(context), &self.copy_to).expect("copy the context out");
+            *self
+                .captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PathBuf::from(context));
+        }
+    }
+
+    impl CommandRunner for CapturingBuild<'_> {
+        fn run(&self, command: &Command) -> Result<Output, ExecError> {
+            self.capture(command);
+            self.inner.run(command)
+        }
+
+        fn stream(&self, command: &Command) -> Result<Box<dyn LineStream>, ExecError> {
+            self.capture(command);
+            self.inner.stream(command)
+        }
+
+        fn which(&self, program: &str) -> Option<PathBuf> {
+            self.inner.which(program)
+        }
+    }
 
     /// The embedded search path, with no project or user roots — what a
     /// test wants, and what CI has.
@@ -899,6 +954,128 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o111, 0o111, "mode {mode:o}");
+    }
+
+    /// `init --scaffold`'s build call site: `build_one` hands podman a
+    /// *staged copy* of the scaffold directory, never the directory
+    /// itself, and that copy carries the canonical assets
+    /// `stage_scaffold_assets` drops in, so the `COPY` lines resolve.
+    ///
+    /// The staging `TempDir` is gone by the time `build_one` returns, so
+    /// the context is copied out at the moment of the `podman build`
+    /// call and the assertions run against those bytes. Asserting the
+    /// argv alone passes with the copy or the staging call deleted —
+    /// this is the build's actual input.
+    #[test]
+    fn a_scaffold_build_stages_the_context_before_building_it() {
+        use agentcage_exec::tools::Elevation;
+        use agentcage_exec::tools::podman::Podman;
+        use agentcage_exec::{FakeRunner, Reply};
+
+        let source = agentcage_state::TestDir::new("scaffold-build-src");
+        std::fs::write(
+            source.path().join("Containerfile"),
+            b"FROM scratch\nCOPY AGENTS.md /home/agent/AGENTS.md\n\
+              COPY skills/agentcage /home/agent/skills/agentcage\n",
+        )
+        .unwrap();
+        std::fs::write(source.path().join("entry.sh"), b"#!/bin/sh\n").unwrap();
+
+        let canonical = agentcage_assets::embedded_files()
+            .iter()
+            .find(|file| file.path == "scaffolds/AGENTS.md")
+            .expect("the embedded brief");
+
+        let runner = FakeRunner::new();
+        runner.on(["podman", "image", "exists"], Reply::status(1));
+        runner.on(["podman", "build"], Reply::success());
+        let captured_root = agentcage_state::TestDir::new("scaffold-build-context");
+        let capture = CapturingBuild {
+            inner: &runner,
+            copy_to: captured_root.path().join("context"),
+            captured: Mutex::new(None),
+        };
+        let podman = Podman::with_elevation(&capture, Elevation::none());
+        let scaffolds = builtin_only();
+        let entry = Build {
+            image: "localhost/test:latest".to_owned(),
+            containerfile: Some("Containerfile".to_owned()),
+            ..Build::default()
+        };
+        let options = SetupOptions {
+            isolation: Some("container"),
+            quiet: true,
+            no_cache: false,
+            pull: false,
+        };
+        let echo = |_: &str| {};
+
+        build_one(
+            &scaffolds,
+            &capture,
+            &podman,
+            source.path(),
+            "openclaw",
+            &entry,
+            &options,
+            &echo,
+        )
+        .expect("the build succeeds");
+
+        let argv = runner.argv(1);
+        assert_eq!(
+            argv[..5],
+            ["podman", "build", "-t", "localhost/test:latest", "-f"]
+        );
+        let context = PathBuf::from(argv.last().expect("a context directory"));
+        assert_ne!(
+            context,
+            source.path(),
+            "the build must not use the scaffold dir itself"
+        );
+
+        // The staged tree, copied out while it existed.
+        let staged = captured_root.path().join("context");
+        assert_eq!(
+            capture
+                .captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref(),
+            Some(context.as_path()),
+            "the build context was never captured"
+        );
+        assert_eq!(
+            PathBuf::from(&argv[5]),
+            context.join("Containerfile"),
+            "podman must build the staged Containerfile, not the source one"
+        );
+        // ... and that staged Containerfile is the one that was copied
+        // out of the live staging directory.
+        assert_eq!(
+            std::fs::read(staged.join("Containerfile")).expect("the staged Containerfile"),
+            std::fs::read(source.path().join("Containerfile")).expect("the source Containerfile")
+        );
+        // `copy_tree(dir, staging.path())`: a sibling of the
+        // Containerfile travels with it.
+        assert_eq!(
+            std::fs::read(staged.join("entry.sh")).expect("the staged sibling"),
+            b"#!/bin/sh\n"
+        );
+        // `stage_scaffold_assets`: the brief and the skill, byte for byte
+        // the canonical ones the `COPY` lines name.
+        assert_eq!(
+            std::fs::read(staged.join("AGENTS.md")).expect("the staged brief"),
+            canonical.bytes
+        );
+        assert!(
+            staged.join("skills/agentcage/SKILL.md").is_file(),
+            "the staged skill tree is missing: {:?}",
+            std::fs::read_dir(staged).map(|entries| entries
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect::<Vec<_>>())
+        );
     }
 
     #[test]
@@ -1011,6 +1188,44 @@ mod tests {
         )
         .expect("openclaw renders");
         assert!(pinned.contains("19999"), "{pinned}");
+    }
+
+    /// The openclaw template's `isolation: vm` branch. The custom-port
+    /// case next door (`the_openclaw_default_port_survives_a_none_port`)
+    /// already covers `--port`; this is the other render the Python tests
+    /// had and the Rust port did not.
+    #[test]
+    fn the_openclaw_vm_isolation_renders_its_vm_block() {
+        let scaffolds = builtin_only();
+        let text = render_config(
+            &scaffolds,
+            &RenderRequest {
+                name: "oc",
+                image: "",
+                isolation: "vm",
+                scaffold: Some("openclaw"),
+                port: None,
+            },
+        )
+        .expect("openclaw renders");
+        assert!(text.contains("isolation: vm"), "{text}");
+        assert!(text.contains("vm:\n  vcpus: 4\n  mem_mb: 8192"), "{text}");
+
+        // The container render must not carry a vm section: the template
+        // gates the whole block on the isolation.
+        let container = render_config(
+            &scaffolds,
+            &RenderRequest {
+                name: "oc",
+                image: "",
+                isolation: "container",
+                scaffold: Some("openclaw"),
+                port: None,
+            },
+        )
+        .expect("openclaw renders");
+        assert!(!container.contains("isolation: vm"), "{container}");
+        assert!(!container.contains("vm:"), "{container}");
     }
 
     /// Each render mints fresh entropy — two cages must not share a

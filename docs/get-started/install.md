@@ -244,7 +244,9 @@ When the registry cannot be reached, `cage update` warns and leaves the cage as 
 To cleanly remove agentcage and all associated sandbox state:
 
 ```bash
-# 1. Stop and destroy all existing cages and scoped secrets
+# 1. Remove the cages and their secrets. Each destroy prints a `Kept:`
+#    block naming the data directory it leaves behind; step 3 removes
+#    those under the default data root.
 for cage in $(agentcage ls --quiet 2>/dev/null); do
   agentcage cage destroy "$cage" -y
 done
@@ -253,8 +255,9 @@ done
 rm -f ~/.local/bin/agentcage
 # or, if installed via cargo install: cargo uninstall agentcage-cli
 
-# 3. Clean up configuration and state directories
-rm -rf ~/.config/agentcage ~/.local/share/agentcage
+# 3. Clean up configuration and state directories. If a step-1 `Kept:`
+#    block named a data directory outside this root, remove that too.
+rm -rf ~/.config/agentcage "${XDG_DATA_HOME:-$HOME/.local/share}/agentcage"
 rm -rf ~/.config/containers/systemd/agentcage-* 2>/dev/null
 ```
 

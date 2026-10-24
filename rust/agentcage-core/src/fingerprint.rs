@@ -303,7 +303,7 @@ pub enum CageYaml<'a> {
 /// # Errors
 ///
 /// [`Error::Yaml`] for text that does not parse, and the conversion
-/// errors of [`json_from_yaml`]. Passing [`CageYaml::Parsed`] something
+/// errors of `json_from_yaml`. Passing [`CageYaml::Parsed`] something
 /// that is not an object is [`Error::NotAMapping`].
 pub fn normalize_cage_yaml(cage_yaml: CageYaml<'_>) -> Result<String, Error> {
     match cage_yaml {

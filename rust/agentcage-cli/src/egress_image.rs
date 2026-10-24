@@ -1,7 +1,7 @@
 //! The egress image's build inputs beyond the embedded `data/` tree.
 //!
 //! `Containerfile.egress` copies the `agentcage-egress` binary from
-//! [`egress::BINARY_REL`] inside the build context. That binary is built
+//! [`egress::BINARY_REL`](agentcage_assets::egress::BINARY_REL) inside the build context. That binary is built
 //! for a linux-musl target, not the host's, so it reaches the host
 //! binary through its own crate (`agentcage-egress-embed`) rather than
 //! the `data/` embed, and it is laid over the extracted tree here, just

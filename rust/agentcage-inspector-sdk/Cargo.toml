@@ -28,18 +28,24 @@ serde = "1"
 # The typed-config test derives `Deserialize`.
 serde = { version = "1", features = ["derive"] }
 
-# Not `[lints] workspace = true`: the workspace forbids `unsafe_code`, and
-# the code `wit_bindgen::generate!` expands to is FFI glue (exported
-# `extern "C"` functions, raw-pointer lifting and lowering) that cannot be
-# written without it. The table below is the workspace's with
+# Not `[lints] workspace = true`: Cargo has no way to inherit the
+# workspace's lints and lower one of them, and the code
+# `wit_bindgen::generate!` expands to is FFI glue (exported `extern "C"`
+# functions, raw-pointer lifting and lowering) that cannot be written
+# without `unsafe`. So the table below is the workspace's with
 # `unsafe_code` lowered to `deny`, so it stays an error everywhere except
-# the one generated `bindings` module that opts out explicitly.
+# the one generated `bindings` module that opts out explicitly — plus the
+# rustdoc lints, which it would otherwise silently not inherit.
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

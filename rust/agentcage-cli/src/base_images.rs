@@ -31,7 +31,7 @@
 //! 3. If the check cannot run (offline, registry error, rate limit), the
 //!    base is treated as unchanged and the caller warns once.
 //!
-//! After a rebuild, [`image_changed`] compares the image a running
+//! After a rebuild, [`image_changed`](crate::base_images::image_changed) compares the image a running
 //! container was started from with the image its tag names now. Units
 //! name images by tag, and the egress tag (`<version>-<hash>`) does not
 //! change when its base does, so the tag alone says nothing; the IDs

@@ -1,7 +1,7 @@
 //! A POSIX shell-words lexer, just enough to parse a `COPY` line.
 //!
 //! [`crate::egress`] splits the tail of every `COPY` instruction with
-//! [`split`] and skips a line that fails to lex. Which sources a
+//! [`split`](crate::shlex::split) and skips a line that fails to lex. Which sources a
 //! Containerfile contributes, and so the egress content hash and the
 //! image tag, therefore depends on this lexer's exact rules. They are
 //! those of Python's `shlex.split(s)`, the reference earlier releases

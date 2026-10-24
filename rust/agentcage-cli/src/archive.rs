@@ -11,7 +11,7 @@
 //! dead laptop, or fetched from wherever a backup was kept. So the two
 //! directions have opposite jobs, and they are separated here:
 //!
-//! * **Writing** ([`write_targz`]) has to be *reproducible*. Neither
+//! * **Writing** ([`write_targz`](crate::archive::write_targz)) has to be *reproducible*. Neither
 //!   half of a `.tar.gz` is deterministic by default — the gzip header
 //!   carries an mtime and the original filename, and every tar member
 //!   carries an mtime, a uid, a gid, a uname, a gname and whatever mode
@@ -21,7 +21,7 @@
 //!   the archive). Rather than write a per-run archive and normalize it,
 //!   this writes the normalized form in the first place.
 //!
-//! * **Reading** ([`extract_into`]) has to be *safe*. A tar member's
+//! * **Reading** ([`extract_into`](crate::archive::extract_into)) has to be *safe*. A tar member's
 //!   name is an arbitrary string, and the classic attack is a member
 //!   called `../../.bashrc`: a naive extractor joins it to the
 //!   destination and writes outside. Symlinks are the same bug with a
@@ -33,7 +33,7 @@
 //!   Symlinks are *carried*, not banned outright, because a cage's
 //!   staged build context is an operator's directory and really does
 //!   contain them. What is banned is a link that leaves the tree
-//!   ([`link_stays_inside`]), which is the same line PEP 706's `data`
+//!   ([`link_stays_inside`](crate::archive::link_stays_inside)), which is the same line PEP 706's `data`
 //!   extraction filter draws. Links are re-created, never followed, so a dangling
 //!   one is harmless.
 //!
@@ -51,7 +51,7 @@
 //!
 //! # Reproducibility, stated precisely
 //!
-//! Two [`write_targz`] calls with equal member lists produce equal
+//! Two [`write_targz`](crate::archive::write_targz) calls with equal member lists produce equal
 //! bytes, on any machine, under any umask, at any time. What this does
 //! *not* claim is byte-equality with archives earlier releases wrote:
 //! their tar writer used its own header spellings and zlib's deflate
@@ -341,7 +341,7 @@ pub fn member_names(tarball: &Path) -> Result<Vec<String>, ArchiveError> {
 /// its name would be worse than one that refused.
 ///
 /// Permissions come from here, not from the archive: files 0600,
-/// directories 0700. See [`EXTRACT_FILE_MODE`].
+/// directories 0700. See `EXTRACT_FILE_MODE`.
 ///
 /// # Errors
 ///

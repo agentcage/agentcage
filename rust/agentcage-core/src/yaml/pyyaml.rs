@@ -124,7 +124,7 @@ pub fn is_bool(scalar: &str) -> Option<bool> {
 /// holding the *text* `"false"` got there by being quoted — and strict
 /// boolean fields exist specifically to reject that (the string
 /// `"false"` is truthy, which is the trap). See
-/// [`super::bool_1_1`] for where this is used and what it deliberately
+/// `super::bool_1_1` for where this is used and what it deliberately
 /// does not do.
 #[must_use]
 pub fn is_bool_1_1_only(scalar: &str) -> Option<bool> {

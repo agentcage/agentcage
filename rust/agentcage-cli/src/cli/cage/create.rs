@@ -230,34 +230,62 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             pull,
         },
     );
-    if let Err(error) = deployed {
-        // Stop partially-started services but preserve state for
-        // debugging: `cage update` is the documented retry.
-        //
-        // Not on the vm backend, where `stop` powers the Lima guest
-        // off. The guest *is* the preserved state: all four recovery
-        // commands printed below shell into it, and the units the
-        // teardown would stop live inside it and go down with it
-        // anyway. Powering it off is the opposite of what this branch
-        // says it does.
-        if config.isolation != "vm" {
-            backend.stop(&name);
+    let deployed = match deployed {
+        Ok(deployed) => deployed,
+        Err(error) => {
+            // Stop partially-started services but preserve state for
+            // debugging: `cage update` is the documented retry.
+            //
+            // Not on the vm backend, where `stop` powers the Lima guest
+            // off. The guest *is* the preserved state: all four recovery
+            // commands printed below shell into it, and the units the
+            // teardown would stop live inside it and go down with it
+            // anyway. Powering it off is the opposite of what this branch
+            // says it does.
+            if config.isolation != "vm" {
+                backend.stop(&name);
+            }
+            eprintln!("{error}");
+            println!();
+            eprintln!("Create failed. State preserved for debugging:");
+            eprintln!("  Inspect logs:    agentcage cage logs {name}");
+            eprintln!(
+                "  Inspect quadlets: ls {}/{name}-*",
+                backend.unit_dir().display()
+            );
+            eprintln!("  Retry:           agentcage cage update {name}");
+            eprintln!("  Clean up:        agentcage cage destroy {name}");
+            if show_timing {
+                agentcage_cli::timing::print_summary(&name);
+            }
+            return Err(ExitCode::from(EXIT_FAILURE));
         }
-        eprintln!("{error}");
-        println!();
-        eprintln!("Create failed. State preserved for debugging:");
-        eprintln!("  Inspect logs:    agentcage cage logs {name}");
-        eprintln!(
-            "  Inspect quadlets: ls {}/{name}-*",
-            backend.unit_dir().display()
-        );
-        eprintln!("  Retry:           agentcage cage update {name}");
-        eprintln!("  Clean up:        agentcage cage destroy {name}");
-        if show_timing {
-            agentcage_cli::timing::print_summary(&name);
-        }
-        return Err(ExitCode::from(EXIT_FAILURE));
-    }
+    };
+
+    // A successful create records the same fingerprint `cage update`
+    // would, so the first update has something to compare against and
+    // says "already up to date" instead of rebuilding a cage whose
+    // inputs have not moved (issue #417). Deliberately the shared
+    // `record_fingerprint`, not a second copy of "gather and save".
+    //
+    // There is no create variant that skips this: every success has
+    // built, installed and started, which is exactly the precondition
+    // a fingerprint asserts. The failure branch above returns before
+    // reaching here, so a failed create preserves no fingerprint and
+    // `cage update` still retries in full.
+    deploy::record_fingerprint(
+        &backend,
+        &ctx.paths,
+        deploy::FingerprintRequest {
+            config: &config,
+            name: &name,
+            config_host_path: &config_host_path.display().to_string(),
+            network_octet: Some(deployed.octet),
+            refresh_images: false,
+            units: Some(deployed.units),
+        },
+    )
+    .map_err(|error| backend_error(&error))?;
 
     println!();
     println!("Logs:");
@@ -480,7 +508,7 @@ pub(crate) fn build_container_image(
 /// `KEY=VALUE` or a bare `KEY`, which prompts. The prompt is
 /// `click.prompt(..., hide_input=True)`: a terminal read with echo off.
 ///
-/// The storing itself is [`SecretWriter`], shared with `secret set` —
+/// The storing itself is [`SecretWriter`](crate::cli::secret::set::SecretWriter), shared with `secret set` —
 /// it is `cli._store_secret`, and the two call sites have to agree
 /// about which backend takes a value and what happens when it refuses.
 ///
@@ -519,9 +547,23 @@ fn state_error(error: &agentcage_state::StateError) -> ExitCode {
     ExitCode::from(EXIT_FAILURE)
 }
 
+fn backend_error(error: &agentcage_cli::backend::BackendError) -> ExitCode {
+    eprintln!("error: {error}");
+    ExitCode::from(EXIT_FAILURE)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_rw_host_bind;
+    use super::{is_rw_host_bind, run};
+    use crate::cli::context::Ctx;
+    use agentcage_cli::backend::ContainerBackend;
+    use agentcage_cli::backends::AnyBackend;
+    use agentcage_cli::deploy;
+    use agentcage_core::fingerprint::fingerprint_matches;
+    use agentcage_core::har::json::Json;
+    use agentcage_exec::{Elevation, FakeRunner, Reply};
+    use agentcage_state::{Paths, TestDir};
+    use std::fs;
 
     /// The pinned examples.
     #[test]
@@ -534,5 +576,143 @@ mod tests {
         assert!(!is_rw_host_bind("/only-one-part"));
         assert!(!is_rw_host_bind("/a:/b:z,ro"));
         assert!(is_rw_host_bind("/a:/b:z,rw"));
+    }
+
+    /// `podman info`'s answer, reduced to the one key the renderer reads.
+    const PODMAN_INFO: &str = r#"{"host": {"security": {"rootless": true}}}"#;
+    /// An inspect with a digest, so the fingerprint has an identity to
+    /// carry rather than `unavailable`.
+    const IMAGE_INSPECT: &str = r#"[{
+        "Id": "sha256:n1",
+        "RepoDigests": ["node@sha256:abc"],
+        "Os": "linux",
+        "Architecture": "amd64"
+    }]"#;
+
+    const CONFIG: &str = "name: acme\n\
+        container:\n  \
+          image: node:22-slim\n\
+        domains:\n  \
+          allow:\n    \
+            - example.com\n";
+
+    /// The leaf `ArgMatches` for a `cage <verb>` invocation, parsed
+    /// through the real command tree.
+    fn leaf_matches(argv: &[&str]) -> clap::ArgMatches {
+        crate::cli::command(false)
+            .try_get_matches_from(argv)
+            .unwrap()
+            .subcommand()
+            .and_then(|(_, sub)| sub.subcommand())
+            .map(|(_, leaf)| leaf.clone())
+            .expect("a two-level subcommand")
+    }
+
+    /// Everything the create path shells out to, answered by prefix so
+    /// the test is about the fingerprint and not about argv order.
+    fn stub_create(fake: &FakeRunner) {
+        agentcage_cli::egress_image::provide_binary_for_tests(b"stub egress");
+        fake.assume_installed()
+            .on(["podman", "volume", "exists"], Reply::status(1))
+            .on(["podman", "info"], Reply::ok(PODMAN_INFO))
+            .on(["podman", "secret", "ls"], Reply::ok(""))
+            .on(["podman", "build"], Reply::success())
+            .on(["podman", "pull"], Reply::success())
+            .on(["podman", "image", "inspect"], Reply::ok(IMAGE_INSPECT))
+            .on(["systemctl", "--user"], Reply::success())
+            .default_reply(Reply::success());
+    }
+
+    /// **`cage create` writes the fingerprint `cage update` reads.**
+    ///
+    /// It used to write none, so the first update after a create found
+    /// nothing stored, called the cage changed and rebuilt it — a
+    /// needless image build for every new cage, and a "this always
+    /// rebuilds" lesson for the operator (issue #417).
+    ///
+    /// The assertion is not merely that a file appeared: the stored
+    /// fingerprint is compared with the one `cage update`'s preflight
+    /// computes, which is the exact comparison that decides the first
+    /// update is a no-op. A create that gathered the inputs even
+    /// slightly differently would write a file that never matches and
+    /// pass a mere existence check.
+    #[test]
+    fn create_records_the_fingerprint_the_first_update_compares_against() {
+        let dir = TestDir::new("create-fingerprint");
+        let fake = FakeRunner::new();
+        stub_create(&fake);
+        let ctx = Ctx {
+            paths: Paths::under(dir.join("home")),
+            runner: Box::new(fake.clone()),
+            version: "9.9.9".to_owned(),
+        };
+        let config_path = dir.join("cage.yaml");
+        fs::write(&config_path, CONFIG).unwrap();
+
+        run(
+            &ctx,
+            &leaf_matches(&[
+                "agentcage",
+                "cage",
+                "create",
+                &config_path.display().to_string(),
+            ]),
+        )
+        .expect("create succeeds against the stubs");
+
+        let stored = ctx
+            .paths
+            .load_fingerprint("acme")
+            .expect("create records a fingerprint");
+        assert!(
+            !matches!(stored, Json::Object(ref pairs) if pairs.is_empty()),
+            "{stored:?}"
+        );
+
+        // The update-side computation, exactly: nowhere rendered units,
+        // and the octet the deploy persisted.
+        let config = ctx
+            .paths
+            .load_deployment_config("acme", &agentcage_cli::hostenv::RealHost)
+            .expect("the stored config loads");
+        let metadata = ctx
+            .paths
+            .load_metadata("acme")
+            .expect("metadata was written");
+        let octet = match metadata.get("network_octet") {
+            Some(&Json::Int(octet)) => u32::try_from(octet).ok(),
+            _ => None,
+        }
+        .expect("the deploy recorded its octet");
+        let backend = AnyBackend::Container(ContainerBackend::with_elevation(
+            &ctx.paths,
+            ctx.runner.as_ref(),
+            &ctx.version,
+            Elevation::none(),
+        ));
+        // `cage update` passes the path `save_proxy_config` returns, not
+        // the stored cage.yaml, so the test has to as well.
+        let config_host_path = ctx
+            .paths
+            .save_proxy_config("acme", &ctx.version)
+            .expect("the proxy config is rewritten");
+        let preflight = deploy::update_fingerprint(
+            &backend,
+            &ctx.paths,
+            deploy::FingerprintRequest {
+                config: &config,
+                name: "acme",
+                config_host_path: &config_host_path.display().to_string(),
+                network_octet: Some(octet),
+                refresh_images: false,
+                units: None,
+            },
+        )
+        .expect("the preflight fingerprint gathers");
+        assert!(
+            fingerprint_matches(&stored, &preflight.fingerprint),
+            "the first update would rebuild: stored {stored:?}, computed {:?}",
+            preflight.fingerprint.to_json()
+        );
     }
 }

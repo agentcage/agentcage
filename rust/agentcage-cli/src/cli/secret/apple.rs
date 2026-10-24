@@ -30,7 +30,7 @@
 //! # And why there is no live-apply path here
 //!
 //! There is nowhere to stage to. The staged-secrets directory is
-//! populated by [`crate::apple::backend::AppleBackend`]'s
+//! populated by [`agentcage_cli::apple::backend::AppleBackend`]'s
 //! `stage_secrets` at `start()` and **wiped** as soon as the egress has
 //! read it (the durable copy is the keychain's), so writing a value
 //! into it on a running cage would reach nothing. So `secret set`'s
