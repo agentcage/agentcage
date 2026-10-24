@@ -5,9 +5,9 @@
 //!
 //! | File | In the egress | Produced from |
 //! | :-- | :-- | :-- |
-//! | `proxy-config.yaml` | `/etc/agentcage/config.yaml`, via `$AGENTCAGE_CONFIG` | [`Paths::save_proxy_config`] |
-//! | `dnsmasq.conf` | `/etc/agentcage/dnsmasq.conf` | [`render_dnsmasq_conf`] |
-//! | `dns-allowlist.conf` | `/etc/agentcage/dns-allowlist.conf` | [`Paths::save_dns_allowlist`] |
+//! | `proxy-config.yaml` | `/etc/agentcage/config.yaml`, via `$AGENTCAGE_CONFIG` | [`Paths::save_proxy_config`](agentcage_state::Paths::save_proxy_config) |
+//! | `dnsmasq.conf` | `/etc/agentcage/dnsmasq.conf` | [`render_dnsmasq_conf`](crate::apple::egress_config::render_dnsmasq_conf) |
+//! | `dns-allowlist.conf` | `/etc/agentcage/dns-allowlist.conf` | [`Paths::save_dns_allowlist`](agentcage_state::Paths::save_dns_allowlist) |
 //!
 //! Rendering host-side rather than baking into the image is what makes
 //! `domain add` a file rewrite plus a SIGHUP instead of a rebuild and a

@@ -17,5 +17,14 @@ crate-type = ["cdylib", "rlib"]
 # exports a 1.0.0 plugin has, and no `phases`.
 wit-bindgen = { version = "0.62", default-features = false, features = ["macros", "realloc"] }
 
+# The workspace's rust lints are spelled out rather than inherited: the
+# bindings `wit-bindgen` generates are FFI glue, so `unsafe_code` has to
+# be `deny` here and Cargo refuses `[lints] workspace = true` alongside
+# an override. The rustdoc table is the workspace's, copied for the same
+# reason.
 [lints.rust]
 unsafe_code = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"

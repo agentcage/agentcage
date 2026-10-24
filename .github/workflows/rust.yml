@@ -114,6 +114,37 @@ jobs:
           echo "actual:   $actual"
           [ "$actual" = "$expected" ]
 
+  # The doc comments are load-bearing: the module docs are the
+  # Python↔Rust mapping tables, and a `[`Thing`]` rustdoc cannot resolve
+  # renders as literal text — a row that no longer points at anything.
+  # `[workspace.lints.rustdoc]` denies that (and the private-target
+  # variant) in every member, which is the part that makes a new one an
+  # error. `-D warnings` is the belt to that suspenders: it also covers
+  # rustdoc's own default warnings, which no manifest setting reaches.
+  # No build of the workspace beyond what `cargo doc` needs, and
+  # `--no-deps` keeps third-party crates' docs (and warnings) out of it.
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup is preinstalled on the GitHub runners; this installs
+      # whatever rust-toolchain.toml asks for.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # Cached like the rust job above.
+      - name: Cache cargo registry and target/
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --locked
+
   # Dependency policy (deny.toml): RustSec advisories, licenses, banned
   # crates and sources. Separate from the build job so a new advisory
   # names itself in the job list instead of hiding in a long log. The

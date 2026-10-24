@@ -13,7 +13,7 @@
 //! with `jq` at boot. That made the cage's entrypoint a string the
 //! guest had to interpret, which is an argv-injection surface for any
 //! `container.command` carrying a shell metacharacter. Instead each
-//! element is shell-quoted host-side by [`shlex_join`] and written as
+//! element is shell-quoted host-side by `shlex_join` and written as
 //! `exec <quoted argv>` into a `/bin/sh` script with a `RUN` heredoc,
 //! so the guest parses nothing. The per-element quoting is
 //! [`agentcage_core::quadlets::shlex_quote`] — the same function the

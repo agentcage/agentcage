@@ -98,7 +98,7 @@ fn overlay() -> &'static std::sync::Mutex<BTreeMap<String, String>> {
 
 /// Publish `name=value` to every host probe in this process.
 ///
-/// See [`OVERLAY`]. Called once, by the `run` flow, before the config is
+/// See `OVERLAY`. Called once, by the `run` flow, before the config is
 /// loaded.
 pub fn publish_env(name: &str, value: &str) {
     if let Ok(mut map) = overlay().lock() {

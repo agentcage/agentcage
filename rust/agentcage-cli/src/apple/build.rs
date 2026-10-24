@@ -16,7 +16,7 @@
 //! build dies with `ECONNREFUSED` (POSIXErrorCode 61). So a
 //! Containerfile with any `localhost/` base drops `--pull` and says it
 //! did; `--no-cache` still forces the rebuild the operator asked for.
-//! [`base_image_refs`] is the scan that decides, and it has to
+//! [`base_image_refs`](crate::apple::build::base_image_refs) is the scan that decides, and it has to
 //! understand multi-stage aliases: in `FROM x AS build` … `FROM build`,
 //! the second `FROM` is not a pull.
 

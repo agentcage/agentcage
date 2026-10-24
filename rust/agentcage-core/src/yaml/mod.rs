@@ -37,7 +37,7 @@
 //! # What this module does about it
 //!
 //! [`dump`] writes the structure itself and quotes every scalar that
-//! PyYAML would not read back as a string — see [`emit`] for how, and
+//! PyYAML would not read back as a string — see `emit` for how, and
 //! [`pyyaml`] for the predicate, which is PyYAML's own implicit-resolver
 //! table transliterated rather than a list of tokens someone tested.
 //!
@@ -45,7 +45,7 @@
 //! config validators the same values `yaml.safe_load` would.
 //! That needs the scalar's *style*, which every serde YAML crate throws
 //! away, so it costs a second parse by a pure-Rust event parser — see
-//! [`style`] for the mechanism, the alignment rules and how it fails
+//! `style` for the mechanism, the alignment rules and how it fails
 //! closed.
 //!
 //! # The reading side, in full
@@ -55,7 +55,7 @@
 //!
 //! | In `cage.yaml` | PyYAML gives | [`load`] gives | |
 //! | :-- | :-- | :-- | :-- |
-//! | `tls: no` | `False` | `Bool(false)` | **resolved** — [`style`] |
+//! | `tls: no` | `False` | `Bool(false)` | **resolved** — `style` |
 //! | `tls: 'no'` | `"no"` | `String("no")` | **resolved** — the quote is honoured, so [`is_truthy`] still says `true` |
 //! | `tls: !!str no` | `"no"` | `String("no")` | **resolved** — an explicit tag is not a plain scalar |
 //! | `no: 1` (a key) | `{False: 1}` | `{Bool(false): 1}` | **resolved** — keys are rewritten too |
@@ -66,8 +66,8 @@
 //! | `n: 1e3` | `"1e3"` | `Number(1000.0)` | [`load`] is *more* permissive |
 //! | `n: 0o17` | `"0o17"` | `Number(15)` | same |
 //! | `k: !!bool no` | `False` | **error** | `serde_norway` refuses the tag; loud, not silent |
-//! | `<<: *anchor` | merged into the mapping | merged into the mapping | **resolved** — [`merge`], because the quiet wrong answer is an emptied `domains.allow` |
-//! | `k: <<`, `k: =` | **raises** | **error** | **resolved** — [`merge`]; PyYAML has no constructor for either tag outside key position |
+//! | `<<: *anchor` | merged into the mapping | merged into the mapping | **resolved** — `merge`, because the quiet wrong answer is an emptied `domains.allow` |
+//! | `k: <<`, `k: =` | **raises** | **error** | **resolved** — `merge`; PyYAML has no constructor for either tag outside key position |
 //!
 //! The booleans are resolved because they are the only row that can flip
 //! a *value* without changing its type — and a relay's `upstream.tls`
@@ -139,7 +139,7 @@ fn custom_error(message: impl std::fmt::Display) -> Error {
 /// Plain `yes`/`no`/`on`/`off` come back as [`Value::Bool`], exactly as
 /// PyYAML resolves them, while the quoted `'no'` stays a string. That
 /// needs the scalar's *style*, which the serde YAML crates discard, so
-/// it costs a second parse — see [`style`] for how, and for why any
+/// it costs a second parse — see `style` for how, and for why any
 /// disagreement between the two parses is an error rather than a guess.
 ///
 /// Callers that know the filename should use [`load_named`], so a
@@ -218,7 +218,7 @@ pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
 /// # Errors
 ///
 /// Complex mapping keys, custom tags, and any failure of the emitter's
-/// own round-trip self-check. See [`emit`].
+/// own round-trip self-check. See `emit`.
 pub fn dump(value: &Value) -> Result<String, Error> {
     emit::dump(value)
 }

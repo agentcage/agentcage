@@ -2,7 +2,7 @@
 //!
 //! Cage creation routes through the VM backend on macOS and takes
 //! 60–180s on a fresh Mac. Without per-phase timings every perf change
-//! is a guess. This is the smallest useful primitive: a [`Phase`] guard
+//! is a guess. This is the smallest useful primitive: a [`Phase`](crate::timing::Phase) guard
 //! that records `{label, ms, ts}` into a per-cage JSONL ledger, and a
 //! reader for the hidden `--timings` flags.
 //!

@@ -17,11 +17,11 @@
 //! precisely the ones CI is not.
 //!
 //! So nothing here touches the world directly. Subprocesses go through
-//! [`CommandRunner`], which is why [`CommandRunner::which`] is on the
+//! [`CommandRunner`](agentcage_exec::CommandRunner), which is why [`CommandRunner::which`](agentcage_exec::CommandRunner::which) is on the
 //! trait at all (PR D1's docs make the same argument), and everything
 //! else — `/etc/os-release`, the cgroup marker, free disk, DNS, a TCP
 //! bind, `$USER`, the euid, macOS-ness and the apple-container
-//! prerequisites — goes through [`DoctorHost`]. A faked pair of those
+//! prerequisites — goes through [`DoctorHost`](crate::doctor::DoctorHost). A faked pair of those
 //! reproduces any host exactly, which is what
 //! `tests/golden_doctor.rs` does for 38 of them against output
 //! recorded from an earlier release.
@@ -46,11 +46,11 @@
 //!
 //! * Earlier releases caught any exception a check raised and reported
 //!   it as a warning. The functions here are total — every path returns
-//!   a [`CheckResult`] — so there is nothing to catch. Two fixture cases
+//!   a [`CheckResult`](crate::doctor::CheckResult) — so there is nothing to catch. Two fixture cases
 //!   record a check raising; both are marked unported, and the golden
 //!   test asserts that the unported set is exactly those two.
 //! * A probe that is not installed or times out reads as a failed
-//!   probe, as it always has. [`ExecError`]'s other variants (spawn
+//!   probe, as it always has. [`ExecError`](agentcage_exec::ExecError)'s other variants (spawn
 //!   failures, I/O errors) take the same branch here, because the
 //!   alternative is a diagnostic tool that crashes while diagnosing.
 

@@ -13,14 +13,14 @@
 //!
 //! Step 3 before step 4 is not an ordering convenience: the address is
 //! populated asynchronously and can still be absent *after* the marker
-//! appears, which is why step 4 polls (see [`AppleBackend::container_ip`]).
+//! appears, which is why step 4 polls (see [`AppleBackend::container_ip`](crate::apple::backend::AppleBackend::container_ip)).
 //!
 //! # What is different about this backend, and must stay different
 //!
 //! * **Secrets are staged to persistent disk.** The container backend
 //!   stages into a tmpfs under `$XDG_RUNTIME_DIR`; macOS has neither.
 //!   The mitigation is temporal rather than spatial —
-//!   [`AppleBackend::wipe_staged_secrets`] removes the cleartext as
+//!   `AppleBackend::wipe_staged_secrets` removes the cleartext as
 //!   soon as the egress is ready, and the durable copy lives in the
 //!   keychain — and it must not be "fixed" toward the Linux shape.
 //! * **The cage VM never sees the secrets directory.** That is the
@@ -30,7 +30,7 @@
 //! * **There is no unit manager.** `install_units` writes a JSON
 //!   document, `start` reads it back, and the mask-mountpoint
 //!   bookkeeping the quadlet backend does in `ExecStartPre` /
-//!   `ExecStopPost` happens here instead (see [`super::masks`]).
+//!   `ExecStopPost` happens here instead (see [`super::masks`](crate::apple::masks)).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1738,9 +1738,9 @@ impl AppleBackend<'_> {
     ///    `dnsmasq --test`, and on failure put the old file back, so a
     ///    malformed allowlist cannot silently break DNS;
     /// 2. make the egress pick up the new baseline
-    ///    ([`EGRESS_RELOAD_SH`]);
+    ///    (`EGRESS_RELOAD_SH`);
     /// 3. regenerate and SIGHUP the **cage-local** dnsmasq
-    ///    ([`CAGE_RELOAD_SH`]) — the load-bearing one, since the
+    ///    (`CAGE_RELOAD_SH`) — the load-bearing one, since the
     ///    workload resolves through `127.0.0.1:53` inside the cage;
     /// 4. nothing for `proxy-config.yaml`: the egress polls its mtime
     ///    every second and hot-reloads itself.
@@ -1824,7 +1824,7 @@ impl AppleBackend<'_> {
 
 // ── the image store, for `cage update` ───────────────────────
 
-/// Apple's image store, as an [`ImageInspector`].
+/// Apple's image store, as an [`ImageInspector`](agentcage_exec::tools::podman::ImageInspector).
 ///
 /// `cage update` fingerprints the digests of every image that can
 /// affect a deployment, and on this backend those images are in

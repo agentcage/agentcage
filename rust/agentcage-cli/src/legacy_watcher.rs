@@ -17,7 +17,7 @@
 //! > relaunches the failing command indefinitely (launchd throttles to
 //! > ~10s — a permanent crash loop).
 //!
-//! [`LegacyWatcher::remove`] removes the artifacts. It is called from
+//! [`LegacyWatcher::remove`](crate::legacy_watcher::LegacyWatcher::remove) removes the artifacts. It is called from
 //! `cage destroy` and `cage update` and is:
 //!
 //! * **idempotent** — every step is best-effort; missing files, missing
@@ -38,10 +38,10 @@
 //!    cage's persisted metadata — written by a version of agentcage
 //!    whose validator is not this one's — so a `name` of `../../x` walks
 //!    out of `~/.config/systemd/user`, and a name containing `;` runs
-//!    arbitrary commands inside the VM. [`is_removable_name`] gates
+//!    arbitrary commands inside the VM. [`is_removable_name`](crate::legacy_watcher::is_removable_name) gates
 //!    everything on the config's own `^[a-z0-9][a-z0-9-]{0,62}$`, so
 //!    the only paths this module can construct are ones it fully
-//!    determines. See [`LegacyWatcher::remove`].
+//!    determines. See [`LegacyWatcher::remove`](crate::legacy_watcher::LegacyWatcher::remove).
 //! 2. **A Linux host with no systemd no longer crashes.** Earlier
 //!    releases ran `systemctl` unguarded, so on a
 //!    systemd-less Linux host that still has the unit file — a restored
@@ -54,12 +54,12 @@
 //!    is installed.
 //! 3. **`systemctl` gets the `runuser` prefix.** The legacy helper
 //!    shelled out directly for `disable --now`
-//!    because [`Systemctl::disable_unit`] cannot express `--now` — not
+//!    because [`Systemctl::disable_unit`](agentcage_exec::tools::systemctl::Systemctl::disable_unit) cannot express `--now` — not
 //!    because the elevation prefix is unwanted. Under `sudo`, a bare
 //!    `systemctl --user` talks to *root's* user instance, where the
 //!    cage's units are not, so that `disable --now` silently
 //!    did nothing before the file was deleted and systemd was left
-//!    holding the reference. [`Elevation`] fixes that.
+//!    holding the reference. [`Elevation`](agentcage_exec::Elevation) fixes that.
 //! 4. **`launchctl` missing is a no-op, not an error.** Same shape as
 //!    (2), for the same reason.
 //!
@@ -155,7 +155,7 @@ pub fn is_removable_name(name: &str) -> bool {
 pub struct LegacyWatcher<'a> {
     runner: &'a dyn CommandRunner,
     host: Host,
-    /// `None` when `$HOME` is unset; see [`LegacyWatcher::remove`].
+    /// `None` when `$HOME` is unset; see [`LegacyWatcher::remove`](crate::legacy_watcher::LegacyWatcher::remove).
     home: Option<PathBuf>,
     uid: u32,
     elevation: Elevation,

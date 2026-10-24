@@ -5,7 +5,7 @@
 //!
 //! They are embedded in the binary by
 //! `agentcage-assets` and extracted, byte- and mode-identical, into a
-//! digest-keyed cache directory. [`Scaffolds::system`] resolves that
+//! digest-keyed cache directory. [`Scaffolds::system`](crate::scaffold::Scaffolds::system) resolves that
 //! once and then everything below is ordinary path work — which matters,
 //! because a scaffold is not just a template: `run_scaffold_setup`
 //! builds a *podman build context* out of the directory, and a
