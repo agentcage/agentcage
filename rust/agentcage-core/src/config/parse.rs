@@ -258,7 +258,8 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         None | Some(Value::Null) => 10,
         Some(value) => int_value(value, "container.restart_sec")?,
     };
-    // The 120 here is not `ContainerConfig`'s 600. See types.rs.
+    // `ContainerConfig::default()` also says 120; the parser-side test
+    // below pins the two together. See types.rs.
     container.timeout_start_sec = or_int(
         c.get("timeout_start_sec"),
         120,
@@ -1627,8 +1628,17 @@ mod tests {
         let config = parse("name: c\ncontainer:\n  timeout_start_sec: 0\n");
         assert_eq!(config.container.timeout_start_sec, 0);
 
-        // Absent takes 120, not `ContainerConfig::default()`'s 600.
+        // Absent takes 120, the same as `ContainerConfig::default()`.
         assert_eq!(parse("name: c\n").container.timeout_start_sec, 120);
+    }
+
+    /// The type default and the loader's missing-key fallback are one
+    /// number, pinned so they cannot drift apart again (#415).
+    #[test]
+    fn timeout_start_sec_default_matches_the_type_default() {
+        let type_default = crate::config::types::ContainerConfig::default().timeout_start_sec;
+        assert_eq!(type_default, 120);
+        assert_eq!(parse("name: c\n").container.timeout_start_sec, type_default);
     }
 
     #[test]
