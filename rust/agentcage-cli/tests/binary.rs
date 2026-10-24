@@ -855,7 +855,8 @@ fn a_vm_cage_backup_says_which_volumes_it_could_not_carry() {
     );
 }
 
-/// A `vm` cage's logs and audit go to its guest, not to the host.///
+/// A `vm` cage's logs and audit go to its guest, not to the host.
+///
 /// There is no guest here, so `cage logs` ends in `limactl`'s own
 /// "instance does not exist" — which is the point: it reached `limactl`
 /// rather than printing an empty host journal. `cage audit` parses a
