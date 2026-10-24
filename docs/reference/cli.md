@@ -174,6 +174,7 @@ agentcage cage prune -y
 Opens the cage's stored `cage.yaml` in `$EDITOR` with automatic validation and atomic saving:
 - Validates YAML schema before saving (rejected edits are saved to `cage.yaml.rejected`).
 - Backs up previous working configuration to `cage.yaml.bak`.
+- Keeps the file's comments, quoting and layout: the operator's `cage.yaml` is written back byte-for-byte when the only change is theirs, and it is re-rendered only when `cage edit` itself adds a generated `secret_injection` placeholder.
 - Auto-applies domain changes to `dnsmasq` via `SIGHUP` without restarting the cage.
 - Ends by naming the command that applies each change it could not apply live:
   - **Live-applied**: proxy policy (`domains`, `inspectors`, `logging`, `capture`, `secret_injection`, `protocol_relays`, `agents`, …), which the egress reloads from `proxy-config.yaml` within about a second, and keys read on use (`exec_aliases`, `help`, `scaffold`).

@@ -505,13 +505,24 @@ fn update_refuses_no_pull_with_pull() {
 /// to get past their existence and version gates: a `cage.yaml` the
 /// loader accepts and a `metadata.json` claiming v0.22.
 fn stage_cage(home: &std::path::Path, name: &str, isolation: &str) {
+    stage_cage_with_config(
+        home,
+        name,
+        &format!("name: {name}\nisolation: {isolation}\ncontainer:\n  image: \"alpine\"\n"),
+    );
+}
+
+/// [`stage_cage`] with the config's bytes chosen by the caller.
+///
+/// `cage edit` refuses a cage without metadata (the version check in
+/// `preflight`), so this writes the same `0.40.1` stamp. The file itself
+/// is written byte-for-byte: the edit tests are about which bytes
+/// survive the command, and a helper that rendered the document first
+/// would hide the very thing they assert.
+fn stage_cage_with_config(home: &std::path::Path, name: &str, config: &str) {
     let paths = agentcage_state::Paths::under(home);
     std::fs::create_dir_all(paths.deployment_dir(name)).expect("the deployment dir is writable");
-    std::fs::write(
-        paths.deployment_dir(name).join("cage.yaml"),
-        format!("name: {name}\nisolation: {isolation}\ncontainer:\n  image: \"alpine\"\n"),
-    )
-    .expect("the config is writable");
+    std::fs::write(paths.stored_config_path(name), config).expect("the config is writable");
     paths
         .save_metadata(
             name,
@@ -999,4 +1010,239 @@ fn cage_edit_refuses_a_bad_edit_without_touching_the_config() {
         std::fs::read_to_string(&config_path).expect("stored config"),
         original
     );
+}
+
+/// The old/new line counts in a `@@ -a,b +c,d @@` header, so the helper
+/// below can tell where a hunk ends without guessing from the prefix.
+fn diff_hunk_counts(header: &str) -> (usize, usize) {
+    let mut parts = header.split_whitespace();
+    let _at_at = parts.next();
+    let old = parts.next().unwrap_or("-0,0");
+    let new = parts.next().unwrap_or("+0,0");
+    let count = |range: &str| {
+        // `-a,b` or `-a` (a one-line range omits the `,b`).
+        let body = range.trim_start_matches(['-', '+']);
+        let mut fields = body.split(',');
+        let _start = fields.next();
+        fields
+            .next()
+            .and_then(|count| count.parse().ok())
+            .unwrap_or(1)
+    };
+    (count(old), count(new))
+}
+
+/// Check the unified diff `cage edit` printed against the bytes it
+/// actually saved: every `+` line is in the file, every `-` line is not,
+/// and every context line still is.
+///
+/// The diff is a preview, so a discrepancy means the operator was shown
+/// a change that is not what landed on disk — the bug in #523 was
+/// exactly that, with the preview showing a re-render the operator never
+/// asked for.
+fn assert_diff_matches_written(stdout: &str, written: &str) {
+    let mut in_diff = false;
+    let (mut old_left, mut new_left) = (0usize, 0usize);
+    for line in stdout.lines() {
+        if !in_diff {
+            in_diff = line.starts_with("--- ");
+            continue;
+        }
+        if line.starts_with("+++ ") {
+            continue;
+        }
+        if line.starts_with("@@") {
+            (old_left, new_left) = diff_hunk_counts(line);
+            continue;
+        }
+        if old_left == 0 && new_left == 0 {
+            // The hunk is fully consumed; anything after it is the
+            // command's next-steps output.
+            break;
+        }
+        if let Some(added) = line.strip_prefix('+') {
+            assert!(
+                written.lines().any(|line| line == added),
+                "printed as added but not written: {added:?}\n{stdout}"
+            );
+            new_left = new_left.saturating_sub(1);
+        } else if let Some(removed) = line.strip_prefix('-') {
+            assert!(
+                !written.lines().any(|line| line == removed),
+                "printed as removed but still written: {removed:?}\n{stdout}"
+            );
+            old_left = old_left.saturating_sub(1);
+        } else if let Some(context) = line.strip_prefix(' ') {
+            assert!(
+                written.lines().any(|line| line == context),
+                "printed as context but not written: {context:?}\n{stdout}"
+            );
+            old_left = old_left.saturating_sub(1);
+            new_left = new_left.saturating_sub(1);
+        } else {
+            break;
+        }
+    }
+    assert!(in_diff, "no diff was printed:\n{stdout}");
+}
+
+/// The regression from #523: a one-value edit used to re-render the whole
+/// document through the YAML emitter, so every comment, quoted scalar and
+/// flow-style list in the operator's `cage.yaml` was replaced by the
+/// emitter's formatting.
+///
+/// The bytes written are asserted whole, not line by line: "keeps the
+/// comments" means the saved file is the operator's file with the one
+/// value changed, and anything looser would let a reformat through.
+#[test]
+fn cage_edit_keeps_the_operators_comments_and_formatting() {
+    let dir = agentcage_state::TestDir::new("binary-cage-edit-comments");
+    let home = dir.path();
+    let paths = agentcage_state::Paths::under(home);
+    let name = "demo";
+    let original = r#"# Cage for the demo agent -- keep this comment.
+name: demo
+
+isolation: container
+
+container:
+  image: "alpine"  # pinned on purpose
+  command: ["sleep", "infinity"]
+  volumes:
+    # Mount the project directory.
+    - "~/project:/workspace:rw"
+"#;
+    stage_cage_with_config(home, name, original);
+
+    let editor = home.join("change-image.sh");
+    std::fs::write(
+        &editor,
+        "#!/bin/sh\nsed -e 's/\"alpine\"/\"ubuntu\"/' \"$1\" > \"$1.t\" && mv \"$1.t\" \"$1\"\n",
+    )
+    .expect("script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    let editor = editor.to_str().expect("utf-8 path");
+    let out = agentcage_sandboxed_env(
+        home,
+        &["cage", "edit", name],
+        &[("VISUAL", editor), ("EDITOR", editor)],
+    );
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "{text}");
+
+    let written =
+        std::fs::read_to_string(paths.stored_config_path(name)).expect("the stored config");
+    assert_eq!(
+        written,
+        original.replace("\"alpine\"", "\"ubuntu\""),
+        "the edit reformatted something besides the value it changed"
+    );
+
+    // The diff is computed against the bytes on disk, not a re-render:
+    // the swapped line is the only change and the comment lines are
+    // context, never removals.
+    let printed = stdout(&out);
+    assert!(
+        printed.contains("-  image: \"alpine\"  # pinned on purpose\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("+  image: \"ubuntu\"  # pinned on purpose\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(" # Mount the project directory.\n"),
+        "the volumes comment was not shown as unchanged context: {printed}"
+    );
+    assert!(
+        !printed.contains("-# Mount the project directory."),
+        "a comment the edit did not touch was printed as removed: {printed}"
+    );
+    assert_diff_matches_written(&printed, &written);
+}
+
+/// The other half of the contract: when the CLI itself has to change the
+/// document — here, minting a placeholder for a rule that omits one —
+/// there is no operator text for the value tree to preserve, so the
+/// re-rendered document is the one saved and the one the diff describes.
+#[test]
+fn cage_edit_saves_the_rendered_document_when_it_fills_a_placeholder() {
+    let dir = agentcage_state::TestDir::new("binary-cage-edit-fill");
+    let home = dir.path();
+    let paths = agentcage_state::Paths::under(home);
+    let name = "fill";
+    let original = r#"# A comment the fill cannot keep.
+name: fill
+
+isolation: container
+
+container:
+  image: "alpine"
+
+domains:
+  allow:
+    - example.com
+
+secret_injection:
+  # No placeholder yet, so the CLI has to add one.
+  - env: DEMO_KEY
+    inject_to:
+      - example.com
+"#;
+    stage_cage_with_config(home, name, original);
+
+    let editor = home.join("change-image.sh");
+    std::fs::write(
+        &editor,
+        "#!/bin/sh\nsed -e 's/\"alpine\"/\"ubuntu\"/' \"$1\" > \"$1.t\" && mv \"$1.t\" \"$1\"\n",
+    )
+    .expect("script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    let editor = editor.to_str().expect("utf-8 path");
+    let out = agentcage_sandboxed_env(
+        home,
+        &["cage", "edit", name],
+        &[("VISUAL", editor), ("EDITOR", editor)],
+    );
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "{text}");
+
+    let written =
+        std::fs::read_to_string(paths.stored_config_path(name)).expect("the stored config");
+    // The minted token is the only nondeterministic part.
+    assert!(
+        written.contains("placeholder: agentcage:secret:DEMO_KEY:"),
+        "the filled placeholder was not saved: {written}"
+    );
+    // Re-rendered, as the fallback requires: the emitter drops comments
+    // and the operator's quotes, and the intended value change is there.
+    assert!(
+        !written.lines().any(|line| line.contains('#')),
+        "a fill must save the re-rendered document, not the commented text: {written}"
+    );
+    assert!(
+        written.contains("image: ubuntu") && !written.contains("\"ubuntu\""),
+        "the saved document was not re-rendered: {written}"
+    );
+
+    let printed = stdout(&out);
+    assert!(
+        printed.contains("-# A comment the fill cannot keep.\n"),
+        "the diff did not describe the re-rendered document: {printed}"
+    );
+    assert!(
+        printed.contains("+  placeholder: agentcage:secret:DEMO_KEY:"),
+        "the diff does not show the minted placeholder: {printed}"
+    );
+    assert_diff_matches_written(&printed, &written);
 }

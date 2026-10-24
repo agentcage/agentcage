@@ -265,7 +265,10 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
     // document. Carrying from the pre-edit config keeps an already
     // generated placeholder stable when the operator leaves
     // `placeholder:` off a rule that already had one.
-    config::fill_raw_placeholders(
+    //
+    // The return value decides which bytes reach disk below: a fill is
+    // the only change this command makes to the document itself.
+    let filled = config::fill_raw_placeholders(
         &mut edited_raw,
         Some(&original_raw),
         &mut agentcage_state::mint_placeholder,
@@ -280,13 +283,23 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
         }
     };
 
+    // Which bytes get validated, diffed and saved. When the fill changed
+    // nothing, the operator's text is already the document that was
+    // parsed above: re-rendering it would trade their comments, quoting
+    // and flow style for this emitter's formatting and change nothing
+    // else (#523). The value tree carries no comments, so a fill — the
+    // one change the CLI makes itself — still has to be re-rendered.
+    let rendered_text: &str = if filled { &rendered } else { &edited_text };
+
     // Validate through the real loader. `config::load` takes the text,
     // so there is no temp file to create, fail to clean up, or leak into
     // the state tree, and a parse-stage message that embeds its source
     // names the cage's own `cage.yaml`. (Earlier releases validated a
-    // temporary copy and named that instead.)
+    // temporary copy and named that instead.) This validates exactly the
+    // bytes that will be written, not a re-rendered stand-in for them.
     let host = agentcage_cli::hostenv::RealHost;
-    let config: Config = match config::load(&config_path.display().to_string(), &rendered, &host) {
+    let source = config_path.display().to_string();
+    let config: Config = match config::load(&source, rendered_text, &host) {
         Ok(config) => config,
         Err(error) => {
             return Err(reject(&format!("edited config failed validation: {error}")));
@@ -302,12 +315,14 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
         eprintln!("warning: {warning}");
     }
 
-    // Show what changed before writing it.
+    // Show what changed before writing it. Against the same text that is
+    // saved below, so the diff is a preview and not an approximation of
+    // one.
     print!(
         "{}",
         unified_diff(
             &original_text,
-            &rendered,
+            rendered_text,
             &format!("{name}/cage.yaml (before)"),
             &format!("{name}/cage.yaml (after)"),
         )
@@ -326,7 +341,7 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), std::process::ExitCode> {
         );
         return Err(std::process::ExitCode::from(EXIT_FAILURE));
     }
-    if let Err(error) = ctx.paths.save_raw_config(name, &edited_raw) {
+    if let Err(error) = ctx.paths.save_raw_config_text(name, rendered_text) {
         eprintln!("error: {error}");
         return Err(std::process::ExitCode::from(EXIT_FAILURE));
     }
