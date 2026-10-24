@@ -8,7 +8,7 @@ agentcage provides built-in commands to create portable, self-contained backup t
 
 `agentcage cage backup` writes a gzipped tar with one top-level directory, `agentcage-backup/`, holding:
 
-- **`manifest.json`**: the backup's format version, the agentcage version that wrote it, the cage's name and isolation backend, a timestamp, the names of the secrets the cage's config expects, the named volumes in the archive, and whether secret values and a build context are included.
+- **`manifest.json`**: the backup's format version, the agentcage version that wrote it, the cage's name and isolation backend, a timestamp, the names of the secrets the cage's config expects, the named volumes in the archive, and whether secret values and a build context are included. A backend that cannot export a declared volume also records the names it skipped, under `named_volumes_skipped`.
 - **`config/`**: the cage's state directory: `cage.yaml`, `metadata.json` (including the cage's network slot), the generated `proxy-config.yaml` and `dns-allowlist.conf` (for reading only, since a restore regenerates both from `cage.yaml`), and the build context when the cage builds its own image: the `Containerfile` and everything it copies in. Left out:
   - credential material: `creds` and `pending_secrets.json`.
   - `cage-env/`, the placeholder environment a deploy regenerates.
@@ -17,7 +17,7 @@ agentcage provides built-in commands to create portable, self-contained backup t
   - `cage.yaml.bak`, `cage.yaml.rejected` and build noise (`.git`, `node_modules`, `__pycache__`, `*.pyc`, `*.deleted.*`).
 
   A restore skips these names even when a hand-made archive includes them.
-- **`volumes/`** (`container` only): one `<name>.tar` for each `container.named_volumes` entry that exists, from `podman volume export`. A `vm` cage's named volumes live in its Lima guest and aren't backed up. `apple-container` has no named volumes.
+- **`volumes/`** (`container` only): one `<name>.tar` for each `container.named_volumes` entry that exists, from `podman volume export`. A `vm` cage's named volumes live in its Lima guest and aren't backed up: `cage backup` prints a warning naming each one, and records it under `named_volumes_skipped` in `manifest.json`. `apple-container` has no named volumes.
 - **`capture/capture.jsonl`**: the capture log, when it isn't empty. An `apple-container` backup also carries **`audit/audit.jsonl`**.
 - **`secrets/`** (only with `--include-secrets`, not on `apple-container`): one file per stored secret, holding its **plaintext value**. Without the flag no values travel, and the restore lists the secrets you have to set again.
 
@@ -84,7 +84,7 @@ agentcage cage restore ~/backups/my-agent.tar.gz --no-start
 
 This restores the secrets, the configuration and the capture log, and on `container` it also creates the named volumes and imports their data, so nothing is lost by not starting. No image is built and no units are installed. Run `agentcage cage update my-agent` to build and start the cage. It mounts the volumes that are already filled.
 
-On `vm` and `apple-container`, a restore never imports named volumes, whether it starts the cage or not. `cage backup` doesn't write any for these backends. If a hand-made archive lists one, the restore warns and leaves the data in the archive, at `agentcage-backup/volumes/<name>.tar`.
+On `vm` and `apple-container`, a restore never imports named volumes, whether it starts the cage or not. `cage backup` doesn't write any for these backends. A `vm` cage's backup records the volumes it skipped under `named_volumes_skipped` in `manifest.json`, and the restore prints the same warning, so an empty volume is expected rather than discovered. If a hand-made archive lists one, the restore warns and leaves the data in the archive, at `agentcage-backup/volumes/<name>.tar`.
 
 ### Overwriting an Existing Cage
 If a cage with the same name already exists on the host:

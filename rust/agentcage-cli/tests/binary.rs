@@ -778,8 +778,84 @@ fn an_apple_cage_is_backed_up_and_restored_in_its_own_shape() {
     assert!(!paths.capture_file("cage-clone").exists());
 }
 
-/// A `vm` cage's logs and audit go to its guest, not to the host.
+/// **A `vm` cage's named volumes are not in the archive, and the
+/// command says so** (#419). They live in the guest's podman and this
+/// build has no volume verbs there, so the only honest backup is one
+/// that names what it left behind — at backup time and again at
+/// restore time, from the manifest's `named_volumes_skipped`.
 ///
+/// Needs no runtime: the volume step is skipped before podman is
+/// asked, and `--no-start` stops the restore before the first build.
+#[test]
+fn a_vm_cage_backup_says_which_volumes_it_could_not_carry() {
+    let dir = agentcage_state::TestDir::new("binary-vm-backup-volumes");
+    let paths = agentcage_state::Paths::under(dir.path());
+    std::fs::create_dir_all(paths.deployment_dir("vm-cage")).expect("writable");
+    std::fs::write(
+        paths.deployment_dir("vm-cage").join("cage.yaml"),
+        "name: vm-cage\nisolation: vm\ncontainer:\n  image: \"alpine\"\n  \
+         named_volumes:\n    vm-cage-workspace: /workspace\n",
+    )
+    .expect("the config is writable");
+    std::fs::write(
+        paths.metadata_path("vm-cage"),
+        "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+    )
+    .expect("the metadata is writable");
+
+    let tarball = dir.join("vm.tar.gz");
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "cage",
+            "backup",
+            "vm-cage",
+            "-o",
+            &tarball.display().to_string(),
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("warning: volume 'vm-cage-workspace' is not in the archive"),
+        "the skipped volume went unmentioned: {}",
+        stderr(&out)
+    );
+
+    // Recorded, so the restore can repeat it rather than leave an
+    // operator to find the empty volume after the cage starts.
+    let manifest = String::from_utf8(
+        agentcage_cli::archive::read_member(&tarball, "agentcage-backup/manifest.json")
+            .expect("a readable tarball")
+            .expect("every backup has a manifest"),
+    )
+    .expect("the manifest is UTF-8");
+    assert!(
+        manifest.contains("\"named_volumes_skipped\"")
+            && manifest.contains("\"vm-cage-workspace\""),
+        "{manifest}"
+    );
+
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "cage",
+            "restore",
+            &tarball.display().to_string(),
+            // Under a new name, because the original is still deployed.
+            "--name",
+            "vm-clone",
+            "--no-start",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("warning: volume 'vm-cage-workspace' is not in the archive"),
+        "the restore did not repeat the warning: {}",
+        stderr(&out)
+    );
+}
+
+/// A `vm` cage's logs and audit go to its guest, not to the host.///
 /// There is no guest here, so `cage logs` ends in `limactl`'s own
 /// "instance does not exist" — which is the point: it reached `limactl`
 /// rather than printing an empty host journal. `cage audit` parses a

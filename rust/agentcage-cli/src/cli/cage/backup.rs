@@ -75,9 +75,13 @@
 //! [`require_known_backend`] has accepted `vm` since PR E6. `cage
 //! backup` reads the cage's secrets from its own store, inside the Lima
 //! guest, and writes no named volumes, since those live in the guest's
-//! podman. `cage restore` stages the secrets in the *host* store, where
-//! the deploy mirrors them into the guest it creates (see the comment
-//! at the restore's `Podman::new`), and imports no named volumes
+//! podman. It is no longer silent about that: a cage that declares
+//! `container.named_volumes` gets a warning per volume, and the
+//! manifest records the skipped names under `named_volumes_skipped` so
+//! `cage restore` can repeat the warning ([`volumes_not_in_backup`]).
+//! `cage restore` stages the secrets in the *host* store, where the
+//! deploy mirrors them into the guest it creates (see the comment at
+//! the restore's `Podman::new`), and imports no named volumes
 //! ([`importable_volumes`]).
 
 use std::collections::BTreeSet;
@@ -335,32 +339,44 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ExitCode::from(EXIT_FAILURE)
     })?;
     let mut volume_names: Vec<String> = Vec::new();
-    // Container-only, as it has been since earlier releases. Its
-    // consequence is worth stating plainly
-    // because nothing prints it: **a vm cage's named volumes are not
-    // backed up.** They live in the guest's podman, `VmPodman` has no
-    // volume verbs, and the tarball comes out with an empty `volumes/`
-    // — silently. The host handle is built here rather than reused
-    // from the router so that "volumes are a host-store thing" is
-    // structural rather than a comment.
-    if config.isolation == "container" && !config.container.named_volumes.is_empty() {
-        let host = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-        members.push(Member::Dir(format!("{ROOT}/volumes")));
-        for volume in config.container.named_volumes.keys() {
-            if host.volume_exists(volume).unwrap_or(false) {
-                let exported = staging.path().join(format!("{volume}.tar"));
-                if let Err(error) = host.volume_export(volume, &exported.display().to_string()) {
-                    eprintln!("error: could not export volume '{volume}': {error}");
-                    return Err(ExitCode::from(EXIT_FAILURE));
+    // What the config declares but this archive cannot carry: recorded
+    // in the manifest so a restore can say it too.
+    let mut skipped_volumes: Vec<String> = Vec::new();
+    // Container-only, as it has been since earlier releases, and the
+    // host handle is built here rather than reused from the router so
+    // that "volumes are a host-store thing" is structural rather than
+    // a comment. **A vm cage's named volumes are not backed up**: they
+    // live in the guest's podman and `VmPodman` has no volume verbs.
+    // Nothing can be done about that here, but it is said out loud —
+    // both in the warning below and in the manifest key the restore
+    // reads back — because an archive with an empty `volumes/` and no
+    // word about it is how an operator comes to trust it.
+    if config.isolation == "container" {
+        if !config.container.named_volumes.is_empty() {
+            let host = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+            members.push(Member::Dir(format!("{ROOT}/volumes")));
+            for volume in config.container.named_volumes.keys() {
+                if host.volume_exists(volume).unwrap_or(false) {
+                    let exported = staging.path().join(format!("{volume}.tar"));
+                    if let Err(error) = host.volume_export(volume, &exported.display().to_string())
+                    {
+                        eprintln!("error: could not export volume '{volume}': {error}");
+                        return Err(ExitCode::from(EXIT_FAILURE));
+                    }
+                    members.push(Member::FileFrom(
+                        format!("{ROOT}/volumes/{volume}.tar"),
+                        exported,
+                    ));
+                    volume_names.push(volume.clone());
+                } else {
+                    eprintln!("warning: volume '{volume}' does not exist, skipping");
                 }
-                members.push(Member::FileFrom(
-                    format!("{ROOT}/volumes/{volume}.tar"),
-                    exported,
-                ));
-                volume_names.push(volume.clone());
-            } else {
-                eprintln!("warning: volume '{volume}' does not exist, skipping");
             }
+        }
+    } else {
+        skipped_volumes.extend(config.container.named_volumes.keys().cloned());
+        for line in volumes_not_in_backup(&config.isolation, &skipped_volumes) {
+            eprintln!("{line}");
         }
     }
 
@@ -381,7 +397,7 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     //
     // Key order is the one earlier releases wrote, and what a human
     // diffing two backups sees.
-    let manifest = Json::Object(vec![
+    let mut fields = vec![
         ("format_version".to_owned(), Json::Int(FORMAT_VERSION)),
         (
             "agentcage_version".to_owned(),
@@ -424,7 +440,23 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             "build_context_included".to_owned(),
             Json::Bool(has_build_context),
         ),
-    ]);
+    ];
+    // Appended, and only when there is something to say, so a container
+    // manifest is byte-identical to the one earlier releases wrote. A
+    // reader that does not know the key ignores it, which is why this
+    // is additive and `FORMAT_VERSION` stays at 1.
+    if !skipped_volumes.is_empty() {
+        fields.push((
+            "named_volumes_skipped".to_owned(),
+            Json::Array(
+                skipped_volumes
+                    .iter()
+                    .map(|name| Json::string(name.as_str()))
+                    .collect(),
+            ),
+        ));
+    }
+    let manifest = Json::Object(fields);
     members.push(Member::File(
         format!("{ROOT}/manifest.json"),
         format!("{}\n", dumps(&manifest, DumpOptions::indented())).into_bytes(),
@@ -822,6 +854,11 @@ struct Manifest {
     secret_keys: Vec<String>,
     secrets_included: bool,
     named_volumes: Vec<String>,
+    /// Named volumes the archived cage declared but the archive does
+    /// not carry, because the backend could not export them — a `vm`
+    /// cage's live in its Lima guest. Written only when non-empty, so a
+    /// container manifest keeps the shape earlier releases wrote.
+    named_volumes_skipped: Vec<String>,
     /// Only ever reported back to the operator, never trusted: the
     /// preflight looks at what the archive *holds*, because a manifest
     /// is the part of a backup a person can edit.
@@ -854,6 +891,7 @@ impl Manifest {
             secret_keys: strings("secret_keys"),
             secrets_included: value.get("secrets_included").is_some_and(Json::is_truthy),
             named_volumes: strings("named_volumes"),
+            named_volumes_skipped: strings("named_volumes_skipped"),
             build_context_included: value
                 .get("build_context_included")
                 .is_some_and(Json::is_truthy),
@@ -958,6 +996,12 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ExitCode::from(EXIT_FAILURE)
     })?;
     let volumes = importable_volumes(&manifest.isolation, volumes, &tarball);
+    // What the backup could not carry, said again here: a restore that
+    // only reports the volumes it *found* in the manifest leaves the
+    // operator believing an empty archive was an empty cage.
+    for line in volumes_not_in_backup(&manifest.isolation, &manifest.named_volumes_skipped) {
+        eprintln!("{line}");
+    }
     // In the preflight, so a refusal comes before `--force` destroys
     // anything and before podman is asked to write anything.
     if let Err(message) = clone_volume_collisions(ctx, &manifest, &target, &config_src, &volumes) {
@@ -1685,6 +1729,40 @@ fn volumes_to_import(
     Ok(import)
 }
 
+/// The reason, by backend, that a cage's named volumes cannot travel in
+/// a backup. One sentence, shared by both halves so that a backup and
+/// the restore of its archive say the same thing about the same
+/// volumes.
+fn volumes_not_in_backup_reason(isolation: &str) -> &'static str {
+    match isolation {
+        "vm" => {
+            "a vm cage's named volumes live in its Lima guest, and \
+             `cage backup` cannot export them"
+        }
+        APPLE_CONTAINER => "apple-container has no named volumes",
+        _ => "`cage backup` could not export this cage's named volumes",
+    }
+}
+
+/// One warning line per named volume the archive does not carry.
+///
+/// Returned rather than printed so both callers — the backup, which
+/// knows the list from the config, and the restore, which reads it out
+/// of `named_volumes_skipped` — use the same words, and so the tests
+/// can assert them without a stderr pipe.
+fn volumes_not_in_backup(isolation: &str, volumes: &[String]) -> Vec<String> {
+    let reason = volumes_not_in_backup_reason(isolation);
+    volumes
+        .iter()
+        .map(|volume| {
+            format!(
+                "warning: volume '{volume}' is not in the archive: {reason}. \
+                 A restore leaves it empty"
+            )
+        })
+        .collect()
+}
+
 /// The part of `volumes` the archive's backend can import — all of it
 /// on `container`, none of it anywhere else — warning, per volume,
 /// about the rest.
@@ -2066,7 +2144,7 @@ mod tests {
         check_restore_build_context, clone_volume_collisions, file_timestamp, host_volumes,
         importable_volumes, is_valid_cage_name, is_valid_volume_name, merge_at_rest_keys,
         restore_build_context, restore_capture, restore_config, restore_inner, restore_secrets,
-        stage_backup_config, volumes_to_import,
+        stage_backup_config, volumes_not_in_backup, volumes_to_import,
     };
     use crate::cli::context::Ctx;
     use agentcage_cli::archive::{self, Member};
@@ -2716,6 +2794,7 @@ container:
             secret_keys: Vec::new(),
             secrets_included: false,
             named_volumes: Vec::new(),
+            named_volumes_skipped: Vec::new(),
             build_context_included,
         }
     }
@@ -2919,6 +2998,36 @@ container:
                 Vec::new(),
             ));
         }
+        archive::write_targz(tarball, &members).unwrap();
+    }
+
+    /// [`backup_with_volumes_on`], for an archive that carries **no**
+    /// volume tar and a manifest recording `skipped` under
+    /// `named_volumes_skipped` — the shape a `vm` backup writes for a
+    /// cage that declares named volumes.
+    fn backup_with_skipped_volumes(tarball: &Path, isolation: &str, skipped: &[&str]) {
+        let quoted: Vec<String> = skipped.iter().map(|name| format!("\"{name}\"")).collect();
+        let declared = skipped
+            .iter()
+            .map(|name| format!("    {name}: /mnt/{name}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cage_yaml =
+            format!("{CAGE_YAML_NO_BUILD}  named_volumes:\n{declared}\nisolation: {isolation}\n");
+        let members = vec![
+            Member::Dir(format!("{ROOT}/config")),
+            Member::File(format!("{ROOT}/config/cage.yaml"), cage_yaml.into_bytes()),
+            Member::File(
+                format!("{ROOT}/manifest.json"),
+                format!(
+                    "{{\"format_version\": 1, \"cage_name\": \"{RICH}\", \
+                      \"isolation\": \"{isolation}\", \"named_volumes\": [], \
+                      \"named_volumes_skipped\": [{}]}}\n",
+                    quoted.join(", ")
+                )
+                .into_bytes(),
+            ),
+        ];
         archive::write_targz(tarball, &members).unwrap();
     }
 
@@ -4440,6 +4549,198 @@ secret_injection:
                 .iter()
                 .any(|argv| argv.first().map(String::as_str) == Some("podman")),
             "the host store was never asked: {calls:?}"
+        );
+    }
+
+    /// **A `vm` backup says what it cannot carry.** A vm cage's named
+    /// volumes live in its Lima guest's podman, and `VmPodman` has no
+    /// volume verbs, so `cage backup` exports none of them. That has
+    /// always been true; printing nothing about it is how an archive
+    /// with an empty `volumes/` looks complete.
+    ///
+    /// The manifest records the skipped names — and keeps
+    /// `named_volumes` empty, since nothing travelled — so a restore
+    /// of this archive can say it too.
+    #[test]
+    fn a_vm_backup_names_the_volumes_it_cannot_carry() {
+        let dir = TestDir::new("vm-backup-skipped-volumes");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(
+            ["limactl", "list", "--json", "agentcage-vm-cage"],
+            Reply::ok("{\"status\": \"Running\"}\n"),
+        );
+        fake.on(["limactl", "shell"], Reply::ok(""));
+        let ctx = ctx(&dir, fake.clone());
+
+        let source = dir.join("vm.yaml");
+        fs::write(
+            &source,
+            "name: vm-cage\nisolation: vm\ncontainer:\n  \
+             image: docker.io/library/node:22-slim\n  named_volumes:\n    \
+             vm-cage-workspace: /workspace\n    vm-cage-state: /state\n",
+        )
+        .unwrap();
+        ctx.paths.save_deployment("vm-cage", &source).unwrap();
+        fs::write(
+            ctx.paths.metadata_path("vm-cage"),
+            "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+        )
+        .unwrap();
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            "vm-cage",
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+
+        let names = archive::member_names(&out).unwrap();
+        assert!(
+            !names.iter().any(|name| name.contains("volumes")),
+            "a vm backup carried a volumes/ member: {names:?}"
+        );
+
+        let manifest = Manifest::parse(&manifest_text(&out)).unwrap();
+        assert!(
+            manifest.named_volumes.is_empty(),
+            "{:?}",
+            manifest.named_volumes
+        );
+        assert_eq!(
+            manifest.named_volumes_skipped,
+            ["vm-cage-workspace", "vm-cage-state"]
+        );
+        // The exact lines the backup printed — same helper, so the
+        // restore of this archive repeats them.
+        assert_eq!(
+            volumes_not_in_backup(&manifest.isolation, &manifest.named_volumes_skipped),
+            [
+                "warning: volume 'vm-cage-workspace' is not in the archive: a vm \
+                 cage's named volumes live in its Lima guest, and `cage backup` \
+                 cannot export them. A restore leaves it empty",
+                "warning: volume 'vm-cage-state' is not in the archive: a vm cage's \
+                 named volumes live in its Lima guest, and `cage backup` cannot \
+                 export them. A restore leaves it empty",
+            ]
+        );
+
+        // And it never asked podman for a volume, in either store.
+        let volume_verbs: Vec<Vec<String>> = fake
+            .argv_sequence()
+            .into_iter()
+            .filter(|argv| argv.iter().any(|arg| arg == "volume" || arg == "export"))
+            .collect();
+        assert!(volume_verbs.is_empty(), "{volume_verbs:?}");
+    }
+
+    /// The container half is **unchanged**: no new manifest key, no
+    /// warning about skipped volumes, and the empty `volumes/` member
+    /// earlier releases emitted for a declared-but-absent volume. Only
+    /// a non-container backend has something to say here.
+    #[test]
+    fn a_container_backup_manifests_no_skipped_volumes() {
+        let dir = TestDir::new("container-backup-no-skipped-volumes");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        // `podman secret ls` — empty — then `volume exists` for the
+        // cage's one named volume, which says no.
+        fake.push(Reply::ok(""));
+        fake.push(Reply::status(1));
+        let ctx = ctx(&dir, fake.clone());
+
+        let source = dir.join("container.yaml");
+        fs::write(
+            &source,
+            "name: acme-agent\nisolation: container\ncontainer:\n  \
+             image: docker.io/library/node:22-slim\n  named_volumes:\n    \
+             acme-agent-workspace: /workspace\n",
+        )
+        .unwrap();
+        ctx.paths.save_deployment(RICH, &source).unwrap();
+        fs::write(
+            ctx.paths.metadata_path(RICH),
+            "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+        )
+        .unwrap();
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            RICH,
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+
+        let text = manifest_text(&out);
+        assert!(
+            !text.contains("named_volumes_skipped"),
+            "a container manifest grew the vm-only key: {text}"
+        );
+        let manifest = Manifest::parse(&text).unwrap();
+        assert!(manifest.named_volumes_skipped.is_empty());
+        assert!(manifest.named_volumes.is_empty());
+        // The `volumes/` directory is still emitted, empty, exactly as
+        // earlier releases did.
+        assert!(
+            archive::member_names(&out)
+                .unwrap()
+                .iter()
+                .any(|name| name == "agentcage-backup/volumes"),
+            "{text}"
+        );
+    }
+
+    /// **The restore repeats it.** An archive whose manifest records
+    /// what the backup skipped makes `cage restore` print the same
+    /// warning, instead of leaving an operator to discover an empty
+    /// volume after the cage starts.
+    #[test]
+    fn a_restore_repeats_the_volumes_the_backup_could_not_carry() {
+        let dir = TestDir::new("restore-skipped-volumes");
+        let tarball = dir.join("backup.tar.gz");
+        backup_with_skipped_volumes(&tarball, "vm", &["vm-cage-workspace"]);
+
+        let staging = dir.join("staging");
+        archive::extract_into(&tarball, &staging).unwrap();
+        let manifest =
+            Manifest::parse(&fs::read_to_string(staging.join(ROOT).join("manifest.json")).unwrap())
+                .unwrap();
+        assert!(manifest.named_volumes.is_empty());
+        assert_eq!(manifest.named_volumes_skipped, ["vm-cage-workspace"]);
+        let warnings = volumes_not_in_backup(&manifest.isolation, &manifest.named_volumes_skipped);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("volume 'vm-cage-workspace' is not in the archive"),
+            "{warnings:?}"
+        );
+
+        // Through the command: the restore succeeds, imports nothing,
+        // and asks podman nothing about the volume.
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::status(1));
+        let ctx = ctx(&dir, fake.clone());
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "restore",
+            &tarball.display().to_string(),
+            "--no-start",
+        ]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+        assert!(ctx.paths.deployment_exists(RICH));
+        assert!(
+            named_volume_calls(&fake).is_empty(),
+            "{:?}",
+            fake.argv_sequence()
         );
     }
 
