@@ -244,7 +244,8 @@ When the registry cannot be reached, `cage update` warns and leaves the cage as 
 To cleanly remove agentcage and all associated sandbox state:
 
 ```bash
-# 1. Stop and destroy all existing cages and scoped secrets
+# 1. Remove the cages and their secrets. This keeps each cage's data
+#    directory, which step 3 removes.
 for cage in $(agentcage ls --quiet 2>/dev/null); do
   agentcage cage destroy "$cage" -y
 done

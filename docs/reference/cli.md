@@ -149,7 +149,7 @@ Controls container execution without rebuilding images:
 ---
 
 ### `agentcage cage destroy NAME` (Aliases: `rm`, `delete`)
-Stops running containers, removes systemd quadlets, deletes state files, and purges scoped secrets:
+Stops running containers, removes systemd quadlets, removes the deployment's state files, and purges scoped secrets:
 
 ```bash
 agentcage rm my-agent -y
@@ -157,7 +157,13 @@ agentcage rm my-agent -y
 
 **Options**:
 - `-y, --yes`: Skip confirmation prompt.
-- `--keep-secrets`: Retain encrypted secrets on the host (useful when recreating the cage).
+- `--keep-secrets`: Retain encrypted secrets on the host (useful when recreating the cage). The per-cage data directory below is kept either way.
+
+**Retention**: `cage destroy` does **not** delete the cage's data directory, `~/.local/share/agentcage/<name>/` (or `$XDG_DATA_HOME/agentcage/<name>/` when `XDG_DATA_HOME` is set). It holds `grants/`, `capture/`, `policy-audit.jsonl` and `timings/`, and it survives so that the policy audit log outlives the command that removed the cage. The command prints a `Kept:` block naming that path. To remove it by hand once the cage is gone:
+
+```bash
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/agentcage/<name>"
+```
 
 ---
 

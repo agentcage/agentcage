@@ -35,6 +35,7 @@ use clap::ArgMatches;
 use crate::cli::context::{Ctx, EXIT_FAILURE, ensure_v022_cage, parse_version};
 use agentcage_cli::backend::SERVICE_NAMES;
 use agentcage_cli::backends::AnyBackend;
+use agentcage_state::Paths;
 
 /// `cage list` — one row per cage, with live status.
 pub(crate) fn list(ctx: &Ctx) -> ExitCode {
@@ -457,7 +458,40 @@ pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
             println!("  {item}");
         }
     }
+    let kept = kept_lines(&ctx.paths, &name);
+    if !kept.is_empty() {
+        println!("Kept:");
+        for line in &kept {
+            println!("{line}");
+        }
+    }
     ExitCode::SUCCESS
+}
+
+/// The `Kept:` block: the per-cage data directory `destroy` does not
+/// remove, and what survives in it (#423).
+///
+/// The deployment and the data directory are different things. The
+/// former is what `destroy` removes; the latter holds the grants
+/// overlay, the capture log, the policy audit trail and the timing
+/// ledger, and outliving the cage is the point — deleting the audit
+/// trail on `destroy` would make it erasable by the command that
+/// removes the evidence of why it mattered. That decision stands;
+/// what was wrong is that the command did not say so.
+///
+/// Empty when the directory is not there: a cage that never wrote data
+/// has nothing to report, and a `Kept:` heading over nothing would be
+/// noise.
+fn kept_lines(paths: &Paths, name: &str) -> Vec<String> {
+    let data = paths.cage_data_dir(name);
+    if !data.is_dir() {
+        return Vec::new();
+    }
+    vec![
+        format!("  data:{}", data.display()),
+        "  grants/, capture/, policy-audit.jsonl and timings/ survive in this directory."
+            .to_owned(),
+    ]
 }
 
 /// Stop, destroy, forget.

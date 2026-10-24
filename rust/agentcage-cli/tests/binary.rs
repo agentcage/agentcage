@@ -456,6 +456,51 @@ fn destroying_an_absent_cage_is_a_reported_no_op() {
         "{}",
         stdout(&out)
     );
+    assert!(
+        !stdout(&out).contains("Kept:"),
+        "a cage with no data directory reported keeping one: {}",
+        stdout(&out)
+    );
+}
+
+/// `cage destroy` keeps the per-cage data directory, and says where it
+/// is (#423).
+///
+/// The visible change is the `Kept:` block: `Removed:` still reports
+/// exactly what it always did, and the data it says survives is still
+/// on disk afterward.
+#[test]
+fn destroy_names_the_data_directory_it_keeps() {
+    let dir = agentcage_state::TestDir::new("binary-destroy-kept");
+    let paths = agentcage_state::Paths::under(dir.path());
+    let name = "pr423-kept-data";
+    stage_cage(dir.path(), name, "container");
+    std::fs::create_dir_all(paths.grants_dir(name)).expect("the data dir is writable");
+    std::fs::write(paths.policy_audit_file(name), "{\"decision\":\"allow\"}\n")
+        .expect("the audit log is writable");
+
+    let out = agentcage_sandboxed(dir.path(), &["cage", "destroy", name, "-y"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let data = paths.cage_data_dir(name);
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "Stopping services...\n\
+             Removing resources...\n\
+             \n\
+             Removed:\n  state:{name}\n\
+             Kept:\n  data:{}\n  \
+             grants/, capture/, policy-audit.jsonl and timings/ survive in this directory.\n",
+            data.display()
+        ),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert!(data.is_dir(), "the data directory was removed");
+    assert!(
+        paths.policy_audit_file(name).is_file(),
+        "the policy audit log was removed"
+    );
 }
 
 /// `cage create` with neither a positional config nor `-c` is the

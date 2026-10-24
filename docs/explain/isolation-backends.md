@@ -130,6 +130,10 @@ To migrate an existing cage from one backend to another (e.g. moving from `vm` t
    ```bash
    agentcage cage destroy my-agent -y
    ```
+   This keeps the cage's data directory (`~/.local/share/agentcage/my-agent/`: grants, capture, the policy audit log and timings). Remove it by hand if the new backend should start without it:
+   ```bash
+   rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/agentcage/my-agent"
+   ```
 3. **Edit the Isolation Setting**:
    Extract `cage.yaml` from the archive or update your local file to change `isolation: apple-container`.
 4. **Restore or Recreate**:
