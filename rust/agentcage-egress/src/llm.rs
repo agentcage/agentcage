@@ -172,6 +172,30 @@ pub struct WireRequest {
     pub body: Vec<u8>,
 }
 
+fn anthropic_headers(api_key: &str) -> Vec<(String, String)> {
+    let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
+    headers.extend(anthropic_auth_headers(api_key));
+    headers.push(("User-Agent".to_owned(), USER_AGENT.to_owned()));
+    headers
+}
+
+fn chat_completions_headers(provider: &str, api_key: &str) -> Vec<(String, String)> {
+    let mut headers = vec![
+        ("Content-Type".to_owned(), "application/json".to_owned()),
+        ("Authorization".to_owned(), format!("Bearer {api_key}")),
+        ("User-Agent".to_owned(), USER_AGENT.to_owned()),
+    ];
+    if provider == "openrouter" {
+        // Attribution needs the URL; the title only sets the display name.
+        headers.push(("HTTP-Referer".to_owned(), OPENROUTER_APP_URL.to_owned()));
+        headers.push((
+            "X-OpenRouter-Title".to_owned(),
+            OPENROUTER_APP_NAME.to_owned(),
+        ));
+    }
+    headers
+}
+
 /// Build the forced-tool-call request for `provider`.
 ///
 /// `base_url` is used as given (the caller resolves the default and
@@ -187,10 +211,12 @@ pub fn build_request(
     call: &ToolCall,
 ) -> WireRequest {
     let tool = &call.tool;
-    let (url, headers, body) = if provider == "anthropic" {
-        let mut headers = vec![("Content-Type".to_owned(), "application/json".to_owned())];
-        headers.extend(anthropic_auth_headers(api_key));
-        headers.push(("User-Agent".to_owned(), USER_AGENT.to_owned()));
+    let headers = if provider == "anthropic" {
+        anthropic_headers(api_key)
+    } else {
+        chat_completions_headers(provider, api_key)
+    };
+    let (url, body) = if provider == "anthropic" {
         // A prefix is its own first text block, not concatenated: some
         // providers match the first block exactly. Without one, `system`
         // stays a plain string, byte for byte as before.
@@ -228,26 +254,13 @@ pub fn build_request(
                 ]),
             ),
         ]);
-        (format!("{base_url}/v1/messages"), headers, body)
+        (format!("{base_url}/v1/messages"), body)
     } else {
         let url = if provider == "openrouter" {
             format!("{base_url}/chat/completions")
         } else {
             format!("{base_url}/v1/chat/completions")
         };
-        let mut headers = vec![
-            ("Content-Type".to_owned(), "application/json".to_owned()),
-            ("Authorization".to_owned(), format!("Bearer {api_key}")),
-            ("User-Agent".to_owned(), USER_AGENT.to_owned()),
-        ];
-        if provider == "openrouter" {
-            // Attribution needs the URL; the title only sets the display name.
-            headers.push(("HTTP-Referer".to_owned(), OPENROUTER_APP_URL.to_owned()));
-            headers.push((
-                "X-OpenRouter-Title".to_owned(),
-                OPENROUTER_APP_NAME.to_owned(),
-            ));
-        }
         let message = |role: &str, content: &str| {
             object([
                 ("role", Json::string(role)),
@@ -287,7 +300,7 @@ pub fn build_request(
             ),
             ("temperature", Json::Int(0)),
         ]);
-        (url, headers, body)
+        (url, body)
     };
     WireRequest {
         url,
