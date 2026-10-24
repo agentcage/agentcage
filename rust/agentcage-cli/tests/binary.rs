@@ -745,6 +745,42 @@ container:
     );
 }
 
+/// `cage prune` takes `destroy`'s teardown and keeps the same data
+/// directory, so it says so too (#423): one `Kept:` block per removed
+/// cage, under that cage's `Removing` line.
+#[test]
+fn prune_names_the_data_directory_it_keeps() {
+    let dir = agentcage_state::TestDir::new("binary-prune-kept");
+    let paths = agentcage_state::Paths::under(dir.path());
+    let name = "pr423-pruned";
+    stage_cage(dir.path(), name, "container");
+    std::fs::write(
+        paths.deployment_dir(name).join("cage.yaml"),
+        format!(
+            "name: {name}\nisolation: container\nlifecycle: interactive\ncontainer:\n  image: \"alpine\"\n"
+        ),
+    )
+    .expect("the config is writable");
+    std::fs::create_dir_all(paths.cage_data_dir(name)).expect("the data dir is writable");
+    std::fs::write(paths.policy_audit_file(name), "{\"decision\":\"allow\"}\n")
+        .expect("the audit log is writable");
+
+    let out = agentcage_sandboxed(dir.path(), &["cage", "prune", "-y"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains(&format!(
+            "Removing {name}...\nKept:\n  data:{}\n  left in place: policy-audit.jsonl\nPruned 1 cage(s).\n",
+            paths.cage_data_dir(name).display()
+        )),
+        "prune did not name the data directory it kept: {text}"
+    );
+    assert!(
+        paths.policy_audit_file(name).is_file(),
+        "prune removed the policy audit log"
+    );
+}
+
 /// Every command in the tree has a body.
 ///
 /// Two tests used to live here: one asserting an unported command
