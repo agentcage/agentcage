@@ -211,7 +211,9 @@ fn openrouter_reports_the_app_name_as_agentcage() {
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.as_str())
     };
-    assert_eq!(header("X-Title"), Some("agentcage"));
+    assert_eq!(header("HTTP-Referer"), Some("https://agentcage.ai"));
+    assert_eq!(header("X-OpenRouter-Title"), Some("agentcage"));
+    assert_eq!(header("X-Title"), None, "the legacy header is not needed");
     assert_eq!(header("User-Agent"), Some(USER_AGENT));
 }
 

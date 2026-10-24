@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The `debian` scaffold starts on apple-container.** Its start command copied the egress CA into `/usr/local/share/ca-certificates` as the uid-1000 workload and exited on the `Permission denied`; the copy is now best-effort, as `ubuntu`'s has been since #140. cage-init has already installed the CA.
 
+- **OpenRouter requests now report the app name as `agentcage`.** The decider and watcher sent only `X-Title`, filled with the `User-Agent` value (`agentcage-policy-api`), so OpenRouter showed the app as `Unknown`: app attribution requires `HTTP-Referer`, and `X-Title` alone creates no app entry. Requests now send `HTTP-Referer: https://agentcage.ai` and `X-OpenRouter-Title: agentcage`, the current attribution headers; the descriptive `User-Agent` is unchanged. The egress binary changes, so the next `cage update` rebuilds the egress image.
+
 ### Changed
 
 - **`install.sh` installs the release's prebuilt binary by default, and `--build` builds from source.** The default downloads `agentcage-<version>-<target>.tar.gz` (egress embedded), checks its sha256 and installs no Rust toolchain, C linker or musl. `--build`, and any branch build (`AGENTCAGE_REF`, which has no release assets), builds the host *and* the egress it embeds from source at the same ref, adding the musl Rust target with rustup and a C toolchain for it: `musl-gcc` from the distro on Linux; on macOS, rustup's `rust-lld` and `llvm-tools` with Xcode's `clang`, so branch builds now work on macOS too.

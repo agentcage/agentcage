@@ -21,8 +21,8 @@
 //! * everything else is chat-completions: `POST {base}/v1/chat/completions`
 //!   (`openai`) or `{base}/chat/completions` (`openrouter`, whose base
 //!   already carries `/api/v1`), Bearer auth, `tool_choice {type:
-//!   function}`, `temperature: 0`, and an `X-Title` naming the app on
-//!   OpenRouter.
+//!   function}`, `temperature: 0`, and OpenRouter's app-attribution
+//!   headers (a URL and a display name).
 //!
 //! `max_tokens` rides every format: it is the cost and truncation guard,
 //! and a guard on one wire format only is not one.
@@ -91,7 +91,10 @@ pub trait ToolCaller: Send + Sync + std::fmt::Debug {
 /// The `User-Agent` both agents send.
 pub const USER_AGENT: &str = "agentcage-policy-api";
 
-/// The app name OpenRouter attributes calls to (`X-Title`).
+/// The project URL that identifies the app to OpenRouter (`HTTP-Referer`).
+pub const OPENROUTER_APP_URL: &str = "https://agentcage.ai";
+
+/// The app name OpenRouter displays (`X-OpenRouter-Title`).
 pub const OPENROUTER_APP_NAME: &str = "agentcage";
 
 /// The `anthropic-version` header value.
@@ -131,7 +134,7 @@ pub struct WireRequest {
 /// `base_url` is used as given (the caller resolves the default and
 /// strips a trailing `/`). Any provider other than `anthropic` speaks
 /// chat-completions; only `openrouter` gets the bare `/chat/completions`
-/// path and the `X-Title` app-name header.
+/// path and OpenRouter's attribution headers.
 #[must_use]
 pub fn build_request(
     provider: &str,
@@ -188,8 +191,12 @@ pub fn build_request(
             ("User-Agent".to_owned(), USER_AGENT.to_owned()),
         ];
         if provider == "openrouter" {
-            // OpenRouter's app-attribution header; optional but cheap.
-            headers.push(("X-Title".to_owned(), OPENROUTER_APP_NAME.to_owned()));
+            // Attribution needs the URL; the title only sets the display name.
+            headers.push(("HTTP-Referer".to_owned(), OPENROUTER_APP_URL.to_owned()));
+            headers.push((
+                "X-OpenRouter-Title".to_owned(),
+                OPENROUTER_APP_NAME.to_owned(),
+            ));
         }
         let body = object([
             ("model", Json::string(model)),

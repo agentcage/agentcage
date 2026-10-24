@@ -191,7 +191,11 @@
             "agentcage-policy-api"
           ],
           [
-            "X-title",
+            "HTTP-Referer",
+            "https://agentcage.ai"
+          ],
+          [
+            "X-OpenRouter-Title",
             "agentcage"
           ]
         ],
@@ -258,7 +262,11 @@
             "agentcage-policy-api"
           ],
           [
-            "X-title",
+            "HTTP-Referer",
+            "https://agentcage.ai"
+          ],
+          [
+            "X-OpenRouter-Title",
             "agentcage"
           ]
         ],
@@ -500,7 +508,11 @@
             "agentcage-policy-api"
           ],
           [
-            "X-title",
+            "HTTP-Referer",
+            "https://agentcage.ai"
+          ],
+          [
+            "X-OpenRouter-Title",
             "agentcage"
           ]
         ],
