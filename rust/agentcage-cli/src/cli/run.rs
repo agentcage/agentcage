@@ -752,3 +752,191 @@ fn abspath(path: &str) -> String {
     };
     agentcage_core::volume_mounts::normpath(&absolute.display().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use agentcage_exec::{
+        Command, CommandRunner, ExecError, FakeRunner, LineStream, Output, Reply,
+    };
+    use agentcage_state::{Paths, TestDir};
+
+    use super::{command, main};
+    use crate::cli::context::Ctx;
+
+    /// A runner that copies the cage's state directory out at the
+    /// moment `podman build` is issued, then answers from the fake.
+    ///
+    /// The `run` flow stages the scaffold's build context into the
+    /// cage's state dir and only then builds. Reading the state dir from
+    /// inside the seam is what makes that observable: `deploy` is
+    /// allowed to fail afterwards (and discard the deployment), but the
+    /// bytes the build was about to run against are already captured.
+    #[derive(Debug)]
+    struct CapturingBuild {
+        /// A clone of the fake the test keeps: `FakeRunner` shares its
+        /// recorded state, and `Ctx` wants an owned `'static` runner.
+        inner: FakeRunner,
+        /// The cage's deployment dir — what the staging writes into.
+        from: PathBuf,
+        copy_to: PathBuf,
+    }
+
+    impl CapturingBuild {
+        /// Whether this call is the scaffold build; if so, snapshot the
+        /// staged state dir first.
+        fn capture(&self, command: &Command) -> bool {
+            let argv = command.argv();
+            if argv.first().map(String::as_str) != Some("podman")
+                || argv.get(1).map(String::as_str) != Some("build")
+            {
+                return false;
+            }
+            let _ = std::fs::remove_dir_all(&self.copy_to);
+            copy_tree(&self.from, &self.copy_to).expect("copy the staged state dir out");
+            true
+        }
+    }
+
+    impl CommandRunner for CapturingBuild {
+        fn run(&self, command: &Command) -> Result<Output, ExecError> {
+            let build = self.capture(command);
+            let output = self.inner.run(command)?;
+            if build {
+                // Fail the build so the flow stops here, right after the
+                // observation: everything the assertion needs has been
+                // captured, and nothing past this point is under test.
+                return Ok(Output::failed(125, "the test stubs the build"));
+            }
+            Ok(output)
+        }
+
+        fn stream(&self, command: &Command) -> Result<Box<dyn LineStream>, ExecError> {
+            self.capture(command);
+            self.inner.stream(command)
+        }
+
+        fn which(&self, program: &str) -> Option<PathBuf> {
+            self.inner.which(program)
+        }
+    }
+
+    /// `shutil.copytree`, for the test's own snapshot.
+    fn copy_tree(source: &Path, dest: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dest)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            let from = entry.path();
+            let to = dest.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_tree(&from, &to)?;
+            } else {
+                std::fs::copy(&from, &to)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `agentcage run <scaffold>`, through the real command: the
+    /// scaffold's build context and the canonical brief/skill are frozen
+    /// into the cage's state dir before the build runs, so the
+    /// Containerfile's `COPY` lines keep resolving after the ephemeral
+    /// project directory is gone.
+    ///
+    /// This drives `main` (clap parse + `execute`), not
+    /// `stage_scaffold_build_context`: making that call site in
+    /// `execute` dead has to fail here, which it cannot if the helper is
+    /// called directly. `claude-code` is one of the scaffolds whose
+    /// Containerfile `COPY`s both canonical assets. The build itself is
+    /// stubbed to fail — the assertion is on what preceded it.
+    #[test]
+    fn an_ephemeral_run_stages_its_build_context_and_canonical_assets() {
+        let dir = TestDir::new("run-call-site");
+        let paths = Paths::under(dir.path());
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let project_arg = project.display().to_string();
+
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        // The scaffold image is not there, so `run_scaffold_setup` builds
+        // it; the build is where the staged context is observed.
+        fake.on(["podman", "image", "exists"], Reply::status(1));
+        fake.on(["podman", "info", "--format", "json"], Reply::ok("{}"));
+        fake.default_reply(Reply::success());
+        let snapshot = TestDir::new("run-call-site-snapshot");
+        let watcher = CapturingBuild {
+            inner: fake.clone(),
+            from: paths.deployment_dir("demo"),
+            copy_to: snapshot.path().join("deployment"),
+        };
+        let ctx = Ctx {
+            paths,
+            runner: Box::new(watcher),
+            version: "9.9.9".to_owned(),
+        };
+
+        let matches = command()
+            .try_get_matches_from([
+                "run",
+                "claude-code",
+                "--name",
+                "demo",
+                "--project",
+                &project_arg,
+                "--isolation",
+                "container",
+                "-s",
+                "ANTHROPIC_API_KEY=sk-test",
+            ])
+            .expect("the argv parses");
+        let _ = main(&ctx, &matches);
+
+        assert!(
+            fake.argv_sequence()
+                .iter()
+                .any(|argv| argv.get(1).map(String::as_str) == Some("build")),
+            "no podman build was issued"
+        );
+        let staged = snapshot.path().join("deployment");
+        assert!(
+            staged.join("Containerfile").is_file(),
+            "the build context was never staged: {:?}",
+            list(&staged)
+        );
+        assert!(staged.join("README.md").is_file(), "{:?}", list(&staged));
+        // Config templates are not build input.
+        assert!(!staged.join("cage.yaml.j2").exists(), "{:?}", list(&staged));
+        assert!(
+            !staged.join("scaffold.yaml").exists(),
+            "{:?}",
+            list(&staged)
+        );
+
+        let brief = agentcage_assets::embedded_files()
+            .iter()
+            .find(|file| file.path == "scaffolds/AGENTS.md")
+            .expect("the embedded brief");
+        assert_eq!(
+            std::fs::read(staged.join("AGENTS.md")).expect("the staged brief"),
+            brief.bytes
+        );
+        assert!(
+            staged.join("skills/agentcage/SKILL.md").is_file(),
+            "{:?}",
+            list(&staged)
+        );
+    }
+
+    fn list(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}

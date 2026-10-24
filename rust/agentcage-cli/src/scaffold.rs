@@ -833,10 +833,64 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::{
-        Build, RenderRequest, Scaffolds, SetupOptions, Source, build_one, render_config,
+        Build, RenderRequest, Scaffolds, SetupOptions, Source, build_one, copy_tree, render_config,
         render_config_with, valid_scaffold_name,
     };
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use agentcage_exec::{Command, CommandRunner, ExecError, FakeRunner, LineStream, Output};
+
+    /// A runner that copies the build context out at the moment `podman
+    /// build` is issued, then answers from the fake.
+    ///
+    /// `build_one` deletes its staging `TempDir` on the way out, so the
+    /// only moment the staged tree exists is inside the build call.
+    /// Copying it then lets the assertions run against the exact files
+    /// the build was handed — argv alone would still pass with the
+    /// staging step removed.
+    #[derive(Debug)]
+    struct CapturingBuild<'a> {
+        inner: &'a FakeRunner,
+        copy_to: PathBuf,
+        captured: Mutex<Option<PathBuf>>,
+    }
+
+    impl CapturingBuild<'_> {
+        fn capture(&self, command: &Command) {
+            let argv = command.argv();
+            if argv.first().map(String::as_str) != Some("podman")
+                || argv.get(1).map(String::as_str) != Some("build")
+            {
+                return;
+            }
+            let Some(context) = argv.last() else {
+                return;
+            };
+            let _ = std::fs::remove_dir_all(&self.copy_to);
+            copy_tree(std::path::Path::new(context), &self.copy_to).expect("copy the context out");
+            *self
+                .captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PathBuf::from(context));
+        }
+    }
+
+    impl CommandRunner for CapturingBuild<'_> {
+        fn run(&self, command: &Command) -> Result<Output, ExecError> {
+            self.capture(command);
+            self.inner.run(command)
+        }
+
+        fn stream(&self, command: &Command) -> Result<Box<dyn LineStream>, ExecError> {
+            self.capture(command);
+            self.inner.stream(command)
+        }
+
+        fn which(&self, program: &str) -> Option<PathBuf> {
+            self.inner.which(program)
+        }
+    }
 
     /// The embedded search path, with no project or user roots — what a
     /// test wants, and what CI has.
@@ -904,9 +958,14 @@ mod tests {
 
     /// `init --scaffold`'s build call site: `build_one` hands podman a
     /// *staged copy* of the scaffold directory, never the directory
-    /// itself, so the canonical assets `stage_scaffold_assets` drops in
-    /// are in the context the `COPY` lines resolve against. What that
-    /// copy contains is pinned in `staging`; this pins the call site.
+    /// itself, and that copy carries the canonical assets
+    /// `stage_scaffold_assets` drops in, so the `COPY` lines resolve.
+    ///
+    /// The staging `TempDir` is gone by the time `build_one` returns, so
+    /// the context is copied out at the moment of the `podman build`
+    /// call and the assertions run against those bytes. Asserting the
+    /// argv alone passes with the copy or the staging call deleted —
+    /// this is the build's actual input.
     #[test]
     fn a_scaffold_build_stages_the_context_before_building_it() {
         use agentcage_exec::tools::Elevation;
@@ -916,15 +975,27 @@ mod tests {
         let source = agentcage_state::TestDir::new("scaffold-build-src");
         std::fs::write(
             source.path().join("Containerfile"),
-            b"FROM scratch\nCOPY AGENTS.md /home/agent/AGENTS.md\n",
+            b"FROM scratch\nCOPY AGENTS.md /home/agent/AGENTS.md\n\
+              COPY skills/agentcage /home/agent/skills/agentcage\n",
         )
         .unwrap();
         std::fs::write(source.path().join("entry.sh"), b"#!/bin/sh\n").unwrap();
 
+        let canonical = agentcage_assets::embedded_files()
+            .iter()
+            .find(|file| file.path == "scaffolds/AGENTS.md")
+            .expect("the embedded brief");
+
         let runner = FakeRunner::new();
         runner.on(["podman", "image", "exists"], Reply::status(1));
         runner.on(["podman", "build"], Reply::success());
-        let podman = Podman::with_elevation(&runner, Elevation::none());
+        let captured_root = agentcage_state::TestDir::new("scaffold-build-context");
+        let capture = CapturingBuild {
+            inner: &runner,
+            copy_to: captured_root.path().join("context"),
+            captured: Mutex::new(None),
+        };
+        let podman = Podman::with_elevation(&capture, Elevation::none());
         let scaffolds = builtin_only();
         let entry = Build {
             image: "localhost/test:latest".to_owned(),
@@ -941,7 +1012,7 @@ mod tests {
 
         build_one(
             &scaffolds,
-            &runner,
+            &capture,
             &podman,
             source.path(),
             "openclaw",
@@ -956,20 +1027,54 @@ mod tests {
             argv[..5],
             ["podman", "build", "-t", "localhost/test:latest", "-f"]
         );
-        let containerfile = PathBuf::from(&argv[5]);
         let context = PathBuf::from(argv.last().expect("a context directory"));
-        assert_eq!(containerfile, context.join("Containerfile"));
         assert_ne!(
             context,
             source.path(),
             "the build must not use the scaffold dir itself"
         );
+
+        // The staged tree, copied out while it existed.
+        let staged = captured_root.path().join("context");
+        assert_eq!(
+            capture
+                .captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref(),
+            Some(context.as_path()),
+            "the build context was never captured"
+        );
+        assert_eq!(
+            PathBuf::from(&argv[5]),
+            context.join("Containerfile"),
+            "podman must build the staged Containerfile, not the source one"
+        );
+        // ... and that staged Containerfile is the one that was copied
+        // out of the live staging directory.
+        assert_eq!(
+            std::fs::read(staged.join("Containerfile")).expect("the staged Containerfile"),
+            std::fs::read(source.path().join("Containerfile")).expect("the source Containerfile")
+        );
+        // `copy_tree(dir, staging.path())`: a sibling of the
+        // Containerfile travels with it.
+        assert_eq!(
+            std::fs::read(staged.join("entry.sh")).expect("the staged sibling"),
+            b"#!/bin/sh\n"
+        );
+        // `stage_scaffold_assets`: the brief and the skill, byte for byte
+        // the canonical ones the `COPY` lines name.
+        assert_eq!(
+            std::fs::read(staged.join("AGENTS.md")).expect("the staged brief"),
+            canonical.bytes
+        );
         assert!(
-            context
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("agentcage-scaffold-")),
-            "unexpected staging directory: {}",
-            context.display()
+            staged.join("skills/agentcage/SKILL.md").is_file(),
+            "the staged skill tree is missing: {:?}",
+            std::fs::read_dir(staged).map(|entries| entries
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect::<Vec<_>>())
         );
     }
 

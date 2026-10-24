@@ -1869,10 +1869,77 @@ impl agentcage_exec::tools::podman::ImageInspector for AppleImages<'_> {
 
 #[cfg(test)]
 mod tests {
-    use agentcage_exec::FakeRunner;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use agentcage_exec::{Command, CommandRunner, ExecError, FakeRunner, LineStream, Output};
     use agentcage_state::{Paths, TestDir};
 
-    use super::{AppleBackend, CAGE_RELOAD_SH, EGRESS_RELOAD_SH};
+    use super::AppleBackend;
+
+    /// A runner that reads a file at the moment each command is issued,
+    /// then answers from the fake.
+    ///
+    /// `reload_domains` rewrites the bind-mounted servers file **in
+    /// place** and then signals the two daemons, so the argv sequence
+    /// alone cannot tell "regenerated before SIGHUP" from "regenerated
+    /// afterwards" — both leave the executed argv identical. Reading
+    /// the file from inside the seam is what makes the ordering
+    /// observable: at signal time it holds whatever the daemons would
+    /// read when they reload.
+    #[derive(Debug)]
+    struct SnapshottingRunner<'a> {
+        inner: &'a FakeRunner,
+        file: PathBuf,
+        /// One entry per call, in call order.
+        snapshots: Mutex<Vec<Option<String>>>,
+    }
+
+    impl SnapshottingRunner<'_> {
+        fn snapshot(&self) {
+            let bytes = std::fs::read_to_string(&self.file).ok();
+            self.snapshots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(bytes);
+        }
+
+        fn snapshots(&self) -> Vec<Option<String>> {
+            self.snapshots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl CommandRunner for SnapshottingRunner<'_> {
+        fn run(&self, command: &Command) -> Result<Output, ExecError> {
+            self.snapshot();
+            self.inner.run(command)
+        }
+
+        fn stream(&self, command: &Command) -> Result<Box<dyn LineStream>, ExecError> {
+            self.snapshot();
+            self.inner.stream(command)
+        }
+
+        fn which(&self, program: &str) -> Option<PathBuf> {
+            self.inner.which(program)
+        }
+    }
+
+    /// The answer the daemons must have read when they were signalled.
+    fn assert_rewritten(servers: Option<&str>, at: &str) {
+        let servers = servers.expect("the servers file exists at signal time");
+        assert!(
+            servers.contains("server=/api.example.com/192.0.2.53"),
+            "{at}: the daemons would reload the old allowlist: {servers}"
+        );
+        assert!(
+            !servers.contains("stale.example.com"),
+            "{at}: the stale entry survived: {servers}"
+        );
+    }
 
     /// A deployed apple cage whose store is the plaintext file store.
     ///
@@ -2036,7 +2103,16 @@ mod tests {
             ["/usr/bin/container", "exec", "demo", "sh", "-c"],
             agentcage_exec::Reply::success(),
         );
-        let backend = AppleBackend::new(&paths, &runner, "0.0.0");
+        // The fake, seen through a runner that reads the servers file
+        // at the instant each command is issued. That is the only way to
+        // tell "regenerated before the signals" from "regenerated after
+        // them": the argv is identical either way.
+        let observant = SnapshottingRunner {
+            inner: &runner,
+            file: egress_config.join("dns-allowlist.conf"),
+            snapshots: Mutex::new(Vec::new()),
+        };
+        let backend = AppleBackend::new(&paths, &observant, "0.0.0");
 
         backend
             .reload_domains(&config, "demo")
@@ -2051,44 +2127,73 @@ mod tests {
         assert!(!servers.contains("stale.example.com"), "{servers}");
 
         let calls = runner.argv_sequence();
+        let snapshots = observant.snapshots();
+        assert_eq!(snapshots.len(), calls.len(), "one read per call");
         assert_eq!(calls.len(), 5, "{calls:?}");
         assert_eq!(calls[0], ["/usr/bin/container", "inspect", "demo-egress"]);
+        // The full argv: dropping `--servers-file=` would leave dnsmasq
+        // validating whichever file it defaults to, not the one that was
+        // just rewritten.
         assert_eq!(
-            calls[1][..5],
+            calls[1],
             [
                 "/usr/bin/container",
                 "exec",
                 "demo-egress",
                 "dnsmasq",
-                "--test"
+                "--test",
+                "--servers-file=/etc/agentcage/dns-allowlist.conf"
             ]
         );
+        // What dnsmasq validated, and what the egress supervisor was then
+        // told to reload, is the *new* file — not the stale one from the
+        // previous reload.
+        assert_rewritten(snapshots[1].as_deref(), "dnsmasq --test");
+        assert_rewritten(snapshots[2].as_deref(), "the egress reload");
+
+        assert_daemons_signalled(&calls);
+    }
+
+    /// The two signals, by what the scripts they carry actually do.
+    ///
+    /// The egress one raises the supervisor's reload flag; the
+    /// cage-local one regenerates the cage's servers file from the
+    /// baseline (re-pointing the upstream at the VM's gateway) and then
+    /// SIGHUPs its pidfile. A cage-local script that only signals — or
+    /// one that signals a different file than it rewrites — leaves
+    /// dnsmasq serving the old allowlist, even though argv is unchanged.
+    fn assert_daemons_signalled(calls: &[Vec<String>]) {
         assert_eq!(
-            calls[2],
-            [
-                "/usr/bin/container",
-                "exec",
-                "demo-egress",
-                "sh",
-                "-c",
-                EGRESS_RELOAD_SH
-            ]
+            calls[2][..5],
+            ["/usr/bin/container", "exec", "demo-egress", "sh", "-c"]
         );
+        let egress_reload = &calls[2][5];
         assert!(
-            EGRESS_RELOAD_SH.contains("/home/acproxy/dns/reload"),
-            "the egress reload flag moved: {EGRESS_RELOAD_SH}"
+            egress_reload.contains("/home/acproxy/dns/reload"),
+            "the egress reload flag moved: {egress_reload}"
         );
         assert_eq!(calls[3], ["/usr/bin/container", "inspect", "demo"]);
         assert_eq!(
-            calls[4],
-            [
-                "/usr/bin/container",
-                "exec",
-                "demo",
-                "sh",
-                "-c",
-                CAGE_RELOAD_SH
-            ]
+            calls[4][..5],
+            ["/usr/bin/container", "exec", "demo", "sh", "-c"]
+        );
+
+        let cage_reload = &calls[4][5];
+        assert!(
+            cage_reload.contains("/etc/agentcage/dns-allowlist.conf"),
+            "the cage reload does not read the baseline allowlist: {cage_reload}"
+        );
+        assert!(
+            cage_reload.contains("/run/agentcage/dns-allowlist.cage.conf"),
+            "the cage reload does not rewrite the cage-local servers file: {cage_reload}"
+        );
+        assert!(
+            cage_reload.contains("/run/agentcage/dnsmasq.pid"),
+            "the cage reload does not use the dnsmasq pidfile: {cage_reload}"
+        );
+        assert!(
+            cage_reload.contains("kill -HUP"),
+            "the cage reload never signals dnsmasq: {cage_reload}"
         );
     }
 

@@ -522,12 +522,9 @@ pub fn discard_deployment(paths: &Paths, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ADJECTIVES, NOUNS, blocked_notice, ensure_volume_dirs, resolve_exec_cmd,
-        stage_scaffold_build_context, vm_podman_prefix,
+        ADJECTIVES, NOUNS, blocked_notice, ensure_volume_dirs, resolve_exec_cmd, vm_podman_prefix,
     };
-    use crate::scaffold::Scaffolds;
     use agentcage_core::config::Config;
-    use std::path::PathBuf;
 
     #[test]
     fn the_word_lists_are_unchanged() {
@@ -624,45 +621,6 @@ mod tests {
         // A named volume has no `/`, so it is not a host path at all and
         // nothing is created for it — the containment check ignores it.
         assert!(!dir.path().join("named-volume").exists());
-    }
-
-    /// The embedded scaffold search path, with no project or user roots.
-    fn builtin_only() -> Scaffolds {
-        let root = agentcage_assets::extract::ensure_extracted().expect("assets extract");
-        Scaffolds::from_roots(
-            None,
-            PathBuf::from("/nonexistent/agentcage-user-scaffolds"),
-            root.join("scaffolds"),
-            root.join("templates"),
-        )
-    }
-
-    /// The `agentcage run` call site: the scaffold's build context and the
-    /// canonical brief/skill are frozen into the cage's state dir, so the
-    /// containerfile's `COPY` lines keep resolving after the temporary
-    /// project directory is gone. `claude-code` is one of the scaffolds
-    /// whose Containerfile `COPY`s both canonical assets.
-    #[test]
-    fn an_ephemeral_run_freezes_its_build_context_and_canonical_assets() {
-        let dir = agentcage_state::TestDir::new("run-staging");
-        let paths = agentcage_state::Paths::under(dir.path());
-        let scaffolds = builtin_only();
-
-        stage_scaffold_build_context(&paths, &scaffolds, "claude-code", "Containerfile", "demo");
-
-        let dest = paths.deployment_dir("demo");
-        assert!(dest.join("Containerfile").is_file());
-        assert!(dest.join("README.md").is_file());
-        // Config templates are not build input.
-        assert!(!dest.join("cage.yaml.j2").exists());
-        assert!(!dest.join("scaffold.yaml").exists());
-
-        let brief = agentcage_assets::embedded_files()
-            .iter()
-            .find(|file| file.path == "scaffolds/AGENTS.md")
-            .expect("the embedded brief");
-        assert_eq!(std::fs::read(dest.join("AGENTS.md")).unwrap(), brief.bytes);
-        assert!(dest.join("skills/agentcage/SKILL.md").is_file());
     }
 
     /// The four `QuadletHost` answers `ensure_volume_dirs` reaches for,
