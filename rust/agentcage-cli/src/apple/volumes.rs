@@ -12,7 +12,7 @@
 //! — so the mask logic sees the **expanded** entries, not the raw ones
 //! (`apple_container.py:1805`). That matters twice over: `~` and `$VAR`
 //! are already gone, so a host path can be stat'd; and an entry
-//! [`user_volume_argv`] refused is not a mount at all, so nothing nests
+//! [`user_volume_argv`](crate::apple::volumes::user_volume_argv) refused is not a mount at all, so nothing nests
 //! under it. Feeding it the raw list would silently re-expose a volume
 //! the containment check had just rejected.
 //!

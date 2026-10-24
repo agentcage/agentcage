@@ -24,7 +24,7 @@
 //! `deployment_exists` is false and the router returns host podman
 //! every time — including for a vm tarball, whose secrets then land in
 //! the host store where that cage's containers cannot see them. See
-//! [`crate::cli`]'s `cage restore` body, where the ordering is pinned
+//! `crate::cli`'s `cage restore` body, where the ordering is pinned
 //! with a test, and docs/history/rust-port-plan.md's bug table.
 
 use agentcage_exec::tools::limactl::{LimaInstance, VmPodman};

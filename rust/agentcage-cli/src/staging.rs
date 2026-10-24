@@ -306,14 +306,14 @@ fn would_stage(containerfile: &Path, relative: &str, scaffold: &str) -> bool {
 ///
 /// The Containerfile itself, plus every sibling [`stage_build_context`]
 /// would stage that the Containerfile actually `COPY`s, through the one
-/// definition of a build-context reference in [`copy_references`].
+/// definition of a build-context reference in `copy_references`.
 ///
 /// Everything else a scaffold dir holds is deliberately absent: a
 /// scaffold's `README.md` is staged for the operator to read and the
 /// build never opens it, so an operator's own README stays theirs.
 ///
 /// Regular files only, for the reason on `_scaffold_build_inputs`: a
-/// `COPY`ed sibling *directory* is staged through [`is_ignored`], so a
+/// `COPY`ed sibling *directory* is staged through `is_ignored`, so a
 /// staged copy legitimately lacks the `node_modules` its source has and
 /// would compare as different forever. No scaffold ships one.
 #[must_use]

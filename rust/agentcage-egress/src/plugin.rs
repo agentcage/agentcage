@@ -12,7 +12,7 @@
 //! ```
 //!
 //! [`WasmPluginLoader`] is the chain builder's
-//! [`PluginLoader`](crate::inspect::chain::PluginLoader); it (and the
+//! [`PluginLoader`]; it (and the
 //! one-shot [`load`]) turns one such entry into an [`Inspector`] the chain
 //! runs like any built-in. What it guarantees:
 //!

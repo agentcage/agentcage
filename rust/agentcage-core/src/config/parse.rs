@@ -77,9 +77,9 @@
 //! `2024-01-02` are likewise numbers or dates there and strings here.
 //!
 //! So a numeric field that receives a string cannot simply be parsed:
-//! `"0755"` parses as 755, and 755 is not 493. So [`coerce_int`] and
-//! [`coerce_float`] refuse a string in a radix the two readers spell
-//! differently — see [`reject_ambiguous`], which is narrow on purpose:
+//! `"0755"` parses as 755, and 755 is not 493. So `coerce_int` and
+//! `coerce_float` refuse a string in a radix the two readers spell
+//! differently — see `reject_ambiguous`, which is narrow on purpose:
 //! `1:30` and `2024-01-02` fail to parse anyway, and `1_000` is 1000 to
 //! both. Only the radix prefixes parse *successfully* into a number
 //! that disagrees.

@@ -263,7 +263,7 @@ pub fn stage_scaffold_build_context(
 
 /// A running `podman logs -f <proxy>` reader.
 ///
-/// Held by [`execute`] for the life of the session and stopped in its
+/// Held by `execute` for the life of the session and stopped in its
 /// cleanup. Dropping it sets the stop flag; the thread notices on its
 /// next line and exits, and the child is reaped when the stream is
 /// dropped with it.

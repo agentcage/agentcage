@@ -82,7 +82,7 @@ fn host_dns_servers() -> Result<Vec<String>, ConfigError> {
 /// are rendered. `std::env::set_var` is `unsafe` in Rust 2024 — it races
 /// every other thread's `getenv`, and this crate forbids `unsafe` — and
 /// the value is only ever read back by this process, through
-/// [`RealQuadletHost::env_var`] and [`RealHost::env_var_is_set`]. So it
+/// [`RealQuadletHost::env_var`] and [`RealHost::env_var_is_set`](agentcage_core::config::ValidationHost::env_var_is_set). So it
 /// is published here instead, the same trade
 /// [`crate::timing::enable_echo`] makes for `AGENTCAGE_TIMING`.
 ///
@@ -98,7 +98,7 @@ fn overlay() -> &'static std::sync::Mutex<BTreeMap<String, String>> {
 
 /// Publish `name=value` to every host probe in this process.
 ///
-/// See [`OVERLAY`]. Called once, by the `run` flow, before the config is
+/// See `OVERLAY`. Called once, by the `run` flow, before the config is
 /// loaded.
 pub fn publish_env(name: &str, value: &str) {
     if let Ok(mut map) = overlay().lock() {

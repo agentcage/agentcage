@@ -48,7 +48,7 @@ impl Paths {
     ///
     /// # Errors
     ///
-    /// [`StateError::Json`] when the document as a whole does not
+    /// [`StateError::Value`] when the document as a whole does not
     /// parse or is not an array.
     pub fn load_pending_secrets(&self, name: &str) -> Result<Vec<(String, String)>> {
         let path = self.pending_secrets_path(name);
@@ -82,7 +82,7 @@ impl Paths {
     ///
     /// # Errors
     ///
-    /// [`StateError::Json`] on a malformed file.
+    /// [`StateError::Value`] on a malformed file.
     pub fn load_secret_key_index(&self, name: &str) -> Result<Vec<String>> {
         let path = self.secret_keys_path(name);
         if !path.is_file() {

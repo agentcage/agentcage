@@ -35,7 +35,7 @@
 //! the fixture asserts it for every case here.
 //!
 //! Hence the split below: `*_text` functions build the styled string,
-//! [`echo`] and [`echo_err`] decide what survives. A caller that needs
+//! [`echo`](crate::output::echo) and [`echo_err`](crate::output::echo_err) decide what survives. A caller that needs
 //! the string (the `--help` banner, PR D5) takes the first half; a
 //! caller that prints takes the wrapper.
 //!

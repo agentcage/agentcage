@@ -22,7 +22,7 @@
 //! (as it always has), so it is not merely a different
 //! subdirectory of the same root — it is a different root, and pointing
 //! `XDG_CONFIG_HOME` at a sandbox does not move it. Both come from
-//! [`Paths`], which is the only place that wart is written down.
+//! [`Paths`](agentcage_state::Paths), which is the only place that wart is written down.
 //!
 //! Whichever is chosen, the **rotated** generation is read first. The
 //! capture writer rolls over at `capture.max_file_size` and keeps one
@@ -45,7 +45,7 @@
 //! *asking* where a capture file would be created
 //! `$XDG_DATA_HOME/agentcage/<name>/capture/` — including on the error
 //! path, where `cage har` reports that there is no capture file and
-//! leaves an empty directory behind for it. [`Paths::capture_file`] is
+//! leaves an empty directory behind for it. [`Paths::capture_file`](agentcage_state::Paths::capture_file) is
 //! pure, so this reports the same error and creates nothing.
 
 use std::ffi::OsString;

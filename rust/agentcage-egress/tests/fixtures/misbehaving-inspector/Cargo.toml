@@ -14,5 +14,5 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 agentcage-inspector-sdk = { path = "../../../../agentcage-inspector-sdk" }
 
-[lints.rust]
-unsafe_code = "forbid"
+[lints]
+workspace = true

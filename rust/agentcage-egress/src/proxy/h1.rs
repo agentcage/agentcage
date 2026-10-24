@@ -812,7 +812,7 @@ async fn write_message(
     conn.io.flush().await
 }
 
-/// Send `req` as [`encode_request`] encodes it.
+/// Send `req` as `encode_request` encodes it.
 pub(crate) async fn write_request(conn: &mut Buffered, req: &Request) -> io::Result<()> {
     let (head, chunked) = request_head(req);
     write_message(conn, head, &req.body, chunked).await
@@ -850,7 +850,7 @@ pub(crate) fn encode_request(req: &Request) -> Vec<u8> {
     out
 }
 
-/// The head of [`encode_request`], and whether the body goes out chunked.
+/// The head of `encode_request`, and whether the body goes out chunked.
 fn request_head(req: &Request) -> (Vec<u8>, bool) {
     let mut headers = req.headers.clone();
     let version = if req.http_version.starts_with("HTTP/1") {

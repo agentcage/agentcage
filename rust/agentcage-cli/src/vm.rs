@@ -4,11 +4,11 @@
 //! half: the units, the Lima YAML, the argv every `limactl` invocation
 //! is built from, the guest-side file pushes and the secret bridging,
 //! none of which needs a Lima host to be checked — every command goes
-//! through [`CommandRunner`], so a recording fake on a Linux CI runner
+//! through [`CommandRunner`](agentcage_exec::CommandRunner), so a recording fake on a Linux CI runner
 //! sees the same argv a real `limactl` would. **E4** is the execution
-//! half below the `── execution ──` rule: [`VmBackend::deploy_cage`],
-//! [`VmBackend::start`], [`VmBackend::stop`],
-//! [`VmBackend::restart`], [`VmBackend::build_artifacts`] and the
+//! half below the `── execution ──` rule: [`VmBackend::deploy_cage`](crate::vm::VmBackend::deploy_cage),
+//! [`VmBackend::start`](crate::vm::VmBackend::start), [`VmBackend::stop`](crate::vm::VmBackend::stop),
+//! [`VmBackend::restart`](crate::vm::VmBackend::restart), [`VmBackend::build_artifacts`](crate::vm::VmBackend::build_artifacts) and the
 //! readiness waits, each of them a loop whose exit condition is a live
 //! guest's answer. Their acceptance check is e2e phase 7.
 //!
@@ -30,7 +30,7 @@
 //!   prompt into a hang.
 //! * `limactl start` never reads the terminal. The one prompt Lima has
 //!   is `create`'s configuration survey, and
-//!   [`LimaInstance::create`] passes `--yes` precisely to suppress it.
+//!   [`LimaInstance::create`](agentcage_exec::tools::limactl::LimaInstance::create) passes `--yes` precisely to suppress it.
 //! * Run live with both variants under `script(1)`: `cage start`
 //!   returned in 30s (`setpgid`) and 33s (`setsid`), and in both cases the
 //!   hostagent was left at `ppid=1`, in its own process group, with
@@ -45,7 +45,7 @@
 //!
 //! Note what this question does **not** touch: the streaming readers.
 //! `cage logs --severity` and `cage audit --follow` run their child
-//! through [`CommandRunner::stream`] with no process-group flag at all,
+//! through [`CommandRunner::stream`](agentcage_exec::CommandRunner::stream) with no process-group flag at all,
 //! and their `terminate()` sends SIGTERM to the local `limactl shell`;
 //! the guest-side `journalctl -f` goes away with the ssh channel.
 //!

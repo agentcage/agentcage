@@ -48,7 +48,7 @@
 //!
 //! This module reaches for [`crate::yaml`] and [`crate::value_fmt`] and
 //! nothing in [`crate::config`] but its error type. In particular
-//! [`coerce_port`] spells out its integer parsing itself rather than
+//! `coerce_port` spells out its integer parsing itself rather than
 //! borrowing the config parser's.
 
 use std::borrow::Cow;
