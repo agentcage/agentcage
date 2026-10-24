@@ -184,8 +184,14 @@ impl Paths {
     ///
     /// `yaml.safe_dump(raw, default_flow_style=False, sort_keys=False)`
     /// — block style, and **insertion order preserved**, because
-    /// `cage edit` shows the result to the operator and re-sorting
-    /// their file would be a gratuitous diff.
+    /// re-sorting the operator's file would be a gratuitous diff.
+    ///
+    /// The document is re-rendered from the value tree, so every comment
+    /// and every choice of quoting or flow style in the file on disk is
+    /// lost. `cage edit` avoids that by calling
+    /// [`Paths::save_raw_config_text`] when it has the operator's own
+    /// bytes to keep; callers that only have a value have no other
+    /// option.
     ///
     /// Atomic because the grants reconcile and a concurrent `cage
     /// update` read this file while it is being written; a truncated
@@ -205,6 +211,37 @@ impl Paths {
             source,
         })?;
         atomic_write_text(&path, &text)
+    }
+
+    /// [`Paths::save_raw_config`] for text the caller already has: write
+    /// the bytes as they are, atomically.
+    ///
+    /// This is the save `cage edit` uses when its placeholder fill
+    /// changed nothing, because re-rendering an operator's document is
+    /// what strips their comments, quotes and flow-style lists (#523).
+    /// The `yaml::dump` in [`Paths::save_raw_config`] is still the only
+    /// way to persist a document the CLI itself changed, since the
+    /// value tree carries no formatting to write back.
+    ///
+    /// The text is parsed before the write and run through the agent
+    /// schema check, so this is not a way to bypass the validation every
+    /// other raw save makes. Parsing here rather than trusting the
+    /// caller matters: the check and the bytes on disk have to describe
+    /// the same document.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::Yaml`] if `text` is not valid YAML,
+    /// [`StateError::Config`] if it fails the agent schema check, and
+    /// whatever [`atomic_write_text`] returns.
+    pub fn save_raw_config_text(&self, name: &str, text: &str) -> Result<()> {
+        let path = self.stored_config_path(name);
+        let raw = yaml::load(text).map_err(|source| StateError::Yaml {
+            path: path.clone(),
+            source,
+        })?;
+        validate_agents_document(&raw)?;
+        atomic_write_text(&path, text)
     }
 
     /// `state.remove_deployment` — delete the state directory, and the
@@ -518,6 +555,30 @@ mod tests {
             .filter_map(|line| line.split(':').next())
             .collect();
         assert_eq!(keys, ["name", "isolation", "lifecycle"]);
+    }
+
+    #[test]
+    fn save_raw_config_text_writes_the_bytes_and_refuses_bad_yaml() {
+        let (_dir, paths) = sandbox();
+        write_cage(&paths, "x", "name: x\n");
+        let text = "# keep me\nname: x\ncommand: [\"sleep\", \"infinity\"]\n";
+        paths.save_raw_config_text("x", text).unwrap();
+        assert_eq!(
+            fs::read_to_string(paths.stored_config_path("x")).unwrap(),
+            text
+        );
+
+        // Not YAML, or two documents: refused, and the file is untouched.
+        for bad in ["name: [x\n", "name: x\n---\nname: y\n"] {
+            assert!(matches!(
+                paths.save_raw_config_text("x", bad),
+                Err(StateError::Yaml { .. })
+            ));
+            assert_eq!(
+                fs::read_to_string(paths.stored_config_path("x")).unwrap(),
+                text
+            );
+        }
     }
 
     #[test]
