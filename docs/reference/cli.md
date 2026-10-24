@@ -159,10 +159,10 @@ agentcage rm my-agent -y
 - `-y, --yes`: Skip confirmation prompt.
 - `--keep-secrets`: Retain encrypted secrets on the host (useful when recreating the cage). The per-cage data directory below is kept either way.
 
-**Retention**: `cage destroy` does **not** delete the cage's data directory, `~/.local/share/agentcage/<name>/` (or `$XDG_DATA_HOME/agentcage/<name>/` when `XDG_DATA_HOME` is set). It holds `grants/`, `capture/`, `policy-audit.jsonl` and `timings/`, and it survives so that the policy audit log outlives the command that removed the cage. The command prints a `Kept:` block naming that path. To remove it by hand once the cage is gone:
+**Retention**: `cage destroy` leaves the cage's data directory in place and prints a `Kept:` block naming it (the `data:` line) and what is still in it. It is `$XDG_DATA_HOME/agentcage/<name>/` when `XDG_DATA_HOME` is set, `~/.local/share/agentcage/<name>/` otherwise; use the path the block printed rather than rebuilding it. It normally holds `grants/`, `capture/`, `policy-audit.jsonl` and `timings/`, and it survives so that the policy audit log outlives the command that removed the cage. Two exceptions: `inspectors/` is staged deployment content and is removed with the deployment, and on `apple-container` the capture log lives under `~/.config/agentcage/apple-container/<name>/logs/` and is removed with that state tree, so `capture/` is not reported as kept. To remove the directory by hand once the cage is gone, use the path from the `Kept:` block:
 
 ```bash
-rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/agentcage/<name>"
+rm -rf '<the path on the data: line>'
 ```
 
 ---
@@ -173,6 +173,8 @@ Removes all exited, stopped ephemeral or interactive cages:
 ```bash
 agentcage cage prune -y
 ```
+
+It takes `destroy`'s teardown and keeps the same thing: each removed cage's data directory, named by the `Kept:` block it prints (see **Retention** above).
 
 ---
 

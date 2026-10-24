@@ -458,18 +458,12 @@ pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
             println!("  {item}");
         }
     }
-    let kept = kept_lines(&ctx.paths, &name);
-    if !kept.is_empty() {
-        println!("Kept:");
-        for line in &kept {
-            println!("{line}");
-        }
-    }
+    print_kept(&ctx.paths, &name);
     ExitCode::SUCCESS
 }
 
-/// The `Kept:` block: the per-cage data directory `destroy` does not
-/// remove, and what survives in it (#423).
+/// Print the `Kept:` block: the per-cage data directory `destroy` does
+/// not remove, and what is still in it (#423).
 ///
 /// The deployment and the data directory are different things. The
 /// former is what `destroy` removes; the latter holds the grants
@@ -477,21 +471,85 @@ pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 /// ledger, and outliving the cage is the point — deleting the audit
 /// trail on `destroy` would make it erasable by the command that
 /// removes the evidence of why it mattered. That decision stands;
-/// what was wrong is that the command did not say so.
+/// what was wrong is that the command did not say so, and that the
+/// list it said it with was hard-coded.
 ///
-/// Empty when the directory is not there: a cage that never wrote data
-/// has nothing to report, and a `Kept:` heading over nothing would be
-/// noise.
-fn kept_lines(paths: &Paths, name: &str) -> Vec<String> {
+/// **The inventory is read off the directory and not asserted.** It is
+/// taken *after* the teardown, so what it names is what actually
+/// survived it, and there is no block at all when the directory is not
+/// there. Two things that were wrong when this was a fixed sentence:
+///
+/// * `capture/` is the container and vm backend's log. An
+///   `apple-container` cage writes `capture.jsonl` under
+///   `~/.config/agentcage/apple-container/<name>/logs/`, which is the
+///   apple state tree `destroy` removes (see
+///   `agentcage_state::Paths::apple_capture_file` and
+///   `har::capture_path`), so naming `capture/` there claimed to keep
+///   a log that had just been deleted. The deploy still creates the
+///   host `capture/` directory for every backend, but on apple it is
+///   empty; empty directories are skipped, see below.
+/// * `inspectors/` is staged deployment content, removed by
+///   `remove_deployment`, so it must not be named as data that stayed.
+///   Reading the directory after the teardown covers it without a
+///   special case, and also covers the one path that does leave it
+///   behind: destroy on a name with neither a stored config nor
+///   backend resources.
+///
+/// A directory that holds nothing is skipped: `grants/` created at
+/// deploy time but never written, or apple's empty `capture/`, keeps
+/// no data and naming it would only suggest it did. The path line is
+/// still printed either way — it is what the operator has to remove by
+/// hand — and a `Kept:` heading over an otherwise empty directory is
+/// the truth, not noise.
+fn print_kept(paths: &Paths, name: &str) {
     let data = paths.cage_data_dir(name);
     if !data.is_dir() {
-        return Vec::new();
+        return;
     }
-    vec![
-        format!("  data:{}", data.display()),
-        "  grants/, capture/, policy-audit.jsonl and timings/ survive in this directory."
-            .to_owned(),
-    ]
+    println!("Kept:");
+    println!("  data:{}", data.display());
+    let entries = kept_entries(&data);
+    if !entries.is_empty() {
+        println!("  left in place: {}", entries.join(", "));
+    }
+}
+
+/// The top-level entries of the data directory that hold something,
+/// as names to print: a directory gets a trailing `/`, a file does
+/// not.
+///
+/// Sorted, because the order of a `read_dir` is the filesystem's and
+/// this output is pinned by a test. An entry whose metadata or
+/// directory cannot be read is skipped rather than reported: the
+/// block's whole point is not to name anything the operator cannot
+/// find.
+fn kept_entries(data: &std::path::Path) -> Vec<String> {
+    let mut entries: Vec<String> = std::fs::read_dir(data)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| holds_data(path))
+        .filter_map(|path| {
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            Some(if path.is_dir() {
+                format!("{name}/")
+            } else {
+                name
+            })
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+/// Whether `path` keeps anything: a file always does, a directory only
+/// when it has an entry of its own.
+///
+/// A directory that cannot be read answers *no* — see
+/// [`kept_entries`].
+fn holds_data(path: &std::path::Path) -> bool {
+    !path.is_dir() || std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// Stop, destroy, forget.
@@ -621,6 +679,10 @@ pub(crate) fn prune(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     for name in &candidates {
         println!("Removing {name}...");
         destroy_cage(ctx, name, false, false);
+        // The teardown is destroy's, so the retention notice is too.
+        // Silent here would leave a prune of ten cages claiming to have
+        // removed ten data directories it did not touch (#423).
+        print_kept(&ctx.paths, name);
     }
     println!("Pruned {} cage(s).", candidates.len());
     ExitCode::SUCCESS

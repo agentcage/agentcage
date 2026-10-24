@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cage destroy` and `cage prune` report the data directory they keep without overstating it.** The `Kept:` block now lists the entries actually still in the per-cage data directory (`grants/`, `policy-audit.jsonl`, `timings/`, …) instead of always asserting `grants/`, `capture/`, `policy-audit.jsonl` and `timings/`. On `apple-container` the capture log lives under `~/.config/agentcage/apple-container/<name>/logs/` and is removed with the cage's state tree, so the old text claimed to keep a capture log `destroy` had just deleted; `inspectors/`, which goes with the deployment, is no longer named either. `cage prune` now prints the same block, since it takes the same teardown path.
+
 ## [0.53.0] - 2026-10-24
 
 ### Added

@@ -463,12 +463,47 @@ fn destroying_an_absent_cage_is_a_reported_no_op() {
     );
 }
 
+/// The `Kept:` block reports what is on disk, not whether this run
+/// removed anything, so a cage that is already gone still names the
+/// data directory its destroy left behind (#423).
+///
+/// Suppressing it on the "not found" branch would hide exactly the
+/// leftover a later `cage create` of the same name inherits.
+#[test]
+fn destroy_reports_kept_data_for_an_absent_cage() {
+    let dir = agentcage_state::TestDir::new("binary-destroy-kept-absent");
+    let paths = agentcage_state::Paths::under(dir.path());
+    let name = "pr423-gone";
+    paths.append_policy_audit(
+        name,
+        "2026-10-24T00:00:00Z",
+        &agentcage_core::har::json::Json::Object(Vec::new()),
+    );
+
+    let out = agentcage_sandboxed(dir.path(), &["cage", "destroy", name, "-y"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("Nothing to remove"),
+        "the absent cage was not reported: {text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "Kept:\n  data:{}\n  left in place: policy-audit.jsonl\n",
+            paths.cage_data_dir(name).display()
+        )),
+        "the leftover data directory was not named: {text}"
+    );
+}
+
 /// `cage destroy` keeps the per-cage data directory, and says where it
 /// is (#423).
 ///
 /// The visible change is the `Kept:` block: `Removed:` still reports
-/// exactly what it always did, and the data it says survives is still
-/// on disk afterward.
+/// exactly what it always did, the inventory names the entries that
+/// are actually in the data directory (and not the staged
+/// `inspectors/`, which goes with the deployment), and the data it
+/// says survives is still on disk afterward.
 #[test]
 fn destroy_names_the_data_directory_it_keeps() {
     let dir = agentcage_state::TestDir::new("binary-destroy-kept");
@@ -476,8 +511,17 @@ fn destroy_names_the_data_directory_it_keeps() {
     let name = "pr423-kept-data";
     stage_cage(dir.path(), name, "container");
     std::fs::create_dir_all(paths.grants_dir(name)).expect("the data dir is writable");
+    std::fs::write(paths.grants_file(name), "- domain: example.com\n").expect("writable");
+    std::fs::create_dir_all(paths.capture_dir(name)).expect("the capture dir is writable");
+    std::fs::write(paths.capture_file(name), "{}\n").expect("the capture log is writable");
     std::fs::write(paths.policy_audit_file(name), "{\"decision\":\"allow\"}\n")
         .expect("the audit log is writable");
+    let timings = paths.cage_data_dir(name).join("timings");
+    std::fs::create_dir_all(&timings).expect("the timings dir is writable");
+    std::fs::write(timings.join("20261024T000000-1.jsonl"), "{}\n").expect("writable");
+    let inspectors = paths.inspectors_dir(name);
+    std::fs::create_dir_all(&inspectors).expect("the inspectors dir is writable");
+    std::fs::write(inspectors.join("plugin.wasm"), "not really").expect("writable");
 
     let out = agentcage_sandboxed(dir.path(), &["cage", "destroy", name, "-y"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -490,13 +534,79 @@ fn destroy_names_the_data_directory_it_keeps() {
              \n\
              Removed:\n  state:{name}\n\
              Kept:\n  data:{}\n  \
-             grants/, capture/, policy-audit.jsonl and timings/ survive in this directory.\n",
+             left in place: capture/, grants/, policy-audit.jsonl, timings/\n",
             data.display()
         ),
         "stderr: {}",
         stderr(&out)
     );
     assert!(data.is_dir(), "the data directory was removed");
+    assert!(
+        paths.policy_audit_file(name).is_file(),
+        "the policy audit log was removed"
+    );
+    assert!(
+        paths.capture_file(name).is_file(),
+        "the capture log was removed"
+    );
+    assert!(
+        !inspectors.exists(),
+        "the staged inspectors were kept with the data"
+    );
+}
+
+/// The `Kept:` block must not name `capture/` on `apple-container`.
+///
+/// That backend writes `capture.jsonl` under
+/// `~/.config/agentcage/apple-container/<name>/logs/`, which
+/// `destroy_resources` `remove_dir_all`s with the rest of the apple
+/// state tree (#423). The old fixed sentence said "capture/ … survive"
+/// while the command had just deleted the log — the exact inversion of
+/// what the issue asked for. The deploy still creates an empty host
+/// `capture/` for every backend, so staging it here is what a real
+/// apple cage has on disk before the destroy.
+#[test]
+fn destroy_does_not_claim_apple_capture_survives() {
+    let dir = agentcage_state::TestDir::new("binary-destroy-apple-kept");
+    let paths = agentcage_state::Paths::under(dir.path());
+    let name = "pr423-apple-kept";
+    stage_cage(dir.path(), name, "apple-container");
+    std::fs::create_dir_all(paths.grants_dir(name)).expect("the data dir is writable");
+    std::fs::write(paths.grants_file(name), "- domain: example.com\n").expect("writable");
+    std::fs::write(paths.policy_audit_file(name), "{\"decision\":\"allow\"}\n")
+        .expect("the audit log is writable");
+    // What `ensure_capture_dir` leaves for `capture.enable_har`, on a
+    // backend whose log actually goes to the apple state tree.
+    std::fs::create_dir_all(paths.capture_dir(name)).expect("the capture dir is writable");
+    let apple_capture = paths.apple_capture_file(name);
+    std::fs::create_dir_all(apple_capture.parent().expect("has a parent"))
+        .expect("the apple logs dir is writable");
+    std::fs::write(&apple_capture, "{}\n").expect("the apple capture log is writable");
+
+    let out = agentcage_sandboxed(dir.path(), &["cage", "destroy", name, "-y"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    let kept = text.split_once("Kept:").map_or_else(
+        || panic!("no Kept: block in {text}"),
+        |(_, rest)| format!("Kept:{rest}"),
+    );
+    assert_eq!(
+        kept,
+        format!(
+            "Kept:\n  data:{}\n  left in place: grants/, policy-audit.jsonl\n",
+            paths.cage_data_dir(name).display()
+        ),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        !text.contains("capture/"),
+        "the block named the capture log destroy had just deleted: {text}"
+    );
+    assert!(
+        !apple_capture.exists(),
+        "destroy kept the apple capture log it reported removing"
+    );
     assert!(
         paths.policy_audit_file(name).is_file(),
         "the policy audit log was removed"
