@@ -145,6 +145,18 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --locked
 
+      # The pass above only resolves links in docs it renders, i.e. on
+      # public items, and most of the CLI is `pub(crate)` or private: a
+      # broken link on a private helper passes it. This pass renders
+      # those too, plus the `fuzzing`-gated `fuzz_api`, the workspace's
+      # only feature. It cannot replace the pass above, because
+      # `private_intra_doc_links` only fires when private items are not
+      # documented.
+      - name: cargo doc (private items, all features)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --locked --document-private-items --all-features
+
   # Dependency policy (deny.toml): RustSec advisories, licenses, banned
   # crates and sources. Separate from the build job so a new advisory
   # names itself in the job list instead of hiding in a long log. The

@@ -18,9 +18,9 @@
 //! * [`imap`] / [`smtp`]: the relays' line, literal, mailbox, address,
 //!   header and DATA handling.
 //! * [`redact_stream`]: streaming redaction against buffered redaction.
-//! * [`decode`]: streaming Content-Encoding removal against the one-shot
+//! * `decode`: streaming Content-Encoding removal against the one-shot
 //!   decoder, and charset decoding.
-//! * [`config`]: loading arbitrary config text and handing it to every
+//! * `config`: loading arbitrary config text and handing it to every
 //!   section's parser.
 
 mod config;

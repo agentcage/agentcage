@@ -363,7 +363,7 @@ const PODMAN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Run a captured probe, flattening every failure into `None`.
 ///
 /// A binary that is not installed, a timeout, a non-zero exit and every
-/// other [`ExecError`] all read as a failed probe.
+/// other [`ExecError`](agentcage_exec::ExecError) all read as a failed probe.
 fn probe(runner: &dyn CommandRunner, cmd: &Command) -> Option<String> {
     let out = runner.run(cmd).ok()?;
     out.success().then(|| out.stdout_text())

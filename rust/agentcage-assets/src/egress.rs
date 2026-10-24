@@ -187,7 +187,7 @@ impl Context for Embedded {
 ///
 /// An overlay file shadows a base file of the same path, which is what
 /// staging it into an extracted tree does too, so [`content_hash_with`]
-/// and [`content_hash_from_dir_with`] agree.
+/// and [`content_hash_from_dir`] agree.
 struct Overlay<'a> {
     /// What the files are laid over.
     base: &'a dyn Context,
