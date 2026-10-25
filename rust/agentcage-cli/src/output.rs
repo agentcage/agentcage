@@ -24,11 +24,11 @@
 //!
 //! The port adds two automation switches on top of the per-stream rule:
 //! `NO_COLOR` (any value, including an empty one) and the global
-//! `--no-color` flag. Either one makes [`echo`] and [`echo_err`] strip
+//! `--no-color` flag. Either one makes `echo` and `echo_err` strip
 //! the escapes even on a terminal; neither changes the default, which
 //! is still the per-stream rule below. `--quiet` (and a `CI` environment,
 //! which scripts set) silences *progress* output -- the spinner and the
-//! banner [`banner`] prints at the start of `cage create` / `cage run` --
+//! banner `banner` prints at the start of `cage create` / `cage run` --
 //! and never a command's own result lines or an error.
 //!
 //! So the colour decision is: **is this particular stream a terminal,
