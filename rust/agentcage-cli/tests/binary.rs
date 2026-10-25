@@ -1462,9 +1462,12 @@ fn agentcage_in_a_pty(home: &std::path::Path, args: &[&str], env: &[(&str, &str)
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_RUNTIME_DIR", home.join("run"))
         // The test controls these; an inherited value would decide the
-        // assertion for it.
+        // assertion for it. A terminal alone is not enough for clap's
+        // colour writer: `TERM=dumb` (GitHub's runner) strips the help,
+        // so use a colour-capable terminal name for the pty.
         .env_remove("NO_COLOR")
         .env_remove("CI")
+        .env("TERM", "xterm-256color")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(
             pty.slave.try_clone().expect("clone the pty"),
