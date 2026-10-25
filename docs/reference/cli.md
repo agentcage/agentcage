@@ -53,7 +53,7 @@ agentcage init my-agent --scaffold claude-code
 ---
 
 ### `agentcage run SCAFFOLD [EXTRA_ARGS]...`
-Launches an ephemeral, one-shot sandboxed agent session. The cage and network are automatically destroyed upon process exit:
+Launches a sandboxed agent session. By default the cage is stopped when the session exits and its resources are kept; `--rm` destroys the cage afterwards.
 
 ```bash
 agentcage run claude-code -s ANTHROPIC_API_KEY
@@ -69,6 +69,11 @@ agentcage run claude-code -s ANTHROPIC_API_KEY
 - `--pull`: Force re-pulling the base image from the remote registry.
 - `--time`: Print wall-clock execution times for each setup phase.
 - `-v, --verbose`: Display full image build output.
+- `--rm`: Stop the session and destroy the cage's deployment, volumes, secrets and scoped resources. The cage's kept audit/data directory is retained and the command prints its path.
+- `--keep`: Keep the stopped cage after the session (the default). Cannot be combined with `--rm`.
+- `--dry-run`: Render and validate the same config a real run would use, print the plan (name, scaffold, isolation, image/build, project mount, allowlist, secrets, ports and commands), and exit without creating state, building an image, binding a port or starting the cage.
+
+On a normal exit the cage is **stopped, not destroyed**. The `Kept:` block names the cage, its data directory and what survived in it, and prints the exact `agentcage cage destroy <name> -y` command to remove it. `--rm` runs that same destroy path, but always leaves the audit/data directory in place so the policy audit log cannot be erased as a side effect of ending a session; it says how to remove that directory by hand.
 
 ---
 
@@ -168,13 +173,19 @@ rm -rf '<the path on the data: line>'
 ---
 
 ### `agentcage cage prune`
-Removes all exited, stopped ephemeral or interactive cages:
+Removes stopped interactive and ephemeral cages that are no longer running:
 
 ```bash
 agentcage cage prune -y
+agentcage cage prune --dry-run --older-than 7d
 ```
 
-It takes `destroy`'s teardown and keeps the same thing: each removed cage's data directory, named by the `Kept:` block it prints (see **Retention** above).
+Options:
+- `-y, --yes`: Skip the confirmation prompt.
+- `--dry-run`: List exactly which cages would be removed, then exit without changing anything or prompting.
+- `--older-than DURATION`: Only include cages that stopped more than `DURATION` ago, using the same `30s` / `10m` / `1h` / `2d` / bare-seconds syntax as `domain add --expires-in`. The age is measured from the recorded `stopped_at` time, with `metadata.json`'s modification time as the fallback for cages from older releases.
+
+Running cages and `service` cages are never removed. Like `destroy`, it takes the existing teardown path and keeps each removed cage's data directory, naming it in the `Kept:` block (see **Retention** above).
 
 ---
 

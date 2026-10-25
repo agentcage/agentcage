@@ -303,6 +303,17 @@ fn prune() -> Command {
     leaf("prune")
         .about("Remove all exited interactive and ephemeral cages.")
         .arg(yes_flag())
+        .arg(flag(
+            "dry_run",
+            "dry-run",
+            "List the cages that would be removed without changing anything.",
+        ))
+        .arg(value_opt(
+            "older_than",
+            "older-than",
+            TEXT,
+            "Only cages stopped more than this long ago (e.g. 30m, 1h, 2d).",
+        ))
 }
 
 /// `cage verify` — the health probe.

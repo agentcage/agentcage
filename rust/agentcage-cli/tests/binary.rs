@@ -792,6 +792,107 @@ fn prune_names_the_data_directory_it_keeps() {
     );
 }
 
+/// `--dry-run` and `--older-than` are visible through the binary too:
+/// the candidate list is exact and nothing is removed.
+#[test]
+fn prune_dry_run_and_older_than_change_nothing() {
+    let dir = agentcage_state::TestDir::new("binary-prune-dry-run");
+    let paths = agentcage_state::Paths::under(dir.path());
+    let now = agentcage_core::har::datetime::DateTime::now_utc().isoformat();
+    for (name, stopped_at) in [
+        ("dry-old", "2000-01-01T00:00:00+00:00"),
+        ("dry-recent", now.as_str()),
+    ] {
+        stage_cage_with_config(
+            dir.path(),
+            name,
+            &format!(
+                "name: {name}\nisolation: container\nlifecycle: interactive\ncontainer:\n  image: \"alpine\"\n"
+            ),
+        );
+        paths
+            .save_metadata(
+                name,
+                &agentcage_core::har::json::Json::Object(vec![
+                    (
+                        "agentcage_version".to_owned(),
+                        agentcage_core::har::json::Json::string("0.40.1"),
+                    ),
+                    (
+                        "lifecycle".to_owned(),
+                        agentcage_core::har::json::Json::string("interactive"),
+                    ),
+                    (
+                        "stopped_at".to_owned(),
+                        agentcage_core::har::json::Json::string(stopped_at),
+                    ),
+                ]),
+            )
+            .expect("metadata is writable");
+    }
+
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &["cage", "prune", "--dry-run", "--older-than", "1h"],
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Dry run: no cages will be removed."),
+        "{text}"
+    );
+    assert!(text.contains("dry-old"), "{text}");
+    assert!(
+        !text.contains("dry-recent"),
+        "the recent cage was selected: {text}"
+    );
+    assert!(paths.deployment_exists("dry-old"), "dry run removed a cage");
+    assert!(
+        paths.deployment_exists("dry-recent"),
+        "dry run removed a cage"
+    );
+}
+
+/// `run --dry-run` reaches no backend and creates no deployment or data
+/// directory; the plan is the only output.
+#[test]
+fn run_dry_run_has_no_side_effects() {
+    let dir = agentcage_state::TestDir::new("binary-run-dry-run");
+    let project = dir.join("project");
+    std::fs::create_dir_all(&project).expect("project dir");
+    let project_arg = project.display().to_string();
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "run",
+            "claude-code",
+            "--dry-run",
+            "--name",
+            "binary-dry",
+            "--project",
+            &project_arg,
+            "--isolation",
+            "container",
+            "-s",
+            "ANTHROPIC_API_KEY=sk-test",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("Dry run: no changes will be made."), "{text}");
+    assert!(text.contains("name: binary-dry"), "{text}");
+    assert!(
+        text.contains("secrets: ANTHROPIC_API_KEY (provided)"),
+        "{text}"
+    );
+    assert!(!text.contains("sk-test"), "the secret value leaked: {text}");
+
+    let paths = agentcage_state::Paths::under(dir.path());
+    assert!(!paths.deployment_exists("binary-dry"));
+    assert!(!paths.deployment_dir("binary-dry").exists());
+    assert!(!paths.cage_data_dir("binary-dry").exists());
+}
+
 /// Every command in the tree has a body.
 ///
 /// Two tests used to live here: one asserting an unported command
