@@ -31,7 +31,8 @@ pub(crate) fn command() -> Command {
             leaf("list")
                 .alias("ls")
                 .about("List secrets for a cage.")
-                .arg(cage_name()),
+                .arg(cage_name())
+                .arg(flag("as_json", "json", "Output as JSON.")),
         )
         .subcommand(
             leaf("rm")
@@ -98,6 +99,7 @@ pub(crate) mod set;
 use std::process::ExitCode;
 
 use agentcage_core::config::Config;
+use agentcage_core::har::json::Json;
 use clap::ArgMatches;
 
 use crate::cli::context::{Ctx, EXIT_FAILURE, ensure_v022_cage};
@@ -180,13 +182,14 @@ pub(crate) fn list(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     let name = matches
         .get_one::<String>("name")
         .expect("required by the parser");
-    match run_list(ctx, name) {
+    let as_json = matches.get_flag("as_json");
+    match run_list(ctx, name, as_json) {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => code,
     }
 }
 
-fn run_list(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
+fn run_list(ctx: &Ctx, name: &str, as_json: bool) -> Result<(), ExitCode> {
     let config = open_cage(ctx, name, false)?;
     require_store_backend(&config, name)?;
     // The apple branch. The *table* is the same one — same
@@ -209,6 +212,18 @@ fn run_list(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
             .map(|full| full[prefix.len()..].to_owned())
             .collect()
     };
+    if as_json {
+        let (_, missing) = rows(&config, &present);
+        crate::cli::json_out::print("secret list", list_json(name, &config, &present));
+        // The envelope documents success; a declared-but-absent secret
+        // is still a failure, and the exit code says so. `secret list`
+        // has always exited 1 for it, and a JSON mode that returned 0
+        // would be a different command.
+        if missing {
+            return Err(ExitCode::from(EXIT_FAILURE));
+        }
+        return Ok(());
+    }
     if render(&config, &present) {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
@@ -231,6 +246,8 @@ enum Kind {
     /// Expected, but by none of the above — a `podman_secrets` entry or
     /// a relay credential.
     Direct,
+    /// Stored at rest but declared by nothing.
+    Orphan,
 }
 
 impl Kind {
@@ -240,6 +257,7 @@ impl Kind {
             Self::Decider => "decider",
             Self::Watcher => "watcher",
             Self::Direct => "direct",
+            Self::Orphan => "orphan",
         }
     }
 }
@@ -269,6 +287,42 @@ impl Kind {
 /// (`podman secret ls`), and `podman secret inspect --showsecret` is
 /// never called.
 fn render(config: &Config, present: &[String]) -> bool {
+    let (rows, any_missing) = rows(config, present);
+    println!("{:<30} {:<12} {:<8} PLACEHOLDER", "NAME", "TYPE", "STATUS");
+    for row in &rows {
+        if row.kind == Kind::Orphan {
+            println!("{:<30} {:<12} ok", row.name, row.kind.as_str());
+            continue;
+        }
+        // `.trim_end()` — a rule with no placeholder must not leave a
+        // run of spaces at the end of the line.
+        let line = format!(
+            "{:<30} {:<12} {:<8} {}",
+            row.name,
+            row.kind.as_str(),
+            row.status,
+            row.placeholder
+        );
+        println!("{}", line.trim_end());
+    }
+    any_missing
+}
+
+/// One line of `secret list`, before it is printed or serialized.
+///
+/// The single source for both renderers: the JSON document and the table
+/// are computed from the same rows, so a key cannot be classified one
+/// way in the table and another in the envelope. `placeholder` is the
+/// rule's decoy token (never a value); an orphan has none.
+struct Row {
+    name: String,
+    kind: Kind,
+    status: &'static str,
+    placeholder: String,
+}
+
+/// The rows and whether any configured secret is missing.
+fn rows(config: &Config, present: &[String]) -> (Vec<Row>, bool) {
     let mut expected = agentcage_cli::services::expected_secrets(config);
     let injection: Vec<&str> = config
         .secret_injection
@@ -308,8 +362,8 @@ fn render(config: &Config, present: &[String]) -> bool {
     orphans.sort_unstable();
     orphans.dedup();
 
-    println!("{:<30} {:<12} {:<8} PLACEHOLDER", "NAME", "TYPE", "STATUS");
     let mut any_missing = false;
+    let mut out = Vec::with_capacity(expected.len() + orphans.len());
     for key in &expected {
         let kind = if injection.contains(&key.as_str()) {
             Kind::Injection
@@ -326,27 +380,66 @@ fn render(config: &Config, present: &[String]) -> bool {
             any_missing = true;
             "MISSING"
         };
-        // `.rstrip()` — a rule with no placeholder must not leave a run
-        // of spaces at the end of the line.
         let placeholder = placeholders
             .iter()
             .find(|(env, _)| env == key)
-            .map_or("", |(_, value)| *value);
-        let line = format!("{key:<30} {:<12} {status:<8} {placeholder}", kind.as_str());
-        println!("{}", line.trim_end());
+            .map_or("", |(_, value)| *value)
+            .to_owned();
+        out.push(Row {
+            name: key.clone(),
+            kind,
+            status,
+            placeholder,
+        });
     }
     for key in orphans {
         // Stored at rest but referenced by nothing: staged at start()
         // and never injected or redacted. Surfaced so it can be audited
         // or removed.
-        println!("{key:<30} {:<12} ok", "orphan");
+        out.push(Row {
+            name: key.clone(),
+            kind: Kind::Orphan,
+            status: "ok",
+            placeholder: String::new(),
+        });
     }
-    any_missing
+    (out, any_missing)
+}
+
+/// `secret list --json`'s `data`: names, classifications and placeholder
+/// labels, never a value.
+///
+/// Nothing on this path reads a stored value: `present` is a list of
+/// names from `podman secret ls`-equivalent calls and `pending_secrets`
+/// indexes, and the placeholder is the decoy the cage injects in place of
+/// the secret. `present` is the same `ok`/`MISSING` distinction the table
+/// prints, and an empty placeholder is omitted rather than emitted as
+/// `""`.
+fn list_json(name: &str, config: &Config, present: &[String]) -> Json {
+    let (rows, _) = rows(config, present);
+    let secrets: Vec<Json> = rows
+        .into_iter()
+        .map(|row| {
+            let mut entry = vec![
+                ("name".to_owned(), Json::string(row.name)),
+                ("type".to_owned(), Json::string(row.kind.as_str())),
+                ("present".to_owned(), Json::Bool(row.status == "ok")),
+            ];
+            if !row.placeholder.is_empty() {
+                entry.push(("placeholder".to_owned(), Json::string(row.placeholder)));
+            }
+            Json::Object(entry)
+        })
+        .collect();
+    crate::cli::json_out::object(vec![
+        ("cage", Json::string(name)),
+        ("secrets", Json::Array(secrets)),
+    ])
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{render, require_store_backend, run_list};
+    use super::{Kind, list_json, render, require_store_backend, rows, run_list};
     use crate::cli::context::Ctx;
     use agentcage_core::config::Config;
     use agentcage_core::config::types::SecretInjectionRule;
@@ -368,6 +461,32 @@ mod tests {
         config.secret_injection.push(rule("API_KEY", "{{API_KEY}}"));
         assert!(render(&config, &[]));
         assert!(!render(&config, &["API_KEY".to_owned()]));
+    }
+
+    /// The JSON document carries names and the decoy placeholder, and
+    /// has nowhere to put a value: the rows never receive one.
+    #[test]
+    fn the_json_rows_name_the_secret_and_never_carry_a_value() {
+        let mut config = Config::default();
+        config.secret_injection.push(rule("API_KEY", "{{API_KEY}}"));
+        let present = vec!["API_KEY".to_owned()];
+        let (rows, missing) = rows(&config, &present);
+        assert!(!missing);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, Kind::Injection);
+        assert_eq!(rows[0].status, "ok");
+
+        let doc = list_json("acme", &config, &present);
+        let text = agentcage_core::har::json::dumps(
+            &doc,
+            agentcage_core::har::json::DumpOptions::indented(),
+        );
+        assert!(text.contains("API_KEY"));
+        assert!(
+            text.contains("{{API_KEY}}"),
+            "the placeholder is a decoy, not a value"
+        );
+        assert!(!text.contains("super-secret"));
     }
 
     /// An agent's API key is the agent's, not an orphan — even when the
@@ -465,7 +584,7 @@ mod tests {
         write_cage(&ctx.paths, "acme", "apple-container");
 
         // Nothing stored yet: the declared rule is MISSING, exit 1.
-        assert!(run_list(&ctx, "acme").is_err());
+        assert!(run_list(&ctx, "acme", false).is_err());
 
         std::fs::write(
             ctx.paths
@@ -474,7 +593,8 @@ mod tests {
             r#"[["API_KEY", "v1"]]"#,
         )
         .expect("the store's file");
-        assert!(run_list(&ctx, "acme").is_ok());
+        assert!(run_list(&ctx, "acme", false).is_ok());
+        assert!(run_list(&ctx, "acme", true).is_ok());
 
         assert_eq!(fake.call_count(), 0, "{:?}", fake.argv_sequence());
     }

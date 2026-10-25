@@ -27,7 +27,8 @@ pub(crate) fn command() -> Command {
             leaf("list")
                 .alias("ls")
                 .about("List domains for a cage.")
-                .arg(cage_name()),
+                .arg(cage_name())
+                .arg(flag("as_json", "json", "Output as JSON.")),
         )
         .subcommand(rm_command())
 }
@@ -618,21 +619,27 @@ pub(crate) fn list(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         .get_one::<String>("name")
         .expect("required by the parser")
         .clone();
+    let as_json = matches.get_flag("as_json");
     // The implicit `grants sync`. A non-success answer is the v0.22
     // refusal, which aborts the command.
     let reconciled = crate::cli::cage::grants::reconcile(ctx, &name, true);
     if reconciled != ExitCode::SUCCESS {
         return reconciled;
     }
-    match list_inner(ctx, &name) {
+    match list_inner(ctx, &name, as_json) {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => code,
     }
 }
 
-fn list_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
+fn list_inner(ctx: &Ctx, name: &str, as_json: bool) -> Result<(), ExitCode> {
     let raw = raw_or_refuse(ctx, name)?;
     ensure_v022_cage(&ctx.paths, name)?;
+
+    if as_json {
+        crate::cli::json_out::print("domain list", list_json(name, &raw));
+        return Ok(());
+    }
 
     let (mode, mut entries, mut passthrough) = read_domain_config(&raw);
     let expires = read_domain_expires(&raw);
@@ -662,6 +669,58 @@ fn list_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         }
     }
     Ok(())
+}
+
+/// `domain list --json`'s `data`: the same information the table prints,
+/// with a stable shape instead of three line formats.
+///
+/// `domains` is the active filter list, sorted; each entry carries
+/// `passthrough` only when it is also in that list, and `expires_at`
+/// only when a TTL is recorded. `passthrough_only` is the entries that
+/// exist *only* in the passthrough list, which the human output marks
+/// `[passthrough only]`.
+fn list_json(name: &str, raw: &Value) -> Json {
+    let (mode, mut entries, passthrough) = read_domain_config(raw);
+    let expires = read_domain_expires(raw);
+    // Sort before borrowing, so the two membership sets and the sorted
+    // output all read the same `Vec`.
+    entries.sort();
+    let in_passthrough: std::collections::BTreeSet<&str> =
+        passthrough.iter().map(String::as_str).collect();
+    let in_list: std::collections::BTreeSet<&str> = entries.iter().map(String::as_str).collect();
+
+    let domains: Vec<Json> = entries
+        .iter()
+        .map(|domain| {
+            let mut entry = vec![("domain".to_owned(), Json::string(domain))];
+            if in_passthrough.contains(domain.as_str()) {
+                entry.push(("passthrough".to_owned(), Json::Bool(true)));
+            }
+            if let Some(at) = expires.get(&canonical(domain)) {
+                entry.push(("expires_at".to_owned(), Json::string(at)));
+            }
+            Json::Object(entry)
+        })
+        .collect();
+
+    let mut passthrough_sorted = passthrough.clone();
+    passthrough_sorted.sort();
+    let passthrough_only: Vec<Json> = passthrough_sorted
+        .iter()
+        .filter(|domain| !in_list.contains(domain.as_str()))
+        .map(Json::string)
+        .collect();
+
+    crate::cli::json_out::object(vec![
+        ("cage", Json::string(name)),
+        ("mode", Json::string(mode)),
+        ("domains", Json::Array(domains)),
+        (
+            "passthrough",
+            crate::cli::json_out::strings(passthrough_sorted),
+        ),
+        ("passthrough_only", Json::Array(passthrough_only)),
+    ])
 }
 
 /// `domain add` — one or more domains, one reload.

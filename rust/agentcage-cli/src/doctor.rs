@@ -1264,6 +1264,14 @@ pub fn main() -> u8 {
     let runner = agentcage_exec::SystemRunner::new();
     let host = SystemDoctorHost::new();
     let report = run(&runner, &host);
-    print!("{}", render(&report, std::io::stdout().is_terminal()));
+    // `--no-color` / `NO_COLOR` must reach this screen too, not just the
+    // ports that print through `crate::output`.
+    print!(
+        "{}",
+        render(
+            &report,
+            crate::output::colour_enabled(std::io::stdout().is_terminal())
+        )
+    );
     report.exit_code()
 }

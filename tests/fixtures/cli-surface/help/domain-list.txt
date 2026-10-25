@@ -3,4 +3,7 @@ Usage: agentcage domain list [OPTIONS] NAME
   List domains for a cage.
 
 Options:
-  --help  Show this message and exit.
+  --json      Output as JSON.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

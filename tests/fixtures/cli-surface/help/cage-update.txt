@@ -31,4 +31,6 @@ Options:
                      changed inputs, --force or --no-cache rebuild. For offline
                      use, or to keep the images fixed.
   --force            Rebuild and restart even when inputs are unchanged.
-  --help             Show this message and exit.
+  --no-color         Disable colored output.
+  --quiet            Suppress progress output (spinners and banners).
+  -h, --help         Show this message and exit.

@@ -14,4 +14,6 @@ Options:
   --scaffold TEXT                 Use a scaffold template (e.g. openclaw).
   --list-scaffolds                List available scaffolds and exit.
   --port INTEGER                  Host port to publish (scaffold-specific).
-  --help                          Show this message and exit.
+  --no-color                      Disable colored output.
+  --quiet                         Suppress progress output (spinners and banners).
+  -h, --help                      Show this message and exit.

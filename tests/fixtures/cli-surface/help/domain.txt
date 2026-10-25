@@ -3,7 +3,9 @@ Usage: agentcage domain [OPTIONS] COMMAND [ARGS]...
   Manage cage domain filters.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.
 
 Commands:
   add   Add one or more domains to a cage's filter list.

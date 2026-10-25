@@ -3,4 +3,6 @@ Usage: agentcage cage verify [OPTIONS] NAME
   Check that a cage is healthy.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

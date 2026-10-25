@@ -37,4 +37,6 @@ Options:
                                   layer cache).
   --pull                          Force re-pull of the base image from the
                                   registry.
-  --help                          Show this message and exit.
+  --no-color                      Disable colored output.
+  --quiet                         Suppress progress output (spinners and banners).
+  -h, --help                      Show this message and exit.

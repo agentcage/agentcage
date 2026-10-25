@@ -18,12 +18,21 @@
 //!   terminal. With `color=None` and no `Context` setting `ctx.color`,
 //!   `click._compat.should_strip_ansi` reduces to `not isatty(stream)`.
 //!
-//! agentcage never passes `color=` to `echo`, never sets `ctx.color`,
-//! and reads neither `NO_COLOR` nor `FORCE_COLOR` — and neither does
-//! click 8.4. `cage audit --no-color` is a per-command flag threaded
-//! into [`agentcage_core::audit::format_table_row`]; it never reaches
-//! this module. So the whole decision is: **is this particular stream a
-//! terminal?**
+//! agentcage never passes `color=` to `echo` and never sets `ctx.color`.
+//! `cage audit --no-color` historically printed its table plain without
+//! going through this module.
+//!
+//! The port adds two automation switches on top of the per-stream rule:
+//! `NO_COLOR` (any value, including an empty one) and the global
+//! `--no-color` flag. Either one makes [`echo`] and [`echo_err`] strip
+//! the escapes even on a terminal; neither changes the default, which
+//! is still the per-stream rule below. `--quiet` (and a `CI` environment,
+//! which scripts set) silences *progress* output -- the spinner and the
+//! banner [`banner`] prints at the start of `cage create` / `cage run` --
+//! and never a command's own result lines or an error.
+//!
+//! So the colour decision is: **is this particular stream a terminal,
+//! and has colour not been switched off?**
 //!
 //! That shape is reproduced rather than flattened, because it has two
 //! consequences a `color: bool` parameter would lose. The decision is
@@ -52,6 +61,62 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+// ── the two switches ─────────────────────────────────────────
+
+/// `--no-color` / `NO_COLOR`: strip escapes even on a terminal.
+static NO_COLOR: AtomicBool = AtomicBool::new(false);
+
+/// `--quiet` / `CI`: silence progress output.
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// Switch colour off (or back on) for the rest of the process.
+///
+/// Called once, by `cli::dispatch`, after the environment and the
+/// command line have been read. Public rather than private so the
+/// tests drive the same seam the binary does.
+pub fn set_no_color(no_color: bool) {
+    NO_COLOR.store(no_color, Ordering::SeqCst);
+}
+
+/// Switch progress output off (or back on) for the rest of the process.
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, Ordering::SeqCst);
+}
+
+/// Whether escapes are suppressed even on a colour-capable stream.
+#[must_use]
+pub fn no_color() -> bool {
+    NO_COLOR.load(Ordering::SeqCst)
+}
+
+/// Whether progress output is switched off.
+#[must_use]
+pub fn quiet() -> bool {
+    QUIET.load(Ordering::SeqCst)
+}
+
+/// Whether a coloured line written to this stream keeps its escapes.
+///
+/// `colour_capable` is `stream.is_terminal()`. A non-terminal always
+/// strips, exactly as `click.echo` does; a terminal keeps the escapes
+/// unless `--no-color`/`NO_COLOR` said otherwise.
+#[must_use]
+pub fn colour_enabled(colour_capable: bool) -> bool {
+    colour_capable && !no_color()
+}
+
+/// Whether progress output may be written to a stream with this
+/// capability.
+///
+/// Progress is the spinner and the pre-deploy banner. It is only shown
+/// on a terminal, and only when `--quiet`/`CI` did not ask for silence:
+/// a pipe or a CI transcript gets the command's result, never its
+/// decoration.
+#[must_use]
+pub fn progress_enabled(terminal: bool) -> bool {
+    terminal && !quiet()
+}
 
 // ── the style primitives ─────────────────────────────────────
 
@@ -212,7 +277,7 @@ pub fn separator_text() -> String {
 /// decision is made against *this* stream and nothing else.
 pub fn echo(text: &str) {
     let mut out = std::io::stdout();
-    let _ = if out.is_terminal() {
+    let _ = if colour_enabled(out.is_terminal()) {
         writeln!(out, "{text}")
     } else {
         writeln!(out, "{}", strip_ansi(text))
@@ -225,7 +290,7 @@ pub fn echo(text: &str) {
 /// decision is per stream: piping stdout does not decolour stderr.
 pub fn echo_err(text: &str) {
     let mut err = std::io::stderr();
-    let _ = if err.is_terminal() {
+    let _ = if colour_enabled(err.is_terminal()) {
         writeln!(err, "{text}")
     } else {
         writeln!(err, "{}", strip_ansi(text))
@@ -238,7 +303,7 @@ pub fn echo_err(text: &str) {
 /// printing lines, so it flushes by hand.
 fn echo_err_no_newline(text: &str) {
     let mut err = std::io::stderr();
-    let _ = if err.is_terminal() {
+    let _ = if colour_enabled(err.is_terminal()) {
         write!(err, "{text}")
     } else {
         write!(err, "{}", strip_ansi(text))
@@ -247,7 +312,15 @@ fn echo_err_no_newline(text: &str) {
 }
 
 /// Print the `╭─╮` banner with version.
+///
+/// Progress output: shown only on a terminal and only when progress is
+/// not silenced. The `--help` banner is a different path entirely
+/// (`cli::banner::banner_text`), because help was explicitly asked for
+/// and must not disappear in a pipe or under `--quiet`.
 pub fn banner(ver: &str) {
+    if !progress_enabled(std::io::stdout().is_terminal()) {
+        return;
+    }
     echo(&banner_text(ver));
 }
 
@@ -435,9 +508,17 @@ pub struct Spinner {
 
 impl Spinner {
     /// Start spinning, with `msg` beside the frame.
+    ///
+    /// Silent -- not the static `…` line -- when progress output is
+    /// switched off or stderr is not a terminal. A script that captured
+    /// stderr should get the command's result, not a progress line it
+    /// has to filter.
     #[must_use]
     pub fn start(msg: &str) -> Self {
-        Self::new(msg, std::io::stderr().is_terminal(), stderr_sink(), None)
+        if !progress_enabled(std::io::stderr().is_terminal()) {
+            return Self::new(msg, false, Box::new(|_, _| {}), None);
+        }
+        Self::new(msg, true, stderr_sink(), None)
     }
 
     fn new(msg: &str, tty: bool, sink: Sink, frame_limit: Option<usize>) -> Self {
@@ -524,8 +605,9 @@ pub fn pause_active_spinner<T>(f: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLEAR_LINE, SPINNER_FRAMES, Sink, Spinner, banner_text, dim, frame_line, green, info_text,
-        ljust, red, separator_text, static_line, step_done_text, step_fail_text, strip_ansi,
+        CLEAR_LINE, SPINNER_FRAMES, Sink, Spinner, banner_text, colour_enabled, dim, frame_line,
+        green, info_text, ljust, no_color, progress_enabled, quiet, red, separator_text,
+        set_no_color, set_quiet, static_line, step_done_text, step_fail_text, strip_ansi,
     };
     use std::sync::{Arc, Mutex};
 
@@ -641,6 +723,33 @@ mod tests {
     // The fixture is the real check (tests/golden_output.rs); these pin
     // the pieces that fixture cases are built out of, so a failure says
     // which piece moved.
+
+    #[test]
+    fn no_color_forces_the_plain_form_on_a_terminal() {
+        // From false to true to false: the same switch `dispatch` sets
+        // from `--no-color` and `NO_COLOR`, read through the same
+        // predicate `echo` branches on.
+        assert!(!no_color());
+        assert!(colour_enabled(true));
+        set_no_color(true);
+        assert!(no_color());
+        assert!(!colour_enabled(true), "a terminal must lose its escapes");
+        assert!(!colour_enabled(false));
+        set_no_color(false);
+        assert!(colour_enabled(true));
+    }
+
+    #[test]
+    fn quiet_switches_off_progress_but_not_a_terminal_check() {
+        assert!(!quiet());
+        assert!(progress_enabled(true));
+        set_quiet(true);
+        assert!(quiet());
+        assert!(!progress_enabled(true), "a terminal gets no spinner");
+        assert!(!progress_enabled(false));
+        set_quiet(false);
+        assert!(progress_enabled(true));
+    }
 
     #[test]
     fn styles_wrap_with_a_reset() {

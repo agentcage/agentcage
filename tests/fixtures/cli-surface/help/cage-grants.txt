@@ -3,7 +3,9 @@ Usage: agentcage cage grants [OPTIONS] NAME COMMAND [ARGS]...
   Manage Policy API runtime domain grants (see docs/explain/policy-api.md).
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.
 
 Commands:
   list     List runtime grants (overlay) and the static baseline for a cage.

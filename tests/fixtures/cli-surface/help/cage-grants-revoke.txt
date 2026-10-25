@@ -6,4 +6,6 @@ Usage: agentcage cage grants revoke [OPTIONS] DOMAIN
   effective on the next proxied request — no explicit signal needed.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

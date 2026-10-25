@@ -46,7 +46,9 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     let as_json = matches.get_flag("as_json") || matches.get_flag("as_json_lines");
     let follow = matches.get_flag("follow");
     let summary = matches.get_flag("summary");
-    let no_color = matches.get_flag("no_color");
+    // The flag, or `NO_COLOR` read by the entry point -- the two ways a
+    // caller can say "no SGR escapes" to this port.
+    let no_color = matches.get_flag("no_color") || agentcage_cli::output::no_color();
     let since = matches.get_one::<String>("since").cloned();
 
     if !ctx.paths.deployment_exists(&name) {
