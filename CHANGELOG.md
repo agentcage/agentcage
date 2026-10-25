@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-10-25
+
 ### Fixed
 
 - **`cage destroy` and `cage prune` say what they keep.** Both have always left the per-cage data directory (`$XDG_DATA_HOME/agentcage/<name>/`, default `~/.local/share/agentcage/<name>/`) in place, so the policy audit log outlives the command that removed the cage, but they did so silently. After the teardown they now print a `Kept:` block naming the directory and the entries still in it (`grants/`, `capture/`, `policy-audit.jsonl`, `timings/`, …); empty directories are not listed, and nothing is printed when there is no data directory. On `apple-container` the capture log lives under the apple state tree and is removed with it, so `capture/` is not reported as kept. What `destroy` removes is unchanged; remove the data directory by hand if a recreated cage of the same name should start without it. ([#423](https://github.com/agentcage/agentcage/issues/423))
