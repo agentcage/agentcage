@@ -56,12 +56,12 @@
 //!
 //! # `--json` is the same run, not a second one
 //!
-//! [`Report::to_json`] renders the checks [`run`] already produced, so
+//! `Report::to_json` renders the checks `run` already produced, so
 //! the human report and the JSON document cannot disagree about what a
-//! host answered: both are views of one [`Report`]. Every check is a
+//! host answered: both are views of one `Report`. Every check is a
 //! flat entry carrying its `section`, its `name` (the message it
 //! prints), its `level` and its `hint`, under a stable
-//! [`JSON_SCHEMA_VERSION`]. The exit code is the same in both modes.
+//! `JSON_SCHEMA_VERSION`. The exit code is the same in both modes.
 
 use std::fmt;
 use std::time::Duration;

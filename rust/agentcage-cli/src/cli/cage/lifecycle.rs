@@ -511,7 +511,7 @@ fn watcher_report(
     }
 }
 
-/// The last [`BLOCKED_WINDOW`] capture entries, and how many were
+/// The last `BLOCKED_WINDOW` capture entries, and how many were
 /// blocked.
 ///
 /// The capture file rotates at 128 MB per file, so reading all of it to
