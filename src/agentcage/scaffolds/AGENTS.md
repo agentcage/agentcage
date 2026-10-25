@@ -31,9 +31,9 @@ surprises here are by design. (The running version is in the
   `reason` to request a new egress domain — instead of guessing from 403s.
   This hostname is reserved and answered by the sandbox itself, so it works
   even when nothing else is allowlisted. The request is decided by a built-in
-  decider agent (a cybersecurity expert that scrutinizes your justification);
-  a granted domain is promoted into the baseline and becomes reachable within
-  about a second.
+  decider agent (a cybersecurity expert that scrutinizes your justification).
+  A granted domain becomes reachable within about a second for the grant's
+  lifetime and appears under `granted`, not `baseline`; you can give it back.
   If an `agentcage` skill is installed, load it: it covers the endpoints,
   what a good justification looks like, and how to give a grant back.
 - The root filesystem may be read-only and Linux capabilities dropped. Write

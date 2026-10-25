@@ -1,7 +1,7 @@
 # Quickstart Tutorial
 
 This hands-on tutorial walks you through your first five minutes with agentcage:
-1. Launching a throwaway coding agent in a single command (`agentcage run`).
+1. Launching a short-lived coding agent in a single command (`agentcage run`).
 2. Observing how the egress sandbox blocks data exfiltration and credential leaks.
 3. Building a persistent cage from a declarative configuration (`agentcage init` + `cage create`).
 4. Using the in-egress Policy API to dynamically request access to new domains.
@@ -41,13 +41,13 @@ Behind the scenes, `agentcage run`:
 6. Handed the container a trusted per-cage CA public certificate (`/certs/agentcage-ca.pem`).
 7. Forwarded outbound requests through the egress gateway, where placeholders are swapped for your real API key only on the wire.
 
-When you exit Claude Code (e.g. typing `/exit`), the ephemeral cage and network namespaces are automatically destroyed, while your workspace edits remain intact on your host.
+When you exit Claude Code (e.g. typing `/exit`), `agentcage run` stops the cage. The deployment directory, quadlets, named volumes, scoped secrets and audit data are kept, so `agentcage cage audit <name>` still works and `agentcage cage start <name>` resumes the same cage. Remove it with `agentcage cage destroy <name>`, or use `agentcage cage prune` for stopped interactive and ephemeral cages. Your workspace edits remain intact on your host.
 
 ---
 
 ## 2. Testing the Sandbox Boundaries
 
-Let's test the sandbox boundaries directly by opening an interactive shell inside a throwaway sandbox:
+Let's test the sandbox boundaries directly by opening an interactive shell inside a sandbox:
 
 ```bash
 agentcage run debian
@@ -289,7 +289,7 @@ When you are finished with a persistent cage:
 # Stop and delete the cage, containers, and scoped secrets:
 agentcage rm my-agent
 
-# Prune any exited ephemeral containers:
+# Remove stopped interactive and ephemeral cages:
 agentcage cage prune -y
 ```
 

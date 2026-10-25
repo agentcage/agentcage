@@ -15,7 +15,7 @@ There are two ways to run Pi in a cage: a one-command ephemeral session with `ag
 
 ### Ephemeral session (`agentcage run`)
 
-The fastest way to get started. Builds the image, creates a temporary cage, drops you into an interactive Pi session, and tears down the cage when you exit.
+The fastest way to get started. Builds the image, creates a cage, drops you into an interactive Pi session, and stops the cage when you exit.
 
 ```bash
 # API key auth (Anthropic)
@@ -28,7 +28,7 @@ agentcage run pi -s OPENAI_API_KEY
 agentcage run pi -s ANTHROPIC_API_KEY --project ~/myrepo
 ```
 
-You'll be prompted to enter the API key value on first run. The cage is removed on exit; audit logs are preserved.
+You'll be prompted to enter the API key value on first run. The cage is stopped, not removed, on exit: its deployment, volumes, scoped secrets and audit logs are kept. `agentcage cage destroy <name>` removes it, or `agentcage cage prune` removes stopped interactive and ephemeral cages in bulk.
 
 ### Persistent interactive cage (`agentcage cage`)
 
@@ -86,10 +86,9 @@ The cage uses `lifecycle: interactive`, so the container stays up (via `sleep in
 # Check containers are running
 agentcage cage list
 
-# View logs
+# View logs (DNS runs in the egress service, so -s egress covers it)
 agentcage cage logs myagent           # cage container
 agentcage cage logs myagent -s egress  # egress proxy and DNS (traffic inspection)
-agentcage cage logs myagent -s dns    # DNS sidecar
 ```
 
 ### Running as a service

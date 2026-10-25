@@ -17,9 +17,12 @@ cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cargo xtask check-invariants
+cargo xtask check-docs
 ```
 
-`cargo xtask check-invariants` (`rust/xtask`) checks the repository-wide rules: no Rust code shells out to Python, no shipped Containerfile installs an interpreter, no Python is tracked outside `docs/history/`, and no tracked file names the proxy agentcage used before the Rust egress, except past `CHANGELOG.md` entries and `docs/history/`. CI runs all four commands.
+`cargo xtask check-docs` checks the live docs against the code: pinned `cargo install` versions match the root `VERSION`, no page documents a nonexistent `dns` log service, `--service`/`-s` examples use `cage` or `egress`, and the install instructions keep describing the prebuilt installer and its `--build` opt-out. Historical notes under `docs/history/` and `CHANGELOG.md` are exempt.
+
+`cargo xtask check-invariants` covers the other repository invariants: Rust never shells out to Python, no shipped container image installs an interpreter, no Python is tracked outside `docs/history/`, and no live file uses the old egress's name. CI runs all of these checks.
 
 ## The Rust tree
 
@@ -36,7 +39,7 @@ The workspace manifest is the root `Cargo.toml`; the crates live under `rust/`:
 | `agentcage-egress-embed` | carries the linux-musl `agentcage-egress` binary inside the host binary. |
 | `agentcage-inspector-sdk` | the guest side of custom inspectors: Rust types and a macro over the WIT world `agentcage:inspector@1.1.0`, compiled to `wasm32-wasip2`. Examples are under `examples/inspectors/`. |
 | `agentcage-e2e-mock` | the mock HTTP services and probes the e2e harness runs next to a cage. |
-| `xtask` | repository tasks: `check-invariants`, `update-deps`, `gen-packaging`. |
+| `xtask` | repository tasks: `check-invariants`, `check-docs`, `update-deps`, `gen-packaging`. |
 
 Each crate's `//!` docs say what it holds. Many comments cite [`docs/history/rust-port-plan.md`](docs/history/rust-port-plan.md) (the host CLI's port) or [`docs/history/egress-port-plan.md`](docs/history/egress-port-plan.md) (the egress's) for the reasoning behind a decision.
 

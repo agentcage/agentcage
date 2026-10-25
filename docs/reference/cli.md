@@ -53,7 +53,7 @@ agentcage init my-agent --scaffold claude-code
 ---
 
 ### `agentcage run SCAFFOLD [EXTRA_ARGS]...`
-Launches an ephemeral, one-shot sandboxed agent session. The cage and network are automatically destroyed upon process exit:
+Launches an ephemeral, one-shot sandboxed agent session. When the session process exits, `run` stops the cage but does not remove it: the deployment directory, quadlets, named volumes, scoped secrets and audit data are kept, so `agentcage cage audit <name>` still works and `agentcage cage start <name>` resumes the same cage. Remove it with `agentcage cage destroy <name>`, or remove stopped interactive and ephemeral cages in bulk with `agentcage cage prune`:
 
 ```bash
 agentcage run claude-code -s ANTHROPIC_API_KEY

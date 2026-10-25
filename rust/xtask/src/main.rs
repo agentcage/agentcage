@@ -2,6 +2,8 @@
 //!
 //! - `check-invariants`: the static checks CI runs on every change
 //!   ([`invariants`]).
+//! - `check-docs`: live documentation against the CLI and VERSION
+//!   ([`docs`]).
 //! - `update-deps`: report (or apply) newer digests for the pinned
 //!   container base images ([`deps`]).
 //! - `gen-packaging`: render the Homebrew formula and the AUR `PKGBUILD`
@@ -12,6 +14,7 @@
 //! working directory inside the checkout.
 
 mod deps;
+mod docs;
 mod invariants;
 mod packaging;
 
@@ -34,6 +37,12 @@ enum Task {
     /// Check the repository invariants (what CI's `invariants` job runs).
     CheckInvariants {
         /// List what each check looked at.
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Check live documentation against the CLI and the VERSION file.
+    CheckDocs {
+        /// List how many live documentation files were scanned.
         #[arg(short, long)]
         verbose: bool,
     },
@@ -78,6 +87,7 @@ fn main() -> ExitCode {
     let root = repo_root();
     let result = match cli.task {
         Task::CheckInvariants { verbose } => invariants::run(&root, verbose),
+        Task::CheckDocs { verbose } => docs::run(&root, verbose),
         Task::UpdateDeps { update } => deps::run(&root, update),
         Task::GenPackaging {
             version,
