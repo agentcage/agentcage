@@ -580,11 +580,11 @@ fn print_run_kept(paths: &agentcage_state::Paths, name: &str, state: RunKept) {
     println!("Kept:");
     match state {
         RunKept::Stopped => {
-            println!("  cage: {name} (stopped; deployment, volumes and secrets preserved)")
+            println!("  cage: {name} (stopped; deployment, volumes and secrets preserved)");
         }
         RunKept::Removed => println!("  cage: {name} (destroyed; audit data retained)"),
         RunKept::RemoveFailed => {
-            println!("  cage: {name} (destroy incomplete; deployment state retained)")
+            println!("  cage: {name} (destroy incomplete; deployment state retained)");
         }
     }
     println!("  data:{}", data.display());
