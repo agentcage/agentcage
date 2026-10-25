@@ -1558,6 +1558,42 @@ impl<'a> VmBackend<'a> {
         }
     }
 
+    /// Stop only the cage's own unit, leaving the guest and the egress
+    /// running.
+    ///
+    /// For `cage restore`'s volume import: the guest's podman has to be
+    /// up to take the archive, and [`Self::stop`] powers it off. The
+    /// egress mounts none of the named volumes, so it can stay.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Failed`] if the unit would not stop: importing
+    /// under a running agent would merge the archive into a volume it
+    /// is writing to.
+    pub fn stop_cage_unit(&self, name: &str) -> Result<(), BackendError> {
+        let instance = self.instance(name);
+        let unit = format!("{name}-cage");
+        let out = instance.exec(&Self::systemctl_argv("stop", &unit), false)?;
+        if out.success() {
+            Ok(())
+        } else {
+            Err(BackendError::Failed(format!(
+                "could not stop {unit}: {}",
+                out.stderr_text().trim_end()
+            )))
+        }
+    }
+
+    /// Start the cage's own unit again after [`Self::stop_cage_unit`],
+    /// and insist that it came up.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Failed`] if the unit did not become active.
+    pub fn start_cage_unit(&self, name: &str) -> Result<(), BackendError> {
+        Self::start_cage_service(&self.instance(name), &format!("{name}-cage"))
+    }
+
     /// `VmBackend.restart` — stop, then start.
     ///
     /// A full guest power cycle, not a `systemctl restart`: that is

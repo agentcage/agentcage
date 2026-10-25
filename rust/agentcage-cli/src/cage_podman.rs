@@ -152,6 +152,56 @@ impl<'a> CagePodman<'a> {
             Self::Guest(p) => p.secret_read(name),
         }
     }
+
+    /// `podman volume exists <name>`, in whichever store.
+    ///
+    /// # Errors
+    ///
+    /// Only if the underlying command could not be run at all.
+    pub fn volume_exists(&self, name: &str) -> Result<bool, ExecError> {
+        match self {
+            Self::Host(p) => p.volume_exists(name),
+            Self::Guest(p) => p.volume_exists(name),
+        }
+    }
+
+    /// `podman volume export <name>`, to a host file.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Io`] if the file cannot be created,
+    /// [`ExecError::Failed`] on a non-zero exit.
+    pub fn volume_export(&self, name: &str, output_path: &str) -> Result<(), ExecError> {
+        match self {
+            Self::Host(p) => p.volume_export(name, output_path),
+            Self::Guest(p) => p.volume_export(name, output_path),
+        }
+    }
+
+    /// `podman volume create -- <name>`.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] on a non-zero exit.
+    pub fn volume_create(&self, name: &str) -> Result<(), ExecError> {
+        match self {
+            Self::Host(p) => p.volume_create(name),
+            Self::Guest(p) => p.volume_create(name),
+        }
+    }
+
+    /// `podman volume import -- <name> -`, from a host file.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Io`] if the archive cannot be opened,
+    /// [`ExecError::Failed`] on a non-zero exit.
+    pub fn volume_import(&self, name: &str, tar_path: &str) -> Result<(), ExecError> {
+        match self {
+            Self::Host(p) => p.volume_import(name, tar_path),
+            Self::Guest(p) => p.volume_import(name, tar_path),
+        }
+    }
 }
 
 impl crate::secrets::store::PodmanSecrets for CagePodman<'_> {

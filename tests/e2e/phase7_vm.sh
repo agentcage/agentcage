@@ -212,6 +212,29 @@ assert_output_contains "7.38" "Exec in VM cage" "hello" \
 assert_output_contains "7.39" "Exec in VM egress" "hello" \
   "$AGENTCAGE" cage exec "$CAGE" -s egress -- echo hello
 
+# ── VM Backup ───────────────────────────────────────────────────────
+# A vm cage's named volumes live in its Lima guest. `cage backup` used
+# to export them from host podman only, so the archive came out without
+# them and said nothing (#419). The marker is written straight into the
+# guest's volume, and has to come back out of the archive's tar.
+e2e_timer_start
+BACKUP_FILE=$(e2e_mktemp e2e-vm-backup .tar.gz)
+MARKER="vm-volume-$$"
+if limactl shell "$VM_NAME" -- podman unshare sh -c \
+     "echo $MARKER > \"\$(podman volume inspect e2e-vm-data --format '{{.Mountpoint}}')/marker\"" \
+     2>/dev/null \
+   && "$AGENTCAGE" cage backup "$CAGE" -o "$BACKUP_FILE" >/dev/null 2>&1; then
+  _vol=$(tar -xzOf "$BACKUP_FILE" agentcage-backup/volumes/e2e-vm-data.tar 2>/dev/null \
+    | tar -xO --wildcards '*marker' 2>/dev/null || true)
+  if [ "$_vol" = "$MARKER" ]; then
+    e2e_pass "7.39b" "Backup carries the VM's named volume"
+  else
+    e2e_fail "7.39b" "Backup carries the VM's named volume" "marker not in archive: '${_vol}'"
+  fi
+else
+  e2e_fail "7.39b" "Backup carries the VM's named volume" "marker write or backup failed"
+fi
+
 # ── VM Destroy ──────────────────────────────────────────────────────
 e2e_timer_start
 echo "Destroying VM cage..."

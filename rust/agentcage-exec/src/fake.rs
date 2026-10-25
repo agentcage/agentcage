@@ -510,8 +510,23 @@ impl FakeRunner {
 
 impl CommandRunner for FakeRunner {
     fn run(&self, command: &Command) -> Result<Output, ExecError> {
-        self.dispatch(command, CallMode::Run)
-            .into_result(command.program())
+        let output = self
+            .dispatch(command, CallMode::Run)
+            .into_result(command.program())?;
+        // What the real runner does with a `Sink::Write` stdout: the
+        // reply's stdout goes to the file, so a test can stub
+        // `podman volume export` and find the tar where it was asked
+        // to go. Only a reply that carries output writes, so a test
+        // pinning the argv alone can name a path that does not exist.
+        if let crate::command::Sink::Write(path) = command.stdout_spec()
+            && !output.stdout.is_empty()
+        {
+            std::fs::write(path, &output.stdout).map_err(|e| ExecError::Io {
+                program: command.program().to_string(),
+                source: e,
+            })?;
+        }
+        Ok(output)
     }
 
     fn stream(&self, command: &Command) -> Result<Box<dyn LineStream>, ExecError> {

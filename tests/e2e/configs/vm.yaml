@@ -8,6 +8,8 @@ container:
   command: ["node", "/app/agent.js"]
   ports:
     - "127.0.0.1:${E2E_PORT_VM}:3000"
+  named_volumes:
+    e2e-vm-data: /data
 domains:
   allow:
     - httpbin.org

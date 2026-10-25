@@ -2017,3 +2017,116 @@ fn an_egress_without_the_staging_mount_has_no_live_channel() {
         &podman, "demo", &config
     ));
 }
+
+// ─── named volumes ───────────────────────────────────────────
+
+/// The volume verbs `cage backup` and `cage restore` use on a vm cage:
+/// the guest's podman, through the same shell, with the tar streamed
+/// to and from a host file rather than through agentcage.
+#[test]
+fn vm_podman_streams_named_volumes_through_the_shell() {
+    let home = Home::new("volumes");
+    let exported = home.root.join("workspace.tar");
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.push(Reply::success());
+    runner.push(Reply::ok("tar bytes"));
+    runner.push(Reply::success());
+    runner.push(Reply::success());
+    let podman = VmPodman::new(&runner, "demo");
+
+    assert!(podman.volume_exists("demo-workspace").expect("asks"));
+    podman
+        .volume_export("demo-workspace", &exported.display().to_string())
+        .expect("exports");
+    podman.volume_create("demo-workspace").expect("creates");
+    podman
+        .volume_import("demo-workspace", &exported.display().to_string())
+        .expect("imports");
+
+    runner.assert_argv(&[
+        &shell("demo", &["podman", "volume", "exists", "demo-workspace"])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        &shell("demo", &["podman", "volume", "export", "demo-workspace"])
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        &shell(
+            "demo",
+            &["podman", "volume", "create", "--", "demo-workspace"],
+        )
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>(),
+        &shell(
+            "demo",
+            &["podman", "volume", "import", "--", "demo-workspace", "-"],
+        )
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>(),
+    ]);
+    assert_eq!(fs::read(&exported).unwrap(), b"tar bytes");
+    assert_eq!(
+        runner.call(3).command.stdin_spec(),
+        &agentcage_exec::Stdin::File(exported.clone())
+    );
+}
+
+/// `cage restore` imports a vm cage's volumes with only the cage's
+/// unit stopped: `stop` would power the guest off, and its podman with
+/// it. The unit comes back up afterwards, and has to be active.
+#[test]
+fn the_cage_unit_stops_and_starts_without_the_guest() {
+    let home = Home::new("cage-unit");
+    let paths = home.paths();
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.push(Reply::success());
+    runner.push(Reply::ok("inactive\n"));
+    runner.push(Reply::success());
+    runner.push(Reply::success());
+    runner.push(Reply::ok("active\n"));
+    let backend = vm(&paths, &runner);
+
+    backend.stop_cage_unit("demo").expect("stops");
+    backend.start_cage_unit("demo").expect("starts");
+
+    let argv: Vec<Vec<String>> = vec![
+        shell(
+            "demo",
+            &["systemctl", "--user", "stop", "demo-cage.service"],
+        ),
+        shell(
+            "demo",
+            &["systemctl", "--user", "is-active", "demo-cage.service"],
+        ),
+        shell("demo", &["systemctl", "--user", "reset-failed"]),
+        shell(
+            "demo",
+            &["systemctl", "--user", "start", "demo-cage.service"],
+        ),
+        shell(
+            "demo",
+            &["systemctl", "--user", "is-active", "demo-cage.service"],
+        ),
+    ];
+    assert_eq!(runner.argv_sequence(), argv);
+}
+
+/// A unit that will not stop is an error, so the restore does not
+/// import under a running agent.
+#[test]
+fn a_cage_unit_that_will_not_stop_is_an_error() {
+    let home = Home::new("cage-unit-stuck");
+    let paths = home.paths();
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.push(Reply::failed(1, "Job failed"));
+    let backend = vm(&paths, &runner);
+
+    let error = backend.stop_cage_unit("demo").expect_err("refuses");
+    assert!(error.to_string().contains("demo-cage"), "{error}");
+}
