@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`agentcage doctor --json`.** The doctor's checks are now also available as one JSON object (`schema_version: 1`, `command`, `ok`, `exit_code`, `summary` counts and a flat `checks` list of `section`/`name`/`level`/`hint`) for scripts that want to assert on a host rather than read it. The human report and the exit status are unchanged. ([#570](https://github.com/agentcage/agentcage/issues/570))
+- **`cage show --json`, `cage status --json` and `cage list --json`.** Each prints one object under the shared read-command envelope (`schema_version`, `command`, `ok`, `data`, `warnings`); `cage status NAME --json` is the `cage show` document and `cage status --json` without a name is the `cage list` document.
+
+### Changed
+
+- **`cage show` / `cage status NAME` name what they used to only count.** The report still starts with the lines earlier releases printed, and now also names the cage's lifecycle and scaffold, its derived `10.89.x` subnet with the cage and egress static addresses, its data directory, every mount with its flags (bind mounts as written, named volumes and tmpfs labelled), the domains it allows or blocks and its passthrough domains, each expected secret with its **masked** placeholder (`agentcage:secret:KEY:****`; real values are never read), the traffic watcher's state and last scan, and how many of the most recent captured requests were blocked. Real secret values are never printed. ([#561](https://github.com/agentcage/agentcage/issues/561))
+
+### Fixed
+
+- **`cage verify` says what to do about a failure.** Every `[FAIL]` is now followed by a `fix:` line: an exact command where the repair is the same on every host (`agentcage cage start NAME`, `agentcage cage update NAME`, `agentcage cage restart NAME`) or a docs link where it is host-specific (a rootful podman).
+
 ## [0.53.1] - 2026-10-25
 
 ### Fixed

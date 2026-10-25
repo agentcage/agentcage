@@ -481,3 +481,131 @@ fn the_doctor_asks_which_rather_than_probing_the_real_path() {
         "macos-healthy: the macOS path has no `which` lookup to make"
     );
 }
+
+/// `doctor --json`: the documented envelope, over a representative set of
+/// hosts rather than one.
+///
+/// The checks are flat, each carrying its `section`, so a consumer can
+/// find a failure without walking two arrays. `name` is the check's
+/// message — the doctor has no separate identifier.
+#[test]
+fn the_json_report_has_the_documented_schema() {
+    let doc = fixture();
+    let ids = [
+        "linux-healthy",
+        "linux-nothing-works",
+        "linux-ports-in-use",
+        "macos-apple-container-only",
+        "macos-no-isolation-backend",
+    ];
+    let mut checked = 0;
+    for id in ids {
+        let case = cases(&doc)
+            .iter()
+            .find(|case| str_at(case, "id") == id)
+            .unwrap_or_else(|| panic!("no fixture case {id}"));
+        let host = FakeHost::from_json(&case["env"]);
+        let runner = runner_for(&doc, &case["env"]);
+        let report = doctor::run(&runner, &host);
+
+        let rendered = report.render_json();
+        let value: Value =
+            serde_json::from_str(&rendered).unwrap_or_else(|e| panic!("{id}: not JSON: {e}"));
+
+        // `serde_json::Value` sorts keys, so the insertion order — part
+        // of the contract, because a caller may diff two reports — is
+        // read off the ordered value.
+        let agentcage_core::har::json::Json::Object(pairs) = report.to_json() else {
+            panic!("{id}: the report is not an object");
+        };
+        let keys: Vec<&str> = pairs.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "schema_version",
+                "command",
+                "ok",
+                "exit_code",
+                "summary",
+                "checks"
+            ],
+            "{id}: the envelope's keys and their order are the contract"
+        );
+        assert!(rendered.starts_with("{\n  \"schema_version\": 1,\n"));
+        assert_eq!(value["schema_version"], 1, "{id}");
+        assert_eq!(value["command"], "doctor", "{id}");
+        let exit_code = u64::from(report.exit_code());
+        assert_eq!(value["exit_code"].as_u64(), Some(exit_code), "{id}");
+        assert_eq!(
+            value["ok"].as_bool(),
+            Some(report.exit_code() == 0),
+            "{id}: ok must agree with the exit status"
+        );
+
+        let summary = &value["summary"];
+        assert_eq!(
+            summary["passed"].as_u64(),
+            Some(report.count(Level::Pass) as u64),
+            "{id}: passed"
+        );
+        assert_eq!(
+            summary["warnings"].as_u64(),
+            Some(report.count(Level::Warn) as u64),
+            "{id}: warnings"
+        );
+        assert_eq!(
+            summary["errors"].as_u64(),
+            Some(report.count(Level::Error) as u64),
+            "{id}: errors"
+        );
+
+        let checks = value["checks"].as_array().expect("checks");
+        let results: Vec<&CheckResult> = report.results().collect();
+        assert_eq!(checks.len(), results.len(), "{id}: every check is present");
+        // The section each entry names is the section that owns it, in
+        // print order.
+        let sections: Vec<&str> = report
+            .sections
+            .iter()
+            .flat_map(|section| section.results.iter().map(|_| section.title))
+            .collect();
+        for (index, (check, result)) in checks.iter().zip(results).enumerate() {
+            assert_eq!(
+                check["section"].as_str(),
+                Some(sections[index]),
+                "{id}: check {index} names the wrong section"
+            );
+            assert_eq!(
+                check["name"].as_str(),
+                Some(result.message.as_str()),
+                "{id}"
+            );
+            assert_eq!(check["level"].as_str(), Some(result.level.as_str()), "{id}");
+            assert_eq!(check["hint"].as_str(), Some(result.hint.as_str()), "{id}");
+            assert!(
+                matches!(check["level"].as_str(), Some("pass" | "warn" | "error")),
+                "{id}: unknown level {}",
+                check["level"]
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 5);
+}
+
+/// `--json` is a rendering choice, not a different run: the same host
+/// produces the same exit code with and without it.
+#[test]
+fn json_does_not_change_the_exit_status() {
+    let doc = fixture();
+    for case in ported_cases(&doc) {
+        let host = FakeHost::from_json(&case["env"]);
+        let runner = runner_for(&doc, &case["env"]);
+        let report = doctor::run(&runner, &host);
+        let value: Value = serde_json::from_str(&report.render_json()).expect("valid JSON");
+        assert_eq!(
+            u64::from(report.exit_code()),
+            value["exit_code"].as_u64().expect("exit_code")
+        );
+    }
+}

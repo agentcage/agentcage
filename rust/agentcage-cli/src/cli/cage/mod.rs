@@ -282,7 +282,11 @@ fn update() -> Command {
 
 /// `cage list` — the table.
 fn list() -> Command {
-    leaf("list").about("List all cages with status.")
+    leaf("list").about("List all cages with status.").arg(flag(
+        "json",
+        "json",
+        "Output the list as one structured JSON object.",
+    ))
 }
 
 /// `cage destroy` — the one command a silent no-op would be worst for.
@@ -346,6 +350,11 @@ fn show() -> Command {
     leaf("show")
         .about("Show cage configuration and status.")
         .arg(cage_name())
+        .arg(flag(
+            "json",
+            "json",
+            "Output the report as one structured JSON object.",
+        ))
 }
 
 /// `cage status` — the only cage command whose `NAME` is optional.
@@ -354,6 +363,11 @@ fn status() -> Command {
         .about("Show status — one cage's detail (with NAME) or all cages (without).")
         .long_about(STATUS_LONG)
         .arg(optional_positional("name", "NAME"))
+        .arg(flag(
+            "json",
+            "json",
+            "Output the report as one structured JSON object.",
+        ))
 }
 
 /// `cage exec` — the second of the two passthrough commands.

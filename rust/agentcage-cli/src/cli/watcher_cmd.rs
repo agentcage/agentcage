@@ -37,7 +37,12 @@ use crate::cli::context::{Ctx, EXIT_FAILURE};
 /// guest-local — Lima's host-to-guest write caching cannot be trusted,
 /// see `quadlets.vm_local_grants_dir` — so it comes back over
 /// `limactl shell`.
-fn load_output(ctx: &Ctx, name: &str, config: &Config, relative: &str) -> Option<String> {
+pub(crate) fn load_output(
+    ctx: &Ctx,
+    name: &str,
+    config: &Config,
+    relative: &str,
+) -> Option<String> {
     if config.isolation == "vm" {
         let backend = ctx.backend_for(&config.isolation);
         return backend

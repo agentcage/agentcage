@@ -214,11 +214,18 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // PR D15. `doctor` takes no arguments, reads no state and writes
-    // nothing, so it is the one command whose body can land before the
-    // e2e phase that would otherwise gate it.
+    // PR D15. `doctor` takes no positional arguments, reads no state and
+    // writes nothing, so it is the one command whose body can land before
+    // the e2e phase that would otherwise gate it.
+    //
+    // `--json` selects the structured report. It is parsed here rather
+    // than in `agentcage_cli::doctor` because the clap tree lives in this
+    // crate and the body is shared with the library's own tests.
     if name == "doctor" {
-        return ExitCode::from(agentcage_cli::doctor::main());
+        let options = agentcage_cli::doctor::Options {
+            json: sub.get_flag("json"),
+        };
+        return ExitCode::from(agentcage_cli::doctor::main(options));
     }
 
     let path = canonical_path(name, sub);
@@ -253,9 +260,9 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "cage edit" => edit::main(&Ctx::system(), leaf),
         "watcher findings" => watcher_cmd::findings(&Ctx::system(), leaf),
         "watcher status" => watcher_cmd::status(&Ctx::system(), leaf),
-        "cage list" => lifecycle::list(&Ctx::system()),
+        "cage list" => lifecycle::list(&Ctx::system(), leaf.get_flag("json")),
         "cage status" => lifecycle::status(&Ctx::system(), leaf),
-        "cage show" => lifecycle::show(&Ctx::system(), &named("name")),
+        "cage show" => lifecycle::show(&Ctx::system(), &named("name"), leaf.get_flag("json")),
         "cage destroy" => lifecycle::destroy(&Ctx::system(), leaf),
         // PR D11.
         "cage backup" => backup::backup(&Ctx::system(), leaf),

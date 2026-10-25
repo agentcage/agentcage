@@ -321,7 +321,7 @@
     "groups": 7,
     "hidden_options": 4,
     "nodes": 48,
-    "options": 130,
+    "options": 134,
     "passthrough_commands": 2,
     "top_level": 7,
     "variadic_arguments": 4
@@ -2126,6 +2126,29 @@
         {
           "count": false,
           "default": false,
+          "dest": "json",
+          "help": "Output the list as one structured JSON object.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
           "dest": "help",
           "help": "Show this message and exit.",
           "hidden": false,
@@ -3085,6 +3108,29 @@
         {
           "count": false,
           "default": false,
+          "dest": "json",
+          "help": "Output the report as one structured JSON object.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
           "dest": "help",
           "help": "Show this message and exit.",
           "hidden": false,
@@ -3206,6 +3252,29 @@
           "secondary_opts": [],
           "type": {
             "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "json",
+          "help": "Output the report as one structured JSON object.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
           }
         },
         {
@@ -3558,6 +3627,29 @@
       "ignore_unknown_options": false,
       "is_group": false,
       "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "json",
+          "help": "Output the report as one structured JSON object.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
         {
           "count": false,
           "default": false,

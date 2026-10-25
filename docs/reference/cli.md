@@ -124,10 +124,16 @@ Lists all existing cages with status, isolation mode, backend, and scaffold meta
 agentcage list
 ```
 
+**Options**:
+- `--json`: Print the list as one JSON object instead of the table (see [JSON output](#json-output)). The envelope's `data.cages` holds one entry per cage: `name`, `lifecycle`, `isolation`, `scaffold`, `status` (the table's status text), `state` (`running` `stopped` `degraded` `exited` `legacy` `unknown`), `running`, `total` and `legacy`. An unreadable cage's config is a row with `state: "unknown"`, not an error.
+
 ---
 
 ### `agentcage cage status [NAME]`
 Displays system status: lists all cages when invoked without arguments; displays full status detail when invoked with `NAME` (mirrors `systemctl status`).
+
+**Options**:
+- `--json`: One JSON object. With `NAME` it is the `cage show` document; without one it is the `cage list` document.
 
 ---
 
@@ -137,6 +143,13 @@ Displays detailed configuration, network IP addresses, mounted volumes, active d
 ```bash
 agentcage show my-agent
 ```
+
+The report names, in order: the cage's name, isolation backend, lifecycle and scaffold; its image and (when it has one) staged Containerfile; its version and service status; the derived network subnet and the cage/egress static addresses; the data directory that outlives `cage destroy`; published ports; every mount with its flags — bind mounts as written, named volumes and tmpfs labelled; the domain mode with the *names* it allows or blocks, plus passthrough names; each expected secret's name and its **masked** placeholder (for example `agentcage:secret:API_KEY:****` — the decoy is named, the token is not printed); the traffic watcher's state and last scan when enabled; and how many of the most recent captured requests were blocked.
+
+Real secret values are never read or printed. Placeholders are decoys, but `show` masks their random suffix anyway so a screenshot cannot be mistaken for a leaked credential; `secret list` prints them in full when that is what you need.
+
+**Options**:
+- `--json`: The same report as one JSON object (see [JSON output](#json-output)). `data` holds `name`, `isolation`, `lifecycle`, `image`, `build`, `version`, `scaffold`, `status` (`state`, `text`, `running`, `total`), `network` (`subnet`, `cage`, `egress`, or `null` on apple-container, which has no `10.89.x` pool), `data_dir`, `ports`, `volumes`, `named_volumes` (`name`, `mount`), `tmpfs`, `domains` (`mode`, `count`, `names`), `passthrough`, `secrets` (`expected`, `present`, `missing`, and `entries` of `name`, `present`, masked `placeholder`), `watcher` (`enabled`, `state`, and `last_scan`/`last_scan_failed`/`findings_total` once it has scanned), and `recent_blocked` (`blocked`, `scanned`, or `null`).
 
 ---
 
@@ -379,6 +392,18 @@ agentcage cage har my-agent --view inbound -o traffic.har
 ### `agentcage doctor`
 Runs comprehensive diagnostic checks on host dependencies, virtualization backends, rootless Podman, systemd lingering, and secret stores.
 
+The human report is unchanged: four sections, one marked line per check, an optional indented remediation hint, and a summary that counts errors and warnings. The exit status is `1` when any check errored and `0` otherwise, in both output modes.
+
+**Options**:
+- `--json`: Print the report as one JSON object instead of the text. It carries `schema_version: 1`, `command: "doctor"`, `ok` (true when the exit status is 0), `exit_code`, `summary` (`passed`, `warnings`, `errors`) and `checks`. Each check is flat, so a consumer does not have to walk sections: `section` (its heading), `name` (the message it prints), `level` (`pass`, `warn` or `error`) and `hint` (the remediation line, or `""`).
+
+---
+
+### `agentcage cage verify NAME`
+Probes a deployed cage's live health: its two services, the CA certificate in the shared volume, the proxy environment, egress filtering against a domain no cage allows, nested containers when enabled, and the podman/VM state behind them.
+
+Every check prints `[PASS]`, `[FAIL]` or `[WARN]`, and every `[FAIL]` is followed by a `fix:` line — an exact command when the repair is the same on every host (`agentcage cage start NAME`, `agentcage cage update NAME`, `agentcage cage restart NAME`), or a docs link when it is the operator's own setup (`docs/how-to/troubleshooting.md`).
+
 ---
 
 ### `agentcage cage backup NAME`
@@ -396,6 +421,30 @@ Restores or clones a cage from a backup tarball:
 ```bash
 agentcage cage restore ./backup.tar.gz --name my-cloned-agent
 ```
+
+---
+
+## JSON output
+
+Read-only commands take `--json` and print one JSON object instead of their text. All of them use the same envelope, so a script can parse any of them the same way:
+
+```json
+{
+  "schema_version": 1,
+  "command": "cage show",
+  "ok": true,
+  "data": {},
+  "warnings": []
+}
+```
+
+- `schema_version` is `1` until a field changes meaning; a consumer should refuse a version it does not know.
+- `command` is the canonical command that produced the document (`cage show`, `cage list`).
+- `ok` is `true` on success. A refusal — a cage that does not exist, an unreadable config — still exits non-zero with the message on stderr and prints no document, the same as the text mode.
+- `data` is the command's payload; its fields are documented per command above.
+- `warnings` is a list of things the command could not read but did not fail on, such as a traffic watcher whose guest-side scan state could not be fetched.
+
+`agentcage doctor --json` uses its own document rather than this envelope (its checks and summary counts are the payload); its `schema_version` is also `1`.
 
 ---
 
