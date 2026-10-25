@@ -1,12 +1,13 @@
-# FEAT-003: Guided first-run setup
+# Guided first-run setup
 
 | | |
 | :--- | :--- |
+| **Issue** | [#566](https://github.com/agentcage/agentcage/issues/566) |
 | **Status** | Proposed |
 | **Priority** | P0 |
 | **Phase** | 1 |
-| **Depends on** | [FEAT-002](FEAT-002-auth-strategies.md) |
-| **Related** | [FEAT-004](FEAT-004-policy-presets-and-suggestions.md), [FEAT-007](FEAT-007-diagnostics-and-support.md) |
+| **Depends on** | [#565](https://github.com/agentcage/agentcage/issues/565) |
+| **Related** | [#567](https://github.com/agentcage/agentcage/issues/567), [#570](https://github.com/agentcage/agentcage/issues/570) |
 
 ## Problem
 

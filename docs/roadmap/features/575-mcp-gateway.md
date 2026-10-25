@@ -1,12 +1,13 @@
-# FEAT-012: MCP gateway and MCP server
+# MCP gateway and MCP server
 
 | | |
 | :--- | :--- |
+| **Issue** | [#575](https://github.com/agentcage/agentcage/issues/575) |
 | **Status** | Proposed |
 | **Priority** | P1 |
 | **Phase** | 4 |
 | **Depends on** | Security design spike |
-| **Related** | [FEAT-013](FEAT-013-api-sdk-ci.md), [FEAT-014](FEAT-014-filesystem-and-socket-policy.md) |
+| **Related** | [#576](https://github.com/agentcage/agentcage/issues/576), [#577](https://github.com/agentcage/agentcage/issues/577) |
 
 ## Problem
 

@@ -1,12 +1,13 @@
-# FEAT-009: Human approvals, notifications and policy explanations
+# Human approvals, notifications and policy explanations
 
 | | |
 | :--- | :--- |
+| **Issue** | [#572](https://github.com/agentcage/agentcage/issues/572) |
 | **Status** | Proposed |
 | **Priority** | P1 |
 | **Phase** | 3 |
-| **Depends on** | [FEAT-006](FEAT-006-cli-automation.md) |
-| **Related** | [FEAT-004](FEAT-004-policy-presets-and-suggestions.md), [FEAT-018](FEAT-018-team-governance.md) |
+| **Depends on** | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| **Related** | [#567](https://github.com/agentcage/agentcage/issues/567), [#581](https://github.com/agentcage/agentcage/issues/581) |
 
 ## Problem
 
@@ -58,7 +59,7 @@ under the cage data directory, not inside the cage.
 ### Policy explanations
 
 - `domain test NAME HOST` and `domain explain NAME HOST` (shared with
-  FEAT-004).
+  [#567](https://github.com/agentcage/agentcage/issues/567)).
 - 403 responses include a machine-readable `suggestion` and a request id.
 
 ## Implementation

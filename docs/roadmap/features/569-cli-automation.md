@@ -1,12 +1,13 @@
-# FEAT-006: CLI automation contract
+# CLI automation contract
 
 | | |
 | :--- | :--- |
+| **Issue** | [#569](https://github.com/agentcage/agentcage/issues/569) |
 | **Status** | Proposed |
 | **Priority** | P0 |
 | **Phase** | 0 |
 | **Depends on** | — |
-| **Related** | [FEAT-007](FEAT-007-diagnostics-and-support.md), [BUG-004](../bugs/BUG-004-show-output.md) |
+| **Related** | [#570](https://github.com/agentcage/agentcage/issues/570), [#561](https://github.com/agentcage/agentcage/issues/561) |
 
 ## Problem
 

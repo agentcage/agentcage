@@ -1,7 +1,8 @@
-# BUG-006: the in-cage agent brief calls a runtime grant “baseline”
+# the in-cage agent brief calls a runtime grant “baseline”
 
 | | |
 | :--- | :--- |
+| **Issue** | [#563](https://github.com/agentcage/agentcage/issues/563) |
 | **Status** | Confirmed |
 | **Priority** | P2 |
 | **Area** | Agent brief / policy documentation |
@@ -46,4 +47,4 @@ Add the same distinction to any scaffold copy of the brief.
 
 ## Related
 
-- [FEAT-004](../features/FEAT-004-policy-presets-and-suggestions.md)
+- [#567](https://github.com/agentcage/agentcage/issues/567)

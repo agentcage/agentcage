@@ -1,12 +1,13 @@
-# FEAT-014: Filesystem, socket and sensitive-file policy
+# Filesystem, socket and sensitive-file policy
 
 | | |
 | :--- | :--- |
+| **Issue** | [#577](https://github.com/agentcage/agentcage/issues/577) |
 | **Status** | Proposed |
 | **Priority** | P2 |
 | **Phase** | 5 |
 | **Depends on** | Threat-model update |
-| **Related** | [FEAT-012](FEAT-012-mcp-gateway.md), [FEAT-018](FEAT-018-team-governance.md) |
+| **Related** | [#575](https://github.com/agentcage/agentcage/issues/575), [#581](https://github.com/agentcage/agentcage/issues/581) |
 
 ## Problem
 

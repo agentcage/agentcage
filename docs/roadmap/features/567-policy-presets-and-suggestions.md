@@ -1,12 +1,13 @@
-# FEAT-004: Policy presets, domain suggestions and explanations
+# Policy presets, domain suggestions and explanations
 
 | | |
 | :--- | :--- |
+| **Issue** | [#567](https://github.com/agentcage/agentcage/issues/567) |
 | **Status** | Proposed |
 | **Priority** | P0 |
 | **Phase** | 1 |
-| **Depends on** | [FEAT-003](FEAT-003-guided-setup.md) |
-| **Related** | [FEAT-005](FEAT-005-plan-lint-config.md), [FEAT-009](FEAT-009-approvals-and-notifications.md) |
+| **Depends on** | [#566](https://github.com/agentcage/agentcage/issues/566) |
+| **Related** | [#568](https://github.com/agentcage/agentcage/issues/568), [#572](https://github.com/agentcage/agentcage/issues/572) |
 
 ## Problem
 

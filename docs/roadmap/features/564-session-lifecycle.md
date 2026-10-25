@@ -1,12 +1,13 @@
-# FEAT-001: Honest, flexible session lifecycle
+# Honest, flexible session lifecycle
 
 | | |
 | :--- | :--- |
+| **Issue** | [#564](https://github.com/agentcage/agentcage/issues/564) |
 | **Status** | Proposed |
 | **Priority** | P0 |
 | **Phase** | 0 |
-| **Depends on** | [BUG-001](../bugs/BUG-001-run-lifecycle.md) |
-| **Related** | [FEAT-008](FEAT-008-git-workflow-and-reports.md), [FEAT-010](FEAT-010-observability.md) |
+| **Depends on** | [#558](https://github.com/agentcage/agentcage/issues/558) |
+| **Related** | [#571](https://github.com/agentcage/agentcage/issues/571), [#573](https://github.com/agentcage/agentcage/issues/573) |
 
 ## Problem
 

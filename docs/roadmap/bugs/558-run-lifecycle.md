@@ -1,12 +1,13 @@
-# BUG-001: `run` stops and keeps state, while the documentation says it removes it
+# `run` stops and keeps state, while the documentation says it removes it
 
 | | |
 | :--- | :--- |
+| **Issue** | [#558](https://github.com/agentcage/agentcage/issues/558) |
 | **Status** | Confirmed |
 | **Priority** | P0 |
 | **Area** | Session lifecycle / documentation |
 | **Affected** | v0.53.1; behaviour predates the Rust port |
-| **Fix** | [FEAT-001](../features/FEAT-001-session-lifecycle.md) plus a docs correction |
+| **Fix** | [#564](https://github.com/agentcage/agentcage/issues/564) plus a docs correction |
 
 ## Summary
 
@@ -88,5 +89,5 @@ continue to occupy a `10.89.x.0/24` slot until `prune` or `destroy` is run.
 
 ## Related
 
-- [FEAT-001](../features/FEAT-001-session-lifecycle.md)
-- [BUG-002](BUG-002-auth-preflight.md)
+- [#564](https://github.com/agentcage/agentcage/issues/564)
+- [#559](https://github.com/agentcage/agentcage/issues/559)

@@ -1,8 +1,9 @@
 # agentcage Improvement Plan (2026–2027)
 
 > **Status:** Proposed. This is a discussion document, not a release schedule
-> or a guarantee. Each bug and feature suggestion has its own numbered page so
-> that it can be reviewed, prioritised and implemented independently.
+> or a guarantee. Each bug and feature suggestion has its own GitHub issue and
+> a page named after that issue, so it can be reviewed, prioritised and
+> implemented independently.
 
 **Last updated:** 2026-10-25
 **Applies to:** v0.54 through v1.0
@@ -27,8 +28,9 @@ does not propose relaxing it.
 - **P2** means “strategic depth”: platform, MCP/API, filesystem policy, team
   governance.
 
-The numbering is stable. New entries take the next number; do not renumber an
-entry after it has been linked from a PR or an issue.
+Issue numbers are stable. Open an issue first, then use its number as the page
+filename; do not renumber an entry after it has been linked from a PR or an
+issue.
 
 ---
 
@@ -82,40 +84,40 @@ while preserving the security properties that make agentcage worth using.
 
 ## 2. Bugs
 
-| ID | Priority | Area | Summary | Fix |
+| Issue | Priority | Area | Summary | Fix |
 | :--- | :--- | :--- | :--- | :--- |
-| [BUG-001](bugs/BUG-001-run-lifecycle.md) | P0 | Session lifecycle | `run` stops and keeps state while docs say it is removed or torn down. | [FEAT-001](features/FEAT-001-session-lifecycle.md) + docs fix |
-| [BUG-002](bugs/BUG-002-auth-preflight.md) | P0 | Auth / docs | The claude scaffold promises OAuth autowiring, but `run` still requires `ANTHROPIC_API_KEY`. | [FEAT-002](features/FEAT-002-auth-strategies.md) + docs fix |
-| [BUG-003](bugs/BUG-003-dns-log-service.md) | P1 | Docs / CLI | Scaffold READMEs document `-s dns`, which the CLI rejects. | Remove the line; docs test |
-| [BUG-004](bugs/BUG-004-show-output.md) | P1 | CLI / docs | `cage show` prints a summary while its reference promises addresses, volumes, rules and placeholders. | [FEAT-007](features/FEAT-007-diagnostics-and-support.md) or docs fix |
-| [BUG-005](bugs/BUG-005-readme-version-install.md) | P0 | Docs / release | README pins v0.50.0 and says the installer builds from source; current releases install a prebuilt binary. | Docs + release checklist |
-| [BUG-006](bugs/BUG-006-grant-baseline-wording.md) | P2 | Docs / agent brief | The cage `AGENTS.md` says a granted domain is promoted into the baseline; it is a runtime grant. | Wording fix |
+| [#558](https://github.com/agentcage/agentcage/issues/558) ([plan](bugs/558-run-lifecycle.md)) | P0 | Session lifecycle | `run` stops and keeps state while docs say it is removed or torn down. | [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) + docs fix |
+| [#559](https://github.com/agentcage/agentcage/issues/559) ([plan](bugs/559-auth-preflight.md)) | P0 | Auth / docs | The claude scaffold promises OAuth autowiring, but `run` still requires `ANTHROPIC_API_KEY`. | [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) + docs fix |
+| [#560](https://github.com/agentcage/agentcage/issues/560) ([plan](bugs/560-dns-log-service.md)) | P1 | Docs / CLI | Scaffold READMEs document `-s dns`, which the CLI rejects. | Remove the line; docs test |
+| [#561](https://github.com/agentcage/agentcage/issues/561) ([plan](bugs/561-show-output.md)) | P1 | CLI / docs | `cage show` prints a summary while its reference promises addresses, volumes, rules and placeholders. | [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) or docs fix |
+| [#562](https://github.com/agentcage/agentcage/issues/562) ([plan](bugs/562-readme-version-install.md)) | P0 | Docs / release | README pins v0.50.0 and says the installer builds from source; current releases install a prebuilt binary. | Docs + release checklist |
+| [#563](https://github.com/agentcage/agentcage/issues/563) ([plan](bugs/563-grant-baseline-wording.md)) | P2 | Docs / agent brief | The cage `AGENTS.md` says a granted domain is promoted into the baseline; it is a runtime grant. | Wording fix |
 
 ---
 
 ## 3. Features
 
-| ID | Priority | Phase | Feature | Depends on |
+| Issue | Priority | Phase | Feature | Depends on |
 | :--- | :--- | :--- | :--- | :--- |
-| [FEAT-001](features/FEAT-001-session-lifecycle.md) | P0 | 0 | Honest, flexible `run` lifecycle: `--rm`, `--keep`, detach/attach, dry-run, prune filters | BUG-001 |
-| [FEAT-002](features/FEAT-002-auth-strategies.md) | P0 | 1 | Scaffold auth strategies and `agentcage auth` | FEAT-001 |
-| [FEAT-003](features/FEAT-003-guided-setup.md) | P0 | 1 | Guided first-run setup | FEAT-002 |
-| [FEAT-004](features/FEAT-004-policy-presets-and-suggestions.md) | P0 | 1 | Policy presets, domain suggestions, `domain test/explain` | FEAT-003 |
-| [FEAT-005](features/FEAT-005-plan-lint-config.md) | P1 | 1 | `plan`, `lint`, config schema, `extends`, devcontainer import | FEAT-003 |
-| [FEAT-006](features/FEAT-006-cli-automation.md) | P0 | 0 | CLI automation contract: `-h`, format, quiet, color, paths, completions | — |
-| [FEAT-007](features/FEAT-007-diagnostics-and-support.md) | P0 | 0 | Diagnostics, support bundle, actionable verify and enriched show/status | FEAT-006 |
-| [FEAT-008](features/FEAT-008-git-workflow-and-reports.md) | P1 | 2 | Git worktrees/clones, diff/apply/merge, session reports, `--yolo` mapping | FEAT-001 |
-| [FEAT-009](features/FEAT-009-approvals-and-notifications.md) | P1 | 3 | Human/hybrid decider, approval queue, notifications, 403 remediation | FEAT-006 |
-| [FEAT-010](features/FEAT-010-observability.md) | P1 | 3 | Live TUI, events, stats, optional OTel, retention, HTML reports | FEAT-006, FEAT-001 |
-| [FEAT-011](features/FEAT-011-workspace-access.md) | P1 | 4 | Dynamic ports, `cp`, `open`, SSH/editor access | FEAT-001, FEAT-006 |
-| [FEAT-012](features/FEAT-012-mcp-gateway.md) | P1 | 4 | MCP gateway and MCP server for cage control | Security spike |
-| [FEAT-013](features/FEAT-013-api-sdk-ci.md) | P2 | 5 | Local API, Python/TS SDK, GitHub Action | FEAT-006 |
-| [FEAT-014](features/FEAT-014-filesystem-and-socket-policy.md) | P2 | 5 | Filesystem/socket policy, credential transforms, format-preserving placeholders | Threat-model update |
-| [FEAT-015](features/FEAT-015-packaging-and-platform.md) | P1 | 0/5 | Self-update, Homebrew/AUR, notarization, WSL2, Nix/devcontainer | #413/#414 |
-| [FEAT-016](features/FEAT-016-scaffold-registry-supply-chain.md) | P2 | 5 | OCI scaffold registry, signatures, SBOMs, prebuilt images and caches | FEAT-015 |
-| [FEAT-017](features/FEAT-017-docs-conformance-and-selftest.md) | P0/P1 | 0/4 | Docs conformance and security self-test | Bugs fixed |
-| [FEAT-018](features/FEAT-018-team-governance.md) | P2 | 5 | Signed audit, SIEM export, signed policy bundles | FEAT-013 |
-| [FEAT-019](features/FEAT-019-standalone-gateway-and-fleet.md) | P2 | 5+ | Standalone egress gateway, remote host, fleet/warm pools | FEAT-008, FEAT-013 |
+| [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) | P0 | 0 | Honest, flexible `run` lifecycle: `--rm`, `--keep`, detach/attach, dry-run, prune filters | [#558](https://github.com/agentcage/agentcage/issues/558) |
+| [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) | P0 | 1 | Scaffold auth strategies and `agentcage auth` | [#564](https://github.com/agentcage/agentcage/issues/564) |
+| [#566](https://github.com/agentcage/agentcage/issues/566) ([plan](features/566-guided-setup.md)) | P0 | 1 | Guided first-run setup | [#565](https://github.com/agentcage/agentcage/issues/565) |
+| [#567](https://github.com/agentcage/agentcage/issues/567) ([plan](features/567-policy-presets-and-suggestions.md)) | P0 | 1 | Policy presets, domain suggestions, `domain test/explain` | [#566](https://github.com/agentcage/agentcage/issues/566) |
+| [#568](https://github.com/agentcage/agentcage/issues/568) ([plan](features/568-plan-lint-config.md)) | P1 | 1 | `plan`, `lint`, config schema, `extends`, devcontainer import | [#566](https://github.com/agentcage/agentcage/issues/566) |
+| [#569](https://github.com/agentcage/agentcage/issues/569) ([plan](features/569-cli-automation.md)) | P0 | 0 | CLI automation contract: `-h`, format, quiet, color, paths, completions | — |
+| [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) | P0 | 0 | Diagnostics, support bundle, actionable verify and enriched show/status | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| [#571](https://github.com/agentcage/agentcage/issues/571) ([plan](features/571-git-workflow-and-reports.md)) | P1 | 2 | Git worktrees/clones, diff/apply/merge, session reports, `--yolo` mapping | [#564](https://github.com/agentcage/agentcage/issues/564) |
+| [#572](https://github.com/agentcage/agentcage/issues/572) ([plan](features/572-approvals-and-notifications.md)) | P1 | 3 | Human/hybrid decider, approval queue, notifications, 403 remediation | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| [#573](https://github.com/agentcage/agentcage/issues/573) ([plan](features/573-observability.md)) | P1 | 3 | Live TUI, events, stats, optional OTel, retention, HTML reports | [#569](https://github.com/agentcage/agentcage/issues/569), [#564](https://github.com/agentcage/agentcage/issues/564) |
+| [#574](https://github.com/agentcage/agentcage/issues/574) ([plan](features/574-workspace-access.md)) | P1 | 4 | Dynamic ports, `cp`, `open`, SSH/editor access | [#564](https://github.com/agentcage/agentcage/issues/564), [#569](https://github.com/agentcage/agentcage/issues/569) |
+| [#575](https://github.com/agentcage/agentcage/issues/575) ([plan](features/575-mcp-gateway.md)) | P1 | 4 | MCP gateway and MCP server for cage control | Security spike |
+| [#576](https://github.com/agentcage/agentcage/issues/576) ([plan](features/576-api-sdk-ci.md)) | P2 | 5 | Local API, Python/TS SDK, GitHub Action | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| [#577](https://github.com/agentcage/agentcage/issues/577) ([plan](features/577-filesystem-and-socket-policy.md)) | P2 | 5 | Filesystem/socket policy, credential transforms, format-preserving placeholders | Threat-model update |
+| [#578](https://github.com/agentcage/agentcage/issues/578) ([plan](features/578-packaging-and-platform.md)) | P1 | 0/5 | Self-update, Homebrew/AUR, notarization, WSL2, Nix/devcontainer | #413/#414 |
+| [#579](https://github.com/agentcage/agentcage/issues/579) ([plan](features/579-scaffold-registry-supply-chain.md)) | P2 | 5 | OCI scaffold registry, signatures, SBOMs, prebuilt images and caches | [#578](https://github.com/agentcage/agentcage/issues/578) |
+| [#580](https://github.com/agentcage/agentcage/issues/580) ([plan](features/580-docs-conformance-and-selftest.md)) | P0/P1 | 0/4 | Docs conformance and security self-test | Bugs fixed |
+| [#581](https://github.com/agentcage/agentcage/issues/581) ([plan](features/581-team-governance.md)) | P2 | 5 | Signed audit, SIEM export, signed policy bundles | [#576](https://github.com/agentcage/agentcage/issues/576) |
+| [#582](https://github.com/agentcage/agentcage/issues/582) ([plan](features/582-standalone-gateway-and-fleet.md)) | P2 | 5+ | Standalone egress gateway, remote host, fleet/warm pools | [#571](https://github.com/agentcage/agentcage/issues/571), [#576](https://github.com/agentcage/agentcage/issues/576) |
 
 ---
 
@@ -126,14 +128,14 @@ parallel where dependencies allow. They are planning aids, not deadlines.
 
 | Phase | Target | Scope | Outcome |
 | :--- | :--- | :--- | :--- |
-| **0. Truth and quick wins** | v0.54 | BUG-001..005, FEAT-001, FEAT-006, FEAT-007, FEAT-017 (docs) | `run` tells the truth; `-h`/JSON/quiet exist; docs no longer lie. |
-| **1. First run** | v0.55 | FEAT-002..005 | A new user can install, authenticate and run without editing policy. |
-| **2. Daily driver** | v0.56 | FEAT-008 | Parallel agents are safe and reviewable. |
-| **3. Control and visibility** | v0.57 | FEAT-009, FEAT-010 | Operators can see and steer a running cage. |
-| **4. Integration** | v0.58 | FEAT-011, FEAT-012, FEAT-017 (selftest) | agentcage fits the editor/CI loop. |
-| **5. Platform** | v0.59–v1.0 | FEAT-013..016, FEAT-018, FEAT-019 | A credible 1.0 with stable contracts and distribution. |
+| **0. Truth and quick wins** | v0.54 | #558–#562, #564, #569, #570, #580 (docs) | `run` tells the truth; `-h`/JSON/quiet exist; docs no longer lie. |
+| **1. First run** | v0.55 | #565–#568 | A new user can install, authenticate and run without editing policy. |
+| **2. Daily driver** | v0.56 | #571 | Parallel agents are safe and reviewable. |
+| **3. Control and visibility** | v0.57 | #572, #573 | Operators can see and steer a running cage. |
+| **4. Integration** | v0.58 | #574, #575, #580 (selftest) | agentcage fits the editor/CI loop. |
+| **5. Platform** | v0.59–v1.0 | #576–#579, #581, #582 | A credible 1.0 with stable contracts and distribution. |
 
-FEAT-015 (packaging) starts immediately and runs alongside phases 0–5. It is
+[#578](https://github.com/agentcage/agentcage/issues/578) (packaging) starts immediately and runs alongside phases 0–5. It is
 the only workstream whose critical path includes external accounts and
 package-manager repositories.
 
@@ -189,12 +191,12 @@ A feature is not “done” because the code exists. It is done when:
 
 | Decision | Recommendation | Owner |
 | :--- | :--- | :--- |
-| `run` default lifecycle | Keep-and-audit by default; `--rm` for true ephemeral. See [FEAT-001](features/FEAT-001-session-lifecycle.md). | Product |
-| Interactive auth state | Allow a cage-owned login volume; do not mount the host home. See [FEAT-002](features/FEAT-002-auth-strategies.md). | Security + product |
-| Worktree default | Opt-in for compatibility; recommend it in first-run profiles. See [FEAT-008](features/FEAT-008-git-workflow-and-reports.md). | Product |
-| Approval transport | Host-side pending queue; the egress returns a retryable pending response. See [FEAT-009](features/FEAT-009-approvals-and-notifications.md). | Security |
-| MCP gateway location | Host-managed gateway with tool allowlists; design spike before code. See [FEAT-012](features/FEAT-012-mcp-gateway.md). | Security |
-| Windows scope | WSL2 first; native Windows is a separate project. See [FEAT-015](features/FEAT-015-packaging-and-platform.md). | Platform |
+| `run` default lifecycle | Keep-and-audit by default; `--rm` for true ephemeral. See [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)). | Product |
+| Interactive auth state | Allow a cage-owned login volume; do not mount the host home. See [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)). | Security + product |
+| Worktree default | Opt-in for compatibility; recommend it in first-run profiles. See [#571](https://github.com/agentcage/agentcage/issues/571) ([plan](features/571-git-workflow-and-reports.md)). | Product |
+| Approval transport | Host-side pending queue; the egress returns a retryable pending response. See [#572](https://github.com/agentcage/agentcage/issues/572) ([plan](features/572-approvals-and-notifications.md)). | Security |
+| MCP gateway location | Host-managed gateway with tool allowlists; design spike before code. See [#575](https://github.com/agentcage/agentcage/issues/575) ([plan](features/575-mcp-gateway.md)). | Security |
+| Windows scope | WSL2 first; native Windows is a separate project. See [#578](https://github.com/agentcage/agentcage/issues/578) ([plan](features/578-packaging-and-platform.md)). | Platform |
 | v1.0 scope | Worktree, auth, packages and docs conformance are hard requirements; MCP/API/SDK may ship after 1.0. | Product |
 
 ---
@@ -237,12 +239,12 @@ A feature is not “done” because the code exists. It is done when:
 
 ## 10. Adding an entry
 
-1. Pick the next unused number in `bugs/` or `features/`; do not renumber.
-2. Copy the shape of an existing page.
-3. Include status, priority, area, evidence, proposal, acceptance criteria and
-   tests.
-4. Add a row to the relevant table above.
-5. Link the entry from the PR or issue that implements it.
+1. Open a GitHub issue with a descriptive title and the right labels.
+2. Create a page under `bugs/<issue>-slug.md` or `features/<issue>-slug.md`.
+3. Copy the shape of an existing page and include status, priority, area,
+   evidence, proposal, acceptance criteria and tests.
+4. Link the issue from the page and add a row to the relevant table above.
+5. Do not renumber an entry after it has been linked.
 
 This plan is intentionally reviewable in slices. A feature page can be
 accepted while the implementation is still blocked on a decision, and a bug

@@ -1,12 +1,13 @@
-# FEAT-015: Packaging, platform support and release engineering
+# Packaging, platform support and release engineering
 
 | | |
 | :--- | :--- |
+| **Issue** | [#578](https://github.com/agentcage/agentcage/issues/578) |
 | **Status** | Proposed |
 | **Priority** | P1 |
 | **Phase** | 0/5 (parallel) |
 | **Depends on** | #413, #414 |
-| **Related** | [FEAT-016](FEAT-016-scaffold-registry-supply-chain.md), [FEAT-017](FEAT-017-docs-conformance-and-selftest.md) |
+| **Related** | [#579](https://github.com/agentcage/agentcage/issues/579), [#580](https://github.com/agentcage/agentcage/issues/580) |
 
 ## Problem
 

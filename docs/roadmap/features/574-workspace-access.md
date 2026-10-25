@@ -1,12 +1,13 @@
-# FEAT-011: Dynamic ports, file transfer and editor access
+# Dynamic ports, file transfer and editor access
 
 | | |
 | :--- | :--- |
+| **Issue** | [#574](https://github.com/agentcage/agentcage/issues/574) |
 | **Status** | Proposed |
 | **Priority** | P1 |
 | **Phase** | 4 |
-| **Depends on** | [FEAT-001](FEAT-001-session-lifecycle.md), [FEAT-006](FEAT-006-cli-automation.md) |
-| **Related** | [FEAT-008](FEAT-008-git-workflow-and-reports.md) |
+| **Depends on** | [#564](https://github.com/agentcage/agentcage/issues/564), [#569](https://github.com/agentcage/agentcage/issues/569) |
+| **Related** | [#571](https://github.com/agentcage/agentcage/issues/571) |
 
 ## Problem
 

@@ -1,12 +1,13 @@
-# FEAT-019: Standalone egress gateway, remote hosts and fleets
+# Standalone egress gateway, remote hosts and fleets
 
 | | |
 | :--- | :--- |
+| **Issue** | [#582](https://github.com/agentcage/agentcage/issues/582) |
 | **Status** | Proposed |
 | **Priority** | P2 |
 | **Phase** | 5+ |
-| **Depends on** | [FEAT-008](FEAT-008-git-workflow-and-reports.md), [FEAT-013](FEAT-013-api-sdk-ci.md) |
-| **Related** | [FEAT-012](FEAT-012-mcp-gateway.md), [FEAT-015](FEAT-015-packaging-and-platform.md) |
+| **Depends on** | [#571](https://github.com/agentcage/agentcage/issues/571), [#576](https://github.com/agentcage/agentcage/issues/576) |
+| **Related** | [#575](https://github.com/agentcage/agentcage/issues/575), [#578](https://github.com/agentcage/agentcage/issues/578) |
 
 ## Problem
 
@@ -57,7 +58,7 @@ agentcage gateway --config proxy.yaml --listen 127.0.0.1:8080
   direct egress is still possible.
 - Remote: use SSH multiplexing and a remote `agentcage` binary; never copy
   private keys. The local CLI drives the same lifecycle contract as local.
-- Fleet: build on FEAT-008 worktrees and FEAT-013 API; don’t invent a second
+- Fleet: build on [#571](https://github.com/agentcage/agentcage/issues/571) worktrees and [#576](https://github.com/agentcage/agentcage/issues/576) API; don’t invent a second
   orchestration model.
 - Warm pool: only after the API and cleanup semantics are stable.
 

@@ -1,7 +1,8 @@
-# BUG-005: README install instructions pin an old version and describe the old installer
+# README install instructions pin an old version and describe the old installer
 
 | | |
 | :--- | :--- |
+| **Issue** | [#562](https://github.com/agentcage/agentcage/issues/562) |
 | **Status** | Confirmed |
 | **Priority** | P0 |
 | **Area** | Documentation / release |
@@ -69,5 +70,5 @@ path.
 
 ## Related
 
-- [FEAT-015](../features/FEAT-015-packaging-and-platform.md)
-- [FEAT-017](../features/FEAT-017-docs-conformance-and-selftest.md)
+- [#578](https://github.com/agentcage/agentcage/issues/578)
+- [#580](https://github.com/agentcage/agentcage/issues/580)

@@ -1,12 +1,13 @@
-# FEAT-002: Scaffold auth strategies and `agentcage auth`
+# Scaffold auth strategies and `agentcage auth`
 
 | | |
 | :--- | :--- |
+| **Issue** | [#565](https://github.com/agentcage/agentcage/issues/565) |
 | **Status** | Proposed |
 | **Priority** | P0 |
 | **Phase** | 1 |
-| **Depends on** | [FEAT-001](FEAT-001-session-lifecycle.md) |
-| **Related** | [BUG-002](../bugs/BUG-002-auth-preflight.md) |
+| **Depends on** | [#564](https://github.com/agentcage/agentcage/issues/564) |
+| **Related** | [#559](https://github.com/agentcage/agentcage/issues/559) |
 
 ## Problem
 
@@ -69,7 +70,7 @@ For `/login` strategies, create a named volume for the agent’s state directory
 (for example `/home/agent/.claude`, `/home/agent/.pi`). This preserves the
 session across `cage restart` and `cage update` without mounting the host home
 directory. The volume is destroyed by `destroy`; `--rm` policy follows
-FEAT-001.
+[#564](https://github.com/agentcage/agentcage/issues/564).
 
 ## Security notes
 

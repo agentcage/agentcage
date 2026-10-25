@@ -1,12 +1,13 @@
-# FEAT-013: Local API, SDKs and CI integration
+# Local API, SDKs and CI integration
 
 | | |
 | :--- | :--- |
+| **Issue** | [#576](https://github.com/agentcage/agentcage/issues/576) |
 | **Status** | Proposed |
 | **Priority** | P2 |
 | **Phase** | 5 |
-| **Depends on** | [FEAT-006](FEAT-006-cli-automation.md) |
-| **Related** | [FEAT-012](FEAT-012-mcp-gateway.md), [FEAT-018](FEAT-018-team-governance.md) |
+| **Depends on** | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| **Related** | [#575](https://github.com/agentcage/agentcage/issues/575), [#581](https://github.com/agentcage/agentcage/issues/581) |
 
 ## Problem
 
@@ -60,7 +61,7 @@ CI.
 
 ## Implementation
 
-- Add `cli/serve.rs` and a small HTTP stack; reuse JSON types from FEAT-006.
+- Add `cli/serve.rs` and a small HTTP stack; reuse JSON types from [#569](https://github.com/agentcage/agentcage/issues/569).
 - Use a Unix socket with peer credentials where possible; if TCP, require
   bearer token and bind loopback.
 - Serialize lifecycle operations per cage to avoid create/destroy races.

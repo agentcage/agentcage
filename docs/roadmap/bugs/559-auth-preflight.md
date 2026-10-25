@@ -1,12 +1,13 @@
-# BUG-002: the claude scaffold promises OAuth autowiring, but `run` still requires an API key
+# the claude scaffold promises OAuth autowiring, but `run` still requires an API key
 
 | | |
 | :--- | :--- |
+| **Issue** | [#559](https://github.com/agentcage/agentcage/issues/559) |
 | **Status** | Confirmed |
 | **Priority** | P0 |
 | **Area** | Authentication / docs |
 | **Affected** | v0.53.1 |
-| **Fix** | [FEAT-002](../features/FEAT-002-auth-strategies.md) plus an immediate docs correction |
+| **Fix** | [#565](https://github.com/agentcage/agentcage/issues/565) plus an immediate docs correction |
 
 ## Summary
 
@@ -64,7 +65,7 @@ cage with a hand-edited OAuth rule.
 1. Immediately correct the scaffold README and `run --help` text so they do
    not promise autowiring.
 2. Implement the generic auth strategy model in
-   [FEAT-002](../features/FEAT-002-auth-strategies.md): render only the
+   [#565](https://github.com/agentcage/agentcage/issues/565): render only the
    selected strategy’s rule, detect the environment token, add the rule on
    demand, and stage the value through the secret store.
 3. For in-cage login, use a cage-owned named volume rather than a host home
@@ -89,5 +90,5 @@ cage with a hand-edited OAuth rule.
 
 ## Related
 
-- [FEAT-002](../features/FEAT-002-auth-strategies.md)
-- [BUG-001](BUG-001-run-lifecycle.md)
+- [#565](https://github.com/agentcage/agentcage/issues/565)
+- [#558](https://github.com/agentcage/agentcage/issues/558)

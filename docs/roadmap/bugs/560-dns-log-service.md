@@ -1,7 +1,8 @@
-# BUG-003: scaffold READMEs document a `-s dns` log service the CLI rejects
+# scaffold READMEs document a `-s dns` log service the CLI rejects
 
 | | |
 | :--- | :--- |
+| **Issue** | [#560](https://github.com/agentcage/agentcage/issues/560) |
 | **Status** | Confirmed |
 | **Priority** | P1 |
 | **Area** | CLI documentation |
@@ -60,4 +61,4 @@ new user reads, and it sends them to a command that cannot work.
 
 ## Related
 
-- [FEAT-017](../features/FEAT-017-docs-conformance-and-selftest.md)
+- [#580](https://github.com/agentcage/agentcage/issues/580)

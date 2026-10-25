@@ -1,12 +1,13 @@
-# FEAT-010: Live observability: TUI, events, stats and reports
+# Live observability: TUI, events, stats and reports
 
 | | |
 | :--- | :--- |
+| **Issue** | [#573](https://github.com/agentcage/agentcage/issues/573) |
 | **Status** | Proposed |
 | **Priority** | P1 |
 | **Phase** | 3 |
-| **Depends on** | [FEAT-006](FEAT-006-cli-automation.md), [FEAT-001](FEAT-001-session-lifecycle.md) |
-| **Related** | [BUG-004](../bugs/BUG-004-show-output.md) |
+| **Depends on** | [#569](https://github.com/agentcage/agentcage/issues/569), [#564](https://github.com/agentcage/agentcage/issues/564) |
+| **Related** | [#561](https://github.com/agentcage/agentcage/issues/561) |
 
 ## Problem
 

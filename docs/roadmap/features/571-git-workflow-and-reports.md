@@ -1,12 +1,13 @@
-# FEAT-008: Git worktrees, review commands and session reports
+# Git worktrees, review commands and session reports
 
 | | |
 | :--- | :--- |
+| **Issue** | [#571](https://github.com/agentcage/agentcage/issues/571) |
 | **Status** | Proposed |
 | **Priority** | P1 |
 | **Phase** | 2 |
-| **Depends on** | [FEAT-001](FEAT-001-session-lifecycle.md) |
-| **Related** | [FEAT-011](FEAT-011-workspace-access.md), [FEAT-010](FEAT-010-observability.md) |
+| **Depends on** | [#564](https://github.com/agentcage/agentcage/issues/564) |
+| **Related** | [#574](https://github.com/agentcage/agentcage/issues/574), [#573](https://github.com/agentcage/agentcage/issues/573) |
 
 ## Problem
 

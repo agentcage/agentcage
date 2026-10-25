@@ -1,12 +1,13 @@
-# FEAT-016: Scaffold registry, signed assets and prebuilt images
+# Scaffold registry, signed assets and prebuilt images
 
 | | |
 | :--- | :--- |
+| **Issue** | [#579](https://github.com/agentcage/agentcage/issues/579) |
 | **Status** | Proposed |
 | **Priority** | P2 |
 | **Phase** | 5 |
-| **Depends on** | [FEAT-015](FEAT-015-packaging-and-platform.md) |
-| **Related** | [FEAT-005](FEAT-005-plan-lint-config.md), [FEAT-017](FEAT-017-docs-conformance-and-selftest.md) |
+| **Depends on** | [#578](https://github.com/agentcage/agentcage/issues/578) |
+| **Related** | [#568](https://github.com/agentcage/agentcage/issues/568), [#580](https://github.com/agentcage/agentcage/issues/580) |
 
 ## Problem
 

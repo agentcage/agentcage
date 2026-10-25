@@ -1,12 +1,13 @@
-# FEAT-005: `plan`, `lint`, config schema and imports
+# `plan`, `lint`, config schema and imports
 
 | | |
 | :--- | :--- |
+| **Issue** | [#568](https://github.com/agentcage/agentcage/issues/568) |
 | **Status** | Proposed |
 | **Priority** | P1 |
 | **Phase** | 1 |
-| **Depends on** | [FEAT-003](FEAT-003-guided-setup.md) |
-| **Related** | [FEAT-004](FEAT-004-policy-presets-and-suggestions.md) |
+| **Depends on** | [#566](https://github.com/agentcage/agentcage/issues/566) |
+| **Related** | [#567](https://github.com/agentcage/agentcage/issues/567) |
 
 ## Problem
 

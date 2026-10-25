@@ -1,12 +1,13 @@
-# BUG-004: `cage show` does not provide the detail its reference promises
+# `cage show` does not provide the detail its reference promises
 
 | | |
 | :--- | :--- |
+| **Issue** | [#561](https://github.com/agentcage/agentcage/issues/561) |
 | **Status** | Confirmed |
 | **Priority** | P1 |
 | **Area** | CLI output / documentation |
 | **Affected** | v0.53.1 |
-| **Fix** | [FEAT-007](../features/FEAT-007-diagnostics-and-support.md) or a docs correction |
+| **Fix** | [#570](https://github.com/agentcage/agentcage/issues/570) or a docs correction |
 
 ## Summary
 
@@ -78,5 +79,5 @@ config and deployment state.
 
 ## Related
 
-- [FEAT-007](../features/FEAT-007-diagnostics-and-support.md)
-- [BUG-005](BUG-005-readme-version-install.md)
+- [#570](https://github.com/agentcage/agentcage/issues/570)
+- [#562](https://github.com/agentcage/agentcage/issues/562)

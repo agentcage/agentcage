@@ -1,12 +1,13 @@
-# FEAT-017: Docs conformance and the security self-test
+# Docs conformance and the security self-test
 
 | | |
 | :--- | :--- |
+| **Issue** | [#580](https://github.com/agentcage/agentcage/issues/580) |
 | **Status** | Proposed |
 | **Priority** | P0/P1 |
 | **Phase** | 0/4 |
 | **Depends on** | The phase-0 bug fixes |
-| **Related** | [BUG-003](../bugs/BUG-003-dns-log-service.md), [BUG-004](../bugs/BUG-004-show-output.md), [BUG-005](../bugs/BUG-005-readme-version-install.md) |
+| **Related** | [#560](https://github.com/agentcage/agentcage/issues/560), [#561](https://github.com/agentcage/agentcage/issues/561), [#562](https://github.com/agentcage/agentcage/issues/562) |
 
 ## Problem
 

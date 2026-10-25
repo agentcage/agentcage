@@ -1,12 +1,13 @@
-# FEAT-007: Diagnostics, support bundles and actionable status
+# Diagnostics, support bundles and actionable status
 
 | | |
 | :--- | :--- |
+| **Issue** | [#570](https://github.com/agentcage/agentcage/issues/570) |
 | **Status** | Proposed |
 | **Priority** | P0 |
 | **Phase** | 0 |
-| **Depends on** | [FEAT-006](FEAT-006-cli-automation.md) |
-| **Related** | [BUG-004](../bugs/BUG-004-show-output.md) |
+| **Depends on** | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| **Related** | [#561](https://github.com/agentcage/agentcage/issues/561) |
 
 ## Problem
 
@@ -75,7 +76,7 @@ watcher state, deployed egress version and update availability.
 - [ ] `doctor --fix` is idempotent and reviews each action.
 - [ ] `support` contains no secret value, header credential or body by default.
 - [ ] Every `verify` failure has a remediation command or docs link.
-- [ ] `show --json` includes the documented fields (see BUG-004).
+- [ ] `show --json` includes the documented fields (see [#561](https://github.com/agentcage/agentcage/issues/561)).
 - [ ] `show` never prints a real secret.
 
 ## Tests

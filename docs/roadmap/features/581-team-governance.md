@@ -1,12 +1,13 @@
-# FEAT-018: Team governance, signed audit and policy bundles
+# Team governance, signed audit and policy bundles
 
 | | |
 | :--- | :--- |
+| **Issue** | [#581](https://github.com/agentcage/agentcage/issues/581) |
 | **Status** | Proposed |
 | **Priority** | P2 |
 | **Phase** | 5 |
-| **Depends on** | [FEAT-013](FEAT-013-api-sdk-ci.md) |
-| **Related** | [FEAT-009](FEAT-009-approvals-and-notifications.md), [FEAT-016](FEAT-016-scaffold-registry-supply-chain.md) |
+| **Depends on** | [#576](https://github.com/agentcage/agentcage/issues/576) |
+| **Related** | [#572](https://github.com/agentcage/agentcage/issues/572), [#579](https://github.com/agentcage/agentcage/issues/579) |
 
 ## Problem
 
@@ -48,7 +49,7 @@ exportable to a SIEM.
 - Hash chain: each record includes `prev_hash` and `hash`; define canonical
   serialization and test it.
 - Signing: use Sigstore/cosign or a local Ed25519 key; document the trust root.
-- Policy bundle: reuse the OCI/signing work from FEAT-016 where possible.
+- Policy bundle: reuse the OCI/signing work from [#579](https://github.com/agentcage/agentcage/issues/579) where possible.
 - Export: one adapter per format, with redaction before serialization.
 - Do not put secrets or raw bodies in exported records.
 
