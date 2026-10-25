@@ -64,7 +64,15 @@ If you are new to agentcage, we suggest reading in this order:
 | **[Backup & Restore](how-to/backup-and-restore.md)** | Procedures for creating portable tarball backups of cage state, volumes, and configurations (`agentcage cage backup`), and restoring or cloning cages (`agentcage cage restore`). |
 | **[Custom Inspectors & Relays](how-to/custom-inspectors.md)** | Writing custom inspectors as sandboxed WebAssembly components with the `agentcage-inspector-sdk` crate, and configuring hardened protocol relays for non-HTTP services (such as IMAP and SMTP). |
 
-### 5. History
+### 5. Roadmap
+
+The forward-looking product and usability plan, kept as a discussion document rather than a release schedule or guarantee:
+
+| Plan | Description |
+| :--- | :--- |
+| **[Improvement Plan (2026–2027)](roadmap.md)** | The gap between the security engine and the day-to-day product, with prioritised workstreams for sessions, auth, onboarding, Git workflow, approvals, integrations and distribution. |
+
+### 6. History
 
 Records of how the project got here, kept for reference rather than as current documentation:
 
