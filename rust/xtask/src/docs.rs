@@ -17,8 +17,9 @@
 //!    compiles from source; the old "builds from source with cargo" default
 //!    was wrong for the current installer.
 //!
-//! History is exempt: `docs/history/` and CHANGELOG entries describe what
-//! the product used to do and are allowed to keep doing so.
+//! History and planning records are exempt: `docs/history/`, `docs/roadmap/`
+//! and CHANGELOG entries describe what the product used to do, or discuss it,
+//! and are allowed to keep doing so.
 
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -88,6 +89,7 @@ fn is_live_doc(rel: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
         && rel != "CHANGELOG.md"
         && !rel.starts_with("docs/history/")
+        && !rel.starts_with("docs/roadmap/")
 }
 
 /// Run every documentation check against the checkout and print the verdicts.
@@ -459,6 +461,10 @@ mod tests {
             ("README.md", "agentcage cage logs box -s dns\n"),
             (
                 "docs/history/old-plan.md",
+                "agentcage cage logs box -s dns\n",
+            ),
+            (
+                "docs/roadmap/bugs/560-dns-log-service.md",
                 "agentcage cage logs box -s dns\n",
             ),
         ]);
