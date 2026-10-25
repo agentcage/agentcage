@@ -70,7 +70,7 @@ The forward-looking product and usability plan, kept as a discussion document ra
 
 | Plan | Description |
 | :--- | :--- |
-| **[Improvement Plan (2026–2027)](roadmap.md)** | The gap between the security engine and the day-to-day product, with prioritised workstreams for sessions, auth, onboarding, Git workflow, approvals, integrations and distribution. |
+| **[Improvement Plan (2026–2027)](roadmap/README.md)** | The gap between the security engine and the day-to-day product, with prioritised workstreams for sessions, auth, onboarding, Git workflow, approvals, integrations and distribution. |
 
 ### 6. History
 

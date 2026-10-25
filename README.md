@@ -353,7 +353,7 @@ Explore the complete technical documentation in [`docs/`](docs/README.md):
 * **[Architecture & Concepts](docs/explain/architecture.md)**: Deep dive into network namespaces, [Isolation Backends](docs/explain/isolation-backends.md), the 8-layer [Security Model](docs/explain/security-model.md), the [Policy API](docs/explain/policy-api.md), and the [Traffic Watcher](docs/explain/traffic-watcher.md).
 * **[Reference Manuals](docs/reference/configuration.md)**: Complete specifications for [`cage.yaml`](docs/reference/configuration.md), the [CLI Manual](docs/reference/cli.md), the [Policy API HTTP Spec](docs/reference/policy-api.md), [Scaffolds](docs/reference/scaffolds.md), and [Secrets Management](docs/reference/secrets.md).
 * **[How-To Guides](docs/how-to/run-agent-harnesses.md)**: Practical operational recipes for [Running Agent Harnesses](docs/how-to/run-agent-harnesses.md), [Managing Egress & Domains](docs/how-to/manage-egress-and-domains.md), [Troubleshooting & Diagnostics](docs/how-to/troubleshooting.md), [Backup & Restore](docs/how-to/backup-and-restore.md), and [Custom Inspectors](docs/how-to/custom-inspectors.md).
-* **[Roadmap](docs/roadmap.md)**: The forward-looking product and usability plan for v0.54 through v1.0, covering session lifecycle, authentication, onboarding, Git workflows, approvals, integrations and distribution.
+* **[Roadmap](docs/roadmap/README.md)**: The forward-looking product and usability plan for v0.54 through v1.0, covering session lifecycle, authentication, onboarding, Git workflows, approvals, integrations and distribution.
 
 ---
 
