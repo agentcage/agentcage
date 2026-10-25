@@ -182,16 +182,6 @@
       ]
     },
     {
-      "alias": "update",
-      "parent": [
-        "agentcage"
-      ],
-      "target": [
-        "cage",
-        "update"
-      ]
-    },
-    {
       "alias": "config",
       "parent": [
         "agentcage",
@@ -315,7 +305,7 @@
   ],
   "click_version": "8.4.0",
   "counts": {
-    "aliases": 31,
+    "aliases": 30,
     "arguments": 44,
     "commands": 41,
     "groups": 7,
@@ -346,8 +336,7 @@
         "show": "cage show",
         "start": "cage start",
         "status": "cage status",
-        "stop": "cage stop",
-        "update": "cage update"
+        "stop": "cage stop"
       },
       "allow_extra_args": false,
       "class": "_BannerGroup",

@@ -46,7 +46,7 @@
 //! section.
 //!
 //! **`_BannerGroup`** is the root: it prints the banner above `--help`
-//! and republishes 19 aliases for commands that live under `cage`. Those
+//! and republishes 18 aliases for commands that live under `cage`. Those
 //! are real top-level commands here, cloned from [`cage::plain`] and
 //! hidden, exactly as click's `get_command` returns the target function
 //! without listing it.
@@ -63,6 +63,7 @@ pub(crate) mod init;
 pub(crate) mod run;
 pub(crate) mod scaffold;
 pub(crate) mod secret;
+pub(crate) mod self_update;
 pub(crate) mod watcher;
 pub(crate) mod watcher_cmd;
 
@@ -88,7 +89,7 @@ pub(crate) const EXIT_NOT_IMPLEMENTED: u8 = 70;
 ///
 /// Sorted by alias, as click sorts them for the help section and as the
 /// generated fixture records them.
-pub(crate) const TOP_LEVEL_ALIASES: [(&str, &str); 19] = [
+pub(crate) const TOP_LEVEL_ALIASES: [(&str, &str); 18] = [
     ("config", "cage edit"),
     ("delete", "cage destroy"),
     ("describe", "cage show"),
@@ -107,7 +108,6 @@ pub(crate) const TOP_LEVEL_ALIASES: [(&str, &str); 19] = [
     ("start", "cage start"),
     ("status", "cage status"),
     ("stop", "cage stop"),
-    ("update", "cage update"),
 ];
 
 /// The version line, byte-identical to what earlier releases printed:
@@ -156,9 +156,10 @@ pub(crate) fn command(styled_banner: bool) -> Command {
         .subcommand(init::init())
         .subcommand(scaffold::command())
         .subcommand(secret::command())
+        .subcommand(self_update::command())
         .subcommand(watcher::command());
 
-    // The 19 `_BannerGroup` aliases, as hidden top-level commands. They
+    // The 18 `_BannerGroup` aliases, as hidden top-level commands. They
     // are clones rather than `Command::alias` entries because their
     // targets are not siblings: `ls` is a root command that runs
     // `cage list`, which clap has no way to express as an alias.
@@ -219,6 +220,12 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
     // e2e phase that would otherwise gate it.
     if name == "doctor" {
         return ExitCode::from(agentcage_cli::doctor::main());
+    }
+
+    // `agentcage update` replaces this binary. It reads no cage state
+    // and needs no backend, so it is answered before any of that.
+    if name == "update" {
+        return self_update::main(sub);
     }
 
     let path = canonical_path(name, sub);

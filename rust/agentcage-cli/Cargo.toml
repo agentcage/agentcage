@@ -137,7 +137,7 @@ serde_json = "1"
 # earlier releases never produced. It costs one small dependency, `terminal_size`.
 #
 # Not enabled: `derive` (the tree is built with the builder API -- see
-# `src/cli/mod.rs` for why: 19 of the aliases are hidden clones of
+# `src/cli/mod.rs` for why: 18 of the aliases are hidden clones of
 # commands that live under a *different* parent, which the derive macro
 # has no way to express), `env`, `unicode`, `suggestions`' extras.
 clap = { version = "4", features = ["wrap_help"] }

@@ -47,6 +47,8 @@ pub mod run;
 pub mod scaffold;
 /// Secret resolution and the at-rest stores (PR D3).
 pub mod secrets;
+/// `agentcage update`: replace this binary with a released one.
+pub mod self_update;
 /// Build, render, install, start (PR D6).
 pub mod services;
 /// Staging a Containerfile's build context into a cage (PR D6).

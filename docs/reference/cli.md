@@ -29,7 +29,21 @@ For developer convenience, frequently used commands can be executed directly wit
 | `agentcage edit NAME` / `config` | `agentcage cage edit NAME` |
 | `agentcage start` / `stop` / `restart` / `reload` | `agentcage cage start/stop/restart ...` |
 | `agentcage rm NAME` / `delete` | `agentcage cage destroy NAME` |
-| `agentcage update NAME ...` | `agentcage cage update NAME ...` |
+
+`agentcage update` is not an alias: it updates agentcage itself (see [below](#agentcage-update-version)). To rebuild a cage, use `agentcage cage update NAME`.
+
+### `agentcage update [VERSION]`
+Replaces the `agentcage` binary with a release from GitHub:
+
+```bash
+agentcage update            # the latest release
+agentcage update --check    # only say whether one is available
+agentcage update 0.53.0     # a specific release, which may be older
+```
+
+It downloads `agentcage-<version>-<target>.tar.gz` for this platform with `curl`, checks it against its published `.sha256`, checks that the new binary runs and reports that version, and then renames it over the running one. The checksum sits on the same release page as the tarball, so it catches a corrupt or truncated download, not a compromised release. `AGENTCAGE_REPO` selects another repository, as it does for `install.sh`.
+
+A binary that Homebrew or a system package manager installed is refused, with the command that upgrades it there (`brew upgrade agentcage`, or your package manager), and so is a binary inside a cargo target directory. Cages are not touched. Each keeps the egress it was built with until `agentcage cage update NAME` rebuilds it, and after an update agentcage prints that command for every cage.
 
 ---
 

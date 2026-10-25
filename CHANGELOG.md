@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`agentcage update` updates agentcage itself.** It downloads the latest release for this platform from GitHub (or the one named, `agentcage update 0.53.0`, which may be older), checks it against its published `.sha256`, checks that the new binary runs and reports that version, and renames it over the running binary. `--check` only reports whether an update is available. A binary installed by Homebrew or a system package manager is refused with the command that upgrades it there, and so is a cargo build. Cages are not touched; after an update it prints the `agentcage cage update <name>` that rebuilds each one with the new egress. `AGENTCAGE_REPO` selects another repository, as for `install.sh`.
+
+### Changed
+
+- **`agentcage update NAME` no longer rebuilds a cage.** `update` was a top-level alias for `cage update`; it is now the command above. Use `agentcage cage update NAME`. Given a cage name, `agentcage update` exits with status 2 and prints that command.
+
 ## [0.53.1] - 2026-10-25
 
 ### Fixed
