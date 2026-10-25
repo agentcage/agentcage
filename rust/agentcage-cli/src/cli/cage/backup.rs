@@ -50,7 +50,8 @@
 //!    and starts it on the restored data. With
 //!    `--no-start` there is no cage running, and they are created and
 //!    imported in place of step 4, so the first `cage update` mounts
-//!    them full. Only on `container`: see [`importable_volumes`].
+//!    them full. On `vm` only with the cage started, into its Lima
+//!    guest: see [`importable_volumes`].
 //! 6. **Capture**, last, because `build_and_deploy` does not touch it.
 //!
 //! # apple-container
@@ -73,12 +74,13 @@
 //!
 //! No branch of its own: a vm archive takes the container path, and
 //! [`require_known_backend`] has accepted `vm` since PR E6. `cage
-//! backup` reads the cage's secrets from its own store, inside the Lima
-//! guest, and writes no named volumes, since those live in the guest's
-//! podman. `cage restore` stages the secrets in the *host* store, where
-//! the deploy mirrors them into the guest it creates (see the comment
-//! at the restore's `Podman::new`), and imports no named volumes
-//! ([`importable_volumes`]).
+//! backup` reads the cage's secrets and exports its named volumes from
+//! its own store, inside the Lima guest, and refuses a cage with named
+//! volumes whose guest is down. `cage restore` stages the secrets in the
+//! *host* store, where the deploy mirrors them into the guest it creates
+//! (see the comment at the restore's `Podman::new`), and imports the
+//! named volumes into the guest after the deploy, with only the cage's
+//! unit stopped ([`importable_volumes`]).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -233,6 +235,21 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         &config.isolation,
         &name,
     );
+    // A vm cage whose guest is down is refused before anything is
+    // printed or staged, rather than archived without its named
+    // volumes: the router has fallen back to host podman, which has
+    // never heard of them, and every volume would come out as "does
+    // not exist, skipping" — a backup missing the cage's workspace
+    // that reports success.
+    if config.isolation == "vm" && !config.container.named_volumes.is_empty() && !podman.is_guest()
+    {
+        eprintln!(
+            "error: cage '{name}' has named volumes, which live in its Lima VM, \
+             and the VM is not running. Start it and back up again: \
+             agentcage cage start {name}"
+        );
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
     let mut members: Vec<Member> = Vec::new();
 
     // ── Config ──────────────────────────────────────────
@@ -335,21 +352,15 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ExitCode::from(EXIT_FAILURE)
     })?;
     let mut volume_names: Vec<String> = Vec::new();
-    // Container-only, as it has been since earlier releases. Its
-    // consequence is worth stating plainly
-    // because nothing prints it: **a vm cage's named volumes are not
-    // backed up.** They live in the guest's podman, `VmPodman` has no
-    // volume verbs, and the tarball comes out with an empty `volumes/`
-    // — silently. The host handle is built here rather than reused
-    // from the router so that "volumes are a host-store thing" is
-    // structural rather than a comment.
-    if config.isolation == "container" && !config.container.named_volumes.is_empty() {
-        let host = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+    // From the cage's own store, through the same router as the
+    // secrets: the host's podman for `container`, the guest's for `vm`
+    // (a vm cage whose guest is down was refused above).
+    if !config.container.named_volumes.is_empty() {
         members.push(Member::Dir(format!("{ROOT}/volumes")));
         for volume in config.container.named_volumes.keys() {
-            if host.volume_exists(volume).unwrap_or(false) {
+            if podman.volume_exists(volume).unwrap_or(false) {
                 let exported = staging.path().join(format!("{volume}.tar"));
-                if let Err(error) = host.volume_export(volume, &exported.display().to_string()) {
+                if let Err(error) = podman.volume_export(volume, &exported.display().to_string()) {
                     eprintln!("error: could not export volume '{volume}': {error}");
                     return Err(ExitCode::from(EXIT_FAILURE));
                 }
@@ -957,7 +968,7 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         eprintln!("error: invalid backup — {message}");
         ExitCode::from(EXIT_FAILURE)
     })?;
-    let volumes = importable_volumes(&manifest.isolation, volumes, &tarball);
+    let volumes = importable_volumes(&manifest.isolation, volumes, &tarball, no_start);
     // In the preflight, so a refusal comes before `--force` destroys
     // anything and before podman is asked to write anything.
     if let Err(message) = clone_volume_collisions(ctx, &manifest, &target, &config_src, &volumes) {
@@ -1057,7 +1068,10 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         // finds it — data included — instead of creating an empty
         // one. This cage holds none of them: `--force` stopped the
         // existing one, and the restored one has not started.
-        import_volumes(&podman, &volumes, &tarball, true);
+        let host = agentcage_cli::cage_podman::CagePodman::Host(
+            agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref()),
+        );
+        import_volumes(&host, &volumes, &tarball, true);
         println!("Cage state restored. Run: agentcage cage update {target} to build and start.");
     } else {
         let config = ctx
@@ -1116,9 +1130,34 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         // volume mid-import, and it should start on the restored data.
         // The deploy started the cage, which created the volumes, so
         // there is nothing to create here.
-        if !volumes.is_empty() {
+        //
+        // On `vm` the volumes are in the guest, so only the cage's unit
+        // is stopped: `backend.stop` powers the guest off, and its
+        // podman with it. Creating a missing one there is cheap
+        // insurance, since the import is the only copy of the data.
+        if let (false, Some(vm)) = (volumes.is_empty(), backend.as_vm()) {
+            if let Err(error) = vm.stop_cage_unit(&target) {
+                eprintln!(
+                    "warning: {error}; not importing the named volumes. Their data \
+                     is in {} under {ROOT}/volumes/",
+                    tarball.display()
+                );
+            } else {
+                let guest = agentcage_cli::cage_podman::CagePodman::Guest(
+                    agentcage_exec::tools::limactl::VmPodman::new(ctx.runner.as_ref(), &target),
+                );
+                import_volumes(&guest, &volumes, &tarball, true);
+                if let Err(error) = vm.start_cage_unit(&target) {
+                    eprintln!("error: {error}");
+                    return Err(ExitCode::from(EXIT_FAILURE));
+                }
+            }
+        } else if !volumes.is_empty() {
+            let host = agentcage_cli::cage_podman::CagePodman::Host(
+                agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref()),
+            );
             backend.stop(&target);
-            import_volumes(&podman, &volumes, &tarball, false);
+            import_volumes(&host, &volumes, &tarball, false);
             if let Err(error) = backend.start(&config.name, false) {
                 eprintln!("error: {error}");
                 return Err(ExitCode::from(EXIT_FAILURE));
@@ -1685,38 +1724,34 @@ fn volumes_to_import(
     Ok(import)
 }
 
-/// The part of `volumes` the archive's backend can import — all of it
-/// on `container`, none of it anywhere else — warning, per volume,
-/// about the rest.
+/// The part of `volumes` the archive's backend can import, warning,
+/// per volume, about the rest.
 ///
-/// Only `container` keeps its named volumes in the host's podman, which
-/// is the one store a restore can reach whether or not it starts the
-/// cage:
-///
-/// * **`vm`**: the volumes live in the cage's Lima guest. `cage backup`
-///   does not export them (the manifest's list is empty by
-///   construction), and `cage restore` used to import a hand-listed
-///   one into the *host* store, where the guest's cage never sees it.
-///   With `--no-start` the guest does not even exist yet.
-/// * **`apple-container`**: there are no named volumes;
+/// * **`container`**: all of it, into the host's podman, whether or not
+///   the restore starts the cage.
+/// * **`vm`**: all of it when the restore starts the cage, into its Lima
+///   guest once the deploy has created it. With `--no-start` none: the
+///   guest does not exist yet, and importing into the *host* store
+///   would put the data where the guest's cage never sees it.
+/// * **`apple-container`**: none. There are no named volumes;
 ///   `container.named_volumes` is one of the knobs the backend drops,
-///   and its manifest's list is empty by construction too.
+///   and its manifest's list is empty by construction.
 ///
-/// So a listed volume on either is not imported, and the warning says
-/// where its data still is: in the archive, which a restore never
-/// changes. Before this the apple path dropped them in silence.
+/// The warning says where a skipped volume's data still is: in the
+/// archive, which a restore never changes.
 fn importable_volumes(
     isolation: &str,
     volumes: Vec<(String, PathBuf)>,
     tarball: &Path,
+    no_start: bool,
 ) -> Vec<(String, PathBuf)> {
-    if isolation == "container" {
+    if isolation == "container" || (isolation == "vm" && !no_start) {
         return volumes;
     }
     let reason = match isolation {
         "vm" => {
-            "a vm cage's named volumes live in its Lima guest, which \
-             `cage restore` does not import into"
+            "a vm cage's named volumes live in its Lima VM, which `--no-start` \
+             does not create. Restore without --no-start to import them"
         }
         APPLE_CONTAINER => "apple-container has no named volumes",
         _ => "only the container backend's named volumes can be imported",
@@ -1911,7 +1946,7 @@ fn host_volumes(cage_yaml: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Import each of `volumes` into the host's podman, creating it first
+/// Import each of `volumes` into the cage's podman, creating it first
 /// when `create_missing` and it does not exist.
 ///
 /// podman will not import into a volume it does not know, so
@@ -1921,7 +1956,7 @@ fn host_volumes(cage_yaml: &str) -> BTreeSet<String> {
 /// always was — the config is installed by now — and the warning says
 /// where the data still is.
 fn import_volumes(
-    podman: &agentcage_exec::tools::podman::Podman<'_>,
+    podman: &agentcage_cli::cage_podman::CagePodman<'_>,
     volumes: &[(String, PathBuf)],
     tarball: &Path,
     create_missing: bool,
@@ -3157,28 +3192,37 @@ container:
         assert!(others.is_empty(), "{others:?}");
     }
 
-    /// Only `container` keeps named volumes in the host's podman. A vm
-    /// cage's live in its Lima guest — which `--no-start` has not even
-    /// created — and apple-container has none, and `cage backup` lists
-    /// none for either. A hand-listed one is not imported into the host
-    /// store, where the cage would never see it; the warning points at
-    /// the archive, which still holds the data.
+    /// `container` imports into the host's podman, started or not. A vm
+    /// cage's volumes live in its Lima guest, so they are imported only
+    /// by a restore that starts it: `--no-start` has not created the
+    /// guest, and the host store is where the cage would never see
+    /// them. apple-container has none. The warning points at the
+    /// archive, which still holds the data.
     #[test]
-    fn only_a_container_restore_imports_named_volumes() {
+    fn named_volumes_are_imported_where_the_backend_can_reach_them() {
         let volumes = vec![(
             "acme-agent-workspace".to_owned(),
             PathBuf::from("/staging/agentcage-backup/volumes/acme-agent-workspace.tar"),
         )];
         let tarball = Path::new("/backups/acme.tar.gz");
+        for no_start in [false, true] {
+            assert_eq!(
+                importable_volumes("container", volumes.clone(), tarball, no_start),
+                volumes
+            );
+        }
         assert_eq!(
-            importable_volumes("container", volumes.clone(), tarball),
+            importable_volumes("vm", volumes.clone(), tarball, false),
             volumes
         );
-        for isolation in ["vm", "apple-container", "no-such-backend"] {
-            assert!(
-                importable_volumes(isolation, volumes.clone(), tarball).is_empty(),
-                "{isolation}"
-            );
+        assert!(importable_volumes("vm", volumes.clone(), tarball, true).is_empty());
+        for isolation in ["apple-container", "no-such-backend"] {
+            for no_start in [false, true] {
+                assert!(
+                    importable_volumes(isolation, volumes.clone(), tarball, no_start).is_empty(),
+                    "{isolation}"
+                );
+            }
         }
 
         // Through the command: a vm `--no-start` restore asks podman
@@ -4509,6 +4553,132 @@ secret_injection:
                 .iter()
                 .any(|argv| argv.first().map(String::as_str) == Some("podman")),
             "the host store was never asked: {calls:?}"
+        );
+    }
+
+    /// The argv prefix of a podman call inside `vm-cage`'s guest.
+    fn guest_podman(verb: &[&str]) -> Vec<String> {
+        [
+            "limactl",
+            "shell",
+            "--workdir",
+            "/",
+            "--tty=false",
+            "agentcage-vm-cage",
+            "--",
+            "podman",
+        ]
+        .iter()
+        .chain(verb)
+        .map(|part| (*part).to_owned())
+        .collect()
+    }
+
+    /// Deploys `vm-cage`, an `isolation: vm` cage with one named volume.
+    fn deploy_vm_cage_with_a_volume(ctx: &Ctx, dir: &TestDir) {
+        let source = dir.join("vm.yaml");
+        fs::write(
+            &source,
+            "name: vm-cage\nisolation: vm\ncontainer:\n  \
+             image: docker.io/library/node:22-slim\n  \
+             named_volumes:\n    vm-cage-workspace: /workspace\n",
+        )
+        .unwrap();
+        ctx.paths.save_deployment("vm-cage", &source).unwrap();
+        fs::write(
+            ctx.paths.metadata_path("vm-cage"),
+            "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+        )
+        .unwrap();
+    }
+
+    /// **A vm cage's named volumes are backed up**, from the guest's
+    /// podman. They used to be skipped without a word: the export was
+    /// host-only, and the tarball came out with no volume in it.
+    #[test]
+    fn a_vm_cage_backs_up_its_named_volumes_from_the_guest() {
+        let dir = TestDir::new("vm-backup-volumes");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(
+            ["limactl", "list", "--json", "agentcage-vm-cage"],
+            Reply::ok("{\"status\": \"Running\"}\n"),
+        );
+        fake.on(guest_podman(&["volume", "exists"]), Reply::success());
+        fake.on(
+            guest_podman(&["volume", "export"]),
+            Reply::ok("workspace tar"),
+        );
+        fake.on(["limactl", "shell"], Reply::ok(""));
+        let ctx = ctx(&dir, fake.clone());
+        deploy_vm_cage_with_a_volume(&ctx, &dir);
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            "vm-cage",
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+
+        assert_eq!(
+            archive::read_member(&out, &format!("{ROOT}/volumes/vm-cage-workspace.tar")).unwrap(),
+            Some(b"workspace tar".to_vec())
+        );
+        let manifest = Manifest::parse(
+            &String::from_utf8(
+                archive::read_member(&out, &format!("{ROOT}/manifest.json"))
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.named_volumes, ["vm-cage-workspace"]);
+        let calls = fake.argv_sequence();
+        assert!(
+            calls
+                .iter()
+                .all(|argv| argv.first().map(String::as_str) == Some("limactl")),
+            "a host podman call escaped: {calls:?}"
+        );
+    }
+
+    /// A vm cage with named volumes and a **stopped** guest is refused
+    /// rather than archived without them. The router would answer with
+    /// host podman, which has never heard of the volumes, and the
+    /// backup would report success holding none of the cage's data.
+    #[test]
+    fn a_stopped_vm_cage_with_named_volumes_is_refused() {
+        let dir = TestDir::new("vm-backup-volumes-stopped");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(
+            ["limactl", "list"],
+            Reply::ok("{\"status\": \"Stopped\"}\n"),
+        );
+        fake.on(["podman", "secret", "ls"], Reply::ok(""));
+        let ctx = ctx(&dir, fake.clone());
+        deploy_vm_cage_with_a_volume(&ctx, &dir);
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            "vm-cage",
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_err());
+        assert!(!out.exists(), "a backup without the volumes was written");
+        assert!(
+            named_volume_calls(&fake).is_empty(),
+            "{:?}",
+            fake.argv_sequence()
         );
     }
 

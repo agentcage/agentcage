@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 
-use crate::command::Command;
+use crate::command::{Command, Sink};
 use crate::outcome::{ExecError, Output};
 use crate::runner::CommandRunner;
 
@@ -442,6 +442,79 @@ impl<'a> VmPodman<'a> {
         Ok(self
             .exec(&["podman", "secret", "rm", name], false)?
             .success())
+    }
+
+    // ── volumes ──────────────────────────────────────────────
+    //
+    // The guest twins of `Podman`'s volume verbs, for `cage backup` and
+    // `cage restore`. A vm cage's named volumes live in the guest's
+    // store, so these are the only way to reach their data. The tar
+    // goes through `limactl shell`'s stdin or stdout, which
+    // `--tty=false` keeps byte-clean, straight to or from a host file,
+    // so a workspace of gigabytes never passes through agentcage's
+    // address space.
+
+    /// `podman volume exists <name>` in the guest.
+    ///
+    /// # Errors
+    ///
+    /// Only if `limactl` itself could not be run.
+    pub fn volume_exists(&self, name: &str) -> Result<bool, ExecError> {
+        Ok(self
+            .exec(&["podman", "volume", "exists", name], false)?
+            .success())
+    }
+
+    /// `podman volume export <name>` in the guest, written to
+    /// `output_path` on the host.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Io`] if the file cannot be created,
+    /// [`ExecError::Failed`] on a non-zero exit.
+    pub fn volume_export(&self, name: &str, output_path: &str) -> Result<(), ExecError> {
+        let argv = ["podman", "volume", "export", name].map(str::to_string);
+        self.instance
+            .runner
+            .run(
+                &self
+                    .instance
+                    .shell_command(&argv)
+                    .stdout(Sink::Write(output_path.into())),
+            )?
+            .check("limactl")?;
+        Ok(())
+    }
+
+    /// `podman volume create -- <name>` in the guest.
+    ///
+    /// `--` for the reason on
+    /// [`Podman::volume_create`](crate::tools::podman::Podman::volume_create):
+    /// `cage restore` reads the name from an archive.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] on a non-zero exit, which includes a
+    /// volume that already exists.
+    pub fn volume_create(&self, name: &str) -> Result<(), ExecError> {
+        self.exec(&["podman", "volume", "create", "--", name], true)?;
+        Ok(())
+    }
+
+    /// `podman volume import -- <name> -` in the guest, fed from
+    /// `tar_path` on the host.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Io`] if the archive cannot be opened,
+    /// [`ExecError::Failed`] on a non-zero exit.
+    pub fn volume_import(&self, name: &str, tar_path: &str) -> Result<(), ExecError> {
+        let argv = ["podman", "volume", "import", "--", name, "-"].map(str::to_string);
+        self.instance
+            .runner
+            .run(&self.instance.shell_command(&argv).stdin_file(tar_path))?
+            .check("limactl")?;
+        Ok(())
     }
 
     /// One guest command, from borrowed parts.

@@ -17,7 +17,7 @@ agentcage provides built-in commands to create portable, self-contained backup t
   - `cage.yaml.bak`, `cage.yaml.rejected` and build noise (`.git`, `node_modules`, `__pycache__`, `*.pyc`, `*.deleted.*`).
 
   A restore skips these names even when a hand-made archive includes them.
-- **`volumes/`** (`container` only): one `<name>.tar` for each `container.named_volumes` entry that exists, from `podman volume export`. A `vm` cage's named volumes live in its Lima guest and aren't backed up. `apple-container` has no named volumes.
+- **`volumes/`**: one `<name>.tar` for each `container.named_volumes` entry that exists, from `podman volume export`. On `vm` the export runs in the cage's Lima VM, so the VM has to be running: `cage backup` refuses a `vm` cage with named volumes whose VM is stopped, rather than writing a backup without them. `apple-container` has no named volumes.
 - **`capture/capture.jsonl`**: the capture log, when it isn't empty. An `apple-container` backup also carries **`audit/audit.jsonl`**.
 - **`secrets/`** (only with `--include-secrets`, not on `apple-container`): one file per stored secret, holding its **plaintext value**. Without the flag no values travel, and the restore lists the secrets you have to set again.
 
@@ -58,7 +58,7 @@ Restore a cage from an existing backup archive:
 agentcage cage restore ~/backups/my-agent.tar.gz
 ```
 
-This restores the secrets the archive carries and the cage's configuration, regenerates `proxy-config.yaml` and `dns-allowlist.conf`, and builds and starts the cage. On `container` it then stops the cage, imports the named volumes and starts it again. The capture log is restored too.
+This restores the secrets the archive carries and the cage's configuration, regenerates `proxy-config.yaml` and `dns-allowlist.conf`, and builds and starts the cage. It then stops the cage, imports the named volumes and starts it again. On `vm` only the cage's unit is stopped, so the volumes are imported into the running VM. The capture log is restored too.
 
 ### Restoring Under a Different Name (Cloning)
 To duplicate an existing cage configuration and volume state under a new name:
@@ -84,7 +84,7 @@ agentcage cage restore ~/backups/my-agent.tar.gz --no-start
 
 This restores the secrets, the configuration and the capture log, and on `container` it also creates the named volumes and imports their data, so nothing is lost by not starting. No image is built and no units are installed. Run `agentcage cage update my-agent` to build and start the cage. It mounts the volumes that are already filled.
 
-On `vm` and `apple-container`, a restore never imports named volumes, whether it starts the cage or not. `cage backup` doesn't write any for these backends. If a hand-made archive lists one, the restore warns and leaves the data in the archive, at `agentcage-backup/volumes/<name>.tar`.
+On `vm`, `--no-start` doesn't import named volumes: the volumes live in the cage's Lima VM, which isn't created until the cage starts. The restore warns and leaves the data in the archive, at `agentcage-backup/volumes/<name>.tar`. Restore without `--no-start` to import them. On `apple-container` a restore never imports named volumes, since the backend has none.
 
 ### Overwriting an Existing Cage
 If a cage with the same name already exists on the host:
