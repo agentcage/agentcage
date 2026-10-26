@@ -56,9 +56,16 @@ pub(crate) fn init() -> Command {
         )
 }
 
-/// `agentcage doctor` — no arguments at all, which is the whole point.
+/// `agentcage doctor` — no positional arguments at all, which is the
+/// whole point.
 pub(crate) fn doctor() -> Command {
-    leaf("doctor").about("Check system health and diagnose common issues.")
+    leaf("doctor")
+        .about("Check system health and diagnose common issues.")
+        .arg(flag(
+            "json",
+            "json",
+            "Output the report as one structured JSON object.",
+        ))
 }
 
 // ── the body ─────────────────────────────────────────────────

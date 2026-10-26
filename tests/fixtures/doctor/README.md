@@ -122,7 +122,11 @@ that quietly diverges is worse than one that carries a known wart.
 
 * `rust/agentcage-cli/tests/golden_doctor.rs` — rebuilds each host and requires
   the bytes back, in both colour modes, plus the structured results and the exit
-  code.
+  code. It also asserts the `--json` document over a representative subset of
+  hosts: the envelope keys and their order, `schema_version`, the summary counts
+  against the results, and every check's `section`/`name`/`level`/`hint`. The
+  human report and the JSON are two renderings of the same `Report`, so the
+  recorded bytes above are the fixture for both.
 * `scripts/gen-doctor-fixture.py --check` — CI's staleness guard. It is what
   notices when `doctor.py` changes and the committed recording does not.
 
