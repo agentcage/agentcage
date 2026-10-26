@@ -78,7 +78,7 @@ pub(crate) fn apply_or_restart(ctx: &Ctx, name: &str, key: &str, value: &str) {
         }
     }
     println!("Restarting cage '{cage}'...");
-    restart(ctx, &cage);
+    let _ = restart(ctx, &cage);
 }
 
 /// The staged write, then the mtime bump — in that order.
@@ -125,7 +125,12 @@ fn stage(
 /// On apple-container neither of those two files drives anything; that
 /// backend's derived artifact is the unit metadata, and
 /// [`reinstall_apple_units`] is the step that regenerates it.
-pub(crate) fn restart(ctx: &Ctx, cage: &str) {
+///
+/// Returns whether the restart brought the cage up. Only then is the
+/// recorded `stopped_at` cleared: a restart that failed leaves the cage
+/// down and its stop time accurate, so `prune --older-than` must not
+/// lose it.
+pub(crate) fn restart(ctx: &Ctx, cage: &str) -> bool {
     if let Err(error) = ctx.paths.save_proxy_config(cage, &ctx.version) {
         eprintln!("warning: {error}");
     }
@@ -152,7 +157,11 @@ pub(crate) fn restart(ctx: &Ctx, cage: &str) {
     if let (Some(config), Some(_)) = (config.as_ref(), backend.as_apple()) {
         reinstall_apple_units(&backend, config, cage);
     }
-    services::restart_cage(&backend, cage);
+    let came_up = services::restart_cage(&backend, cage);
+    if came_up {
+        services::clear_stopped_at(&ctx.paths, cage);
+    }
+    came_up
 }
 
 /// `cli._reinstall_apple_units` — regenerate the apple-container unit

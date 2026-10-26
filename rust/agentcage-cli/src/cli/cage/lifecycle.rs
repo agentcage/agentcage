@@ -32,6 +32,7 @@ use std::io::{Read as _, Seek as _};
 use std::process::ExitCode;
 
 use agentcage_core::config::{Config, PLACEHOLDER_PREFIX};
+use agentcage_core::har::datetime::DateTime;
 use agentcage_core::har::json::{self, DumpOptions, Json};
 use clap::ArgMatches;
 
@@ -1025,6 +1026,7 @@ fn stop_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     // while destroy is the documented way out.
     let config = addressable(ctx, name, "cage stop")?;
     ctx.backend_for(&config.isolation).stop(name);
+    agentcage_cli::services::record_stopped_at(&ctx.paths, name);
     println!("Stopped cage '{name}'");
     Ok(())
 }
@@ -1109,6 +1111,7 @@ fn start_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         eprintln!("error: {error}");
         ExitCode::from(EXIT_FAILURE)
     })?;
+    agentcage_cli::services::clear_stopped_at(&ctx.paths, name);
     println!("Started cage '{name}'");
     Ok(())
 }
@@ -1171,7 +1174,9 @@ fn restart_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         eprintln!("error: {error}");
         return Err(ExitCode::from(EXIT_FAILURE));
     }
-    crate::cli::secret::live::restart(ctx, name);
+    if crate::cli::secret::live::restart(ctx, name) {
+        agentcage_cli::services::clear_stopped_at(&ctx.paths, name);
+    }
     println!("Restarted cage '{name}'");
     Ok(())
 }
@@ -1290,7 +1295,7 @@ fn print_kept(paths: &Paths, name: &str) {
 /// directory cannot be read is skipped rather than reported: the
 /// block's whole point is not to name anything the operator cannot
 /// find.
-fn kept_entries(data: &std::path::Path) -> Vec<String> {
+pub(crate) fn kept_entries(data: &std::path::Path) -> Vec<String> {
     let mut entries: Vec<String> = std::fs::read_dir(data)
         .into_iter()
         .flatten()
@@ -1319,19 +1324,56 @@ fn holds_data(path: &std::path::Path) -> bool {
     !path.is_dir() || std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
 }
 
+/// What [`destroy_cage_status`] removed and whether the teardown was
+/// complete.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct DestroyResult {
+    /// The removal descriptions `cage destroy` prints, in order.
+    pub(crate) removed: Vec<String>,
+    /// Whether every part of the teardown succeeded. False means at
+    /// least one resource or the deployment itself may still be there,
+    /// even when the deployment directory is gone.
+    pub(crate) complete: bool,
+}
+
 /// Stop, destroy, forget.
 ///
 /// When the stored config cannot be loaded the fallback is simply the
 /// container backend: its `has_resources` is a filesystem check and
 /// its podman calls already tolerate a podman that cannot be run.
-fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<String> {
+///
+/// The returned list is only what was removed, for `cage destroy` and
+/// `cage prune` to print. Callers that need to know whether teardown
+/// *finished* must use [`destroy_cage_status`]: a failed
+/// `destroy_resources` is otherwise indistinguishable from a complete
+/// one once the deployment directory has been removed.
+pub(crate) fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<String> {
+    destroy_cage_status(ctx, name, keep_secrets, echo).removed
+}
+
+/// [`destroy_cage`], also reporting whether the teardown was complete.
+///
+/// `complete` is false when `destroy_resources` errors or when the
+/// deployment cannot be removed — the two failures `destroy_cage`
+/// itself only warns about. `run --rm` uses this so a partial teardown
+/// is reported as a failure rather than as `Removed` merely because
+/// `deployment_exists` became false.
+pub(crate) fn destroy_cage_status(
+    ctx: &Ctx,
+    name: &str,
+    keep_secrets: bool,
+    echo: bool,
+) -> DestroyResult {
     let backend = ctx.backend_of(name);
     let known = ctx.paths.deployment_exists(name);
     if !known && !backend.has_resources(name) {
         if echo {
             println!("Nothing to remove for '{name}' (no stored config and no backend resources).");
         }
-        return Vec::new();
+        return DestroyResult {
+            removed: Vec::new(),
+            complete: true,
+        };
     }
 
     if echo {
@@ -1342,12 +1384,15 @@ fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<St
     if echo {
         println!("Removing resources...");
     }
-    let mut removed = backend
-        .destroy_resources(name, keep_secrets)
-        .unwrap_or_else(|error| {
+    let mut complete = true;
+    let mut removed = match backend.destroy_resources(name, keep_secrets) {
+        Ok(removed) => removed,
+        Err(error) => {
             eprintln!("warning: {error}");
+            complete = false;
             Vec::new()
-        });
+        }
+    };
 
     if ctx.paths.deployment_exists(name) {
         let removal = if keep_secrets {
@@ -1355,13 +1400,20 @@ fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<St
         } else {
             ctx.paths.remove_deployment(name)
         };
-        if let Err(error) = removal {
-            eprintln!("warning: {error}");
-        } else {
-            removed.push(format!("state:{name}"));
+        match removal {
+            Err(error) => {
+                eprintln!("warning: {error}");
+                complete = false;
+            }
+            Ok(()) if ctx.paths.deployment_exists(name) => {
+                // Defensive: a `remove_deployment` that returned Ok
+                // but left the directory is not a complete teardown.
+                complete = false;
+            }
+            Ok(()) => removed.push(format!("state:{name}")),
         }
     }
-    removed
+    DestroyResult { removed, complete }
 }
 
 /// `cage prune` — remove every *exited* interactive or ephemeral cage.
@@ -1384,6 +1436,18 @@ fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<St
 ///   `prune` walks past.
 /// * **Running.** Zero of the cage's services up.
 ///
+/// `--older-than` is a fourth filter, applied to the **time the cage
+/// stopped**, not to the deployment directory's or `metadata.json`'s
+/// mtime. `run` and `cage stop` write `stopped_at` into
+/// `metadata.json`; every successful start path (`cage start`,
+/// `cage restart`, `cage update`, `cage restore`, and the live-secret
+/// restart fallback) clears it. A metadata mtime proves only that
+/// metadata was written: a cage that ran for a month and rebooted five
+/// minutes ago would look ancient. So a cage with no recorded
+/// `stopped_at` is skipped — "I cannot prove it is old" must never
+/// mean "remove it", and a missing stop time must never stand in for
+/// one.
+///
 /// The teardown itself is `destroy`'s, run with its narration
 /// suppressed, so a ten-cage prune
 /// prints ten `Removing <name>...` lines rather than thirty. A failure
@@ -1391,6 +1455,57 @@ fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<St
 /// stuck cage leaves the rest of the list uncollected.
 pub(crate) fn prune(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     let yes = matches.get_flag("yes");
+    let dry_run = matches.get_flag("dry_run");
+    let older_than = match matches.get_one::<String>("older_than") {
+        Some(spec) => match crate::cli::domain::parse_duration(spec) {
+            Ok(seconds) => Some(seconds),
+            Err(message) => {
+                eprintln!("error: invalid --older-than: {message}");
+                return ExitCode::from(EXIT_FAILURE);
+            }
+        },
+        None => None,
+    };
+
+    let candidates = prune_candidates(ctx, older_than);
+    if candidates.is_empty() {
+        println!("Nothing to prune.");
+        return ExitCode::SUCCESS;
+    }
+
+    if dry_run {
+        println!("Dry run: no cages will be removed.");
+    } else {
+        println!("The following exited cages will be removed:");
+    }
+    for name in &candidates {
+        println!("  {name}");
+    }
+
+    if dry_run {
+        println!("Would prune {} cage(s).", candidates.len());
+        return ExitCode::SUCCESS;
+    }
+
+    if !yes && !confirm(&format!("\nRemove {} cage(s)?", candidates.len())) {
+        eprintln!("Aborted!");
+        return ExitCode::from(EXIT_FAILURE);
+    }
+
+    for name in &candidates {
+        println!("Removing {name}...");
+        destroy_cage(ctx, name, false, false);
+        // The teardown is destroy's, so the retention notice is too.
+        // Silent here would leave a prune of ten cages claiming to have
+        // removed ten data directories it did not touch (#423).
+        print_kept(&ctx.paths, name);
+    }
+    println!("Pruned {} cage(s).", candidates.len());
+    ExitCode::SUCCESS
+}
+
+/// The cages `prune` is allowed to remove, after every filter.
+fn prune_candidates(ctx: &Ctx, older_than: Option<i64>) -> Vec<String> {
     let mut candidates: Vec<String> = Vec::new();
 
     for name in ctx.paths.list_deployments().unwrap_or_default() {
@@ -1423,36 +1538,36 @@ pub(crate) fn prune(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         if parse_version(&version) < (0, 22) {
             continue;
         }
-        if ctx.backend_for(&config.isolation).running_count(&name).0 == 0 {
-            candidates.push(name);
+        if ctx.backend_for(&config.isolation).running_count(&name).0 != 0 {
+            continue;
         }
+        if let Some(seconds) = older_than
+            && stopped_age_seconds(&metadata).is_none_or(|age| age < seconds)
+        {
+            continue;
+        }
+        candidates.push(name);
     }
+    candidates
+}
 
-    if candidates.is_empty() {
-        println!("Nothing to prune.");
-        return ExitCode::SUCCESS;
-    }
-
-    println!("The following exited cages will be removed:");
-    for name in &candidates {
-        println!("  {name}");
-    }
-
-    if !yes && !confirm(&format!("\nRemove {} cage(s)?", candidates.len())) {
-        eprintln!("Aborted!");
-        return ExitCode::from(EXIT_FAILURE);
-    }
-
-    for name in &candidates {
-        println!("Removing {name}...");
-        destroy_cage(ctx, name, false, false);
-        // The teardown is destroy's, so the retention notice is too.
-        // Silent here would leave a prune of ten cages claiming to have
-        // removed ten data directories it did not touch (#423).
-        print_kept(&ctx.paths, name);
-    }
-    println!("Pruned {} cage(s).", candidates.len());
-    ExitCode::SUCCESS
+/// Seconds since the cage last stopped, or `None` when it has no
+/// recorded stop time.
+///
+/// Deliberately no `metadata.json` mtime fallback: the file's
+/// modification time is not the time the cage stopped, and treating it
+/// as one can remove a cage that restarted moments ago. A missing,
+/// empty or unparseable `stopped_at` answers `None`, and
+/// `--older-than` then skips the cage rather than guessing.
+fn stopped_age_seconds(metadata: &Json) -> Option<i64> {
+    let stopped = metadata
+        .get("stopped_at")
+        .and_then(Json::as_str)
+        .filter(|value| !value.is_empty())
+        .and_then(DateTime::from_isoformat)?;
+    DateTime::now_utc()
+        .seconds_since(&stopped.assume_utc())
+        .map(|seconds| seconds.max(0))
 }
 
 /// `click.confirm` — `[y/N]`, default no, EOF is no.
@@ -1541,10 +1656,11 @@ mod tests {
     use std::fmt::Write as _;
 
     use super::{
-        ListRow, envelope, gather_show, list_row, mask_placeholder, read_domain_config,
-        recent_blocked, render_show,
+        ListRow, envelope, gather_show, list_row, mask_placeholder, prune, prune_candidates,
+        read_domain_config, recent_blocked, render_show,
     };
     use crate::cli::context::Ctx;
+    use agentcage_core::har::datetime::DateTime;
     use agentcage_core::har::json::{self, Json};
     use agentcage_exec::{FakeRunner, Reply};
     use agentcage_state::{Paths, TestDir};
@@ -1963,5 +2079,174 @@ secret_injection:
         .unwrap();
 
         assert_eq!(recent_blocked(&path), Some((1, 2)));
+    }
+
+    fn ctx_under(dir: &std::path::Path, fake: FakeRunner) -> Ctx {
+        Ctx {
+            paths: Paths::under(dir),
+            runner: Box::new(fake),
+            version: "9.9.9".to_owned(),
+        }
+    }
+
+    /// Stage one deployment with the metadata `prune` reads.
+    fn stage(
+        home: &std::path::Path,
+        name: &str,
+        lifecycle: &str,
+        version: &str,
+        stopped_at: Option<&str>,
+    ) -> Paths {
+        let paths = Paths::under(home);
+        let source = home.join(format!("{name}.yaml"));
+        std::fs::write(
+            &source,
+            format!(
+                "name: {name}\nisolation: container\nlifecycle: {lifecycle}\ncontainer:\n  image: \"alpine\"\n"
+            ),
+        )
+        .expect("write config");
+        paths
+            .save_deployment(name, &source)
+            .expect("save deployment");
+        let mut metadata = Json::Object(vec![
+            ("agentcage_version".to_owned(), Json::string(version)),
+            ("lifecycle".to_owned(), Json::string(lifecycle)),
+        ]);
+        if let Some(stopped_at) = stopped_at {
+            metadata.set("stopped_at", Json::string(stopped_at));
+        }
+        paths.save_metadata(name, &metadata).expect("save metadata");
+        paths
+    }
+
+    /// `--older-than` compares the recorded stop time, and the three
+    /// existing filters still win over it: a recent cage, a service
+    /// cage, a legacy cage and a running cage all stay.
+    #[test]
+    fn older_than_filters_by_stopped_at_and_never_selects_forbidden_cages() {
+        let dir = TestDir::new("prune-older-than");
+        let old = "2000-01-01T00:00:00+00:00";
+        let now = DateTime::now_utc().isoformat();
+        stage(dir.path(), "old-cage", "interactive", "0.53.1", Some(old));
+        stage(
+            dir.path(),
+            "recent-cage",
+            "interactive",
+            "0.53.1",
+            Some(&now),
+        );
+        stage(dir.path(), "service-cage", "service", "0.53.1", Some(old));
+        stage(
+            dir.path(),
+            "legacy-cage",
+            "interactive",
+            "0.21.5",
+            Some(old),
+        );
+        stage(
+            dir.path(),
+            "running-cage",
+            "interactive",
+            "0.53.1",
+            Some(old),
+        );
+
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::success());
+        fake.on(
+            [
+                "podman",
+                "inspect",
+                "--format",
+                "{{.State.Status}}",
+                "running-cage-cage",
+            ],
+            Reply::ok("running"),
+        );
+        let ctx = ctx_under(dir.path(), fake);
+
+        assert_eq!(prune_candidates(&ctx, Some(3600)), ["old-cage"]);
+        assert_eq!(
+            prune_candidates(&ctx, None),
+            ["old-cage", "recent-cage"],
+            "without --older-than both stopped interactive cages are candidates"
+        );
+    }
+
+    /// A cage with no `stopped_at` is skipped by `--older-than` even
+    /// when its `metadata.json` mtime is ancient. The file's mtime is
+    /// not the time the cage stopped: a cage that ran for a month and
+    /// rebooted five minutes ago has old metadata and no stop recorded.
+    #[test]
+    fn older_than_skips_a_cage_with_no_recorded_stop_even_with_old_metadata() {
+        let dir = TestDir::new("prune-old-metadata-no-stop");
+        let paths = stage(dir.path(), "no-stop-cage", "interactive", "0.53.1", None);
+
+        // Make the metadata file look years old, which the former
+        // mtime fallback would have treated as a stop time.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(paths.metadata_path("no-stop-cage"))
+            .expect("metadata is writable");
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
+            ),
+        )
+        .expect("mtime is settable");
+
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::success());
+        let ctx = ctx_under(dir.path(), fake);
+
+        assert!(
+            prune_candidates(&ctx, Some(3600)).is_empty(),
+            "a cage with no stopped_at was selected by --older-than"
+        );
+        // Without the age filter it is still an ordinary stopped
+        // interactive cage, so the absence of a stop time is not a
+        // permanent exemption.
+        assert_eq!(prune_candidates(&ctx, None), ["no-stop-cage"]);
+    }
+
+    /// `--dry-run` prints the candidate list and returns without
+    /// touching the deployment or asking for confirmation.
+    #[test]
+    fn prune_dry_run_changes_nothing() {
+        let dir = TestDir::new("prune-dry-run");
+        let paths = stage(
+            dir.path(),
+            "dry-cage",
+            "interactive",
+            "0.53.1",
+            Some("2000-01-01T00:00:00+00:00"),
+        );
+
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::success());
+        let ctx = ctx_under(dir.path(), fake.clone());
+
+        let root = crate::cli::cage::command()
+            .try_get_matches_from(["cage", "prune", "--dry-run", "--older-than", "1h"])
+            .expect("the argv parses");
+        let leaf = root.subcommand_matches("prune").expect("the prune leaf");
+        let _ = prune(&ctx, leaf);
+
+        assert!(
+            paths.deployment_exists("dry-cage"),
+            "--dry-run removed the cage"
+        );
+        assert!(
+            !fake.argv_sequence().iter().any(|argv| {
+                argv.first().map(String::as_str) == Some("systemctl")
+                    && argv.iter().any(|arg| arg == "stop")
+            }),
+            "--dry-run reached the teardown: {:?}",
+            fake.argv_sequence()
+        );
     }
 }

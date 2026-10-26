@@ -123,6 +123,24 @@ pub(crate) fn command() -> Command {
             "pull",
             "Force re-pull of the base image from the registry.",
         ))
+        .arg(flag(
+            "rm",
+            "rm",
+            "Destroy the cage and its scoped resources after the session. The cage's audit data directory is kept.",
+        ))
+        .arg(
+            flag(
+                "keep",
+                "keep",
+                "Keep the stopped cage, its volumes and secrets after the session (default).",
+            )
+            .conflicts_with("rm"),
+        )
+        .arg(flag(
+            "dry_run",
+            "dry-run",
+            "Render and validate the config, print the plan, and exit without changing anything.",
+        ))
         .arg(
             Arg::new("extra_args")
                 .num_args(0..)
@@ -161,6 +179,8 @@ pub(crate) fn main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         show_timing: matches.get_flag("show_timing"),
         no_cache: matches.get_flag("no_cache"),
         pull: matches.get_flag("pull"),
+        remove: matches.get_flag("rm"),
+        dry_run: matches.get_flag("dry_run"),
     };
     // The session's own status is this process's status, which is
     // what makes
@@ -188,6 +208,8 @@ struct Options {
     show_timing: bool,
     no_cache: bool,
     pull: bool,
+    remove: bool,
+    dry_run: bool,
 }
 
 #[expect(
@@ -299,6 +321,21 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
     let Ok(mut config) = load_and_validate(&config_path) else {
         return 1;
     };
+
+    // `--dry-run` stops here, before the secret pre-flight, the port
+    // probe, the state directory, the build or the session. It still
+    // validates the rendered config and the volume declarations, and it
+    // prints the plan a real invocation would follow.
+    if options.dry_run {
+        return dry_run(
+            &ctx.paths,
+            &project_dir,
+            &scaffold,
+            &cage_name,
+            &config,
+            options,
+        );
+    }
 
     // Fail fast on missing secrets, before any host filesystem is
     // touched — `cage create`'s secrets-then-ports order. Every
@@ -465,29 +502,327 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
 
     let exit_code = session(ctx, &config, &cage_name, options);
 
-    // The cage is stopped, not destroyed: the deployment directory, the
-    // quadlets, the named volumes and the secrets all survive, so
-    // `agentcage cage audit <name>` works afterwards and
-    // `agentcage cage start <name>` brings the same cage back.
-    println!();
-    output::separator();
-    {
-        let _spinner = output::Spinner::start("Stopping cage...");
-        ctx.backend_for(&config.isolation).stop(&config.name);
-    }
-    output::echo(&format!(
-        "  {}",
-        output::dim(&format!("{cage_name} stopped"))
-    ));
-    output::echo(&format!(
-        "  {}",
-        output::dim(&format!("agentcage cage audit {cage_name}"))
-    ));
+    finish_run(ctx, &config, &cage_name, options);
 
     // `shutil.rmtree(config_dir)` — the staged copy has been in the
     // cage's state dir since `save_deployment`.
     drop(staged);
     exit_code
+}
+
+/// `--rm` and the default keep path, sharing destroy's teardown.
+///
+/// Both branches reuse the existing lifecycle teardown. The default
+/// (`--keep`, and what `run` has always done) stops the units and leaves
+/// the deployment, volumes, secrets and data directory in place. `--rm`
+/// calls `cage destroy`'s own teardown, so there is exactly one
+/// implementation of what destroying a cage means, and uses its checked
+/// result so a partial teardown is not reported as success.
+///
+/// The audit data directory is deliberately not deleted even by `--rm`:
+/// it holds the policy audit trail, capture log and grants overlay, and
+/// deleting evidence as an implicit side effect of ending a session is
+/// the one thing this command must not do. The `Kept:` block says so and
+/// names the command that removes it by hand.
+fn finish_run(ctx: &Ctx, config: &Config, cage_name: &str, options: &Options) {
+    use agentcage_cli::output;
+
+    println!();
+    output::separator();
+
+    if options.remove {
+        let spinner = output::Spinner::start("Removing cage...");
+        let destroyed =
+            crate::cli::cage::lifecycle::destroy_cage_status(ctx, cage_name, false, false);
+        drop(spinner);
+        // `complete`, not `deployment_exists`: `destroy_resources`
+        // failures are warnings inside the teardown, so the deployment
+        // directory can be gone while a network, volume or secret is
+        // still there. Reporting that as `Removed` would claim success
+        // for a partial teardown.
+        if !destroyed.complete || ctx.paths.deployment_exists(cage_name) {
+            println!(
+                "  {}",
+                output::dim(&format!(
+                    "{cage_name} could not be fully destroyed; some resources may remain"
+                ))
+            );
+            print_run_kept(&ctx.paths, cage_name, RunKept::RemoveFailed);
+        } else if destroyed.removed.is_empty() {
+            println!("  {}", output::dim(&format!("{cage_name} removed")));
+            print_run_kept(&ctx.paths, cage_name, RunKept::Removed);
+        } else {
+            println!("  {}", output::dim(&format!("{cage_name} destroyed")));
+            print_run_kept(&ctx.paths, cage_name, RunKept::Removed);
+        }
+        return;
+    }
+
+    {
+        let _spinner = output::Spinner::start("Stopping cage...");
+        ctx.backend_for(&config.isolation).stop(&config.name);
+    }
+    agentcage_cli::services::record_stopped_at(&ctx.paths, cage_name);
+    println!("  {}", output::dim(&format!("{cage_name} stopped")));
+    print_run_kept(&ctx.paths, cage_name, RunKept::Stopped);
+}
+
+/// What happened to the cage when the session ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunKept {
+    /// Default path: the cage is stopped and all its resources are kept.
+    Stopped,
+    /// `--rm` succeeded: the cage is gone, apart from its audit data.
+    Removed,
+    /// `--rm` was requested but teardown did not finish.
+    RemoveFailed,
+}
+
+/// The `Kept:` block `run` prints after a session.
+///
+/// The state changes only the wording and the removal advice; the
+/// inventory is read from disk, so it names exactly what survived.
+fn print_run_kept(paths: &agentcage_state::Paths, name: &str, state: RunKept) {
+    let data = paths.cage_data_dir(name);
+    println!("Kept:");
+    match state {
+        RunKept::Stopped => {
+            println!("  cage: {name} (stopped; deployment, volumes and secrets preserved)");
+        }
+        RunKept::Removed => println!("  cage: {name} (destroyed; audit data retained)"),
+        RunKept::RemoveFailed => {
+            println!("  cage: {name} (destroy incomplete; some resources may remain)");
+        }
+    }
+    println!("  data:{}", data.display());
+    if data.is_dir() {
+        let entries = crate::cli::cage::lifecycle::kept_entries(&data);
+        if !entries.is_empty() {
+            println!("  left in place: {}", entries.join(", "));
+        }
+    }
+    match state {
+        RunKept::Removed => println!(
+            "  remove with: rm -rf {}",
+            agentcage_core::value_fmt::quote_text(&data.display().to_string())
+        ),
+        RunKept::Stopped | RunKept::RemoveFailed => {
+            println!("  remove with: agentcage cage destroy {name} -y");
+        }
+    }
+}
+
+/// Render the plan a real `run` would follow, without touching the
+/// cage's state.
+///
+/// Deliberately **no** bind probe here: `check_port_availability` binds
+/// each host port to ask whether it is free, and `--dry-run` promises no
+/// side effects. Conflicts with other cages' configured publishes are
+/// reported from their stored configs instead, and the actual bind probe
+/// remains part of the real deploy.
+fn dry_run(
+    paths: &agentcage_state::Paths,
+    project_dir: &str,
+    scaffold: &str,
+    cage_name: &str,
+    config: &Config,
+    options: &Options,
+) -> i32 {
+    use agentcage_cli::output;
+
+    for volume in &config.container.volumes {
+        if let Err(error) = agentcage_core::volume_mounts::validate_non_persistent_volume(volume) {
+            output::step_fail(&error.to_string());
+            return 1;
+        }
+    }
+
+    println!(
+        "{}",
+        plan_text(paths, project_dir, scaffold, cage_name, config, options)
+    );
+    0
+}
+
+/// The printable `--dry-run` plan. Kept separate from the printing so the
+/// fields are testable without capturing stdout.
+fn plan_text(
+    paths: &agentcage_state::Paths,
+    project_dir: &str,
+    scaffold: &str,
+    cage_name: &str,
+    config: &Config,
+    options: &Options,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    out.push_str("Dry run: no changes will be made.\n\n");
+    let _ = writeln!(out, "  name: {cage_name}");
+    let _ = writeln!(out, "  scaffold: {scaffold}");
+    let _ = writeln!(out, "  isolation: {}", config.isolation);
+
+    let image = if config.container.image.is_empty() {
+        "(none)".to_owned()
+    } else {
+        config.container.image.clone()
+    };
+    let _ = writeln!(out, "  image: {image}");
+    let containerfile = &config.container.build.containerfile;
+    let build = if containerfile.is_empty() {
+        format!("pull {image}")
+    } else {
+        let flags = format!(
+            "{}{}",
+            if options.no_cache { " --no-cache" } else { "" },
+            if options.pull { " --pull=always" } else { "" }
+        );
+        format!("podman build -t {image} -f {containerfile}{flags} <scaffold context>")
+    };
+    let _ = writeln!(out, "  build: {build}");
+
+    let _ = writeln!(out, "  project: {project_dir}");
+    let mounts: Vec<String> = config
+        .container
+        .volumes
+        .iter()
+        .map(|volume| volume.replace("${PROJECT_DIR}", project_dir))
+        .collect();
+    let _ = writeln!(
+        out,
+        "  mounts: {}",
+        if mounts.is_empty() {
+            "none".to_owned()
+        } else {
+            mounts.join(", ")
+        }
+    );
+
+    let _ = writeln!(out, "  allowlist: {}", domain_summary(config));
+
+    let expected = agentcage_cli::services::expected_secrets(config);
+    let provided: std::collections::BTreeSet<&str> = options
+        .secrets
+        .iter()
+        .map(|spec| spec.split_once('=').map_or(spec.as_str(), |(key, _)| key))
+        .collect();
+    let secrets = if expected.is_empty() {
+        "none".to_owned()
+    } else {
+        expected
+            .iter()
+            .map(|key| {
+                if provided.contains(key.as_str()) {
+                    format!("{key} (provided)")
+                } else {
+                    format!("{key} (not provided)")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let _ = writeln!(out, "  secrets: {secrets}");
+
+    let ports = if config.container.ports.is_empty() {
+        "none".to_owned()
+    } else {
+        config.container.ports.join(", ")
+    };
+    let _ = writeln!(out, "  ports: {ports}");
+    let conflicts = conflicting_cages(paths, cage_name, config);
+    let _ = writeln!(
+        out,
+        "  port conflicts: {}",
+        if conflicts.is_empty() {
+            "none with existing cages (the bind probe runs at deploy)".to_owned()
+        } else {
+            conflicts.join(", ")
+        }
+    );
+
+    let exec = agentcage_cli::run::resolve_exec_cmd(config, &options.extra_args)
+        .iter()
+        .map(|arg| agentcage_core::value_fmt::quote_text(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cleanup = if options.remove {
+        format!("agentcage cage destroy {cage_name} -y")
+    } else {
+        format!(
+            "agentcage cage stop {cage_name} (keeps deployment, volumes, secrets and audit data)"
+        )
+    };
+    out.push_str("  commands:\n");
+    let _ = writeln!(out, "    build: {build}");
+    let _ = writeln!(out, "    session: {exec}");
+    let _ = writeln!(out, "    cleanup: {cleanup}");
+    out
+}
+
+/// `allowlist`, `blocklist` or `none`, with the entries and count.
+fn domain_summary(config: &Config) -> String {
+    let mode = if config.domains.mode.is_empty() {
+        if !config.domains.allow.is_empty() {
+            "allowlist"
+        } else if !config.domains.block.is_empty() {
+            "blocklist"
+        } else {
+            "none"
+        }
+    } else {
+        config.domains.mode.as_str()
+    };
+    let entries = config.domains.list();
+    if entries.is_empty() {
+        mode.to_owned()
+    } else {
+        format!("{mode} ({}): {}", entries.len(), entries.join(", "))
+    }
+}
+
+/// Other cages' stored configs that publish the same host bind/port.
+///
+/// This is the dry-run's non-binding conflict answer. It cannot see a
+/// process outside agentcage holding the port; the real deploy's bind
+/// probe does that, and `--dry-run` deliberately does not bind.
+fn conflicting_cages(paths: &agentcage_state::Paths, name: &str, config: &Config) -> Vec<String> {
+    let ours: Vec<(String, String)> = config
+        .container
+        .ports
+        .iter()
+        .filter_map(|spec| published_port(spec))
+        .collect();
+    if ours.is_empty() {
+        return Vec::new();
+    }
+    let mut conflicts = Vec::new();
+    for other in paths.list_deployments().unwrap_or_default() {
+        if other == name {
+            continue;
+        }
+        let Ok(other_config) =
+            paths.load_deployment_config(&other, &agentcage_cli::hostenv::RealHost)
+        else {
+            continue;
+        };
+        for spec in &other_config.container.ports {
+            if published_port(spec).is_some_and(|key| ours.contains(&key)) {
+                conflicts.push(format!("{other}:{spec}"));
+            }
+        }
+    }
+    conflicts
+}
+
+/// `[BIND:]HOST:CONTAINER` to `(bind, host_port)`, skipping the shapes
+/// `check_port_availability` also cannot probe.
+fn published_port(spec: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    match parts.len() {
+        3 => Some((parts[0].to_owned(), parts[1].to_owned())),
+        2 => Some(("0.0.0.0".to_owned(), parts[0].to_owned())),
+        _ => None,
+    }
 }
 
 /// The build-and-deploy half, so the caller's error path is one branch.
@@ -765,8 +1100,9 @@ mod tests {
     };
     use agentcage_state::{Paths, TestDir};
 
-    use super::{command, main};
+    use super::{Options, command, execute, finish_run, main, plan_text};
     use crate::cli::context::Ctx;
+    use agentcage_core::config::Config;
 
     /// A runner that copies the cage's state directory out at the
     /// moment `podman build` is issued, then answers from the fake.
@@ -941,5 +1277,243 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Every flag is independent; the helper keeps the tests focused.
+    fn options(remove: bool, dry_run: bool) -> Options {
+        Options {
+            scaffold: String::new(),
+            project_dir: None,
+            name: None,
+            secrets: Vec::new(),
+            extra_args: Vec::new(),
+            verbose: false,
+            isolation: None,
+            as_root: false,
+            show_timing: false,
+            no_cache: false,
+            pull: false,
+            remove,
+            dry_run,
+        }
+    }
+
+    #[test]
+    fn keep_and_rm_are_a_usage_error_together() {
+        let error = command()
+            .try_get_matches_from(["run", "codex", "--keep", "--rm"])
+            .expect_err("--keep and --rm must conflict");
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn a_dry_run_plan_names_everything_a_real_run_would_use() {
+        let dir = TestDir::new("run-plan");
+        let paths = Paths::under(dir.path());
+        let mut config = Config {
+            name: "demo".to_owned(),
+            isolation: "container".to_owned(),
+            ..Config::default()
+        };
+        config.container.image = "localhost/agentcage-scaffold-claude-code:latest".to_owned();
+        config.container.build.containerfile = "Containerfile".to_owned();
+        config.container.ports = vec!["127.0.0.1:3000:3000".to_owned()];
+        config.domains.mode = "allowlist".to_owned();
+        config.domains.allow = vec!["anthropic.com".to_owned(), "claude.com".to_owned()];
+        config
+            .secret_injection
+            .push(agentcage_core::config::SecretInjectionRule {
+                env: "ANTHROPIC_API_KEY".to_owned(),
+                ..agentcage_core::config::SecretInjectionRule::default()
+            });
+        let mut opts = options(false, true);
+        opts.secrets = vec!["ANTHROPIC_API_KEY=sk-test".to_owned()];
+
+        let text = plan_text(
+            &paths,
+            "/work/project",
+            "claude-code",
+            "demo",
+            &config,
+            &opts,
+        );
+        assert!(text.contains("Dry run: no changes will be made."), "{text}");
+        assert!(text.contains("name: demo"), "{text}");
+        assert!(text.contains("scaffold: claude-code"), "{text}");
+        assert!(text.contains("isolation: container"), "{text}");
+        assert!(
+            text.contains("podman build -t localhost/agentcage-scaffold-claude-code:latest"),
+            "{text}"
+        );
+        assert!(text.contains("project: /work/project"), "{text}");
+        assert!(
+            text.contains("allowlist (2): anthropic.com, claude.com"),
+            "{text}"
+        );
+        assert!(
+            text.contains("ANTHROPIC_API_KEY (provided)"),
+            "the secret names are in the plan: {text}"
+        );
+        assert!(!text.contains("sk-test"), "a secret value leaked: {text}");
+        assert!(text.contains("ports: 127.0.0.1:3000:3000"), "{text}");
+        assert!(text.contains("port conflicts: none"), "{text}");
+        assert!(text.contains("cleanup: agentcage cage stop demo"), "{text}");
+
+        opts.remove = true;
+        let text = plan_text(
+            &paths,
+            "/work/project",
+            "claude-code",
+            "demo",
+            &config,
+            &opts,
+        );
+        assert!(
+            text.contains("cleanup: agentcage cage destroy demo -y"),
+            "{text}"
+        );
+    }
+
+    /// `--dry-run` stops before state, secrets, ports, the build and the
+    /// session. The fake has no podman rule at all, so reaching any of
+    /// those would panic rather than pass silently.
+    #[test]
+    fn a_dry_run_creates_no_state_and_calls_nothing() {
+        let dir = TestDir::new("run-dry-run");
+        let paths = Paths::under(dir.path());
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::success());
+        let ctx = Ctx {
+            paths: paths.clone(),
+            runner: Box::new(fake.clone()),
+            version: "9.9.9".to_owned(),
+        };
+        let mut opts = options(false, true);
+        opts.scaffold = "claude-code".to_owned();
+        opts.project_dir = Some(project.display().to_string());
+        opts.name = Some("dry-demo".to_owned());
+        opts.isolation = Some("container".to_owned());
+        opts.secrets = vec!["ANTHROPIC_API_KEY=sk-test".to_owned()];
+
+        assert_eq!(execute(&ctx, &opts), 0);
+        assert!(!paths.deployment_exists("dry-demo"));
+        assert!(
+            !paths.deployment_dir("dry-demo").exists(),
+            "the dry run created a deployment directory"
+        );
+        assert!(
+            !paths.cage_data_dir("dry-demo").exists(),
+            "the dry run created a data directory"
+        );
+        assert!(
+            !fake
+                .argv_sequence()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("podman")),
+            "the dry run reached podman: {:?}",
+            fake.argv_sequence()
+        );
+    }
+
+    /// The default branch stops and keeps everything the deployment
+    /// wrote, and records when it stopped for `prune --older-than`.
+    #[test]
+    fn the_default_branch_keeps_the_cage_and_records_stopped_at() {
+        let dir = TestDir::new("run-keep");
+        let paths = Paths::under(dir.path());
+        let name = "kept-demo";
+        stage_deployment(dir.path(), &paths, name);
+
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::success());
+        let ctx = Ctx {
+            paths: paths.clone(),
+            runner: Box::new(fake),
+            version: "9.9.9".to_owned(),
+        };
+        let config = Config {
+            name: name.to_owned(),
+            isolation: "container".to_owned(),
+            ..Config::default()
+        };
+
+        finish_run(&ctx, &config, name, &options(false, false));
+
+        assert!(
+            paths.deployment_exists(name),
+            "the default run discarded the deployment"
+        );
+        let metadata = paths.load_metadata(name).expect("metadata is readable");
+        assert!(
+            metadata
+                .get("stopped_at")
+                .and_then(agentcage_core::har::json::Json::as_str)
+                .is_some_and(|value| !value.is_empty()),
+            "no stopped_at was recorded: {metadata:?}"
+        );
+    }
+
+    /// `--rm` must take destroy's teardown, not grow a second one, and
+    /// it must leave the audit data directory behind.
+    #[test]
+    fn rm_destroys_the_deployment_through_the_lifecycle_teardown() {
+        let dir = TestDir::new("run-rm");
+        let paths = Paths::under(dir.path());
+        let name = "rm-demo";
+        stage_deployment(dir.path(), &paths, name);
+        std::fs::create_dir_all(paths.grants_dir(name)).expect("data dir");
+        std::fs::write(paths.policy_audit_file(name), "{\"decision\":\"allow\"}\n")
+            .expect("audit file");
+
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::success());
+        let ctx = Ctx {
+            paths: paths.clone(),
+            runner: Box::new(fake.clone()),
+            version: "9.9.9".to_owned(),
+        };
+        let config = Config {
+            name: name.to_owned(),
+            isolation: "container".to_owned(),
+            ..Config::default()
+        };
+
+        finish_run(&ctx, &config, name, &options(true, false));
+
+        assert!(
+            !paths.deployment_exists(name),
+            "--rm left the deployment behind"
+        );
+        assert!(
+            paths.policy_audit_file(name).is_file(),
+            "--rm deleted the audit log"
+        );
+        let calls = fake.argv_sequence();
+        assert!(
+            calls.iter().any(|argv| {
+                argv.first().map(String::as_str) == Some("podman")
+                    && argv.get(1).map(String::as_str) == Some("network")
+                    && argv.get(2).map(String::as_str) == Some("rm")
+            }),
+            "destroy's podman teardown did not run: {calls:?}"
+        );
+    }
+
+    fn stage_deployment(home: &Path, paths: &Paths, name: &str) {
+        let source = home.join(format!("{name}.yaml"));
+        std::fs::write(
+            &source,
+            format!("name: {name}\nisolation: container\nlifecycle: interactive\ncontainer:\n  image: \"alpine\"\n"),
+        )
+        .expect("write source config");
+        paths
+            .save_deployment(name, &source)
+            .expect("save deployment");
     }
 }

@@ -3,7 +3,11 @@ Usage: agentcage cage prune [OPTIONS]
   Remove all exited interactive and ephemeral cages.
 
 Options:
-  -y, --yes   Skip confirmation prompt
-  --no-color  Disable colored output.
-  --quiet     Suppress progress output (spinners and banners).
-  -h, --help  Show this message and exit.
+  -y, --yes            Skip confirmation prompt
+  --dry-run            List the cages that would be removed without changing
+                       anything.
+  --older-than TEXT    Only cages stopped more than this long ago (e.g. 30m,
+                       1h, 2d).
+  --no-color           Disable colored output.
+  --quiet              Suppress progress output (spinners and banners).
+  -h, --help           Show this message and exit.

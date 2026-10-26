@@ -37,6 +37,13 @@ Options:
                                   layer cache).
   --pull                          Force re-pull of the base image from the
                                   registry.
+  --rm                            Destroy the cage and its scoped resources
+                                  after the session. The cage's audit data
+                                  directory is kept.
+  --keep                          Keep the stopped cage, its volumes and
+                                  secrets after the session (default).
+  --dry-run                       Render and validate the config, print the
+                                  plan, and exit without changing anything.
   --no-color                      Disable colored output.
   --quiet                         Suppress progress output (spinners and banners).
   -h, --help                      Show this message and exit.
