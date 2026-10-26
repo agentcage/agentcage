@@ -174,7 +174,6 @@ fn the_root_aliases_refuse_it_too() {
         vec!["inspect", "test"],
         vec!["status", "test"],
         vec!["logs", "test"],
-        vec!["update", "test"],
         vec!["shell", "test"],
         vec!["exec", "test", "--", "ls"],
     ] {

@@ -627,6 +627,35 @@ fn create_without_a_config_names_both_ways_to_give_one() {
     );
 }
 
+/// `agentcage update <cage>` was the root alias for `cage update`. It
+/// now updates agentcage itself, so a cage name is answered with where
+/// the command went, as a usage error, before anything is looked up.
+#[test]
+fn update_with_a_cage_name_points_at_cage_update() {
+    let dir = agentcage_state::TestDir::new("binary-self-update-cage");
+    let out = agentcage_sandboxed(dir.path(), &["update", "my-agent"]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("agentcage cage update my-agent"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The binary under test lives in a cargo `target/` directory, which
+/// `agentcage update` refuses to overwrite, before any download.
+#[test]
+fn update_refuses_to_overwrite_a_cargo_build() {
+    let dir = agentcage_state::TestDir::new("binary-self-update-build");
+    let out = agentcage_sandboxed(dir.path(), &["update", "0.1.0"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("is a cargo build"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 /// `cage update` with neither a NAME nor `-c` cannot identify a cage.
 #[test]
 fn update_without_a_target_says_why() {

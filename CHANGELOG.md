@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`agentcage update` updates agentcage itself.** It downloads the latest release for this platform from GitHub (or the one named, `agentcage update 0.53.0`, which may be older), checks it against its published `.sha256`, checks that the new binary runs and reports that version, and renames it over the running binary. `--check` only reports whether an update is available. A binary installed by Homebrew or a system package manager is refused with the command that upgrades it there, and so is a cargo build. Cages are not touched; after an update it prints the `agentcage cage update <name>` that rebuilds each one with the new egress. `AGENTCAGE_REPO` selects another repository, as for `install.sh`.
+
 - **Lifecycle controls for `agentcage run`, and age/dry-run filters for `agentcage cage prune`.** `run --keep` states the default explicitly and `run --rm` destroys the cage through `cage destroy`'s teardown when the session ends. `run --dry-run` renders and validates the same config a real run would use, prints the plan (name, isolation, image/build, project mount, allowlist, secrets, ports and commands) and exits without creating state, binding a port, building an image or starting the session. `cage prune --dry-run` lists exactly which cages would be removed without changing anything, and `cage prune --older-than DURATION` limits the candidates to cages stopped more than that long ago. Running, `service` and legacy cages remain excluded. Refs #558, #564.
 
 - **`run` records why it kept the cage.** The default end-of-session output has a `Kept:` block naming the stopped cage, the per-cage data directory, the entries still in it and the exact `agentcage cage destroy <name> -y` command to remove it. `--rm` reports a partial teardown as a failure rather than as success.
@@ -18,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`cage show --json`, `cage status --json` and `cage list --json`.** Each prints one object under the shared read-command envelope (`schema_version`, `command`, `ok`, `data`, `warnings`); `cage status NAME --json` is the `cage show` document and `cage status --json` without a name is the `cage list` document.
 
 ### Changed
+
+- **`agentcage update NAME` no longer rebuilds a cage.** `update` was a top-level alias for `cage update`; it is now the command above. Use `agentcage cage update NAME`. Given a cage name, `agentcage update` exits with status 2 and prints that command.
 
 - **`agentcage run` stops and keeps the cage by default, and the documentation now says so.** The deployment, named volumes, secrets and data directory survive a session exit, so the cage can be audited or started again. Earlier documentation claimed the cage and network were destroyed automatically; that was not what the binary did. Removal is explicit, with `agentcage cage destroy` or `agentcage cage prune`. Even `run --rm` deliberately retains the per-cage data directory — the policy audit trail, capture log, grants overlay and timing ledger on the container and vm backends — because ending a session must not erase the evidence of what happened in it; the command prints how to remove that directory by hand. `cage prune` retains the same directory for every cage it removes.
 

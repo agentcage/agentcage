@@ -220,7 +220,13 @@ When upgrading agentcage, update the CLI binary and refresh existing cage contai
 
 ```bash
 # If installed via the installer:
+agentcage update
+
+# Or run the installer again, which also checks the prerequisites:
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
+
+# If installed via Homebrew:
+brew upgrade agentcage
 
 # If installed via cargo install (--force replaces the existing build):
 cargo install --locked --force --git https://github.com/agentcage/agentcage --tag v<version> agentcage-cli

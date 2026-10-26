@@ -99,8 +99,14 @@ const ALLOWED_DIFFERENCES: &[(&str, &str)] = &[
         "A hidden `completions` command",
         "click provides shell completion through the `_AGENTCAGE_COMPLETE` environment \
          protocol, with no command. clap has no stable equivalent, so the tree adds a \
-         hidden `agentcage completions <SHELL>`. It is the only command in the Rust tree \
-         with no counterpart in `cli.py`, and it is allowlisted by name below.",
+         hidden `agentcage completions <SHELL>`. It has no counterpart in `cli.py`, and \
+         it is allowlisted by name below.",
+    ),
+    (
+        "`agentcage update` updates agentcage itself",
+        "In `cli.py`, `update` was a root alias for `cage update`. It is now a command of \
+         its own that replaces the binary with a released one, so the alias is gone from \
+         the fixture and the command is allowlisted below. `cage update` is unchanged.",
     ),
     (
         "`-h` beside `--help`",
@@ -119,8 +125,11 @@ const ALLOWED_DIFFERENCES: &[(&str, &str)] = &[
     ),
 ];
 
-/// The commands the Rust tree has that `cli.py` does not.
-const ADDED_COMMANDS: &[&str] = &["completions", "paths", "version"];
+/// The root commands the Rust tree has that `cli.py` does not.
+///
+/// Root only: `update` is also a real `cage` subcommand, which is
+/// compared as usual.
+const ADDED_COMMANDS: &[&str] = &["completions", "paths", "update", "version"];
 
 /// The options the automation contract adds to nodes click did not
 /// declare them on.
@@ -246,8 +255,8 @@ fn every_command_and_subcommand_is_present() {
         let actual: Vec<String> = cmd
             .get_subcommands()
             .map(|s| s.get_name().to_string())
-            .filter(|n| !ADDED_COMMANDS.contains(&n.as_str()))
-            // The 19 `_BannerGroup` aliases are real commands at the
+            .filter(|n| path.len() > 1 || !ADDED_COMMANDS.contains(&n.as_str()))
+            // The 18 `_BannerGroup` aliases are real commands at the
             // root; click reaches them through `get_command`, so they
             // are not in `Group.commands` and must not be compared as
             // if they were. `top_level_aliases_resolve` covers them.
@@ -659,13 +668,14 @@ fn the_counts_match_the_fixture() {
     let mut options = 0u64;
     let mut hidden = 0u64;
     let mut arguments = 0u64;
-    // Depth matters: `update`, `show`, `status` and six more are both a
-    // top-level alias and a real `cage` subcommand. Filtering by name
+    // Depth matters: `show`, `status` and six more are both a
+    // top-level alias and a real `cage` subcommand, and `update` is both
+    // an added root command and a real `cage` subcommand. Filtering by name
     // alone would silently drop the real ones -- which is exactly the
     // bug this count exists to catch.
     let mut walk: Vec<(usize, &Command)> = vec![(0, &root)];
     while let Some((depth, cmd)) = walk.pop() {
-        if ADDED_COMMANDS.contains(&cmd.get_name()) {
+        if depth == 1 && ADDED_COMMANDS.contains(&cmd.get_name()) {
             continue;
         }
         // The cloned `_BannerGroup` aliases live only at depth 1; click
