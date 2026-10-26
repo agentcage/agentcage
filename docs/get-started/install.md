@@ -1,6 +1,6 @@
 # Installing agentcage
 
-agentcage is a single command-line binary, built from source with Rust's `cargo`, that drives an isolated container or microVM runtime on your host machine. It installs as an unprivileged, user-level utility — no root daemons, no background services, and no system-wide configuration, and no runtime to install first.
+agentcage is a single command-line binary, distributed as a prebuilt release binary (and buildable from source with Rust's `cargo`), that drives an isolated container or microVM runtime on your host machine. It installs as an unprivileged, user-level utility — no root daemons, no background services, and no system-wide configuration, and no runtime to install first.
 
 ---
 
@@ -11,7 +11,7 @@ agentcage is a single command-line binary, built from source with Rust's `cargo`
 | **Linux Runtime** | Podman 4.4+ (rootless), cgroups v2, systemd | `systemd` 250+ enables encrypted secret storage via `systemd-creds`. |
 | **macOS (Apple Silicon, 26+)** | Apple `container` CLI | Default and fastest backend on modern Apple Silicon Macs (`brew install container`). |
 | **macOS (Intel / Older)** | Lima 0.19+ | MicroVM isolation using Lima (`brew install lima`). |
-| **Rust toolchain** | Rust 1.96+ and a C linker | Build-time only. The installer sets up a minimal toolchain with rustup if none is found. |
+| **Rust toolchain** | Rust 1.96+ and a C linker | Only needed with `--build` or another source install. The installer sets one up if needed. |
 | **Disk Space** | ≥ 2 GB free in `$HOME` | Used for base container images and per-cage persistent volumes. |
 
 agentcage has no runtime dependencies of its own: once built, the binary needs no interpreter and no Rust toolchain. The network-facing components (the `agentcage-egress` proxy and `dnsmasq`) run inside the isolated egress container image, which agentcage builds automatically on first use. That image is `alpine:3` plus a few utilities and the static `agentcage-egress` binary, which the host binary carries inside it for its own architecture. There is no interpreter anywhere in the product.
@@ -22,15 +22,21 @@ agentcage has no runtime dependencies of its own: once built, the binary needs n
 
 ### Option 1: The Automated Installer (Recommended)
 
-The official installer script inspects your operating system and installed packages, builds agentcage from source with `cargo`, and installs it into `~/.local/bin` alongside the necessary backend components:
+The official installer script inspects your operating system and installed packages, downloads the latest release's prebuilt `agentcage` binary for your platform, verifies it against its published SHA-256, and installs it into `~/.local/bin` alongside the necessary backend components:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-If no Rust toolchain is found, the installer sets up a minimal one with [rustup](https://rustup.rs) (into `~/.rustup` and `~/.cargo`, without editing your shell profile). An existing toolchain older than 1.96 is left alone and the installer stops and asks you to run `rustup update stable`. The build takes a few minutes.
+To build agentcage and the egress it embeds from source instead, pass `--build`:
 
-The host binary embeds the static linux-musl `agentcage-egress` binary that goes into each cage's egress image. For a release, the installer downloads the release's prebuilt egress binary for your architecture, checks it against its published SHA-256, and builds the host around it, so the result works out of the box. For a branch (`AGENTCAGE_REF`), there is no release asset, so it builds the egress from source when the musl tooling is available (see [Building from a clone](#building-from-a-clone)), and otherwise stops with an error that says what is missing.
+```bash
+curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh -s -- --build
+```
+
+If no Rust toolchain is found with `--build`, the installer sets up a minimal one with [rustup](https://rustup.rs) (into `~/.rustup` and `~/.cargo`, without editing your shell profile). An existing toolchain older than 1.96 is left alone and the installer stops and asks you to run `rustup update stable`. The build takes a few minutes.
+
+The release's prebuilt `agentcage` binary already embeds the static linux-musl `agentcage-egress` for your architecture, so a default install needs no Rust toolchain and its `cage create` works out of the box. With `--build` (or for a branch via `AGENTCAGE_REF`, which has no release assets), agentcage builds both the host and its egress from source; the egress build needs the musl tooling described under [Building from a clone](#building-from-a-clone), and the installer stops with an error saying what is missing if it is unavailable.
 
 To read the script before running it:
 
@@ -40,7 +46,7 @@ less install.sh
 sh install.sh --help
 ```
 
-To pick what gets built, set `AGENTCAGE_VERSION=0.50.0` (a release tag; the default is the latest release) or `AGENTCAGE_REF=master` (a branch).
+To pick a release, set `AGENTCAGE_VERSION=0.53.1` (the default is the latest release) or `AGENTCAGE_REF=master` (a branch, which is built from source).
 
 Ensure `~/.local/bin` is in your shell `$PATH`:
 
@@ -55,7 +61,7 @@ export PATH="$HOME/.local/bin:$PATH"
 With Rust 1.96+ already installed, build and install the CLI directly. It is not published to crates.io; `cargo` fetches it from the repository:
 
 ```bash
-cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.50.0 agentcage-cli
+cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.53.1 agentcage-cli
 ```
 
 `agentcage-cli` is the package name; the binary it installs is `agentcage`, into `~/.cargo/bin`. `--locked` builds against the committed `Cargo.lock`, the same dependency versions CI tested. Use `--branch master` instead of `--tag` to track unreleased changes.
@@ -83,10 +89,10 @@ install -m 755 target/release/agentcage ~/.local/bin/agentcage
 
 The egress build needs a C compiler for the musl target (`musl-gcc`, from `musl-tools` on Debian/Ubuntu or `musl` on Arch and Fedora). On macOS the target is still Linux (`aarch64-unknown-linux-musl` on Apple Silicon, since that is what the VM runs), so you need a cross C toolchain for it.
 
-> **Why there is no prebuilt binary download.** The macOS release binaries
-> are not notarized yet, and an un-notarized download triggers a Gatekeeper
-> prompt. A binary built on your own machine is not quarantined, so building
-> from source avoids that on every platform with one install path.
+> **Prebuilt macOS binaries.** The macOS release binaries are not notarized
+> yet, but `curl` does not set the quarantine attribute, so the installer's
+> default prebuilt download is not blocked by Gatekeeper. Use `--build` to
+> compile from source instead.
 
 > **The old Python package is not an install path.** `pip install agentcage`
 > and `uv tool install agentcage` used to be how you got the CLI. They

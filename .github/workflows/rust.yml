@@ -34,7 +34,9 @@ jobs:
   # fails in seconds rather than behind the full test run: Rust does not
   # shell out to a Python interpreter, no shipped image installs one, no
   # tracked file is Python, and no live file names the replaced egress
-  # (see rust/xtask/src/invariants.rs).
+  # (see rust/xtask/src/invariants.rs). `check-docs` then checks the live
+  # documentation's install pins and log-service examples against VERSION
+  # and the CLI (see rust/xtask/src/docs.rs).
   invariants:
     name: repository invariants
     runs-on: ubuntu-latest
@@ -44,6 +46,8 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: cargo xtask check-invariants
         run: cargo xtask check-invariants
+      - name: cargo xtask check-docs
+        run: cargo xtask check-docs
 
   rust:
     name: build, test, clippy, fmt
