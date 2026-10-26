@@ -92,4 +92,3 @@ CI.
 - SDKs are a compatibility burden; version the API and publish deprecation
   policy.
 - CI runners may not support rootless Podman/KVM; document fallbacks.
-EOF

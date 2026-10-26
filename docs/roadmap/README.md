@@ -88,8 +88,8 @@ while preserving the security properties that make agentcage worth using.
 | :--- | :--- | :--- | :--- | :--- |
 | [#558](https://github.com/agentcage/agentcage/issues/558) ([plan](bugs/558-run-lifecycle.md)) | P0 | Session lifecycle | `run` stops and keeps state while docs say it is removed or torn down. | [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) + docs fix |
 | [#559](https://github.com/agentcage/agentcage/issues/559) ([plan](bugs/559-auth-preflight.md)) | P0 | Auth / docs | The claude scaffold promises OAuth autowiring, but `run` still requires `ANTHROPIC_API_KEY`. | [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) + docs fix |
-| [#560](https://github.com/agentcage/agentcage/issues/560) ([plan](bugs/560-dns-log-service.md)) | P1 | Docs / CLI | Scaffold READMEs document `-s dns`, which the CLI rejects. | Remove the line; docs test |
-| [#561](https://github.com/agentcage/agentcage/issues/561) ([plan](bugs/561-show-output.md)) | P1 | CLI / docs | `cage show` prints a summary while its reference promises addresses, volumes, rules and placeholders. | [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) or docs fix |
+| [#560](https://github.com/agentcage/agentcage/issues/560) ([plan](bugs/560-dns-log-service.md)) | P1 | Docs / CLI | Scaffold READMEs document `-s dns`, which the CLI rejects. | Replace with `-s egress`; docs test |
+| [#561](https://github.com/agentcage/agentcage/issues/561) ([plan](bugs/561-show-output.md)) | P1 | CLI / docs | `cage show` prints a summary while its reference promises addresses, volumes, rules and placeholders. | [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) or docs fix; `--json` uses the [#569](https://github.com/agentcage/agentcage/issues/569) ([plan](features/569-cli-automation.md)) envelope |
 | [#562](https://github.com/agentcage/agentcage/issues/562) ([plan](bugs/562-readme-version-install.md)) | P0 | Docs / release | README pins v0.50.0 and says the installer builds from source; current releases install a prebuilt binary. | Docs + release checklist |
 | [#563](https://github.com/agentcage/agentcage/issues/563) ([plan](bugs/563-grant-baseline-wording.md)) | P2 | Docs / agent brief | The cage `AGENTS.md` says a granted domain is promoted into the baseline; it is a runtime grant. | Wording fix |
 
@@ -128,8 +128,8 @@ parallel where dependencies allow. They are planning aids, not deadlines.
 
 | Phase | Target | Scope | Outcome |
 | :--- | :--- | :--- | :--- |
-| **0. Truth and quick wins** | v0.54 | #558–#562, #564, #569, #570, #580 (docs) | `run` tells the truth; `-h`/JSON/quiet exist; docs no longer lie. |
-| **1. First run** | v0.55 | #565–#568 | A new user can install, authenticate and run without editing policy. |
+| **0. Truth and quick wins** | v0.54 | #558, #560–#563, #564, #569, #570, #580 (docs) | `run` tells the truth; `-h`/JSON/quiet exist; docs no longer lie. |
+| **1. First run** | v0.55 | #559, #565–#568 | A new user can install, authenticate and run without editing policy. |
 | **2. Daily driver** | v0.56 | #571 | Parallel agents are safe and reviewable. |
 | **3. Control and visibility** | v0.57 | #572, #573 | Operators can see and steer a running cage. |
 | **4. Integration** | v0.58 | #574, #575, #580 (selftest) | agentcage fits the editor/CI loop. |

@@ -45,7 +45,7 @@ Kept:
   data: /home/me/.local/share/agentcage/claude-bold-fox
   volumes: claude-bold-fox-state
   secrets: ANTHROPIC_API_KEY
-Remove with: agentcage destroy claude-bold-fox
+Remove with: agentcage cage destroy claude-bold-fox
 
 $ agentcage run claude-code --rm
 # no stopped cage remains
@@ -53,7 +53,7 @@ $ agentcage run claude-code --rm
 $ agentcage run claude-code --detach --name review
 review
 $ agentcage attach review
-$ agentcage prune --older-than 7d --dry-run
+$ agentcage cage prune --older-than 7d --dry-run
 ```
 
 ## Implementation

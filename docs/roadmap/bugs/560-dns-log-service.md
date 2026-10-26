@@ -18,7 +18,7 @@ agentcage cage logs myagent -s dns    # DNS sidecar
 ```
 
 `agentcage cage logs --service` accepts only `cage` and `egress`
-(`rust/agentcage-cli/src/cli/args.rs:33-34`). DNS runs inside the egress
+(`rust/agentcage-cli/src/cli/args.rs:42`). DNS runs inside the egress
 service in the current architecture, so `-s egress` is the correct command.
 
 ## Evidence

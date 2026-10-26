@@ -88,4 +88,3 @@ alias: deprecate first, remove later.
 - Package-manager policies differ; self-update cannot be the only upgrade
   path.
 - Windows native support is a separate project; do not let it block WSL2.
-EOF

@@ -85,4 +85,3 @@ agentcage gateway --config proxy.yaml --listen 127.0.0.1:8080
 - Remote support multiplies platform combinations; start with Linux-to-Linux.
 - Fleet orchestration can become a separate product; keep it thin and built on
   existing primitives.
-EOF

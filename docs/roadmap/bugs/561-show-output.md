@@ -7,7 +7,7 @@
 | **Priority** | P1 |
 | **Area** | CLI output / documentation |
 | **Affected** | v0.53.1 |
-| **Fix** | [#570](https://github.com/agentcage/agentcage/issues/570) or a docs correction |
+| **Fix** | [#570](https://github.com/agentcage/agentcage/issues/570) or a docs correction; `--json` follows the [#569](https://github.com/agentcage/agentcage/issues/569) envelope |
 
 ## Summary
 
@@ -55,7 +55,12 @@ Either:
 1. **Enrich the output** with network addresses, volumes and mount flags,
    named domain rules and expiry, secret names and masked placeholder names,
    ports, data directory, recent blocked count and watcher state; add
-   `--json` with the same data. This is the recommended path.
+   `--json` with the same data. `cage show --json` is not an independent JSON
+   design: it emits the envelope owned by
+   [#569](https://github.com/agentcage/agentcage/issues/569)
+   ([plan](../features/569-cli-automation.md)) — `schema_version`, `command`,
+   `ok`, `data`, `warnings` — with the fields above under `data`. This is the
+   recommended path.
 2. **Correct the reference** to describe the summary and point to `cage audit`,
    `domain list`, `secret list` and `cage logs` for detail.
 
@@ -66,7 +71,9 @@ config and deployment state.
 
 - [ ] `cage show` displays every field the reference promises, or the
       reference no longer promises them.
-- [ ] `cage show --json` exposes the same fields with a stable schema.
+- [ ] `cage show --json` exposes the same fields with a stable schema, inside
+      the [#569](https://github.com/agentcage/agentcage/issues/569) envelope.
+      The envelope is a prerequisite, not this issue’s design.
 - [ ] Secret values are never printed; only key names and masked placeholders.
 - [ ] A test pins the documented field list.
 
@@ -80,4 +87,6 @@ config and deployment state.
 ## Related
 
 - [#570](https://github.com/agentcage/agentcage/issues/570)
+- [#569](https://github.com/agentcage/agentcage/issues/569) — owns the JSON
+  envelope and the shared `--json`/`--format` flags that `cage show` uses.
 - [#562](https://github.com/agentcage/agentcage/issues/562)

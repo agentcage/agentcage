@@ -29,6 +29,13 @@ user to verify that a fresh install actually enforces its boundaries.
 - Extract documented `--service` values and compare with the CLI’s allowed set.
 - Compare `cargo install ... --tag vX.Y.Z` with `VERSION`.
 - Check that every documented `cage.yaml` key appears in the schema/reference.
+- Exempt `docs/history/`, `docs/roadmap/` and `CHANGELOG.md`. History pages
+  describe retired commands and roadmap pages deliberately show the proposed
+  interface before it exists (for example `cage prune --older-than 7d
+  --dry-run` on the [#564](https://github.com/agentcage/agentcage/issues/564)
+  page), so a fenced example there is not a promise. Everything under
+  `docs/get-started/`, `docs/explain/`, `docs/reference/`, `docs/how-to/` and
+  the top-level `README.md` is checked.
 - Assert the known behavioural promises have semantic tests:
   - what `run` keeps/removes;
   - auth strategies available to a scaffold;
@@ -76,6 +83,9 @@ destructive payloads. A failing probe exits non-zero.
 
 - Build `check-docs` in `xtask`; use the clap command tree rather than a
   second hand-written list.
+- Skip `docs/history/`, `docs/roadmap/` and `CHANGELOG.md` in the extractor,
+  and say so in the check’s own help so the exemption is visible rather than
+  accidental.
 - Start with a small allowlist of documented examples; expand as drift is
   cleaned up.
 - Base `selftest` on the redteam harness, but audit the probes and replace
@@ -106,4 +116,3 @@ destructive payloads. A failing probe exits non-zero.
 - Docs checks can become brittle; keep the scope narrow and semantic.
 - Selftest can give false confidence; document what it does not cover.
 - Redteam probes may be unsafe to ship; canary-only is a hard requirement.
-EOF

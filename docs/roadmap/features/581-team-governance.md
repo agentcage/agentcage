@@ -73,4 +73,3 @@ exportable to a SIEM.
 - Signing key management is a product decision; start with optional local keys.
 - SIEM formats are easy to get subtly wrong; use a documented subset.
 - Central policy can become a control plane; keep it opt-in and local-first.
-EOF

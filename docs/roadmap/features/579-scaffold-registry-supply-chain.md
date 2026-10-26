@@ -72,4 +72,3 @@ agentcage scaffold verify NAME
   and no hosted index if possible.
 - Signing key management and trust roots need documentation.
 - Prebuilt images can drift from local scaffolds; use the same content hash.
-EOF

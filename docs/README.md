@@ -2,12 +2,14 @@
 
 Welcome to the **agentcage** technical documentation. agentcage is a defense-in-depth isolation sandbox designed to safely run autonomous AI coding agents (such as Claude Code, Pi, OpenAI Codex, and OpenClaw) with default-deny network egress, zero-leak placeholder secret injection, transparent TLS inspection, and autonomous policy controls.
 
-This documentation is organized according to the **Diátaxis framework**, structured into four distinct quadrants based on your goals:
+This documentation follows the **Diátaxis framework** for its four core sections, then adds two more for planning and provenance. The index below is organized into six sections based on your goals:
 
 - **[Get Started](#1-get-started)**: Step-by-step onboarding for first-time operators.
 - **[Explanations & Architecture](#2-architecture--explanations)**: Deep dives into internal mechanisms, security models, and design trade-offs.
 - **[Reference Manuals](#3-reference-manuals)**: Exhaustive technical specifications for configuration, CLI commands, APIs, and schemas.
 - **[How-To Guides](#4-how-to-guides)**: Practical, task-oriented operational recipes for common workflows.
+- **[Roadmap](#5-roadmap)**: The forward-looking product and usability plan — a discussion document, not a description of current behaviour.
+- **[History](#6-history)**: Records of past ports, plans and audits, kept for reference rather than as current documentation.
 
 ---
 

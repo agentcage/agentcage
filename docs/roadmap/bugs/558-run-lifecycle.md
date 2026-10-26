@@ -18,10 +18,11 @@ removed or destroyed on exit.
 
 The code is explicit about this:
 
-- `rust/agentcage-cli/src/run.rs:28-34` documents that only `destroy` removes a
-  cage.
-- `rust/agentcage-cli/src/run.rs:468-472` calls the teardown “stopped, not
-  destroyed” and lists what survives.
+- `rust/agentcage-cli/src/run.rs:28-34` — the module documentation states that
+  `run` “stops the cage on the way out — and only stops it”, and that
+  `cage destroy` “is still the only thing that removes one”.
+- `rust/agentcage-cli/src/cli/run.rs:468-471` — the teardown comment calls it
+  “stopped, not destroyed” and lists what survives.
 
 The documentation says the opposite in at least:
 

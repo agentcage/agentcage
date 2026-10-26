@@ -104,4 +104,3 @@ Minted tokens are redacted exactly like stored secrets.
 - Kernel heterogeneity; a rule that silently does nothing is a security bug.
 - Performance on large worktrees; benchmark before defaulting.
 - New placeholder formats can regress redaction; require fuzzing.
-EOF
