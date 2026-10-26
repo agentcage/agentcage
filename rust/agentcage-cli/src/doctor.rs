@@ -1399,7 +1399,15 @@ pub fn main(options: Options) -> u8 {
     if options.json {
         println!("{}", report.render_json());
     } else {
-        print!("{}", render(&report, std::io::stdout().is_terminal()));
+        // `--no-color` / `NO_COLOR` must reach this screen too, not just
+        // the ports that print through `crate::output`.
+        print!(
+            "{}",
+            render(
+                &report,
+                crate::output::colour_enabled(std::io::stdout().is_terminal())
+            )
+        );
     }
     report.exit_code()
 }

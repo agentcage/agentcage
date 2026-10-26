@@ -140,7 +140,10 @@ pub(crate) fn audit() -> Command {
             .hide(true),
         )
         .arg(flag("summary", "summary", "Show aggregated statistics."))
-        .arg(flag("no_color", "no-color", "Disable colored output."))
+    // `--no-color` is a global flag now (`cli::command`), so this
+    // command inherits it instead of declaring its own. It keeps the
+    // id `no_color` and the same help text, so the body below and the
+    // recorded surface do not change.
 }
 
 // ── cage har ────────────────────────────────────────────────────────

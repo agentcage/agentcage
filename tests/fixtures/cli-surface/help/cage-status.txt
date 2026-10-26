@@ -6,4 +6,6 @@ Usage: agentcage cage status [OPTIONS] [NAME]
   status <name>` shows that cage's detail (same as `cage show`).
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

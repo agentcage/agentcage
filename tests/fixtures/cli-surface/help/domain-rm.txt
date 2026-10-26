@@ -4,4 +4,6 @@ Usage: agentcage domain rm [OPTIONS] NAME DOMAIN_NAME
 
 Options:
   --passthrough  Remove only from passthrough list (keep in allow/block).
-  --help         Show this message and exit.
+  --no-color     Disable colored output.
+  --quiet        Suppress progress output (spinners and banners).
+  -h, --help     Show this message and exit.

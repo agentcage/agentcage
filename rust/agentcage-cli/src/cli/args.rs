@@ -14,14 +14,18 @@
 //!
 //! # The deliberate departures from clap's defaults
 //!
-//! * **No `-h`.** Only `--help`, as in earlier releases. Adding a short
-//!   form would be a kindness, but it would also change which command
-//!   lines parse, and the recorded surface pins that.
-//! * **`--help` is [`ArgAction::HelpLong`].** click prints a command's
-//!   whole docstring for `--help` and only its first line in the parent's
-//!   command listing. clap splits those two jobs across `about` and
-//!   `long_about`, reached by `-h` and `--help` respectively — so the
-//!   single `--help` click offers has to be the *long* one.
+//! * **`-h` and `--help`.** `--help` is the long form (click prints a
+//!   command's whole docstring for it and only the first line in the
+//!   parent's command listing). `-h` is a post-port addition, accepted
+//!   everywhere as an alias for the same thing, because it is the first
+//!   key every user tries and its absence was reported as a bug. It is
+//!   recorded in `tests/fixtures/cli-surface/surface.json`.
+//! * **`--help` is [`ArgAction::HelpLong`].** clap splits the docstring
+//!   and the one-line summary across `about` and `long_about`, reached
+//!   by `-h` and `--help` respectively when it owns the flag -- so the
+//!   single `--help` click offers has to be the *long* one. `-h` here is
+//!   the same parameter, not clap's short-about form, so both spellings
+//!   print the same help.
 //! * **No `help` subcommand.** clap generates `agentcage cage help
 //!   create`; click has no such thing.
 //! * **Uppercase value names.** click derives `NAME`, `TEXT`, `INTEGER`,
@@ -51,9 +55,16 @@ pub(crate) const FINDING_SEVERITIES: [&str; 5] = ["info", "low", "medium", "high
 /// The isolation backends, shared by `init` and `run`.
 pub(crate) const ISOLATIONS: [&str; 3] = ["container", "vm", "apple-container"];
 
-/// click's `--help`: long form only, and worded exactly as click words it.
+/// click's `--help`, plus the `-h` alias this port adds.
+///
+/// One parameter with two spellings, not two parameters: click printed
+/// `--help` last among the options and the recorded surface has one help
+/// option, so a second `Arg` would show up as a second option in every
+/// command's help. `-h` is therefore a short spelling of the same
+/// long-help action.
 pub(crate) fn help_arg() -> Arg {
     Arg::new("help")
+        .short('h')
         .long("help")
         .action(ArgAction::HelpLong)
         .help("Show this message and exit.")

@@ -3,4 +3,6 @@ Usage: agentcage doctor [OPTIONS]
   Check system health and diagnose common issues.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

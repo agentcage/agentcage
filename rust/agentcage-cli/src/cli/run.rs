@@ -453,13 +453,13 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
     }
 
     println!();
-    println!("  {}", output::dim(&project_dir));
-    println!(
+    output::echo(&format!("  {}", output::dim(&project_dir)));
+    output::echo(&format!(
         "  {} {} {}",
         output::dim("Ctrl+D to exit"),
         output::dim("\u{b7}"),
         output::dim(&format!("agentcage cage audit {cage_name}"))
-    );
+    ));
     println!();
     output::separator();
 
@@ -475,11 +475,14 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
         let _spinner = output::Spinner::start("Stopping cage...");
         ctx.backend_for(&config.isolation).stop(&config.name);
     }
-    println!("  {}", output::dim(&format!("{cage_name} stopped")));
-    println!(
+    output::echo(&format!(
+        "  {}",
+        output::dim(&format!("{cage_name} stopped"))
+    ));
+    output::echo(&format!(
         "  {}",
         output::dim(&format!("agentcage cage audit {cage_name}"))
-    );
+    ));
 
     // `shutil.rmtree(config_dir)` — the staged copy has been in the
     // cage's state dir since `save_deployment`.

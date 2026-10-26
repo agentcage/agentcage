@@ -393,6 +393,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -450,6 +451,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -887,6 +889,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -998,6 +1001,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1184,6 +1188,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1294,6 +1299,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1357,6 +1363,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1492,6 +1499,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1557,6 +1565,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1604,6 +1613,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1668,6 +1678,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1732,6 +1743,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1775,6 +1787,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2094,6 +2107,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2159,6 +2173,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2378,6 +2393,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2444,6 +2460,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2507,6 +2524,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2640,6 +2658,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2941,6 +2960,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3055,6 +3075,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3141,6 +3162,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3204,6 +3226,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3290,6 +3313,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3353,6 +3377,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3535,6 +3560,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3598,6 +3624,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3663,6 +3690,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3706,6 +3734,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3839,6 +3868,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3902,6 +3932,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4009,6 +4040,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4237,6 +4269,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4278,6 +4311,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4393,6 +4427,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4480,6 +4515,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4543,6 +4579,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4628,6 +4665,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4670,6 +4708,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4733,6 +4772,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4777,6 +4817,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4844,6 +4885,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4928,6 +4970,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5012,6 +5055,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5167,6 +5211,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5211,6 +5256,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5381,6 +5427,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5444,6 +5491,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,

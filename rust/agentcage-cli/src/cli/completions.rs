@@ -20,6 +20,18 @@
 //! surface, and `tests/cli_surface.rs` allows it by name rather than by
 //! loosening the "every command matches" assertion.
 //!
+//! # The two spellings
+//!
+//! `agentcage completions <SHELL>` is the original form and stays. The
+//! automation contract adds `agentcage completions print --shell
+//! <SHELL>`, which is the same script with a flag-shaped spelling for a
+//! wrapper that already assigned a shell variable. There is no `install`
+//! subcommand on purpose: installing means guessing between `.bashrc`,
+//! `.bash_profile`, `.zshrc`, `~/.config/fish/config.fish` and whatever
+//! framework owns them, and writing to a user's dotfiles from a
+//! sandboxing tool is not a trade worth making for one `eval`. The
+//! script goes to stdout; where it lands is the user's call.
+//!
 //! # What a reviewer should check at cutover
 //!
 //! Nothing in the repo references the click protocol today — not
@@ -42,16 +54,45 @@ use crate::cli::args::leaf;
 pub(crate) const SHELLS: [&str; 3] = ["bash", "zsh", "fish"];
 
 /// `agentcage completions <SHELL>` — hidden, per the module docs.
+///
+/// The positional is optional and the command has one subcommand because
+/// both spellings have to parse: `completions bash` (no subcommand, one
+/// positional) and `completions print --shell bash` (a subcommand with
+/// the shell in a flag). `arg_required_else_help` keeps a bare
+/// `agentcage completions` a usage error, as the required positional did.
 pub(crate) fn command() -> Command {
     leaf("completions")
         .hide(true)
         .about("Print a shell completion script (bash, zsh or fish).")
         .arg(
             Arg::new("shell")
-                .required(true)
+                .required(false)
                 .value_name("SHELL")
                 .value_parser(SHELLS),
         )
+        .subcommand(
+            leaf("print").about("Print a shell completion script.").arg(
+                Arg::new("shell")
+                    .long("shell")
+                    .required(true)
+                    .value_name("SHELL")
+                    .value_parser(SHELLS),
+            ),
+        )
+        .arg_required_else_help(true)
+}
+
+/// The shell a `completions` invocation named, whether as the positional
+/// (`completions bash`) or the flag (`completions print --shell bash`).
+///
+/// `None` only for the bare command, which `arg_required_else_help` turns
+/// into help-and-exit-2 before the body is reached.
+#[must_use]
+pub(crate) fn requested_shell(matches: &clap::ArgMatches) -> Option<String> {
+    if let Some((_, print)) = matches.subcommand() {
+        return print.get_one::<String>("shell").cloned();
+    }
+    matches.get_one::<String>("shell").cloned()
 }
 
 /// Write the completion script for `shell` to `out`.

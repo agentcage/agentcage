@@ -9,4 +9,6 @@ Usage: agentcage scaffold create [OPTIONS] NAME
 Options:
   --from TEXT  Fork an existing scaffold as starting point.
   --force      Overwrite existing scaffold.
-  --help       Show this message and exit.
+  --no-color   Disable colored output.
+  --quiet      Suppress progress output (spinners and banners).
+  -h, --help   Show this message and exit.
