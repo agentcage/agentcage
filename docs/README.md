@@ -2,14 +2,12 @@
 
 Welcome to the **agentcage** technical documentation. agentcage is a defense-in-depth isolation sandbox designed to safely run autonomous AI coding agents (such as Claude Code, Pi, OpenAI Codex, and OpenClaw) with default-deny network egress, zero-leak placeholder secret injection, transparent TLS inspection, and autonomous policy controls.
 
-This documentation follows the **Diátaxis framework** for its four core sections, then adds two more for planning and provenance. The index below is organized into six sections based on your goals:
+This documentation is organized according to the **Diátaxis framework**, structured into four distinct quadrants based on your goals:
 
 - **[Get Started](#1-get-started)**: Step-by-step onboarding for first-time operators.
 - **[Explanations & Architecture](#2-architecture--explanations)**: Deep dives into internal mechanisms, security models, and design trade-offs.
 - **[Reference Manuals](#3-reference-manuals)**: Exhaustive technical specifications for configuration, CLI commands, APIs, and schemas.
 - **[How-To Guides](#4-how-to-guides)**: Practical, task-oriented operational recipes for common workflows.
-- **[Roadmap](#5-roadmap)**: The forward-looking product and usability plan — a discussion document, not a description of current behaviour.
-- **[History](#6-history)**: Records of past ports, plans and audits, kept for reference rather than as current documentation.
 
 ---
 
@@ -66,15 +64,7 @@ If you are new to agentcage, we suggest reading in this order:
 | **[Backup & Restore](how-to/backup-and-restore.md)** | Procedures for creating portable tarball backups of cage state, volumes, and configurations (`agentcage cage backup`), and restoring or cloning cages (`agentcage cage restore`). |
 | **[Custom Inspectors & Relays](how-to/custom-inspectors.md)** | Writing custom inspectors as sandboxed WebAssembly components with the `agentcage-inspector-sdk` crate, and configuring hardened protocol relays for non-HTTP services (such as IMAP and SMTP). |
 
-### 5. Roadmap
-
-The forward-looking product and usability plan, kept as a discussion document rather than a release schedule or guarantee:
-
-| Plan | Description |
-| :--- | :--- |
-| **[Improvement Plan (2026–2027)](roadmap/README.md)** | The gap between the security engine and the day-to-day product, split into numbered GitHub issues and plan pages for sessions, auth, onboarding, Git workflow, approvals, integrations and distribution. |
-
-### 6. History
+### 5. History
 
 Records of how the project got here, kept for reference rather than as current documentation:
 
