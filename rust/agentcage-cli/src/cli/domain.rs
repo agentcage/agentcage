@@ -637,7 +637,7 @@ fn list_inner(ctx: &Ctx, name: &str, as_json: bool) -> Result<(), ExitCode> {
     ensure_v022_cage(&ctx.paths, name)?;
 
     if as_json {
-        crate::cli::json_out::print("domain list", list_json(name, &raw));
+        crate::cli::json_out::print("domain list", list_json(name, &raw), true, &[]);
         return Ok(());
     }
 

@@ -17,9 +17,11 @@
 //! to the envelope itself; additions to `data` are not a break, because
 //! an existing reader ignores keys it does not know. `command` is the
 //! canonical spelling (`domain list`, never the `ls` alias), so two
-//! spellings of one command produce the same document. `warnings` is
-//! always present, empty when there is nothing to say; it carries text
-//! for a human, never a secret.
+//! spellings of one command produce the same document. `ok` is `false`
+//! when the command still prints a document but reports a failure --
+//! today that is `secret list --json` with a missing secret, which also
+//! exits non-zero. `warnings` is always present, empty when there is
+//! nothing to say; it carries text for a human, never a secret.
 //!
 //! # Why `agentcage_core::har::json`
 //!
@@ -44,14 +46,15 @@ pub(crate) const SCHEMA_VERSION: i64 = 1;
 /// Build the envelope around `data`.
 ///
 /// Key order is insertion order, which is the documented order. `ok` is
-/// `true` here because a failing command reports on stderr and exits
-/// non-zero rather than printing a half-document; an `ok: false`
-/// document would be a second, weaker failure channel.
-pub(crate) fn envelope(command: &str, data: Json, warnings: &[String]) -> Json {
+/// supplied by the command rather than assumed: a failing command
+/// normally reports on stderr and exits non-zero without printing a
+/// document, but `secret list --json` prints what it found *and* exits
+/// 1, so its document must say `ok: false`.
+pub(crate) fn envelope(command: &str, data: Json, ok: bool, warnings: &[String]) -> Json {
     Json::Object(vec![
         ("schema_version".to_owned(), Json::Int(SCHEMA_VERSION)),
         ("command".to_owned(), Json::string(command)),
-        ("ok".to_owned(), Json::Bool(true)),
+        ("ok".to_owned(), Json::Bool(ok)),
         ("data".to_owned(), data),
         (
             "warnings".to_owned(),
@@ -64,13 +67,16 @@ pub(crate) fn envelope(command: &str, data: Json, warnings: &[String]) -> Json {
 ///
 /// Two-space indent with `ensure_ascii`, so a non-ASCII path or cage name
 /// is escaped the same way in every agentcage document.
-pub(crate) fn render(command: &str, data: Json) -> String {
-    dumps(&envelope(command, data, &[]), DumpOptions::indented())
+pub(crate) fn render(command: &str, data: Json, ok: bool, warnings: &[String]) -> String {
+    dumps(
+        &envelope(command, data, ok, warnings),
+        DumpOptions::indented(),
+    )
 }
 
 /// Print one envelope to stdout, with a trailing newline.
-pub(crate) fn print(command: &str, data: Json) {
-    println!("{}", render(command, data));
+pub(crate) fn print(command: &str, data: Json, ok: bool, warnings: &[String]) {
+    println!("{}", render(command, data, ok, warnings));
 }
 
 /// An object from borrowed keys, in the order given.
@@ -104,6 +110,7 @@ mod tests {
         let doc = envelope(
             "domain list",
             object(vec![("cage", Json::string("acme"))]),
+            true,
             &[],
         );
         // `parse` keeps document order, so this reads the order back.
@@ -126,10 +133,42 @@ mod tests {
         );
     }
 
+    /// A document can report failure without changing its shape or order.
+    #[test]
+    fn the_envelope_can_report_ok_false_and_warnings() {
+        let doc = envelope(
+            "secret list",
+            object(vec![("cage", Json::string("acme"))]),
+            false,
+            &["API_KEY is missing".to_owned()],
+        );
+        let text = dumps(&doc, DumpOptions::indented());
+        let parsed = parse(&text).expect("parses");
+        let keys: Vec<String> = match &parsed {
+            Json::Object(pairs) => pairs.iter().map(|(key, _)| key.clone()).collect(),
+            other => panic!("not an object: {other:?}"),
+        };
+        assert_eq!(
+            keys,
+            ["schema_version", "command", "ok", "data", "warnings"]
+        );
+        assert_eq!(parsed.get("ok"), Some(&Json::Bool(false)));
+        assert_eq!(
+            parsed.get("warnings"),
+            Some(&Json::Array(vec![Json::string("API_KEY is missing")]))
+        );
+        assert!(text.contains("\"ok\": false"));
+    }
+
     /// An alias spelling never leaks into the document.
     #[test]
     fn render_is_indented_and_carries_the_command() {
-        let text = render("secret list", object(vec![("cage", Json::string("acme"))]));
+        let text = render(
+            "secret list",
+            object(vec![("cage", Json::string("acme"))]),
+            true,
+            &[],
+        );
         assert!(text.starts_with("{\n  \"schema_version\": 1,"));
         assert!(text.contains("\"command\": \"secret list\""));
         assert!(text.trim_end().ends_with('}'));

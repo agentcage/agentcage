@@ -58,8 +58,10 @@ produces the same document. `schema_version` is bumped only for a
 breaking change to the envelope; new keys inside `data` are not a break.
 Secret *values* are never emitted — `secret list` carries names, types,
 `present` and the decoy placeholder label only. A failing command keeps
-its existing stderr message and non-zero exit code; `ok` is always `true`
-when a document is printed.
+its existing stderr message and non-zero exit code. `ok` is `false` only
+when a command still prints a document while reporting failure — today
+that is `secret list --json` when a declared secret is missing, which
+also exits 1; every other document has `ok: true`.
 
 See [`agentcage paths`](#agentcage-paths---json) and
 [`agentcage version`](#agentcage-version---json) for the
@@ -452,8 +454,9 @@ agentcage paths --json
 ```
 
 The rows are `home`, `config` (`$XDG_CONFIG_HOME/agentcage`), `data`
-(`$XDG_DATA_HOME/agentcage`), `cache` (`<data>/agentcage/assets`, the
-extracted build contexts), `runtime` (`$XDG_RUNTIME_DIR`), `apple-container`
+(`$XDG_DATA_HOME/agentcage`), `cache` (`<data>/assets`, the
+extracted build contexts, where `<data>` is the `data` row above),
+`runtime` (`$XDG_RUNTIME_DIR`), `apple-container`
 (`~/.config/agentcage/apple-container`), `quadlets`
 (`~/.config/containers/systemd`) and `user-units` (`~/.config/systemd/user`).
 JSON `data` uses the same names with `apple_container` and `user_units`

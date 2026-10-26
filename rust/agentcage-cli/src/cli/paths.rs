@@ -103,6 +103,8 @@ pub(crate) fn main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
                     .map(|root| (root.key, Json::string(root.path.clone())))
                     .collect(),
             ),
+            true,
+            &[],
         );
         return ExitCode::SUCCESS;
     }

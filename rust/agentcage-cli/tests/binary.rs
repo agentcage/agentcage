@@ -1466,6 +1466,9 @@ fn agentcage_in_a_pty(home: &std::path::Path, args: &[&str], env: &[(&str, &str)
         // colour writer: `TERM=dumb` (GitHub's runner) strips the help,
         // so use a colour-capable terminal name for the pty.
         .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("FORCE_COLOR")
         .env_remove("CI")
         .env("TERM", "xterm-256color")
         .stdin(std::process::Stdio::null())
@@ -1511,9 +1514,13 @@ fn json_document(out: &Output) -> serde_json::Value {
 
 /// The five envelope keys, in this order, in the raw bytes.
 fn assert_envelope(doc: &serde_json::Value, command: &str) {
+    assert_envelope_ok(doc, command, true);
+}
+
+fn assert_envelope_ok(doc: &serde_json::Value, command: &str, ok: bool) {
     assert_eq!(doc["schema_version"], 1);
     assert_eq!(doc["command"], command);
-    assert_eq!(doc["ok"], true);
+    assert_eq!(doc["ok"], ok);
     assert_eq!(doc["warnings"], serde_json::json!([]));
 }
 
@@ -1582,6 +1589,17 @@ fn no_color_switches_off_ansi_on_a_terminal() {
         (vec!["--help"], vec![("NO_COLOR", "1")]),
         // "any value", including the empty one.
         (vec!["--help"], vec![("NO_COLOR", "")]),
+        // `NO_COLOR` wins over the override variables agentcage does not
+        // read; this pins that an inherited `FORCE_COLOR` cannot turn
+        // colour back on.
+        (
+            vec!["--help"],
+            vec![
+                ("NO_COLOR", "1"),
+                ("FORCE_COLOR", "1"),
+                ("CLICOLOR_FORCE", "1"),
+            ],
+        ),
         // After the command, before the help: every global position.
         (vec!["cage", "list", "--no-color", "--help"], vec![]),
     ] {
@@ -1721,6 +1739,33 @@ fn paths_prints_the_resolved_roots() {
             .display()
             .to_string()
     );
+    assert_eq!(
+        doc["data"]["home"],
+        home.display().to_string(),
+        "the home row is the sandbox root"
+    );
+    assert_eq!(
+        doc["data"]["apple_container"],
+        home.join(".config/agentcage/apple-container")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        doc["data"]["quadlets"],
+        home.join(".config/containers/systemd")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        doc["data"]["user_units"],
+        home.join(".config/systemd/user").display().to_string()
+    );
+    assert_eq!(
+        doc["data"].as_object().expect("data object").len(),
+        8,
+        "paths --json has one key per root: {}",
+        doc["data"]
+    );
     // Nothing was created by asking.
     assert!(!home.join(".config/agentcage").exists());
 }
@@ -1829,7 +1874,7 @@ fn secret_list_json_never_carries_a_value() {
 }
 
 /// A declared-but-absent secret still exits 1 in JSON mode — the
-/// envelope documents what was found, and the exit code reports it.
+/// document says `ok: false` and the exit code agrees.
 #[test]
 fn secret_list_json_keeps_the_missing_exit_code() {
     let dir = agentcage_state::TestDir::new("binary-secret-json-missing");
@@ -1844,7 +1889,7 @@ fn secret_list_json_keeps_the_missing_exit_code() {
     let out = agentcage_sandboxed(home, &["secret", "list", "acme", "--json"]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("one document");
-    assert_envelope(&doc, "secret list");
+    assert_envelope_ok(&doc, "secret list", false);
     assert_eq!(doc["data"]["secrets"][0]["present"], false);
 }
 

@@ -36,6 +36,8 @@ pub(crate) fn main(matches: &ArgMatches) -> ExitCode {
                 ("name", Json::string(crate::cli::PROG)),
                 ("version", Json::string(agentcage_core::VERSION)),
             ]),
+            true,
+            &[],
         );
     } else {
         println!("{}", crate::cli::version_line());

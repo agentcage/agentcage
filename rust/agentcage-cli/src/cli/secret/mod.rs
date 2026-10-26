@@ -213,12 +213,13 @@ fn run_list(ctx: &Ctx, name: &str, as_json: bool) -> Result<(), ExitCode> {
             .collect()
     };
     if as_json {
-        let (_, missing) = rows(&config, &present);
-        crate::cli::json_out::print("secret list", list_json(name, &config, &present));
-        // The envelope documents success; a declared-but-absent secret
-        // is still a failure, and the exit code says so. `secret list`
-        // has always exited 1 for it, and a JSON mode that returned 0
-        // would be a different command.
+        let (rows, missing) = rows(&config, &present);
+        // The document and the exit code read the same `missing`, so
+        // they cannot disagree about whether a declared secret is absent.
+        crate::cli::json_out::print("secret list", list_json(name, &rows), !missing, &[]);
+        // A declared-but-absent secret is still a failure, and the exit
+        // code says so. `secret list` has always exited 1 for it, and a
+        // JSON mode that returned 0 would be a different command.
         if missing {
             return Err(ExitCode::from(EXIT_FAILURE));
         }
@@ -409,24 +410,25 @@ fn rows(config: &Config, present: &[String]) -> (Vec<Row>, bool) {
 /// `secret list --json`'s `data`: names, classifications and placeholder
 /// labels, never a value.
 ///
-/// Nothing on this path reads a stored value: `present` is a list of
-/// names from `podman secret ls`-equivalent calls and `pending_secrets`
-/// indexes, and the placeholder is the decoy the cage injects in place of
-/// the secret. `present` is the same `ok`/`MISSING` distinction the table
-/// prints, and an empty placeholder is omitted rather than emitted as
-/// `""`.
-fn list_json(name: &str, config: &Config, present: &[String]) -> Json {
-    let (rows, _) = rows(config, present);
+/// Takes the already-computed rows, the same ones the table would print,
+/// so the JSON document cannot classify a key one way and the exit code
+/// another. Nothing on this path reads a stored value: `present` is a
+/// list of names from `podman secret ls`-equivalent calls and
+/// `pending_secrets` indexes, and the placeholder is the decoy the cage
+/// injects in place of the secret. `present` is the same `ok`/`MISSING`
+/// distinction the table prints, and an empty placeholder is omitted
+/// rather than emitted as `""`.
+fn list_json(name: &str, rows: &[Row]) -> Json {
     let secrets: Vec<Json> = rows
-        .into_iter()
+        .iter()
         .map(|row| {
             let mut entry = vec![
-                ("name".to_owned(), Json::string(row.name)),
+                ("name".to_owned(), Json::string(&row.name)),
                 ("type".to_owned(), Json::string(row.kind.as_str())),
                 ("present".to_owned(), Json::Bool(row.status == "ok")),
             ];
             if !row.placeholder.is_empty() {
-                entry.push(("placeholder".to_owned(), Json::string(row.placeholder)));
+                entry.push(("placeholder".to_owned(), Json::string(&row.placeholder)));
             }
             Json::Object(entry)
         })
@@ -476,7 +478,7 @@ mod tests {
         assert_eq!(rows[0].kind, Kind::Injection);
         assert_eq!(rows[0].status, "ok");
 
-        let doc = list_json("acme", &config, &present);
+        let doc = list_json("acme", &rows);
         let text = agentcage_core::har::json::dumps(
             &doc,
             agentcage_core::har::json::DumpOptions::indented(),

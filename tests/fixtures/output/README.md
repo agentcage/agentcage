@@ -33,13 +33,13 @@ records the bytes, from the real Python, and the port is held to them.
 | :-- | :-- |
 | `styled.json` | `banner_text`, `banner`, `step_done`, `step_fail`, `info`, `separator`, `dim`, `green`, `red` |
 | `spinner.json` | `output.Spinner` — frames, pause/resume, the non-tty fallback |
+| `timings.json` | `_timing.print_summary`, the `AGENTCAGE_TIMING=1` echo, the JSONL record |
 
 The port's `Spinner::start` (as opposed to the recorded `Spinner::new`)
 is quieter than the recorded behaviour: it prints nothing at all when
 stderr is not a terminal or `--quiet`/`CI` asked for silence, because the
 static `…` line was noise in a script's log. The recorded non-tty case is
 still asserted against `new`, so the helper's bytes are pinned.
-| `timings.json` | `_timing.print_summary`, the `AGENTCAGE_TIMING=1` echo, the JSONL record |
 
 ## Both colour modes, and why that is the whole colour rule
 
