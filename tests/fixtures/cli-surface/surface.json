@@ -311,7 +311,7 @@
     "groups": 7,
     "hidden_options": 4,
     "nodes": 48,
-    "options": 130,
+    "options": 139,
     "passthrough_commands": 2,
     "top_level": 7,
     "variadic_arguments": 4
@@ -382,6 +382,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -439,6 +440,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -876,6 +878,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -987,6 +990,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1173,6 +1177,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1283,6 +1288,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1346,6 +1352,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1481,6 +1488,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1546,6 +1554,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1593,6 +1602,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1657,6 +1667,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1721,6 +1732,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -1764,6 +1776,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2083,6 +2096,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2115,6 +2129,29 @@
         {
           "count": false,
           "default": false,
+          "dest": "json",
+          "help": "Output the list as one structured JSON object.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
           "dest": "help",
           "help": "Show this message and exit.",
           "hidden": false,
@@ -2125,6 +2162,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2344,6 +2382,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2400,6 +2439,51 @@
         {
           "count": false,
           "default": false,
+          "dest": "dry_run",
+          "help": "List the cages that would be removed without changing anything.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--dry-run"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "default": null,
+          "dest": "older_than",
+          "help": "Only cages stopped more than this long ago (e.g. 30m, 1h, 2d).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--older-than"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
           "dest": "help",
           "help": "Show this message and exit.",
           "hidden": false,
@@ -2410,6 +2494,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2473,6 +2558,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2606,6 +2692,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -2874,6 +2961,75 @@
           }
         },
         {
+          "count": false,
+          "default": false,
+          "dest": "rm",
+          "help": "Destroy the cage and its scoped resources after the session. The cage's audit data directory is kept.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--rm"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "keep",
+          "help": "Keep the stopped cage, its volumes and secrets after the session (default).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--keep"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "dry_run",
+          "help": "Render and validate the config, print the plan, and exit without changing anything.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--dry-run"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
           "default": {
             "unset": true
           },
@@ -2907,6 +3063,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3021,6 +3178,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3074,6 +3232,29 @@
         {
           "count": false,
           "default": false,
+          "dest": "json",
+          "help": "Output the report as one structured JSON object.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
           "dest": "help",
           "help": "Show this message and exit.",
           "hidden": false,
@@ -3084,6 +3265,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3147,6 +3329,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3200,6 +3383,29 @@
         {
           "count": false,
           "default": false,
+          "dest": "json",
+          "help": "Output the report as one structured JSON object.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
           "dest": "help",
           "help": "Show this message and exit.",
           "hidden": false,
@@ -3210,6 +3416,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3273,6 +3480,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3455,6 +3663,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3518,6 +3727,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3550,6 +3760,29 @@
         {
           "count": false,
           "default": false,
+          "dest": "json",
+          "help": "Output the report as one structured JSON object.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
           "dest": "help",
           "help": "Show this message and exit.",
           "hidden": false,
@@ -3560,6 +3793,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3603,6 +3837,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3736,6 +3971,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3799,6 +4035,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -3906,6 +4143,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4134,6 +4372,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4175,6 +4414,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4290,6 +4530,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4377,6 +4618,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4440,6 +4682,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4525,6 +4768,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4567,6 +4811,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4630,6 +4875,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4674,6 +4920,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4741,6 +4988,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4825,6 +5073,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -4909,6 +5158,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5064,6 +5314,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5108,6 +5359,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5278,6 +5530,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,
@@ -5341,6 +5594,7 @@
           "multiple": false,
           "nargs": 1,
           "opts": [
+            "-h",
             "--help"
           ],
           "prompt": null,

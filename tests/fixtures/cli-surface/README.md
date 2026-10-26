@@ -8,6 +8,31 @@
 > a regression. The rest of this README describes how they were
 > originally produced.
 
+## Post-port additions (issue #569, phase 0)
+
+The Rust tree deliberately adds a small amount to click's surface, and
+this directory records it by hand. All of it is asserted:
+
+| Addition | Where it is recorded | Compared by |
+| :-- | :-- | :-- |
+| `-h` beside `--help` | `surface.json`, every node's `help` param is `["-h", "--help"]` | `check_spelling` (short, long) |
+| global `--no-color` | `help/*.txt`; `ADDED_OPTIONS` in `conformance.rs` | spelling/help where click declared it (`cage audit`) |
+| global `--quiet` | `help/*.txt`; `ADDED_OPTIONS` in `conformance.rs` | allowlisted: click has no counterpart |
+| `--json` on `domain list` / `secret list` | `help/*.txt`; `ADDED_OPTIONS` in `conformance.rs` | allowlisted: click has no counterpart |
+| `paths`, `version` commands | `help/paths.txt`, `help/version.txt` | `ADDED_COMMANDS` in `conformance.rs` |
+| `completions print` | none (the whole command is hidden) | not part of the surface |
+
+`surface.json` still carries click's option and node counts. `the_counts_match_the_fixture`
+skips the added ids in its walk and adds the fixture's own declarations back, so a
+new option has to be declared in `ADDED_OPTIONS` *and* given a hand-written help line
+before the counts pass again.
+
+`help/*.txt` remain the human-readable record. Their option columns were
+re-rendered to click's layout when the global pair was inserted (the two
+new lines are the only reason every file changed); they are still not
+asserted byte-for-byte. `help/domain-list.txt` and `help/secret-list.txt`
+also record the new `--json`.
+
 Generated from the live click tree in `src/agentcage/cli.py` by
 `scripts/gen-cli-surface.py`. Nothing in this directory was hand-written.
 

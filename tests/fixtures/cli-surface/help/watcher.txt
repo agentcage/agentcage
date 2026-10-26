@@ -9,7 +9,9 @@ Usage: agentcage watcher [OPTIONS] COMMAND [ARGS]...
   ``agents.watcher:`` block in cage.yaml. See docs/explain/traffic-watcher.md.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.
 
 Commands:
   findings  Show the traffic watcher's recorded findings.

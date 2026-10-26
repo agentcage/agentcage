@@ -32,7 +32,10 @@
 //! | [`init`] | `init`, `doctor` |
 //! | [`args`] | the click-shaped defaults every command is built from |
 //! | [`banner`] | `_BannerGroup`'s banner |
-//! | [`completions`] | the one addition to the surface |
+//! | [`completions`] | the one addition to the surface (`completions`, hidden) |
+//! | [`json_out`] | the JSON envelope the automation switches write |
+//! | [`paths`] | `paths`, the resolved state roots |
+//! | [`version`] | `version`, the machine-readable sibling of `--version` |
 //!
 //! # The two group classes this reproduces
 //!
@@ -60,19 +63,23 @@ mod conformance;
 pub(crate) mod context;
 pub(crate) mod domain;
 pub(crate) mod init;
+pub(crate) mod json_out;
+pub(crate) mod paths;
 pub(crate) mod run;
 pub(crate) mod scaffold;
 pub(crate) mod secret;
 pub(crate) mod self_update;
+pub(crate) mod version;
 pub(crate) mod watcher;
 pub(crate) mod watcher_cmd;
 
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
-use clap::{Arg, ArgAction, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, ColorChoice, Command};
 
 use crate::cli::args::aliases_section;
+use crate::cli::context::Ctx;
 
 /// The program name, as it appears in `--version`, `--help` and errors.
 pub(crate) const PROG: &str = "agentcage";
@@ -118,14 +125,28 @@ pub(crate) fn version_line() -> String {
     format!("{PROG}, version {}", agentcage_core::VERSION)
 }
 
+/// The global `--no-color` flag's help, shared by the declaration and by
+/// the recorded `cage audit` option it replaces.
+const NO_COLOR_HELP: &str = "Disable colored output.";
+
 /// Build the whole command tree.
 ///
 /// `styled_banner` is `false` whenever the help is not going to a
-/// terminal, or every piped `agentcage --help` would grow escape bytes
-/// that earlier releases did not emit and the fixture does not have.
+/// terminal -- or when `--no-color`/`NO_COLOR` asked for plain output --
+/// or every piped `agentcage --help` would grow escape bytes that earlier
+/// releases did not emit and the fixture does not have.
 pub(crate) fn command(styled_banner: bool) -> Command {
     let mut root = Command::new(PROG)
         .about("Defense-in-depth proxy sandbox for AI agents.")
+        // clap styles its own usage errors and help headings. `--no-color`
+        // and `NO_COLOR` have to reach that output too, not only the
+        // lines this crate prints, so the whole tree is told to use
+        // plain text whenever the banner would be plain.
+        .color(if styled_banner {
+            ColorChoice::Auto
+        } else {
+            ColorChoice::Never
+        })
         .before_help(banner::banner_text(agentcage_core::VERSION, styled_banner))
         .after_help(aliases_section(&TOP_LEVEL_ALIASES))
         // click's `Group` shows its help and exits 2 when given nothing.
@@ -135,7 +156,8 @@ pub(crate) fn command(styled_banner: bool) -> Command {
         .subcommand_help_heading("Commands")
         // Both flags are hand-rolled: click offers `--version` and
         // `--help` with no short forms, and clap offers `-V` and `-h`
-        // as well. See `args::help_arg`.
+        // as well. See `args::help_arg` (the port adds `-h`, and only
+        // that).
         .disable_help_flag(true)
         .disable_version_flag(true)
         .arg(
@@ -145,6 +167,25 @@ pub(crate) fn command(styled_banner: bool) -> Command {
                 .help("Show the version and exit."),
         )
         .arg(args::help_arg())
+        // The automation contract's two global switches. `global(true)`
+        // puts them on every subcommand as well as the root, so both
+        // `agentcage --quiet cage create` and `agentcage cage create
+        // --quiet` parse. They are additions to click's surface, not
+        // reproductions of it -- see `conformance::ADDED_OPTIONS`.
+        .arg(
+            Arg::new("no_color")
+                .long("no-color")
+                .global(true)
+                .action(ArgAction::SetTrue)
+                .help(NO_COLOR_HELP),
+        )
+        .arg(
+            Arg::new("quiet")
+                .long("quiet")
+                .global(true)
+                .action(ArgAction::SetTrue)
+                .help("Suppress progress output (spinners and banners)."),
+        )
         // Alphabetical, because click's `format_commands` sorts the
         // listing and clap prints declaration order. Sorting here is the
         // whole fix; `every_command_and_subcommand_is_present` asserts
@@ -154,9 +195,11 @@ pub(crate) fn command(styled_banner: bool) -> Command {
         .subcommand(init::doctor())
         .subcommand(domain::command())
         .subcommand(init::init())
+        .subcommand(paths::command())
         .subcommand(scaffold::command())
         .subcommand(secret::command())
         .subcommand(self_update::command())
+        .subcommand(version::command())
         .subcommand(watcher::command());
 
     // The 18 `_BannerGroup` aliases, as hidden top-level commands. They
@@ -177,7 +220,19 @@ pub(crate) fn command(styled_banner: bool) -> Command {
 
 /// Parse `argv` (excluding `argv[0]`) and act on it.
 pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
-    let styled = std::io::stdout().is_terminal();
+    // The two switches are read before the tree is built, because the
+    // help banner's escapes are baked into the tree at build time and
+    // because `--help --no-color` has to be plain even though clap
+    // prints the help before returning matches. Scanning for the two
+    // known flags is exact here: both are boolean, both are global, and
+    // a `--` ends what this CLI owns (everything after it belongs to
+    // the workload, `cage exec`/`run` passthrough).
+    let no_color = flag_given(argv, "--no-color") || std::env::var_os("NO_COLOR").is_some();
+    let quiet = flag_given(argv, "--quiet") || ci_environment();
+    agentcage_cli::output::set_no_color(no_color);
+    agentcage_cli::output::set_quiet(quiet);
+
+    let styled = std::io::stdout().is_terminal() && !no_color;
     let mut full = vec![PROG.to_string()];
     full.extend_from_slice(argv);
 
@@ -207,19 +262,39 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
     };
 
     if name == "completions" {
-        let shell = sub
-            .get_one::<String>("shell")
-            .expect("required by the parser");
+        let Some(shell) = completions::requested_shell(sub) else {
+            // `arg_required_else_help` makes this unreachable; print the
+            // help to stderr and use clap's usage-error code if a future
+            // edit ever lets it through.
+            let mut err = std::io::stderr();
+            let _ = writeln!(err, "{}", completions::command().render_help());
+            return ExitCode::from(2);
+        };
         let mut out = std::io::stdout();
-        completions::generate(shell, command(false), &mut out);
+        completions::generate(&shell, command(false), &mut out);
         return ExitCode::SUCCESS;
+    }
+
+    if name == "version" {
+        return version::main(leaf(sub));
+    }
+
+    if name == "paths" {
+        return paths::main(&Ctx::system(), leaf(sub));
     }
 
     // PR D15. `doctor` takes no arguments, reads no state and writes
     // nothing, so it is the one command whose body can land before the
     // e2e phase that would otherwise gate it.
+    //
+    // `--json` selects the structured report. It is parsed here rather
+    // than in `agentcage_cli::doctor` because the clap tree lives in this
+    // crate and the body is shared with the library's own tests.
     if name == "doctor" {
-        return ExitCode::from(agentcage_cli::doctor::main());
+        let options = agentcage_cli::doctor::Options {
+            json: sub.get_flag("json"),
+        };
+        return ExitCode::from(agentcage_cli::doctor::main(options));
     }
 
     // `agentcage update` replaces this binary. It reads no cage state
@@ -233,6 +308,30 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
         return code;
     }
     not_implemented(&path)
+}
+
+/// Whether `long` appears before the first `--`.
+///
+/// Before the separator, every token belongs to this CLI; after it, to
+/// the workload (`cage exec foo -- ls --no-color` asks `ls` for
+/// `--no-color`, not agentcage). Boolean flags have no value spelling to
+/// get wrong, so an exact match is the whole check.
+fn flag_given(argv: &[String], long: &str) -> bool {
+    for arg in argv {
+        if arg == "--" {
+            return false;
+        }
+        if arg == long {
+            return true;
+        }
+    }
+    false
+}
+
+/// The conventional CI marker (`CI=true`, `CI=1`, or any non-empty
+/// value). A CI log should carry results, not a braille spinner.
+fn ci_environment() -> bool {
+    std::env::var_os("CI").is_some_and(|value| !value.is_empty())
 }
 
 /// The command bodies this port has, keyed by canonical path.
@@ -260,9 +359,9 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "cage edit" => edit::main(&Ctx::system(), leaf),
         "watcher findings" => watcher_cmd::findings(&Ctx::system(), leaf),
         "watcher status" => watcher_cmd::status(&Ctx::system(), leaf),
-        "cage list" => lifecycle::list(&Ctx::system()),
+        "cage list" => lifecycle::list(&Ctx::system(), leaf.get_flag("json")),
         "cage status" => lifecycle::status(&Ctx::system(), leaf),
-        "cage show" => lifecycle::show(&Ctx::system(), &named("name")),
+        "cage show" => lifecycle::show(&Ctx::system(), &named("name"), leaf.get_flag("json")),
         "cage destroy" => lifecycle::destroy(&Ctx::system(), leaf),
         // PR D11.
         "cage backup" => backup::backup(&Ctx::system(), leaf),
@@ -440,15 +539,32 @@ mod tests {
         }
     }
 
-    /// `-h` and `-V` are clap's, not click's, and must not exist.
+    /// `-h` is the port's addition; `-V` is clap's and must not exist.
     #[test]
-    fn no_short_help_or_version_flags() {
+    fn short_help_exists_and_short_version_does_not() {
         let root = command(false);
         let shorts: Vec<char> = root
             .get_arguments()
             .filter_map(clap::Arg::get_short)
             .collect();
-        assert!(!shorts.contains(&'h'), "{shorts:?}");
+        assert!(shorts.contains(&'h'), "{shorts:?}");
         assert!(!shorts.contains(&'V'), "{shorts:?}");
+    }
+
+    /// `-h` reaches the help parameter on every node, not just the root.
+    #[test]
+    fn every_node_accepts_the_short_help_flag() {
+        fn walk(cmd: &clap::Command) {
+            let arg = cmd
+                .get_arguments()
+                .find(|arg| arg.get_id() == "help")
+                .unwrap_or_else(|| panic!("`{}` has no help parameter", cmd.get_name()));
+            assert_eq!(arg.get_short(), Some('h'), "`{}`", cmd.get_name());
+            assert_eq!(arg.get_long(), Some("help"), "`{}`", cmd.get_name());
+            for sub in cmd.get_subcommands() {
+                walk(sub);
+            }
+        }
+        walk(&command(false));
     }
 }

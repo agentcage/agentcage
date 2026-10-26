@@ -30,4 +30,6 @@ Options:
   -n, --max-entries INTEGER       Max entries (0 = unlimited).  [default: 0]
   -o, --output PATH               Output file (default: stdout).
   --json-lines                    Output raw capture JSONL instead of HAR.
-  --help                          Show this message and exit.
+  --no-color                      Disable colored output.
+  --quiet                         Suppress progress output (spinners and banners).
+  -h, --help                      Show this message and exit.

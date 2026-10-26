@@ -15,4 +15,6 @@ Options:
                      seconds). After it expires the domain is blocked at the
                      proxy and pruned from the allowlist. Useful for a one-off
                      task like `npm install`. Only valid in allowlist mode.
-  --help             Show this message and exit.
+  --no-color         Disable colored output.
+  --quiet            Suppress progress output (spinners and banners).
+  -h, --help         Show this message and exit.

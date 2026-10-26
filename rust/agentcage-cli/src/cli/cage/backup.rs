@@ -1337,6 +1337,10 @@ fn restore_apple(
     apple
         .start(target, false)
         .map_err(|error| report_backend_error(&error))?;
+    // The archive carried the source cage's metadata, including any
+    // `stopped_at`. The restored cage is running now, so that timestamp
+    // is stale and `prune --older-than` must not age it by it.
+    services::clear_stopped_at(&ctx.paths, target);
 
     println!("Cage '{target}' restored from {}", tarball.display());
     Ok(())

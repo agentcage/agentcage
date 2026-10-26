@@ -1,0 +1,9 @@
+Usage: agentcage paths [OPTIONS]
+
+  Print the state directories agentcage uses.
+
+Options:
+  --json      Output as JSON.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

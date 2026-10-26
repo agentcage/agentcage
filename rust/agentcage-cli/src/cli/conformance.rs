@@ -108,13 +108,40 @@ const ALLOWED_DIFFERENCES: &[(&str, &str)] = &[
          its own that replaces the binary with a released one, so the alias is gone from \
          the fixture and the command is allowlisted below. `cage update` is unchanged.",
     ),
+    (
+        "`-h` beside `--help`",
+        "click declares `--help` with no short form, and the recorded surface was edited by \
+         hand to add `-h` to that one parameter. It is the first key every user tries, and \
+         its absence was reported as a bug. Both spellings reach the same long help; no \
+         other option gained a short form.",
+    ),
+    (
+        "Two global automation options",
+        "`--no-color` and `--quiet` are declared on the root with clap's `global`, so they \
+         parse before or after any subcommand. They are additions to click's surface, not \
+         reproductions of it, and are allowlisted by id below. `--no-color` replaces the \
+         per-command flag `cage audit` used to declare, with the same id and help text, so \
+         that command's recorded parameters still match.",
+    ),
 ];
 
 /// The root commands the Rust tree has that `cli.py` does not.
 ///
 /// Root only: `update` is also a real `cage` subcommand, which is
 /// compared as usual.
-const ADDED_COMMANDS: &[&str] = &["completions", "update"];
+const ADDED_COMMANDS: &[&str] = &["completions", "paths", "update", "version"];
+
+/// The options the automation contract adds to nodes click did not
+/// declare them on.
+///
+/// `no_color` and `quiet` are declared on the root with `global(true)`,
+/// so they appear on every subcommand. `as_json` is the `--json` flag
+/// added to `domain list` and `secret list`; the id is click's own on
+/// `cage audit`/`cage har`, where the fixture already records it. A node
+/// keeps the comparison when the fixture knows the id, and skips it when
+/// it does not; the counts skip them all and add the fixture's own
+/// declarations back.
+const ADDED_OPTIONS: &[&str] = &["no_color", "quiet", "as_json"];
 
 // ── fixture loading ─────────────────────────────────────────────────
 
@@ -181,14 +208,16 @@ fn find<'a>(root: &'a Command, path: &[String]) -> Option<&'a Command> {
     Some(cursor)
 }
 
-/// The recorded parameters of a node, keyed by their destination name —
+/// The recorded parameters of a node, keyed by their destination name --
 /// which is the id every clap `Arg` in this tree is built with.
+///
+/// `help` is included: the fixture records it as `-h, --help` and this is
+/// what pins the short spelling to every node.
 fn click_params(node: &Value) -> BTreeMap<String, &Value> {
     node["params"]
         .as_array()
         .expect("params is an array")
         .iter()
-        .filter(|p| p["opts"][0] != "--help")
         .map(|p| (p["dest"].as_str().expect("dest").to_string(), p))
         .collect()
 }
@@ -302,7 +331,14 @@ fn every_flag_and_argument_matches_the_recorded_surface() {
 
         let actual: BTreeMap<String, &Arg> = cmd
             .get_arguments()
-            .filter(|a| a.get_id() != "help")
+            // A root-declared global the fixture did not record is an
+            // addition, not a divergence. One the fixture *did* record
+            // (`cage audit`'s `no_color`) is compared, and the global
+            // reproduces its spelling and help text exactly.
+            .filter(|a| {
+                let id = a.get_id().as_str();
+                !ADDED_OPTIONS.contains(&id) || expected.contains_key(id)
+            })
             .map(|a| (a.get_id().to_string(), a))
             .collect();
 
@@ -417,8 +453,17 @@ fn check_arity(where_: &str, click: &Value, arg: &Arg, passthrough: bool) {
             "{where_} passthrough: click's `ignore_unknown_options` is {passthrough}"
         );
     } else if click["is_flag"].as_bool().unwrap_or(false) {
+        // `--help` is a flag too, but clap spells its action `Help` /
+        // `HelpLong` rather than `SetFlag`; every other flag is
+        // `SetTrue`.
         assert!(
-            matches!(arg.get_action(), ArgAction::SetTrue),
+            matches!(
+                arg.get_action(),
+                clap::ArgAction::SetTrue
+                    | clap::ArgAction::Help
+                    | clap::ArgAction::HelpShort
+                    | clap::ArgAction::HelpLong
+            ),
             "{where_} should be a boolean flag"
         );
     } else if click["multiple"].as_bool().unwrap_or(false) {
@@ -608,6 +653,17 @@ fn the_counts_match_the_fixture() {
     let counts = &surface["counts"];
     let root = built();
 
+    // The fixture's own declarations of the added ids (`cage audit`'s
+    // `no_color`, `cage audit`/`cage har`'s `as_json`). The walk skips
+    // every added id; these are added back, so the count stays click's.
+    let declared_additions = surface["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .flat_map(|node| node["params"].as_array().expect("params"))
+        .filter(|param| ADDED_OPTIONS.contains(&p_dest(param).as_str()))
+        .count();
+
     let mut nodes = 0u64;
     let mut options = 0u64;
     let mut hidden = 0u64;
@@ -632,11 +688,15 @@ fn the_counts_match_the_fixture() {
         for arg in cmd.get_arguments() {
             if arg.is_positional() {
                 arguments += 1;
-            } else {
-                options += 1;
-                if arg.is_hide_set() {
-                    hidden += 1;
-                }
+                continue;
+            }
+            let id = arg.get_id().as_str();
+            if ADDED_OPTIONS.contains(&id) {
+                continue;
+            }
+            options += 1;
+            if arg.is_hide_set() {
+                hidden += 1;
             }
         }
         walk.extend(cmd.get_subcommands().map(|sub| (depth + 1, sub)));
@@ -645,9 +705,18 @@ fn the_counts_match_the_fixture() {
     assert_eq!(nodes, counts["nodes"].as_u64().expect("nodes"));
     assert_eq!(arguments, counts["arguments"].as_u64().expect("arguments"));
     // click's option count includes the `--help` it adds to every node
-    // and the root's `--version`; so does this walk.
-    assert_eq!(options, counts["options"].as_u64().expect("options"));
+    // and the root's `--version`; so does this walk. The globals the walk
+    // skipped are added back where the fixture records them.
+    assert_eq!(
+        options + declared_additions as u64,
+        counts["options"].as_u64().expect("options")
+    );
     assert_eq!(hidden, counts["hidden_options"].as_u64().expect("hidden"));
+}
+
+/// The destination name a recorded click parameter is keyed by.
+fn p_dest(param: &Value) -> String {
+    param["dest"].as_str().expect("dest").to_string()
 }
 
 // ── behaviour ───────────────────────────────────────────────────────

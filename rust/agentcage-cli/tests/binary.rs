@@ -821,6 +821,107 @@ fn prune_names_the_data_directory_it_keeps() {
     );
 }
 
+/// `--dry-run` and `--older-than` are visible through the binary too:
+/// the candidate list is exact and nothing is removed.
+#[test]
+fn prune_dry_run_and_older_than_change_nothing() {
+    let dir = agentcage_state::TestDir::new("binary-prune-dry-run");
+    let paths = agentcage_state::Paths::under(dir.path());
+    let now = agentcage_core::har::datetime::DateTime::now_utc().isoformat();
+    for (name, stopped_at) in [
+        ("dry-old", "2000-01-01T00:00:00+00:00"),
+        ("dry-recent", now.as_str()),
+    ] {
+        stage_cage_with_config(
+            dir.path(),
+            name,
+            &format!(
+                "name: {name}\nisolation: container\nlifecycle: interactive\ncontainer:\n  image: \"alpine\"\n"
+            ),
+        );
+        paths
+            .save_metadata(
+                name,
+                &agentcage_core::har::json::Json::Object(vec![
+                    (
+                        "agentcage_version".to_owned(),
+                        agentcage_core::har::json::Json::string("0.40.1"),
+                    ),
+                    (
+                        "lifecycle".to_owned(),
+                        agentcage_core::har::json::Json::string("interactive"),
+                    ),
+                    (
+                        "stopped_at".to_owned(),
+                        agentcage_core::har::json::Json::string(stopped_at),
+                    ),
+                ]),
+            )
+            .expect("metadata is writable");
+    }
+
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &["cage", "prune", "--dry-run", "--older-than", "1h"],
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Dry run: no cages will be removed."),
+        "{text}"
+    );
+    assert!(text.contains("dry-old"), "{text}");
+    assert!(
+        !text.contains("dry-recent"),
+        "the recent cage was selected: {text}"
+    );
+    assert!(paths.deployment_exists("dry-old"), "dry run removed a cage");
+    assert!(
+        paths.deployment_exists("dry-recent"),
+        "dry run removed a cage"
+    );
+}
+
+/// `run --dry-run` reaches no backend and creates no deployment or data
+/// directory; the plan is the only output.
+#[test]
+fn run_dry_run_has_no_side_effects() {
+    let dir = agentcage_state::TestDir::new("binary-run-dry-run");
+    let project = dir.join("project");
+    std::fs::create_dir_all(&project).expect("project dir");
+    let project_arg = project.display().to_string();
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "run",
+            "claude-code",
+            "--dry-run",
+            "--name",
+            "binary-dry",
+            "--project",
+            &project_arg,
+            "--isolation",
+            "container",
+            "-s",
+            "ANTHROPIC_API_KEY=sk-test",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("Dry run: no changes will be made."), "{text}");
+    assert!(text.contains("name: binary-dry"), "{text}");
+    assert!(
+        text.contains("secrets: ANTHROPIC_API_KEY (provided)"),
+        "{text}"
+    );
+    assert!(!text.contains("sk-test"), "the secret value leaked: {text}");
+
+    let paths = agentcage_state::Paths::under(dir.path());
+    assert!(!paths.deployment_exists("binary-dry"));
+    assert!(!paths.deployment_dir("binary-dry").exists());
+    assert!(!paths.cage_data_dir("binary-dry").exists());
+}
+
 /// Every command in the tree has a body.
 ///
 /// Two tests used to live here: one asserting an unported command
@@ -1465,4 +1566,479 @@ secret_injection:
         "the diff does not show the minted placeholder: {printed}"
     );
     assert_diff_matches_written(&printed, &written);
+}
+
+// ── the automation contract (issue #569, phase 0) ───────────────────
+//
+// `-h`, `--no-color`/`NO_COLOR`, `--quiet`/`CI`, the JSON envelope and
+// `agentcage paths` are for scripts. The script-shaped assertions here
+// are deliberately made against the *process*: a pty for the colour
+// tests (a pipe would strip the escapes for a reason that has nothing to
+// do with the new flags), and one parsed JSON document for each envelope.
+
+/// Put the child's stdout/stderr on a pty and read everything it wrote.
+///
+/// Only a terminal makes `output::echo` keep its escapes, so proving
+/// `--no-color` changes anything needs one. stdin is `/dev/null`; the
+/// child is `--help` or a command that fails fast, and both exits close
+/// the slave side.
+fn agentcage_in_a_pty(home: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> String {
+    let pty = nix::pty::openpty(None, None).expect("a pty");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agentcage"));
+    command
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_RUNTIME_DIR", home.join("run"))
+        // The test controls these; an inherited value would decide the
+        // assertion for it. A terminal alone is not enough for clap's
+        // colour writer: `TERM=dumb` (GitHub's runner) strips the help,
+        // so use a colour-capable terminal name for the pty.
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("FORCE_COLOR")
+        .env_remove("CI")
+        .env("TERM", "xterm-256color")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(
+            pty.slave.try_clone().expect("clone the pty"),
+        ))
+        .stderr(std::process::Stdio::from(pty.slave));
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().expect("the binary starts");
+    // The parent's own copies of the slave side keep the pty open; the
+    // child closing its stdio is what must produce EOF here.
+    drop(command);
+    let mut output = Vec::new();
+    {
+        use std::io::Read as _;
+        let mut master = std::fs::File::from(pty.master);
+        let mut buffer = [0_u8; 4096];
+        loop {
+            match master.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => output.extend_from_slice(&buffer[..n]),
+                // A signal interrupted the read; try again.
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                // EIO once the last slave descriptor closes, on Linux.
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.wait();
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+/// One parsed JSON document on stdout, and nothing on stderr.
+fn json_document(out: &Output) -> serde_json::Value {
+    assert_eq!(code(out), 0, "stderr: {}", stderr(out));
+    assert!(stderr(out).is_empty(), "{}", stderr(out));
+    serde_json::from_str(&stdout(out)).unwrap_or_else(|error| {
+        panic!("stdout is not one JSON document ({error}): {}", stdout(out))
+    })
+}
+
+/// The five envelope keys, in this order, in the raw bytes.
+fn assert_envelope(doc: &serde_json::Value, command: &str) {
+    assert_envelope_ok(doc, command, true);
+}
+
+fn assert_envelope_ok(doc: &serde_json::Value, command: &str, ok: bool) {
+    assert_eq!(doc["schema_version"], 1);
+    assert_eq!(doc["command"], command);
+    assert_eq!(doc["ok"], ok);
+    assert_eq!(doc["warnings"], serde_json::json!([]));
+}
+
+fn assert_key_order(text: &str, keys: &[&str]) {
+    let mut last = 0;
+    for key in keys {
+        let needle = format!("\"{key}\"");
+        let at = text[last..]
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{key} missing from {text}"))
+            + last;
+        assert!(at >= last, "{keys:?} are out of order in {text}");
+        last = at + needle.len();
+    }
+}
+
+/// `-h` is the same help as `--help`, at the root and under any command.
+#[test]
+fn short_and_long_help_are_the_same_help() {
+    assert_eq!(stdout(&agentcage(&["-h"])), stdout(&agentcage(&["--help"])));
+    for args in [
+        vec!["cage", "har"],
+        vec!["cage", "create"],
+        vec!["domain", "list"],
+        vec!["secret", "set"],
+        vec!["paths"],
+        vec!["version"],
+    ] {
+        let mut short_args = args.clone();
+        short_args.push("-h");
+        let mut long_args = args.clone();
+        long_args.push("--help");
+        let short = agentcage(&short_args);
+        let long = agentcage(&long_args);
+        assert_eq!(code(&short), 0, "{args:?}: {}", stderr(&short));
+        assert_eq!(
+            stdout(&short),
+            stdout(&long),
+            "{args:?}: -h and --help differ"
+        );
+        assert!(stdout(&short).contains("Usage:"), "{args:?}");
+    }
+    // Every group as well.
+    for group in ["cage", "domain", "secret", "watcher", "scaffold"] {
+        let out = agentcage(&[group, "-h"]);
+        assert_eq!(code(&out), 0, "{group}: {}", stderr(&out));
+        assert!(stdout(&out).contains("Usage:"), "{group}");
+    }
+}
+
+/// On a terminal the escapes are there, and `--no-color` / `NO_COLOR`
+/// take them away — including clap's own styled usage output.
+#[test]
+fn no_color_switches_off_ansi_on_a_terminal() {
+    let dir = agentcage_state::TestDir::new("binary-no-color");
+    let home = dir.path();
+
+    let styled = agentcage_in_a_pty(home, &["--help"], &[]);
+    assert!(
+        styled.contains("\u{1b}["),
+        "a tty should keep the banner's escapes: {styled:.80}"
+    );
+
+    for (args, env) in [
+        (vec!["--no-color", "--help"], vec![]),
+        (vec!["--help"], vec![("NO_COLOR", "1")]),
+        // "any value", including the empty one.
+        (vec!["--help"], vec![("NO_COLOR", "")]),
+        // `NO_COLOR` wins over the override variables agentcage does not
+        // read; this pins that an inherited `FORCE_COLOR` cannot turn
+        // colour back on.
+        (
+            vec!["--help"],
+            vec![
+                ("NO_COLOR", "1"),
+                ("FORCE_COLOR", "1"),
+                ("CLICOLOR_FORCE", "1"),
+            ],
+        ),
+        // After the command, before the help: every global position.
+        (vec!["cage", "list", "--no-color", "--help"], vec![]),
+    ] {
+        let plain = agentcage_in_a_pty(home, &args, &env);
+        assert!(
+            !plain.contains("\u{1b}["),
+            "{args:?} {env:?} still carried an escape: {plain:.80}"
+        );
+    }
+
+    // A parse error is clap's output, and the flag has to reach it too.
+    let plain = agentcage_in_a_pty(home, &["nosuchcommand", "--no-color"], &[]);
+    assert!(!plain.contains("\u{1b}["), "{plain:.80}");
+}
+
+/// `--quiet` and `CI` drop the progress banner; the command's own error
+/// still lands on stderr.
+#[test]
+fn quiet_and_ci_silence_progress_but_never_the_error() {
+    let dir = agentcage_state::TestDir::new("binary-quiet");
+    let home = dir.path();
+    let config = home.join("not-a-cage.yaml");
+    std::fs::write(&config, "not a cage\n").expect("a config file");
+    let config = config.display().to_string();
+
+    let loud = agentcage_in_a_pty(home, &["cage", "create", &config], &[]);
+    assert!(
+        loud.contains(&format!("agentcage v{}", agentcage_core::VERSION)),
+        "the banner is the progress output this test removes: {loud:.80}"
+    );
+    assert!(loud.contains("error:"), "{loud:.80}");
+
+    for (args, env) in [
+        (vec!["--quiet", "cage", "create", &config], vec![]),
+        (vec!["cage", "create", "--quiet", &config], vec![]),
+        (vec!["cage", "create", &config], vec![("CI", "1")]),
+    ] {
+        let quiet = agentcage_in_a_pty(home, &args, &env);
+        assert!(
+            !quiet.contains(&format!("agentcage v{}", agentcage_core::VERSION)),
+            "{args:?} {env:?} still printed the banner: {quiet:.80}"
+        );
+        assert!(
+            quiet.contains("error:"),
+            "{args:?} {env:?} swallowed the error: {quiet:.80}"
+        );
+    }
+}
+
+/// `--quiet` must not touch a command's explicit output.
+#[test]
+fn quiet_keeps_explicit_command_output() {
+    let dir = agentcage_state::TestDir::new("binary-quiet-output");
+    let quiet = agentcage_sandboxed(dir.path(), &["--quiet", "paths"]);
+    let loud = agentcage_sandboxed(dir.path(), &["paths"]);
+    assert_eq!(code(&quiet), 0, "{}", stderr(&quiet));
+    assert_eq!(stdout(&quiet), stdout(&loud));
+    assert!(stdout(&quiet).contains("ROOT"), "{}", stdout(&quiet));
+
+    // An error still reaches stderr under --quiet, with exit 1.
+    let out = agentcage_sandboxed(dir.path(), &["domain", "list", "nope", "--quiet"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("does not exist"), "{}", stderr(&out));
+}
+
+/// `agentcage version --json`, and the plain spelling it replaces.
+#[test]
+fn version_json_is_the_shared_envelope() {
+    let out = agentcage(&["version", "--json"]);
+    let text = stdout(&out);
+    let doc = json_document(&out);
+    assert_envelope(&doc, "version");
+    assert_eq!(doc["data"]["name"], "agentcage");
+    assert_eq!(doc["data"]["version"], agentcage_core::VERSION);
+    assert_key_order(
+        &text,
+        &["schema_version", "command", "ok", "data", "warnings"],
+    );
+
+    let plain = agentcage(&["version"]);
+    assert_eq!(code(&plain), 0);
+    assert_eq!(
+        stdout(&plain).trim_end(),
+        format!("agentcage, version {}", agentcage_core::VERSION)
+    );
+}
+
+/// `agentcage paths` prints the roots `Paths` resolved, in both shapes.
+#[test]
+fn paths_prints_the_resolved_roots() {
+    let dir = agentcage_state::TestDir::new("binary-paths");
+    let home = dir.path();
+
+    let human = agentcage_sandboxed(home, &["paths"]);
+    assert_eq!(code(&human), 0, "{}", stderr(&human));
+    let text = stdout(&human);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("ROOT"), "{text}");
+    for label in [
+        "home",
+        "config",
+        "data",
+        "cache",
+        "runtime",
+        "apple-container",
+        "quadlets",
+        "user-units",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(label)),
+            "{label} is missing from:\n{text}"
+        );
+    }
+    assert!(
+        text.contains(&home.join(".config/agentcage").display().to_string()),
+        "the config root is not the sandbox's: {text}"
+    );
+
+    let out = agentcage_sandboxed(home, &["paths", "--json"]);
+    let doc = json_document(&out);
+    assert_envelope(&doc, "paths");
+    assert_eq!(
+        doc["data"]["config"],
+        home.join(".config/agentcage").display().to_string()
+    );
+    assert_eq!(
+        doc["data"]["data"],
+        home.join(".local/share/agentcage").display().to_string()
+    );
+    assert_eq!(
+        doc["data"]["runtime"],
+        home.join("run").display().to_string()
+    );
+    assert_eq!(
+        doc["data"]["cache"],
+        home.join(".local/share/agentcage/assets")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        doc["data"]["home"],
+        home.display().to_string(),
+        "the home row is the sandbox root"
+    );
+    assert_eq!(
+        doc["data"]["apple_container"],
+        home.join(".config/agentcage/apple-container")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        doc["data"]["quadlets"],
+        home.join(".config/containers/systemd")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        doc["data"]["user_units"],
+        home.join(".config/systemd/user").display().to_string()
+    );
+    assert_eq!(
+        doc["data"].as_object().expect("data object").len(),
+        8,
+        "paths --json has one key per root: {}",
+        doc["data"]
+    );
+    // Nothing was created by asking.
+    assert!(!home.join(".config/agentcage").exists());
+}
+
+/// A cage on disk with a domain list, for the two `list --json` cases.
+fn stage_domain_cage(home: &std::path::Path, name: &str) {
+    stage_cage_with_config(
+        home,
+        name,
+        &format!(
+            "name: {name}\n\
+             isolation: container\n\
+             container:\n  image: \"alpine\"\n\
+             domains:\n  allow:\n    - example.com\n    - api.example.com\n\
+             \x20 passthrough:\n    - passthrough.example.com\n\
+             \x20 expires:\n    api.example.com: 2030-01-01T00:00:00Z\n"
+        ),
+    );
+}
+
+/// `domain list --json` (and its `ls` alias) is the shared envelope, and
+/// carries the same list the table prints.
+#[test]
+fn domain_list_json_is_the_shared_envelope() {
+    let dir = agentcage_state::TestDir::new("binary-domain-json");
+    let home = dir.path();
+    stage_domain_cage(home, "acme");
+
+    let out = agentcage_sandboxed(home, &["domain", "list", "acme", "--json"]);
+    let text = stdout(&out);
+    let doc = json_document(&out);
+    assert_envelope(&doc, "domain list");
+    assert_eq!(doc["data"]["cage"], "acme");
+    assert_eq!(doc["data"]["mode"], "allowlist");
+    let domains: Vec<&str> = doc["data"]["domains"]
+        .as_array()
+        .expect("domains")
+        .iter()
+        .map(|entry| entry["domain"].as_str().expect("domain"))
+        .collect();
+    assert_eq!(domains, ["api.example.com", "example.com"]);
+    let api = &doc["data"]["domains"][0];
+    assert_eq!(api["expires_at"], "2030-01-01T00:00:00Z");
+    assert_eq!(
+        doc["data"]["passthrough"],
+        serde_json::json!(["passthrough.example.com"])
+    );
+    assert_eq!(
+        doc["data"]["passthrough_only"],
+        serde_json::json!(["passthrough.example.com"])
+    );
+    assert_key_order(
+        &text,
+        &["schema_version", "command", "ok", "data", "warnings"],
+    );
+
+    // The alias resolves to the same document.
+    let alias = agentcage_sandboxed(home, &["domain", "ls", "acme", "--json"]);
+    assert_eq!(stdout(&alias), text, "the ls alias changed the document");
+    assert_eq!(code(&alias), 0, "{}", stderr(&alias));
+}
+
+/// `secret list --json` names secrets and never emits their values.
+#[test]
+fn secret_list_json_never_carries_a_value() {
+    let dir = agentcage_state::TestDir::new("binary-secret-json");
+    let home = dir.path();
+    let name = "acme";
+    let paths = agentcage_state::Paths::under(home);
+    stage_cage_with_config(
+        home,
+        name,
+        &format!(
+            "name: {name}\n\
+             isolation: apple-container\n\
+             container:\n  image: \"alpine\"\n\
+             secrets:\n  backend: plaintext\n  allow_plaintext: true\n\
+             secret_injection:\n  \
+               - env: API_KEY\n    placeholder: \"{{{{API_KEY}}}}\"\n"
+        ),
+    );
+    let value = "sk-live-this-must-not-be-printed";
+    std::fs::write(
+        paths.deployment_dir(name).join("pending_secrets.json"),
+        format!("[[\"API_KEY\", {value:?}]]"),
+    )
+    .expect("the plaintext store");
+
+    let out = agentcage_sandboxed(home, &["secret", "list", name, "--json"]);
+    let doc = json_document(&out);
+    assert_envelope(&doc, "secret list");
+    assert_eq!(doc["data"]["cage"], name);
+    assert_eq!(doc["data"]["secrets"][0]["name"], "API_KEY");
+    assert_eq!(doc["data"]["secrets"][0]["type"], "injection");
+    assert_eq!(doc["data"]["secrets"][0]["present"], true);
+    assert_eq!(doc["data"]["secrets"][0]["placeholder"], "{{API_KEY}}");
+    assert!(
+        !stdout(&out).contains(value),
+        "the secret value reached stdout: {}",
+        stdout(&out)
+    );
+
+    let alias = agentcage_sandboxed(home, &["secret", "ls", name, "--json"]);
+    assert_eq!(stdout(&alias), stdout(&out));
+    assert_eq!(code(&alias), 0, "{}", stderr(&alias));
+}
+
+/// A declared-but-absent secret still exits 1 in JSON mode — the
+/// document says `ok: false` and the exit code agrees.
+#[test]
+fn secret_list_json_keeps_the_missing_exit_code() {
+    let dir = agentcage_state::TestDir::new("binary-secret-json-missing");
+    let home = dir.path();
+    stage_cage_with_config(
+        home,
+        "acme",
+        "name: acme\nisolation: apple-container\ncontainer:\n  image: \"alpine\"\n\
+         secrets:\n  backend: plaintext\n  allow_plaintext: true\n\
+         secret_injection:\n  - env: API_KEY\n    placeholder: \"{{API_KEY}}\"\n",
+    );
+    let out = agentcage_sandboxed(home, &["secret", "list", "acme", "--json"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("one document");
+    assert_envelope_ok(&doc, "secret list", false);
+    assert_eq!(doc["data"]["secrets"][0]["present"], false);
+}
+
+/// `completions print --shell` is the positional spelling, byte for byte.
+#[test]
+fn completions_print_matches_the_positional_spelling() {
+    for shell in ["bash", "zsh", "fish"] {
+        let positional = agentcage(&["completions", shell]);
+        let flagged = agentcage(&["completions", "print", "--shell", shell]);
+        assert_eq!(code(&positional), 0, "{shell}: {}", stderr(&positional));
+        assert_eq!(code(&flagged), 0, "{shell}: {}", stderr(&flagged));
+        assert_eq!(stdout(&flagged), stdout(&positional), "{shell}");
+        assert!(stdout(&flagged).contains("agentcage"), "{shell}");
+    }
+    assert_eq!(code(&agentcage(&["completions", "print"])), 2);
+    assert_eq!(
+        code(&agentcage(&["completions", "print", "--shell", "elvish"])),
+        2
+    );
+    // There is no `install`: dotfiles are the user's.
+    assert_eq!(code(&agentcage(&["completions", "install", "bash"])), 2);
 }

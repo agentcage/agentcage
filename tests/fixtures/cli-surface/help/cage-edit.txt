@@ -13,4 +13,6 @@ Usage: agentcage cage edit [OPTIONS] NAME
     changes.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.
