@@ -5,4 +5,6 @@ Usage: agentcage cage destroy [OPTIONS] NAME
 Options:
   -y, --yes       Skip confirmation prompt
   --keep-secrets  Keep scoped secrets (useful for recreating the cage)
-  --help          Show this message and exit.
+  --no-color      Disable colored output.
+  --quiet         Suppress progress output (spinners and banners).
+  -h, --help      Show this message and exit.

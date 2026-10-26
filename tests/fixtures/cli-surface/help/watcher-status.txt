@@ -3,4 +3,6 @@ Usage: agentcage watcher status [OPTIONS] NAME
   Show the traffic watcher's configuration and last scan.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

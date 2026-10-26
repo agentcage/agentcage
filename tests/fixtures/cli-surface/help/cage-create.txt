@@ -14,4 +14,6 @@ Options:
   --pull                 Force re-pull of the base image from the registry.
   --time                 Echo per-phase wall times and print a summary on
                          completion.
-  --help                 Show this message and exit.
+  --no-color             Disable colored output.
+  --quiet                Suppress progress output (spinners and banners).
+  -h, --help             Show this message and exit.

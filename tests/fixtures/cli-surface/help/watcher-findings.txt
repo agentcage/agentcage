@@ -10,4 +10,6 @@ Options:
   -n, --max-entries INTEGER       Max findings to show (most recent; 0 = all).
                                   [default: 50]
   --json                          Output raw finding entries as JSON lines.
-  --help                          Show this message and exit.
+  --no-color                      Disable colored output.
+  --quiet                         Suppress progress output (spinners and banners).
+  -h, --help                      Show this message and exit.

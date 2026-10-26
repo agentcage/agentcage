@@ -7,16 +7,20 @@ Usage: agentcage [OPTIONS] COMMAND [ARGS]...
   Defense-in-depth proxy sandbox for AI agents.
 
 Options:
-  --version  Show the version and exit.
-  --help     Show this message and exit.
+  --version   Show the version and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.
 
 Commands:
   cage      Manage cages.
   doctor    Check system health and diagnose common issues.
   domain    Manage cage domain filters.
   init      Scaffold a new agentcage config file.
+  paths     Print the state directories agentcage uses.
   scaffold  Create and manage custom scaffolds.
   secret    Manage cage-scoped secrets.
+  version   Show the version and exit.
   watcher   Read the traffic watcher's findings and scan status.
 
 Aliases:

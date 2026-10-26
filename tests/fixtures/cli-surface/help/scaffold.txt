@@ -3,7 +3,9 @@ Usage: agentcage scaffold [OPTIONS] COMMAND [ARGS]...
   Create and manage custom scaffolds.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.
 
 Commands:
   create  Create a new user scaffold.
