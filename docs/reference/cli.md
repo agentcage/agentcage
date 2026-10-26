@@ -149,7 +149,7 @@ The report names, in order: the cage's name, isolation backend, lifecycle and sc
 Real secret values are never read or printed. Placeholders are decoys, but `show` masks their random suffix anyway so a screenshot cannot be mistaken for a leaked credential; `secret list` prints them in full when that is what you need.
 
 **Options**:
-- `--json`: The same report as one JSON object (see [JSON output](#json-output)). `data` holds `name`, `isolation`, `lifecycle`, `image`, `build`, `version`, `scaffold`, `status` (`state`, `text`, `running`, `total`), `network` (`subnet`, `cage`, `egress`, or `null` on apple-container, which has no `10.89.x` pool), `data_dir`, `ports`, `volumes`, `named_volumes` (`name`, `mount`), `tmpfs`, `domains` (`mode`, `count`, `names`), `passthrough`, `secrets` (`expected`, `present`, `missing`, and `entries` of `name`, `present`, masked `placeholder`), `watcher` (`enabled`, `state`, and `last_scan`/`last_scan_failed`/`findings_total` once it has scanned), and `recent_blocked` (`blocked`, `scanned`, or `null`).
+- `--json`: The same report as one JSON object (see [JSON output](#json-output)). `data` holds `name`, `isolation`, `lifecycle`, `image`, `build`, `version`, `scaffold`, `status` (`state`, `text`, `running`, `total`), `network` (`subnet`, `cage`, `egress`, or `null` on apple-container, which has no `10.89.x` pool), `data_dir`, `ports`, `volumes`, `named_volumes` (`name`, `mount`), `tmpfs`, `domains` (`mode`, `count`, `names`), `passthrough`, `secrets` (`expected`, `present`, `missing`, and `entries` of `name`, `present`, masked `placeholder`), `watcher` (`enabled`, `state`, and `last_scan`/`last_scan_failed`/`findings_total` once it has scanned), and `recent_blocked` (`blocked`, `scanned`, or `null`). `status.state` uses the same vocabulary as `cage list --json` — `running`, `stopped`, `degraded`, `exited` — so a stopped interactive or ephemeral cage is `exited` in both; `status.text` is the line the human report prints (`stopped (0/2)`), which is unchanged. `recent_blocked` counts the last 500 capture entries, growing the read backwards past entries larger than 256 KiB, and `scanned` is the number of those entries that parsed — not the number of log lines.
 
 ---
 
@@ -395,7 +395,9 @@ Runs comprehensive diagnostic checks on host dependencies, virtualization backen
 The human report is unchanged: four sections, one marked line per check, an optional indented remediation hint, and a summary that counts errors and warnings. The exit status is `1` when any check errored and `0` otherwise, in both output modes.
 
 **Options**:
-- `--json`: Print the report as one JSON object instead of the text. It carries `schema_version: 1`, `command: "doctor"`, `ok` (true when the exit status is 0), `exit_code`, `summary` (`passed`, `warnings`, `errors`) and `checks`. Each check is flat, so a consumer does not have to walk sections: `section` (its heading), `name` (the message it prints), `level` (`pass`, `warn` or `error`) and `hint` (the remediation line, or `""`).
+- `--json`: Print the report as one JSON object instead of the text. It carries `schema_version: 1`, `command: "doctor"`, `ok` (true when the exit status is 0), `exit_code`, `summary` (`passed`, `warnings`, `errors`) and `checks`. Each check is flat, so a consumer does not have to walk sections: `section` (its heading), `id` (a stable key, see below), `name` (the message it prints, with the host's versions and wording), `level` (`pass`, `warn` or `error`) and `hint` (the remediation line, or `""`).
+
+  `id` is the key to match on: it is the same on every host and in every release, while `name` is the message and changes with versions (`Podman 6.1.4` on one host, `Podman not found` on another). The ids are `podman`, `podman-rootless`, `lima`, `apple-container`, `qemu`, `systemd-linger`, `cgroup-v2`, `disk-space`, `secret-backend`, `dns`, `subnet-conflicts`, and `port-<port>` for each probed port (`port-8080`, `port-3000`, `port-18789`). A check that does not run on a host is absent rather than reported as skipped: `podman-rootless`, `qemu`, `systemd-linger` and `cgroup-v2` do not run on macOS, and `apple-container` only runs there.
 
 ---
 
@@ -442,7 +444,7 @@ Read-only commands take `--json` and print one JSON object instead of their text
 - `command` is the canonical command that produced the document (`cage show`, `cage list`).
 - `ok` is `true` on success. A refusal — a cage that does not exist, an unreadable config — still exits non-zero with the message on stderr and prints no document, the same as the text mode.
 - `data` is the command's payload; its fields are documented per command above.
-- `warnings` is a list of things the command could not read but did not fail on, such as a traffic watcher whose guest-side scan state could not be fetched.
+- `warnings` is a list of things the command could not read but did not fail on, such as a traffic watcher whose guest-side scan state could not be fetched or could not be parsed.
 
 `agentcage doctor --json` uses its own document rather than this envelope (its checks and summary counts are the payload); its `schema_version` is also `1`.
 

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`agentcage doctor --json`.** The doctor's checks are now also available as one JSON object (`schema_version: 1`, `command`, `ok`, `exit_code`, `summary` counts and a flat `checks` list of `section`/`name`/`level`/`hint`) for scripts that want to assert on a host rather than read it. The human report and the exit status are unchanged. ([#570](https://github.com/agentcage/agentcage/issues/570))
+- **`agentcage doctor --json`.** The doctor's checks are now also available as one JSON object (`schema_version: 1`, `command`, `ok`, `exit_code`, `summary` counts and a flat `checks` list of `section`/`id`/`name`/`level`/`hint`) for scripts that want to assert on a host rather than read it. `id` is the stable key (`podman`, `lima`, `port-8080`, ...); `name` is the message the check printed, versions and all. The human report and the exit status are unchanged. ([#570](https://github.com/agentcage/agentcage/issues/570))
 - **`cage show --json`, `cage status --json` and `cage list --json`.** Each prints one object under the shared read-command envelope (`schema_version`, `command`, `ok`, `data`, `warnings`); `cage status NAME --json` is the `cage show` document and `cage status --json` without a name is the `cage list` document.
 
 ### Changed
@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`cage show`'s blocked count no longer disappears on a log with large entries.** `recent_blocked` read a fixed 256 KiB tail of the capture log, so an entry larger than that (a body up to `capture.max_body_size`, 10 MiB by default) started the read mid-entry, was discarded as torn, and the newest blocked request went uncounted — `recent_blocked: null`, or `Blocked: 0 of the last N`. The tail read now grows backwards until it holds the 500-entry window or reaches the start of the file (capped at 64 MiB), keeps a line when the read happened to begin on a line boundary, and counts only lines that parse as capture entries.
+- **`cage show --json` / `cage status NAME --json` agree with `cage list --json` on `status.state`.** A stopped interactive or ephemeral cage is `exited` in both documents, a stopped service is `stopped`; the printed `status.text` line is unchanged. An unreadable traffic-watcher state file is now reported in the document's `warnings` instead of only changing the state word.
 - **`cage verify` says what to do about a failure.** Every `[FAIL]` is now followed by a `fix:` line: an exact command where the repair is the same on every host (`agentcage cage start NAME`, `agentcage cage update NAME`, `agentcage cage restart NAME`) or a docs link where it is host-specific (a rootful podman).
 
 ## [0.53.1] - 2026-10-25

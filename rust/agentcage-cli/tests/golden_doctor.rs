@@ -486,8 +486,8 @@ fn the_doctor_asks_which_rather_than_probing_the_real_path() {
 /// hosts rather than one.
 ///
 /// The checks are flat, each carrying its `section`, so a consumer can
-/// find a failure without walking two arrays. `name` is the check's
-/// message — the doctor has no separate identifier.
+/// find a failure without walking two arrays. `id` is the stable key;
+/// `name` is the check's message.
 #[test]
 fn the_json_report_has_the_documented_schema() {
     let doc = fixture();
@@ -576,6 +576,11 @@ fn the_json_report_has_the_documented_schema() {
                 "{id}: check {index} names the wrong section"
             );
             assert_eq!(
+                check["id"].as_str(),
+                Some(result.id.as_str()),
+                "{id}: check {index} carries the wrong id"
+            );
+            assert_eq!(
                 check["name"].as_str(),
                 Some(result.message.as_str()),
                 "{id}"
@@ -607,5 +612,65 @@ fn json_does_not_change_the_exit_status() {
             u64::from(report.exit_code()),
             value["exit_code"].as_u64().expect("exit_code")
         );
+    }
+}
+
+/// Every check carries a stable key, and it is stable.
+///
+/// A JSON consumer keys on `id`, so it must be present, unique within a
+/// report, and *not* derived from the message: messages carry versions
+/// (`Podman 6.1.4`), PIDs and host-specific wording, all of which differ
+/// between two hosts running the same doctor. The set is also asserted
+/// to be the documented vocabulary, so renaming one is a deliberate
+/// schema change rather than a silent one.
+#[test]
+fn every_check_has_a_stable_identifier() {
+    const KNOWN_IDS: [&str; 14] = [
+        "podman",
+        "podman-rootless",
+        "lima",
+        "apple-container",
+        "qemu",
+        "systemd-linger",
+        "cgroup-v2",
+        "disk-space",
+        "secret-backend",
+        "dns",
+        "subnet-conflicts",
+        "port-8080",
+        "port-3000",
+        "port-18789",
+    ];
+    let doc = fixture();
+    for case in ported_cases(&doc) {
+        let case_id = str_at(case, "id");
+        let host = FakeHost::from_json(&case["env"]);
+        let runner = runner_for(&doc, &case["env"]);
+        let report = doctor::run(&runner, &host);
+
+        let mut seen = BTreeSet::new();
+        for result in report.results() {
+            let id = result.id.as_str();
+            assert!(!id.is_empty(), "{case_id}: a check has no id");
+            assert!(
+                id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "{case_id}: id {id:?} is not a stable slug"
+            );
+            assert!(
+                !id.contains('.'),
+                "{case_id}: id {id:?} looks like it carries a version"
+            );
+            assert!(
+                !id.contains(&result.message),
+                "{case_id}: id {id:?} is derived from the message"
+            );
+            assert!(
+                KNOWN_IDS.contains(&id),
+                "{case_id}: undocumented check id {id:?}"
+            );
+            assert!(seen.insert(id.to_owned()), "{case_id}: duplicate id {id:?}");
+        }
+        assert!(!seen.is_empty(), "{case_id}: the report has no checks");
     }
 }

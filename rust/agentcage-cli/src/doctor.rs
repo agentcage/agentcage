@@ -59,9 +59,12 @@
 //! `Report::to_json` renders the checks `run` already produced, so
 //! the human report and the JSON document cannot disagree about what a
 //! host answered: both are views of one `Report`. Every check is a
-//! flat entry carrying its `section`, its `name` (the message it
-//! prints), its `level` and its `hint`, under a stable
-//! `JSON_SCHEMA_VERSION`. The exit code is the same in both modes.
+//! flat entry carrying its `section`, its stable `id` (`podman`,
+//! `port-8080`, ...), its `name` (the message it prints), its `level`
+//! and its `hint`, under a stable `JSON_SCHEMA_VERSION`. The id is what
+//! a consumer keys on: the message carries versions and host-specific
+//! wording, so it changes between hosts. The exit code is the same in
+//! both modes.
 
 use std::fmt;
 use std::time::Duration;
@@ -186,6 +189,11 @@ impl Level {
 /// One check's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckResult {
+    /// The stable key a `--json` consumer keys on, assigned by
+    /// [`run`]: `podman`, `podman-rootless`, `port-8080`, ... It never
+    /// carries a version or the message, both of which change between
+    /// hosts and releases.
+    pub id: String,
     /// Which mark it prints.
     pub level: Level,
     /// The line itself.
@@ -197,6 +205,7 @@ pub struct CheckResult {
 impl CheckResult {
     fn new(level: Level, message: impl Into<String>, hint: impl Into<String>) -> Self {
         Self {
+            id: String::new(),
             level,
             message: message.into(),
             hint: hint.into(),
@@ -209,6 +218,16 @@ impl CheckResult {
 
     fn warn(message: impl Into<String>) -> Self {
         Self::new(Level::Warn, message, "")
+    }
+
+    /// Attach the check's stable identifier.
+    ///
+    /// The id is assigned where the check is scheduled rather than
+    /// inside the check itself, so `run` is the single place that says
+    /// what every entry in the report is called.
+    fn identified(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
     }
 }
 
@@ -264,9 +283,10 @@ impl Report {
     ///
     /// The checks are flat rather than nested under their sections: a
     /// consumer looking for "which check failed" should not have to
-    /// walk two arrays, so each entry carries its own `section`. `name`
-    /// is the check's message — the doctor has no separate identifier,
-    /// and its message is what it prints.
+    /// walk two arrays, so each entry carries its own `section`. `id` is
+    /// the stable key — `podman`, `podman-rootless`, `port-8080` — and
+    /// `name` is the message the check printed, which carries versions
+    /// and host-specific wording and is therefore not a key.
     #[must_use]
     pub fn to_json(&self) -> Json {
         let checks: Vec<Json> = self
@@ -276,6 +296,7 @@ impl Report {
                 section.results.iter().map(|result| {
                     Json::Object(vec![
                         ("section".to_owned(), Json::string(section.title)),
+                        ("id".to_owned(), Json::string(&result.id)),
                         ("name".to_owned(), Json::string(&result.message)),
                         ("level".to_owned(), Json::string(result.level.as_str())),
                         ("hint".to_owned(), Json::string(&result.hint)),
@@ -880,23 +901,31 @@ pub fn run(runner: &dyn CommandRunner, host: &dyn DoctorHost) -> Report {
         title: "Prerequisites",
         results: Vec::new(),
     };
-    prereqs.results.push(check_podman(runner, distro, is_macos));
+    prereqs
+        .results
+        .push(check_podman(runner, distro, is_macos).identified("podman"));
     // Gated on the previous result, which on macOS is a `pass` even when
     // podman is absent — hence the second condition, not just the first.
     if prereqs.results[0].level == Level::Pass && !is_macos {
-        prereqs.results.push(check_podman_rootless(runner));
+        prereqs
+            .results
+            .push(check_podman_rootless(runner).identified("podman-rootless"));
     }
     prereqs
         .results
-        .push(check_lima(runner, distro, is_macos, apple_ok));
+        .push(check_lima(runner, distro, is_macos, apple_ok).identified("lima"));
     if let Some(issues) = &apple_issues {
-        prereqs.results.push(check_apple_container(issues));
+        prereqs
+            .results
+            .push(check_apple_container(issues).identified("apple-container"));
     }
     if !is_macos {
         prereqs
             .results
-            .push(check_qemu(runner, distro, &host.machine()));
-        prereqs.results.push(check_systemd_linger(runner, host));
+            .push(check_qemu(runner, distro, &host.machine()).identified("qemu"));
+        prereqs
+            .results
+            .push(check_systemd_linger(runner, host).identified("systemd-linger"));
     }
 
     let mut system = Section {
@@ -904,21 +933,30 @@ pub fn run(runner: &dyn CommandRunner, host: &dyn DoctorHost) -> Report {
         results: Vec::new(),
     };
     if !is_macos {
-        system.results.push(check_cgroup_v2(host));
+        system
+            .results
+            .push(check_cgroup_v2(host).identified("cgroup-v2"));
     }
-    system.results.push(check_disk_space(host));
+    system
+        .results
+        .push(check_disk_space(host).identified("disk-space"));
 
     let secrets = Section {
         title: "Secrets",
-        results: vec![check_secret_backend(runner, host)],
+        results: vec![check_secret_backend(runner, host).identified("secret-backend")],
     };
 
     let mut network = Section {
         title: "Network",
-        results: vec![check_dns(host), check_subnet_conflicts(runner)],
+        results: vec![
+            check_dns(host).identified("dns"),
+            check_subnet_conflicts(runner).identified("subnet-conflicts"),
+        ],
     };
     for port in COMMON_PORTS {
-        network.results.push(check_port(runner, host, port));
+        network
+            .results
+            .push(check_port(runner, host, port).identified(format!("port-{port}")));
     }
 
     Report {

@@ -499,6 +499,9 @@ fn watcher_report(
         return WatcherReport::NoScanYet;
     }
     let Ok(state) = json::parse(&text) else {
+        warnings.push(format!(
+            "could not parse the traffic watcher's scan state for '{name}'"
+        ));
         return WatcherReport::Unreadable;
     };
     WatcherReport::Scanned {
@@ -511,47 +514,100 @@ fn watcher_report(
     }
 }
 
+/// How many entries `recent_blocked` reports on.
+const BLOCKED_WINDOW: usize = 500;
+/// The first chunk the backward read asks for. It doubles until the
+/// chunk holds `BLOCKED_WINDOW` complete lines or reaches the start of
+/// the file.
+const BLOCKED_TAIL_BYTES: u64 = 256 * 1024;
+/// A capture entry can carry a request or response body
+/// (`capture.max_body_size` defaults to 10 MiB), so a fixed-size tail
+/// silently loses entries. The cap keeps a pathological file from being
+/// read whole to answer a status line.
+const BLOCKED_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// The last `BLOCKED_WINDOW` capture entries, and how many were
 /// blocked.
 ///
 /// The capture file rotates at 128 MB per file, so reading all of it to
-/// answer a status line would not be "cheap". Only the tail of the
-/// current file is read, and only the last `n` complete lines are
-/// parsed; a torn first line from starting mid-entry is discarded.
+/// answer a status line would not be "cheap". The read starts at the
+/// end and grows backwards until it holds `BLOCKED_WINDOW` complete
+/// lines or reaches the start of the file: one 256 KiB chunk is not
+/// enough when an entry carries a body, and a single such entry used to
+/// make the whole window read as empty. A torn first line from starting
+/// mid-entry is discarded — but only when the byte before the read
+/// really is not a newline, since `start > 0` also holds when the chunk
+/// happens to begin exactly on a line boundary.
 fn recent_blocked(path: &std::path::Path) -> Option<(usize, usize)> {
-    const BLOCKED_WINDOW: usize = 500;
-    const BLOCKED_TAIL_BYTES: u64 = 256 * 1024;
-
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let offset = len.saturating_sub(BLOCKED_TAIL_BYTES);
-    file.seek(std::io::SeekFrom::Start(offset)).ok()?;
-    let mut bytes = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(BLOCKED_TAIL_BYTES)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    let text = String::from_utf8_lossy(&bytes);
-
-    let mut lines: Vec<&str> = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    if offset > 0 && !lines.is_empty() {
-        lines.remove(0);
-    }
-    let window: Vec<&str> = lines.into_iter().rev().take(BLOCKED_WINDOW).collect();
-    if window.is_empty() {
+    if len == 0 {
         return None;
     }
-    let blocked = window
-        .iter()
-        .filter(|line| {
-            json::parse(line.trim())
-                .is_ok_and(|entry| entry.get("decision").and_then(Json::as_str) == Some("blocked"))
-        })
-        .count();
-    Some((blocked, window.len()))
+
+    let mut tail = BLOCKED_TAIL_BYTES;
+    loop {
+        let start = len.saturating_sub(tail);
+        let bytes = read_range(&mut file, start, len)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let mut lines: Vec<&str> = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        // `start > 0` is not the test: a chunk that begins exactly at a
+        // newline starts on a whole line. The byte before `start` is.
+        if start > 0 && !lines.is_empty() && byte_before(&mut file, start)? != b'\n' {
+            lines.remove(0);
+        }
+        // Enough for the window, the whole file (EOF), or the cap.
+        if lines.len() >= BLOCKED_WINDOW || start == 0 || tail >= BLOCKED_MAX_BYTES {
+            return count_blocked(&lines);
+        }
+        tail = tail.saturating_mul(2).min(BLOCKED_MAX_BYTES);
+    }
+}
+
+/// The bytes of `file` from `start` up to `len`.
+fn read_range(file: &mut std::fs::File, start: u64, len: u64) -> Option<Vec<u8>> {
+    file.seek(std::io::SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(file)
+        .take(len.saturating_sub(start))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(bytes)
+}
+
+/// The byte at `offset - 1`, i.e. the one that decides whether `offset`
+/// is the start of a line. Only called with `offset > 0`.
+fn byte_before(file: &mut std::fs::File, offset: u64) -> Option<u8> {
+    file.seek(std::io::SeekFrom::Start(offset.checked_sub(1)?))
+        .ok()?;
+    let mut byte = [0u8; 1];
+    std::io::Read::read_exact(file, &mut byte).ok()?;
+    Some(byte[0])
+}
+
+/// How many of the last `BLOCKED_WINDOW` complete lines are capture
+/// entries, and how many of those say `blocked`.
+///
+/// A line that does not parse as an object is not an entry. Counting it
+/// in the denominator was the other half of `Blocked: 0 of the last N`:
+/// a torn or corrupt line inflated `N` without ever being a request.
+fn count_blocked(lines: &[&str]) -> Option<(usize, usize)> {
+    let mut scanned = 0;
+    let mut blocked = 0;
+    for line in lines.iter().rev().take(BLOCKED_WINDOW) {
+        let Ok(entry @ Json::Object(_)) = json::parse(line.trim()) else {
+            continue;
+        };
+        scanned += 1;
+        if entry.get("decision").and_then(Json::as_str) == Some("blocked") {
+            blocked += 1;
+        }
+    }
+    // Nothing parseable is not "0 of the last 0 requests".
+    (scanned > 0).then_some((blocked, scanned))
 }
 
 /// A string field of a parsed JSON object, or `""`.
@@ -564,12 +620,23 @@ fn json_field(value: &Json, key: &str) -> String {
 }
 
 impl ShowReport {
-    /// `running`, `stopped` or `degraded`.
+    /// `running`, `stopped`, `exited` or `degraded`.
+    ///
+    /// The same vocabulary `cage list` uses, so the two `--json`
+    /// documents agree: an interactive or ephemeral cage whose containers
+    /// are all gone has *exited* — that is what its lifecycle means —
+    /// while a service that is down is *stopped*. The printed `status`
+    /// line is a separate concern ([`Self::status_text`]) and keeps the
+    /// wording earlier releases used.
     fn state(&self) -> &'static str {
         if self.running == self.total {
             "running"
         } else if self.running == 0 {
-            "stopped"
+            if self.lifecycle == "interactive" || self.lifecycle == "ephemeral" {
+                "exited"
+            } else {
+                "stopped"
+            }
         } else {
             "degraded"
         }
@@ -1615,6 +1682,39 @@ secret_injection:
         );
     }
 
+    /// `cage list` calls a stopped interactive or ephemeral cage
+    /// `exited`, and `show` must agree: both `--json` documents use one
+    /// vocabulary. The printed `status.text` keeps the old wording.
+    #[test]
+    fn show_json_state_matches_list_for_an_interactive_cage() {
+        let dir = TestDir::new("show-json-exited");
+        let ctx = ctx(&dir, fake());
+        deploy(&ctx, "acme", 3);
+        // Same cage, interactive lifecycle: metadata is what both
+        // commands read it from.
+        std::fs::write(
+            ctx.paths.deployment_dir("acme").join("metadata.json"),
+            "{\"agentcage_version\": \"0.53.1\", \"lifecycle\": \"interactive\", \
+             \"scaffold\": \"openclaw\", \"network_octet\": 3}",
+        )
+        .unwrap();
+
+        let report = gather_show(&ctx, "acme").unwrap();
+        let json = report.to_json();
+        let status = json.get("status").expect("status");
+        assert_eq!(status.get("state").and_then(Json::as_str), Some("exited"));
+        // Byte-identical to the line earlier releases printed.
+        assert_eq!(
+            status.get("text").and_then(Json::as_str),
+            Some("stopped (0/2)")
+        );
+        assert_eq!(status.get("running"), Some(&Json::Int(0)));
+        assert_eq!(status.get("total"), Some(&Json::Int(2)));
+
+        // And the same word `cage list --json` uses for the same cage.
+        assert_eq!(list_row(&ctx, "acme").state, "exited");
+    }
+
     /// The JSON envelope is the same one every read command uses, and its
     /// data carries the same facts as the text.
     #[test]
@@ -1745,6 +1845,45 @@ secret_injection:
         assert!(domains.passthrough.is_empty());
     }
 
+    /// An unreadable watcher state is a warning, not a silent state
+    /// word: `show --json`'s `warnings` is where a consumer learns the
+    /// command could not read something.
+    #[test]
+    fn an_unreadable_watcher_state_warns() {
+        let dir = TestDir::new("show-watcher-unreadable");
+        let ctx = ctx(&dir, fake());
+        let cage_dir = ctx.paths.deployment_dir("acme");
+        std::fs::create_dir_all(&cage_dir).unwrap();
+        std::fs::write(
+            ctx.paths.stored_config_path("acme"),
+            "name: acme\nisolation: container\nlifecycle: service\n\
+             container:\n  image: node:22-slim\n\
+             agents:\n  watcher:\n    enable: true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            cage_dir.join("metadata.json"),
+            "{\"agentcage_version\": \"0.53.1\"}",
+        )
+        .unwrap();
+        let watcher_dir = ctx.paths.grants_dir("acme").join("watcher");
+        std::fs::create_dir_all(&watcher_dir).unwrap();
+        std::fs::write(watcher_dir.join("state.json"), "not json").unwrap();
+
+        let report = gather_show(&ctx, "acme").unwrap();
+        assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+        assert!(
+            report.warnings[0].contains("scan state"),
+            "{:?}",
+            report.warnings
+        );
+        let text = render_show(&report);
+        assert!(
+            text.contains("Watcher:    enabled (scan state unreadable)\n"),
+            "{text}"
+        );
+    }
+
     /// A capture tail is counted, not read whole, and the torn first line
     /// of a partial read is not mistaken for an entry.
     #[test]
@@ -1759,5 +1898,70 @@ secret_injection:
 
         assert_eq!(recent_blocked(&path), Some((2, 4)));
         assert_eq!(recent_blocked(&dir.path().join("absent.jsonl")), None);
+    }
+
+    /// An entry larger than the first chunk must not hide itself.
+    ///
+    /// Capture entries carry request and response bodies
+    /// (`capture.max_body_size` defaults to 10 MiB), so a fixed 256 KiB
+    /// tail read started *inside* the newest entry, discarded it as
+    /// torn, and answered `recent_blocked: null` — or `Blocked: 0 of
+    /// the last N` — for a log whose last request was blocked.
+    #[test]
+    fn a_blocked_entry_larger_than_the_first_chunk_is_counted() {
+        let dir = TestDir::new("show-blocked-big-entry");
+        let path = dir.path().join("capture.jsonl");
+        let mut text = String::new();
+        let _ = writeln!(
+            text,
+            "{{\"decision\": \"blocked\", \"body\": \"{}\"}}",
+            "x".repeat(300 * 1024)
+        );
+        let _ = writeln!(text, "{{\"decision\": \"allowed\"}}");
+        assert!(text.len() > 256 * 1024, "the fixture must exceed the tail");
+        std::fs::write(&path, text).unwrap();
+
+        // The one-shot 256 KiB read answered `(0, 1)` here: the giant
+        // entry was the torn first line, and only the following entry
+        // was left.
+        assert_eq!(recent_blocked(&path), Some((1, 2)));
+    }
+
+    /// A chunk that begins exactly on a line boundary keeps its first
+    /// line. The old code dropped it whenever the read started past
+    /// zero, which is not the same thing.
+    #[test]
+    fn a_chunk_starting_on_a_line_boundary_keeps_its_first_line() {
+        let dir = TestDir::new("show-blocked-boundary");
+        let path = dir.path().join("capture.jsonl");
+
+        // The last 256 KiB of the file must begin right after a newline,
+        // and hold one whole (parseable) entry.
+        let prefix = "{\"decision\": \"blocked\"}\n";
+        let entry = "{\"decision\": \"allowed\", \"body\": \"\"}";
+        let padding = 256 * 1024 - 1 - entry.len();
+        let text = format!(
+            "{prefix}{{\"decision\": \"allowed\", \"body\": \"{}\"}}\n",
+            "x".repeat(padding)
+        );
+        assert_eq!(text.len(), prefix.len() + 256 * 1024);
+        std::fs::write(&path, text).unwrap();
+
+        assert_eq!(recent_blocked(&path), Some((1, 2)));
+    }
+
+    /// A line that does not parse is not a request: the denominator is
+    /// the number of entries looked at, not the number of lines.
+    #[test]
+    fn unparseable_lines_are_not_counted_as_requests() {
+        let dir = TestDir::new("show-blocked-garbage");
+        let path = dir.path().join("capture.jsonl");
+        std::fs::write(
+            &path,
+            "{\"decision\": \"blocked\"}\nnot json\n{\"decision\": \"allowed\"}\n",
+        )
+        .unwrap();
+
+        assert_eq!(recent_blocked(&path), Some((1, 2)));
     }
 }
