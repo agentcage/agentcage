@@ -65,9 +65,33 @@ fn request(exe: &Path, version: Option<Version>, check: bool) -> Request<'_> {
 }
 
 fn no_stray_new_file(exe: &Path) {
+    let dir = exe.parent().expect("the binary's directory");
+    let left: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".agentcage.new"))
+        })
+        .collect();
+    assert!(left.is_empty(), "staged files were left behind: {left:?}");
+}
+
+/// Assert the final call is the staged binary's `--version` probe. The
+/// staging name is unique to concurrent updates, so its shape is checked
+/// rather than a fixed `.agentcage.new` path.
+fn assert_version_probe(fake: &FakeRunner, exe: &Path) {
+    let last = fake.argv(fake.call_count() - 1);
+    assert_eq!(last.len(), 2, "the last call was {last:?}");
+    assert_eq!(last[1], "--version");
+    let staged = Path::new(&last[0]);
+    assert_eq!(staged.parent(), exe.parent());
     assert!(
-        !exe.with_file_name(".agentcage.new").exists(),
-        "the staged binary was left behind"
+        staged
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".agentcage.new")),
+        "the version probe did not run a staging file: {}",
+        staged.display()
     );
 }
 
@@ -124,10 +148,10 @@ fn an_update_replaces_the_binary_with_the_latest_release() {
     no_stray_new_file(&exe);
 
     let base = "https://github.com/agentcage/agentcage/releases/download/v0.54.0";
-    let staged = exe.with_file_name(".agentcage.new").display().to_string();
     let tar = format!("{base}/agentcage-0.54.0-{target}.tar.gz");
     let sha = format!("{tar}.sha256");
-    fake.assert_argv(&[
+    fake.assert_call(
+        0,
         &[
             "curl",
             "--proto",
@@ -140,10 +164,16 @@ fn an_update_replaces_the_binary_with_the_latest_release() {
             "%{url_effective}",
             "https://github.com/agentcage/agentcage/releases/latest",
         ],
+    );
+    fake.assert_call(
+        1,
         &["curl", "--proto", "=https", "--tlsv1.2", "-fsSL", &tar],
+    );
+    fake.assert_call(
+        2,
         &["curl", "--proto", "=https", "--tlsv1.2", "-fsSL", &sha],
-        &[&staged, "--version"],
-    ]);
+    );
+    assert_version_probe(&fake, &exe);
 }
 
 /// A named release skips the lookup, and may be older: that is how a
@@ -193,6 +223,35 @@ fn a_bad_checksum_installs_nothing() {
     assert_eq!(std::fs::read(&exe).unwrap(), OLD);
     no_stray_new_file(&exe);
     assert_eq!(fake.call_count(), 3, "the new binary was run");
+}
+
+/// A release build may append a suffix to the version it reports. That
+/// is still the version that was downloaded, so it installs.
+#[test]
+fn a_binary_reporting_a_suffixed_version_is_accepted() {
+    let Some(target) = release_target() else {
+        return;
+    };
+    let dir = TestDir::new("self-update-suffixed-version");
+    let exe = installed(&dir);
+    let tarball = release_tarball(&dir, "0.54.0", target, NEW);
+    let fake = FakeRunner::new();
+    fake.push(latest_reply("0.54.0"));
+    fake.push(Reply::ok(tarball.clone()));
+    fake.push(checksum_reply(&tarball, target, "0.54.0"));
+    fake.push(Reply::ok("agentcage, version 0.54.0-dev\n"));
+
+    let outcome = run(&fake, &request(&exe, None, false)).expect("installs a suffixed build");
+
+    assert_eq!(
+        outcome,
+        Outcome::Updated {
+            from: v("0.53.1"),
+            to: v("0.54.0")
+        }
+    );
+    assert_eq!(std::fs::read(&exe).unwrap(), NEW);
+    no_stray_new_file(&exe);
 }
 
 /// A binary that does not call itself the release it was downloaded

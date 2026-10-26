@@ -33,6 +33,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use agentcage_exec::{Command, CommandRunner, ExecError, Sink};
 
@@ -204,18 +205,28 @@ pub fn run(runner: &dyn CommandRunner, request: &Request<'_>) -> Result<Outcome,
         .ok_or_else(|| format!("{stage}.tar.gz has no {stage}/agentcage"))?;
 
     // In the target's directory, so the final rename cannot cross a
-    // filesystem. The leading dot keeps it out of a `ls` and out of
-    // `PATH` lookups that glob.
-    let new = dir.join(".agentcage.new");
-    write_executable(&new, &binary).map_err(|error| {
-        let _ = std::fs::remove_file(&new);
+    // filesystem, and unique to this process so two updates cannot
+    // truncate or rename each other's file. The leading dot keeps it
+    // out of a `ls` and out of `PATH` lookups that glob.
+    let first_attempt = NEXT_STAGING.fetch_add(STAGING_ATTEMPTS, Ordering::Relaxed);
+    let (new, mut file) = create_staging(dir, first_attempt).map_err(|error| {
         format!(
+            "could not create a staging file in {}: {error}. Is {} writable? Re-run \
+             with the permissions that installed it, or reinstall with install.sh",
+            dir.display(),
+            dir.display()
+        )
+    })?;
+    if let Err(error) = write_executable(&new, &mut file, &binary) {
+        let _ = std::fs::remove_file(&new);
+        return Err(format!(
             "could not write {}: {error}. Is {} writable? Re-run with the permissions \
              that installed it, or reinstall with install.sh",
             new.display(),
             dir.display()
-        )
-    })?;
+        ));
+    }
+    drop(file);
     if let Err(error) = check_runs(runner, &new, wanted) {
         let _ = std::fs::remove_file(&new);
         return Err(error);
@@ -300,17 +311,59 @@ fn verify(tarball: &Path, checksum: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_executable(path: &Path, data: &[u8]) -> std::io::Result<()> {
+/// How many staging names one update tries before giving up.
+const STAGING_ATTEMPTS: u64 = 64;
+
+/// The next block of staging names this process will try. Each update
+/// takes a block so separate calls cannot hand out the same name.
+static NEXT_STAGING: AtomicU64 = AtomicU64::new(0);
+
+/// The staging path for one attempt: beside the binary being replaced,
+/// named for this process and the attempt.
+fn staging_path(dir: &Path, attempt: u64) -> PathBuf {
+    dir.join(format!(".agentcage.new.{}.{attempt}", std::process::id()))
+}
+
+/// Create a staging file no other update is using.
+///
+/// `create_new` is what makes concurrent updates safe: the loser of a
+/// collision retries with another name instead of opening, and then
+/// truncating, the winner's file.
+fn create_staging(dir: &Path, first_attempt: u64) -> std::io::Result<(PathBuf, std::fs::File)> {
+    for attempt in first_attempt..first_attempt + STAGING_ATTEMPTS {
+        let path = staging_path(dir, attempt);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not find an unused staging file name",
+    ))
+}
+
+fn write_executable(path: &Path, file: &mut std::fs::File, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, data)?;
+    file.write_all(data)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
 /// The new binary has to run here and call itself `wanted`. A binary
 /// for the wrong architecture, or a tarball with the wrong thing in it,
 /// stops here with the old one untouched.
+///
+/// The reported text is split on anything that is not a digit or a dot,
+/// so a banner, punctuation or a pre-release suffix (`0.54.0-dev`) does
+/// not make an otherwise correct binary unusable. A different version
+/// still has no token equal to `wanted` and is refused.
 fn check_runs(runner: &dyn CommandRunner, binary: &Path, wanted: Version) -> Result<(), String> {
-    let expected = format!("agentcage, version {wanted}");
     let out = runner
         .run(
             &Command::new(binary.display().to_string())
@@ -320,11 +373,15 @@ fn check_runs(runner: &dyn CommandRunner, binary: &Path, wanted: Version) -> Res
         .and_then(|out| out.check("agentcage"))
         .map_err(|error| format!("the downloaded agentcage does not run: {error}"))?;
     let reported = out.stdout_trimmed();
-    if reported == expected {
+    let wanted_text = wanted.to_string();
+    let has_version = reported
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .any(|token| token == wanted_text);
+    if has_version {
         Ok(())
     } else {
         Err(format!(
-            "the downloaded agentcage reports {reported:?}, not {expected:?}; \
+            "the downloaded agentcage reports {reported:?}, not version {wanted}; \
              refusing to install it"
         ))
     }
@@ -383,4 +440,35 @@ pub fn managed_install(exe: &Path) -> Option<String> {
 /// When the OS cannot say where it is.
 pub fn current_exe() -> std::io::Result<PathBuf> {
     std::fs::canonicalize(std::env::current_exe()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{create_staging, staging_path};
+    use std::io::Write as _;
+
+    /// A staging name already on disk is not opened or truncated; the
+    /// update moves on to the next attempt.
+    #[test]
+    fn an_existing_staging_path_is_skipped() {
+        let dir = agentcage_state::TestDir::new("self-update-staging");
+        let first = 10_000;
+        for attempt in first..first + 2 {
+            let path = staging_path(dir.path(), attempt);
+            std::fs::write(&path, b"another update").unwrap();
+        }
+
+        let (path, mut file) = create_staging(dir.path(), first).expect("a free name");
+
+        assert_eq!(path, staging_path(dir.path(), first + 2));
+        file.write_all(b"new agentcage").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new agentcage");
+        for attempt in first..first + 2 {
+            assert_eq!(
+                std::fs::read(staging_path(dir.path(), attempt)).unwrap(),
+                b"another update",
+                "an existing staging file was truncated"
+            );
+        }
+    }
 }
