@@ -202,7 +202,7 @@ agentcage run codex --project ~/code/my-repo -s OPENAI_API_KEY
 agentcage run pi --project . --isolation vm -s OPENAI_API_KEY
 ```
 
-The cage is stopped, not removed, on exit: `agentcage cage audit <name>` still works and `agentcage cage start <name>` brings the same cage back. Remove it with `agentcage cage destroy <name>`, or use `agentcage cage prune` to remove stopped interactive and ephemeral cages in bulk.
+The cage is stopped, not removed, on exit: `agentcage cage audit <name>` still works and `agentcage cage start <name>` brings the same cage back. Remove the cage itself with `agentcage cage destroy <name>`; it keeps the cage's data directory (including audit logs) and named volumes, and prints the `Kept:` path. Use `agentcage cage prune` to remove stopped interactive and ephemeral cages in bulk.
 
 ### 3. Persistent Cage
 
@@ -240,9 +240,9 @@ CAGE LIFECYCLE
   agentcage cage create -c cage.yaml          Build, install, and start persistent cage
   agentcage cage update NAME [--no-cache]     Rebuild images and restart cage
   agentcage start | stop | restart NAME       Control cage lifecycle (skips rebuild)
-  agentcage destroy NAME [-y] [--keep-secrets]Stop containers, remove quadlets and state
-  agentcage prune [-y]                        Remove exited interactive/ephemeral cages
-  agentcage verify NAME                       Run runtime health diagnostics
+  agentcage rm NAME [-y] [--keep-secrets]     Stop containers, remove quadlets and secrets; data kept
+  agentcage cage prune [-y]                   Remove exited interactive/ephemeral cages; data kept
+  agentcage cage verify NAME                  Run runtime health diagnostics
 
 WORKLOAD INTERACTION
   agentcage exec NAME -- CMD                  Execute a command inside the cage container

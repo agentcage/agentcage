@@ -28,7 +28,7 @@ agentcage run pi -s OPENAI_API_KEY
 agentcage run pi -s ANTHROPIC_API_KEY --project ~/myrepo
 ```
 
-You'll be prompted to enter the API key value on first run. The cage is stopped, not removed, on exit: its deployment, volumes, scoped secrets and audit logs are kept. `agentcage cage destroy <name>` removes it, or `agentcage cage prune` removes stopped interactive and ephemeral cages in bulk.
+You'll be prompted to enter the API key value on first run. The cage is stopped, not removed, on exit: its deployment, volumes, scoped secrets and audit logs are kept. `agentcage cage destroy <name>` removes the deployment and scoped secrets but keeps the data directory (including audit logs) and named volumes; it prints the `Kept:` path. `agentcage cage prune` removes stopped interactive and ephemeral cages in bulk.
 
 ### Persistent interactive cage (`agentcage cage`)
 

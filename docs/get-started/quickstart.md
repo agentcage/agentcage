@@ -41,7 +41,7 @@ Behind the scenes, `agentcage run`:
 6. Handed the container a trusted per-cage CA public certificate (`/certs/agentcage-ca.pem`).
 7. Forwarded outbound requests through the egress gateway, where placeholders are swapped for your real API key only on the wire.
 
-When you exit Claude Code (e.g. typing `/exit`), `agentcage run` stops the cage. The deployment directory, quadlets, named volumes, scoped secrets and audit data are kept, so `agentcage cage audit <name>` still works and `agentcage cage start <name>` resumes the same cage. Remove it with `agentcage cage destroy <name>`, or use `agentcage cage prune` for stopped interactive and ephemeral cages. Your workspace edits remain intact on your host.
+When you exit Claude Code (e.g. typing `/exit`), `agentcage run` stops the cage. The deployment directory, quadlets, named volumes, scoped secrets and audit data are kept, so `agentcage cage audit <name>` still works and `agentcage cage start <name>` resumes the same cage. Remove the cage itself with `agentcage cage destroy <name>`; it keeps the data directory (including audit logs) and named volumes and prints the `Kept:` path. Use `agentcage cage prune` for stopped interactive and ephemeral cages. Your workspace edits remain intact on your host.
 
 ---
 
@@ -286,8 +286,10 @@ agentcage 0.50.0 or earlier can still hold real secrets in its outbound view.
 When you are finished with a persistent cage:
 
 ```bash
-# Stop and delete the cage, containers, and scoped secrets:
-agentcage rm my-agent
+# Stop the cage, remove its containers, quadlets and scoped secrets. The
+# data directory (audit logs included) and named volumes are kept, and a
+# `Kept:` block names the path to remove by hand when you are done with it.
+agentcage cage destroy my-agent
 
 # Remove stopped interactive and ephemeral cages:
 agentcage cage prune -y
