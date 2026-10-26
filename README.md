@@ -230,9 +230,8 @@ CAGE LIFECYCLE
   agentcage cage create -c cage.yaml          Build, install, and start persistent cage
   agentcage cage update NAME [--no-cache]     Rebuild images and restart cage
   agentcage start | stop | restart NAME       Control cage lifecycle (skips rebuild)
-  agentcage cage destroy NAME [-y] [--keep-secrets]
-                                             Stop containers, remove quadlets and state
-  agentcage cage prune [-y]                   Remove exited interactive/ephemeral cages
+  agentcage rm NAME [-y] [--keep-secrets]     Stop containers, remove quadlets and secrets; data kept
+  agentcage cage prune [-y]                   Remove exited interactive/ephemeral cages; data kept
   agentcage cage verify NAME                  Run runtime health diagnostics
 
 WORKLOAD INTERACTION
