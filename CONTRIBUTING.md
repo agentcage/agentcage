@@ -20,7 +20,7 @@ cargo xtask check-invariants
 cargo xtask check-docs
 ```
 
-`cargo xtask check-docs` checks the live docs against the code: pinned `cargo install` versions match the root `VERSION`, no page documents a nonexistent `dns` log service, `--service`/`-s` examples use `cage` or `egress`, and the install instructions keep describing the prebuilt installer and its `--build` opt-out. Historical notes under `docs/history/` and `CHANGELOG.md` are exempt.
+`cargo xtask check-docs` checks the live docs against the code: pinned `cargo install` tags and `AGENTCAGE_VERSION=x.y.z` pins match the root `VERSION`, no page documents a nonexistent `dns` log service, `--service`/`-s` examples (in prose as well as fenced commands) use `cage` or `egress`, and the install instructions keep describing the prebuilt installer and its `--build` opt-out. History and planning material are exempt: `docs/history/`, `docs/roadmap/` and `CHANGELOG.md` are describing or discussing what the product used to do, so they may keep doing so.
 
 `cargo xtask check-invariants` covers the other repository invariants: Rust never shells out to Python, no shipped container image installs an interpreter, no Python is tracked outside `docs/history/`, and no live file uses the old egress's name. CI runs all of these checks.
 

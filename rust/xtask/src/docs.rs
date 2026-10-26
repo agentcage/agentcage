@@ -6,13 +6,20 @@
 //! 1. **Install examples pin the current release.** A `cargo install ...
 //!    --tag vX.Y.Z` in the README or install guide that names an older
 //!    version sends readers to a stale release every time VERSION moves.
-//! 2. **No `dns` log service.** `cage logs` (and `cage exec` / `cage shell`)
+//! 2. **`AGENTCAGE_VERSION` pins name the current release.** The install
+//!    guide tells readers to set `AGENTCAGE_VERSION=x.y.z` to pick a
+//!    release, so a concrete pin there (or in the README) rots the same
+//!    way the `--tag` examples do. A placeholder such as
+//!    `AGENTCAGE_VERSION=<version>` is deliberately not pinned and passes.
+//! 3. **No `dns` log service.** `cage logs` (and `cage exec` / `cage shell`)
 //!    accept exactly `cage` and `egress`; DNS runs inside the egress
-//!    service, so `-s dns` names a service that does not exist.
-//! 3. **Fenced service examples use an allowed value.** This is the same
-//!    rule as (2), stated as a value check so a future flag spelling is
+//!    service, so `-s dns` names a service that does not exist. The check
+//!    reads prose as well as fenced commands, so ``Use `-s dns`.`` is
+//!    caught, not only a `bash` example.
+//! 4. **Fenced service examples use an allowed value.** This is the same
+//!    rule as (3), stated as a value check so a future flag spelling is
 //!    caught, not only the literal `-s dns`.
-//! 4. **The install docs describe how the installer actually works.** Its
+//! 5. **The install docs describe how the installer actually works.** Its
 //!    default path installs the release's prebuilt binary, and `--build`
 //!    compiles from source; the old "builds from source with cargo" default
 //!    was wrong for the current installer.
@@ -27,8 +34,12 @@ use std::process::{Command, ExitCode};
 /// The `-s/--service` values the CLI accepts (`cli/args.rs::SERVICES`).
 const SERVICES: [&str; 2] = ["cage", "egress"];
 
-/// Files whose pinned `cargo install --tag` examples must name `VERSION`.
+/// Files whose pinned release references (`cargo install --tag`,
+/// `AGENTCAGE_VERSION=`) must name `VERSION`.
 const PINNED_INSTALL_DOCS: [&str; 2] = ["README.md", "docs/get-started/install.md"];
+
+/// The environment variable that pins the release `install.sh` fetches.
+const VERSION_ENV: &str = "AGENTCAGE_VERSION";
 
 /// One check: the problems it found, empty when the documentation holds.
 type Check = fn(&dyn Docs, &str) -> Vec<String>;
@@ -105,8 +116,12 @@ pub(crate) fn run(root: &Path, verbose: bool) -> Result<ExitCode, String> {
         .filter(|text| !text.is_empty())
         .ok_or("VERSION is missing or empty")?;
 
-    let checks: [(&str, Check); 4] = [
+    let checks: [(&str, Check); 5] = [
         ("install examples pin the VERSION tag", pinned_install_tags),
+        (
+            "AGENTCAGE_VERSION pins name the current release",
+            pinned_version_env,
+        ),
         ("no live doc names a dns log service", no_dns_service),
         (
             "fenced service examples use cage or egress",
@@ -132,6 +147,11 @@ pub(crate) fn run(root: &Path, verbose: bool) -> Result<ExitCode, String> {
     }
     if verbose {
         println!("\nscanned {} live Markdown files", repo.paths().len());
+        println!(
+            "scanned {} release-pinned docs: {}",
+            PINNED_INSTALL_DOCS.len(),
+            PINNED_INSTALL_DOCS.join(", ")
+        );
     }
     if failed > 0 {
         eprintln!("\n{failed} documentation violation(s); see rust/xtask/src/docs.rs.");
@@ -156,17 +176,20 @@ fn tags_on_line(line: &str) -> Vec<&str> {
     tags
 }
 
+/// Whether a value is a concrete release (`1.2.3`), not a placeholder
+/// (`<version>`, `master`) that is deliberately not pinned.
+fn is_concrete_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.contains('.')
+        && value
+            .chars()
+            .all(|character| character.is_ascii_digit() || character == '.')
+}
+
 /// Whether a tag is a concrete release (`v1.2.3`), not a placeholder
 /// (`v<version>`) that is deliberately not pinned.
 fn is_release_tag(tag: &str) -> bool {
-    let Some(rest) = tag.strip_prefix('v') else {
-        return false;
-    };
-    rest.contains('.')
-        && !rest.is_empty()
-        && rest
-            .chars()
-            .all(|character| character.is_ascii_digit() || character == '.')
+    tag.strip_prefix('v').is_some_and(is_concrete_version)
 }
 
 /// Check 1: a pinned `cargo install --tag` names the current VERSION.
@@ -196,13 +219,60 @@ fn pinned_install_tags(repo: &dyn Docs, version: &str) -> Vec<String> {
     problems
 }
 
-/// The value after `-s` / `--service`, with common Markdown punctuation
-/// trimmed so `` `egress` `` and `[cage]` compare as the CLI sees them.
-fn service_value(token: &str) -> &str {
+/// Every `AGENTCAGE_VERSION=x.y.z` value on a line.
+///
+/// The env var is written inside inline code in the install guide
+/// (``set `AGENTCAGE_VERSION=0.53.1` ``), so the token is trimmed of its
+/// backticks and sentence punctuation before the prefix is read.
+fn version_env_values(line: &str) -> Vec<&str> {
+    let mut values = Vec::new();
+    for token in line.split_whitespace() {
+        let token = trim_token(token);
+        let Some(value) = token.strip_prefix(VERSION_ENV) else {
+            continue;
+        };
+        if let Some(value) = value.strip_prefix('=') {
+            values.push(trim_token(value));
+        }
+    }
+    values
+}
+
+/// Check 2: a pinned `AGENTCAGE_VERSION` names the current VERSION.
+fn pinned_version_env(repo: &dyn Docs, version: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for rel in PINNED_INSTALL_DOCS {
+        let Some(text) = repo.read(rel) else {
+            problems.push(format!("{rel}: install guide is missing"));
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            for value in version_env_values(line) {
+                if is_concrete_version(value) && value != version {
+                    problems.push(format!(
+                        "{rel}:{}: `{VERSION_ENV}={value}` pins an old release; VERSION is \
+                         {version} (drop the pin, or set {VERSION_ENV}={version})\n    {line}",
+                        index + 1
+                    ));
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// A token with Markdown and sentence punctuation trimmed, so a flag or
+/// value written inline (`` -s ``, `` `dns`. ``, `` `[cage]` ``) compares
+/// as the CLI sees it.
+///
+/// The sentence punctuation matters as much as the backticks: prose such
+/// as ``Use `-s dns`.`` ends the value with a full stop, and the flag with
+/// an opening backtick (and, when a line break falls there, nothing).
+fn trim_token(token: &str) -> &str {
     token.trim_matches(|character: char| {
         matches!(
             character,
-            '`' | '\'' | '"' | '[' | ']' | '(' | ')' | ',' | ';' | ':'
+            '`' | '\'' | '"' | '[' | ']' | '(' | ')' | ',' | ';' | ':' | '.' | '!' | '?'
         )
     })
 }
@@ -212,15 +282,16 @@ fn all_service_values(line: &str) -> Vec<String> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let mut values = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
-        if *token == "-s" || *token == "--service" {
+        let token = trim_token(token);
+        if token == "-s" || token == "--service" {
             if let Some(value) = tokens.get(index + 1) {
-                values.push(service_value(value).to_owned());
+                values.push(trim_token(value).to_owned());
             }
         } else if let Some(value) = token
             .strip_prefix("-s=")
             .or_else(|| token.strip_prefix("--service="))
         {
-            values.push(service_value(value).to_owned());
+            values.push(trim_token(value).to_owned());
         }
     }
     values
@@ -260,25 +331,26 @@ fn command_service_values(line: &str) -> Vec<String> {
         if token == "--" {
             break;
         }
-        if token == "-s" || token == "--service" {
+        let flag = trim_token(token);
+        if flag == "-s" || flag == "--service" {
             if let Some(value) = tokens.get(index + 1) {
-                values.push(service_value(value).to_owned());
+                values.push(trim_token(value).to_owned());
             }
             index += 2;
             continue;
         }
-        if let Some(value) = token
+        if let Some(value) = flag
             .strip_prefix("-s=")
-            .or_else(|| token.strip_prefix("--service="))
+            .or_else(|| flag.strip_prefix("--service="))
         {
-            values.push(service_value(value).to_owned());
+            values.push(trim_token(value).to_owned());
         }
         index += 1;
     }
     values
 }
 
-/// Check 2: no live doc, in prose or a command, names `dns` as a service.
+/// Check 3: no live doc, in prose or a command, names `dns` as a service.
 fn no_dns_service(repo: &dyn Docs, _version: &str) -> Vec<String> {
     let mut problems = Vec::new();
     for rel in repo.paths() {
@@ -302,7 +374,7 @@ fn no_dns_service(repo: &dyn Docs, _version: &str) -> Vec<String> {
     problems
 }
 
-/// Check 3: every service value in a fenced command example is allowed.
+/// Check 4: every service value in a fenced command example is allowed.
 fn documented_service_values(repo: &dyn Docs, _version: &str) -> Vec<String> {
     let mut problems = Vec::new();
     for rel in repo.paths() {
@@ -348,7 +420,7 @@ fn documented_service_values(repo: &dyn Docs, _version: &str) -> Vec<String> {
     problems
 }
 
-/// Check 4: the install docs name the prebuilt default and `--build` opt-out.
+/// Check 5: the install docs name the prebuilt default and `--build` opt-out.
 fn installer_docs(repo: &dyn Docs, _version: &str) -> Vec<String> {
     let mut problems = Vec::new();
     for rel in PINNED_INSTALL_DOCS {
@@ -377,6 +449,7 @@ mod tests {
 
     use super::{
         Docs, documented_service_values, installer_docs, no_dns_service, pinned_install_tags,
+        pinned_version_env,
     };
 
     static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
@@ -453,6 +526,69 @@ mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].starts_with("README.md:1:"));
         assert!(problems[0].contains("v0.53.1"));
+    }
+
+    #[test]
+    fn stale_version_env_pins_are_refused() {
+        let clean = TempTree::new(&[
+            ("README.md", "No pin here.\n"),
+            (
+                "docs/get-started/install.md",
+                "To pick a release, set `AGENTCAGE_VERSION=0.53.1` (the default is the latest \
+                 release) or leave it unset.\n\
+                 A placeholder such as `AGENTCAGE_VERSION=<version>` is not a pin.\n",
+            ),
+        ]);
+        assert!(pinned_version_env(&clean, "0.53.1").is_empty());
+
+        let stale = TempTree::new(&[
+            (
+                "README.md",
+                "Pinned: `AGENTCAGE_VERSION=0.52.0`, the previous release.\n",
+            ),
+            (
+                "docs/get-started/install.md",
+                "To pick a release, set `AGENTCAGE_VERSION=0.50.3` (the default is the latest \
+                 release).\n",
+            ),
+        ]);
+        let problems = pinned_version_env(&stale, "0.53.1");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("README.md:1:"));
+        assert!(problems[0].contains("AGENTCAGE_VERSION=0.52.0"));
+        assert!(problems[1].starts_with("docs/get-started/install.md:1:"));
+        assert!(problems[1].contains("AGENTCAGE_VERSION=0.50.3"));
+        assert!(problems[1].contains("VERSION is 0.53.1"));
+    }
+
+    #[test]
+    fn inline_code_dns_service_is_refused() {
+        let repo = TempTree::new(&[
+            (
+                "README.md",
+                "Use `-s dns`. DNS runs inside the egress.\n\
+                 Use `-s egress` instead.\n",
+            ),
+            (
+                "docs/get-started/quickstart.md",
+                "Pull the log for one service with `-s dns` or `--service=dns`.\n\
+                 The proxy is `-s egress`.\n",
+            ),
+        ]);
+        let problems = no_dns_service(&repo, "0.53.1");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("README.md:1:"), "{problems:?}");
+        assert!(
+            problems[1].starts_with("docs/get-started/quickstart.md:1:"),
+            "{problems:?}"
+        );
+
+        let clean = TempTree::new(&[(
+            "README.md",
+            "Use `-s egress`. The proxy carries DNS.\n\
+             The flag is `-s`, and `-s=cage` is the workload log.\n",
+        )]);
+        assert!(no_dns_service(&clean, "0.53.1").is_empty());
     }
 
     #[test]
