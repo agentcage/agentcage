@@ -15,7 +15,7 @@ There are two ways to run Codex in a cage: a one-command ephemeral session with 
 
 ### Ephemeral session (`agentcage run`)
 
-The fastest way to get started. Builds the image, creates a temporary cage, drops you into an interactive Codex session, and tears down the cage when you exit.
+The fastest way to get started. Builds the image, creates a cage, drops you into an interactive Codex session, and stops the cage when you exit.
 
 ```bash
 # API key auth
@@ -25,7 +25,7 @@ agentcage run codex -s OPENAI_API_KEY
 agentcage run codex -s OPENAI_API_KEY --project ~/myrepo
 ```
 
-You'll be prompted to enter the API key value on first run. The cage is removed on exit; audit logs are preserved.
+You'll be prompted to enter the API key value on first run. The cage is stopped, not removed, on exit: its deployment, volumes, scoped secrets and audit logs are kept. `agentcage cage destroy <name>` removes the deployment and scoped secrets but keeps the data directory (including audit logs) and named volumes; it prints the `Kept:` path. `agentcage cage prune` removes stopped interactive and ephemeral cages in bulk.
 
 ### Persistent interactive cage (`agentcage cage`)
 
@@ -45,7 +45,7 @@ This creates `cage.yaml` with sensible defaults and auto-builds the `agentcage-s
 agentcage cage create -c cage.yaml
 ```
 
-This builds the proxy and DNS images, generates systemd quadlet files, and starts all three services (cage, proxy, dns).
+This builds the egress image, generates systemd quadlet files, and starts both services (cage and egress).
 
 #### 3. Set secrets
 
@@ -69,10 +69,9 @@ The cage uses `lifecycle: interactive`, so the container stays up (via `sleep in
 # Check containers are running
 agentcage cage list
 
-# View logs
+# View logs (DNS runs in the egress service, so -s egress covers it)
 agentcage cage logs myagent           # cage container
 agentcage cage logs myagent -s egress  # egress proxy and DNS (traffic inspection)
-agentcage cage logs myagent -s dns    # DNS sidecar
 ```
 
 ### Running as a service

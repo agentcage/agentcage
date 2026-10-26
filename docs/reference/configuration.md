@@ -39,7 +39,7 @@ secret_injection:
 | :--- | :--- | :--- | :--- |
 | `name` | string | **Required** | Unique cage name. Lowercase alphanumeric and hyphens (`^[a-z0-9][a-z0-9-]{0,62}$`). |
 | `isolation` | string | `auto` | Isolation backend: `container` (Linux Podman), `apple-container` (macOS 26+ microVMs), or `vm` (Lima). |
-| `lifecycle` | string | `service` | Execution mode: `service` (managed systemd service, auto-restarts), `interactive` (terminal session), or `ephemeral` (destroyed upon process exit). |
+| `lifecycle` | string | `service` | Execution mode: `service` (managed systemd service, auto-restarts), `interactive` (terminal session), or `ephemeral` (session-owned; `agentcage run` stops it on process exit but removes nothing — use `cage destroy` or `cage prune` to remove it). |
 | `scaffold` | string | `null` | Name of the scaffold template used to initialize the cage. |
 | `help` | string | `null` | Custom operational documentation displayed when running `agentcage show <name>`. |
 | `dns_servers` | list[string] | `host` | Upstream DNS resolvers. Defaults to host resolvers (excluding loopbacks like `127.0.0.53`). |

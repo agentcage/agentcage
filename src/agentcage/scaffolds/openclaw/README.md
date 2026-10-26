@@ -26,7 +26,7 @@ This creates `cage.yaml` with sensible defaults: domain allowlist, secret inject
 agentcage cage create -c cage.yaml
 ```
 
-This builds the proxy and DNS images, generates systemd quadlet files, and starts all three services (cage, proxy, dns). After startup, inline help is printed showing next steps.
+This builds the egress image, generates systemd quadlet files, and starts both services (cage and egress). After startup, inline help is printed showing next steps.
 
 ### 3. Set secrets
 
@@ -72,10 +72,9 @@ agentcage cage list
 # Check health from inside the cage
 agentcage cage exec --as-root myapp -- openclaw health
 
-# View logs
+# View logs (DNS runs in the egress service, so -s egress covers it)
 agentcage cage logs myapp           # cage container
 agentcage cage logs myapp -s egress  # egress proxy and DNS (traffic inspection)
-agentcage cage logs myapp -s dns    # DNS sidecar
 ```
 
 ## Managing your cage

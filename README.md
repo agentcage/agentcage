@@ -160,14 +160,22 @@ Using the official one-line installer:
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-It builds agentcage from source with `cargo` (setting up a minimal Rust
-toolchain via rustup if you have none). Or, with Rust 1.96+ installed:
+It downloads the latest release's prebuilt `agentcage` binary for your
+platform, verifies it against its published SHA-256, and installs it into
+`~/.local/bin`; no Rust toolchain is needed. To build from source instead,
+pass `--build`:
 
 ```bash
-cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.50.0 agentcage-cli
+curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh -s -- --build
 ```
 
-The host binary embeds the egress proxy that goes into each cage's egress image. The installer takes care of that (it downloads the release's prebuilt egress binary and verifies it); a plain `cargo install` builds only the host. See [the install guide](docs/get-started/install.md) for both.
+Or, with Rust 1.96+ installed:
+
+```bash
+cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.53.1 agentcage-cli
+```
+
+The prebuilt release binary embeds the egress proxy that goes into each cage's egress image. A plain `cargo install` builds only the host, without that egress binary. See [the install guide](docs/get-started/install.md) for both.
 
 agentcage is a single binary. It is no longer a Python package:
 `pip install agentcage` and `uv tool install agentcage` are not install
@@ -181,7 +189,7 @@ agentcage doctor
 
 ### 2. Ephemeral Session (One-Command Run)
 
-Run an interactive coding agent in a temporary, sandboxed cage with your repository mounted. The cage is automatically torn down when the session exits:
+Run an interactive coding agent in a short-lived, sandboxed cage with your repository mounted. `agentcage run` stops the cage when the session exits, but keeps its deployment directory, quadlets, named volumes, scoped secrets and audit data:
 
 ```bash
 # Run Claude Code in the current project directory (prompts for key securely)
@@ -193,6 +201,8 @@ agentcage run codex --project ~/code/my-repo -s OPENAI_API_KEY
 # Run Pi terminal harness with a specific isolation backend
 agentcage run pi --project . --isolation vm -s OPENAI_API_KEY
 ```
+
+The cage is stopped, not removed, on exit: `agentcage cage audit <name>` still works and `agentcage cage start <name>` brings the same cage back. Remove the cage itself with `agentcage cage destroy <name>`; it keeps the cage's data directory (including audit logs) and named volumes, and prints the `Kept:` path. Use `agentcage cage prune` to remove stopped interactive and ephemeral cages in bulk.
 
 ### 3. Persistent Cage
 
@@ -226,13 +236,13 @@ agentcage provides top-level aliases for all common operations (`agentcage run`,
 ```text
 CAGE LIFECYCLE
   agentcage init [NAME] [--scaffold NAME]     Scaffold a new cage.yaml
-  agentcage run <scaffold> -s KEY [--project] Launch ephemeral agent session (auto-cleanup)
+  agentcage run <scaffold> -s KEY [--project] Launch ephemeral agent session (stops on exit)
   agentcage cage create -c cage.yaml          Build, install, and start persistent cage
   agentcage cage update NAME [--no-cache]     Rebuild images and restart cage
   agentcage start | stop | restart NAME       Control cage lifecycle (skips rebuild)
-  agentcage destroy NAME [-y] [--keep-secrets]Stop containers, remove quadlets and state
-  agentcage prune [-y]                        Remove exited interactive/ephemeral cages
-  agentcage verify NAME                       Run runtime health diagnostics
+  agentcage rm NAME [-y] [--keep-secrets]     Stop containers, remove quadlets and secrets; data kept
+  agentcage cage prune [-y]                   Remove exited interactive/ephemeral cages; data kept
+  agentcage cage verify NAME                  Run runtime health diagnostics
 
 WORKLOAD INTERACTION
   agentcage exec NAME -- CMD                  Execute a command inside the cage container
