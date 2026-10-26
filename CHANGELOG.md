@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Lifecycle controls for `agentcage run`, and age/dry-run filters for `agentcage cage prune`.** `run --keep` states the default explicitly and `run --rm` destroys the cage through `cage destroy`'s teardown when the session ends. `run --dry-run` renders and validates the same config a real run would use, prints the plan (name, isolation, image/build, project mount, allowlist, secrets, ports and commands) and exits without creating state, binding a port, building an image or starting the session. `cage prune --dry-run` lists exactly which cages would be removed without changing anything, and `cage prune --older-than DURATION` limits the candidates to cages stopped more than that long ago. Running, `service` and legacy cages remain excluded. Refs #558, #564.
+
+- **`run` records why it kept the cage.** The default end-of-session output has a `Kept:` block naming the stopped cage, the per-cage data directory, the entries still in it and the exact `agentcage cage destroy <name> -y` command to remove it. `--rm` reports a partial teardown as a failure rather than as success.
+
+### Changed
+
+- **`agentcage run` stops and keeps the cage by default, and the documentation now says so.** The deployment, named volumes, secrets and data directory survive a session exit, so the cage can be audited or started again. Earlier documentation claimed the cage and network were destroyed automatically; that was not what the binary did. Removal is explicit, with `agentcage cage destroy` or `agentcage cage prune`. Even `run --rm` deliberately retains the per-cage data directory — the policy audit trail, capture log, grants overlay and timing ledger on the container and vm backends — because ending a session must not erase the evidence of what happened in it; the command prints how to remove that directory by hand. `cage prune` retains the same directory for every cage it removes.
+
+### Fixed
+
+- **`cage prune --older-than` trusts only a recorded stop time.** The filter fell back to `metadata.json`'s modification time when a cage had no `stopped_at`, which proves only that metadata was written: a cage that ran for a month and restarted five minutes ago could be selected by `--older-than 7d` and destroyed. A cage with no recorded stop time is now skipped. Every successful start path — `cage start`, `cage restart`, `cage update`, `cage restore` and the live-secret restart fallback — clears `stopped_at`, while a start that fails leaves it in place. `run` and `cage stop` continue to record it.
+
 ## [0.53.1] - 2026-10-25
 
 ### Fixed

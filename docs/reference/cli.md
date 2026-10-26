@@ -183,7 +183,7 @@ agentcage cage prune --dry-run --older-than 7d
 Options:
 - `-y, --yes`: Skip the confirmation prompt.
 - `--dry-run`: List exactly which cages would be removed, then exit without changing anything or prompting.
-- `--older-than DURATION`: Only include cages that stopped more than `DURATION` ago, using the same `30s` / `10m` / `1h` / `2d` / bare-seconds syntax as `domain add --expires-in`. The age is measured from the recorded `stopped_at` time, with `metadata.json`'s modification time as the fallback for cages from older releases.
+- `--older-than DURATION`: Only include cages that stopped more than `DURATION` ago, using the same `30s` / `10m` / `1h` / `2d` / bare-seconds syntax as `domain add --expires-in`. The age is measured only from the recorded `stopped_at` time. A cage with no such record is skipped, even if its `metadata.json` is old: metadata mtime is not the time the cage stopped and cannot prove a recent restart did not happen.
 
 Running cages and `service` cages are never removed. Like `destroy`, it takes the existing teardown path and keeps each removed cage's data directory, naming it in the `Kept:` block (see **Retention** above).
 

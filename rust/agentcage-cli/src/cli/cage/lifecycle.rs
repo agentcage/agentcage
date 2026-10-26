@@ -259,7 +259,7 @@ fn stop_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     // while destroy is the documented way out.
     let config = addressable(ctx, name, "cage stop")?;
     ctx.backend_for(&config.isolation).stop(name);
-    record_stopped_at(&ctx.paths, name);
+    agentcage_cli::services::record_stopped_at(&ctx.paths, name);
     println!("Stopped cage '{name}'");
     Ok(())
 }
@@ -344,7 +344,7 @@ fn start_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         eprintln!("error: {error}");
         ExitCode::from(EXIT_FAILURE)
     })?;
-    clear_stopped_at(&ctx.paths, name);
+    agentcage_cli::services::clear_stopped_at(&ctx.paths, name);
     println!("Started cage '{name}'");
     Ok(())
 }
@@ -407,8 +407,9 @@ fn restart_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         eprintln!("error: {error}");
         return Err(ExitCode::from(EXIT_FAILURE));
     }
-    crate::cli::secret::live::restart(ctx, name);
-    clear_stopped_at(&ctx.paths, name);
+    if crate::cli::secret::live::restart(ctx, name) {
+        agentcage_cli::services::clear_stopped_at(&ctx.paths, name);
+    }
     println!("Restarted cage '{name}'");
     Ok(())
 }
@@ -556,19 +557,56 @@ fn holds_data(path: &std::path::Path) -> bool {
     !path.is_dir() || std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
 }
 
+/// What [`destroy_cage_status`] removed and whether the teardown was
+/// complete.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct DestroyResult {
+    /// The removal descriptions `cage destroy` prints, in order.
+    pub(crate) removed: Vec<String>,
+    /// Whether every part of the teardown succeeded. False means at
+    /// least one resource or the deployment itself may still be there,
+    /// even when the deployment directory is gone.
+    pub(crate) complete: bool,
+}
+
 /// Stop, destroy, forget.
 ///
 /// When the stored config cannot be loaded the fallback is simply the
 /// container backend: its `has_resources` is a filesystem check and
 /// its podman calls already tolerate a podman that cannot be run.
+///
+/// The returned list is only what was removed, for `cage destroy` and
+/// `cage prune` to print. Callers that need to know whether teardown
+/// *finished* must use [`destroy_cage_status`]: a failed
+/// `destroy_resources` is otherwise indistinguishable from a complete
+/// one once the deployment directory has been removed.
 pub(crate) fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<String> {
+    destroy_cage_status(ctx, name, keep_secrets, echo).removed
+}
+
+/// [`destroy_cage`], also reporting whether the teardown was complete.
+///
+/// `complete` is false when `destroy_resources` errors or when the
+/// deployment cannot be removed — the two failures `destroy_cage`
+/// itself only warns about. `run --rm` uses this so a partial teardown
+/// is reported as a failure rather than as `Removed` merely because
+/// `deployment_exists` became false.
+pub(crate) fn destroy_cage_status(
+    ctx: &Ctx,
+    name: &str,
+    keep_secrets: bool,
+    echo: bool,
+) -> DestroyResult {
     let backend = ctx.backend_of(name);
     let known = ctx.paths.deployment_exists(name);
     if !known && !backend.has_resources(name) {
         if echo {
             println!("Nothing to remove for '{name}' (no stored config and no backend resources).");
         }
-        return Vec::new();
+        return DestroyResult {
+            removed: Vec::new(),
+            complete: true,
+        };
     }
 
     if echo {
@@ -579,12 +617,15 @@ pub(crate) fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool
     if echo {
         println!("Removing resources...");
     }
-    let mut removed = backend
-        .destroy_resources(name, keep_secrets)
-        .unwrap_or_else(|error| {
+    let mut complete = true;
+    let mut removed = match backend.destroy_resources(name, keep_secrets) {
+        Ok(removed) => removed,
+        Err(error) => {
             eprintln!("warning: {error}");
+            complete = false;
             Vec::new()
-        });
+        }
+    };
 
     if ctx.paths.deployment_exists(name) {
         let removal = if keep_secrets {
@@ -592,13 +633,20 @@ pub(crate) fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool
         } else {
             ctx.paths.remove_deployment(name)
         };
-        if let Err(error) = removal {
-            eprintln!("warning: {error}");
-        } else {
-            removed.push(format!("state:{name}"));
+        match removal {
+            Err(error) => {
+                eprintln!("warning: {error}");
+                complete = false;
+            }
+            Ok(()) if ctx.paths.deployment_exists(name) => {
+                // Defensive: a `remove_deployment` that returned Ok
+                // but left the directory is not a complete teardown.
+                complete = false;
+            }
+            Ok(()) => removed.push(format!("state:{name}")),
         }
     }
-    removed
+    DestroyResult { removed, complete }
 }
 
 /// `cage prune` — remove every *exited* interactive or ephemeral cage.
@@ -622,14 +670,16 @@ pub(crate) fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool
 /// * **Running.** Zero of the cage's services up.
 ///
 /// `--older-than` is a fourth filter, applied to the **time the cage
-/// stopped**, not to the deployment directory's mtime. `run` and `cage
-/// stop` write `stopped_at` into `metadata.json`; `cage start` and
-/// `cage restart` clear it. A cage deployed by an older release has no
-/// `stopped_at`, so the fallback is the `metadata.json` file's own
-/// modification time — the best existing deployment timestamp, and the
-/// one metadata write `save_metadata` performs atomically. A cage with
-/// neither timestamp is skipped, because "I cannot prove it is old"
-/// must never mean "remove it".
+/// stopped**, not to the deployment directory's or `metadata.json`'s
+/// mtime. `run` and `cage stop` write `stopped_at` into
+/// `metadata.json`; every successful start path (`cage start`,
+/// `cage restart`, `cage update`, `cage restore`, and the live-secret
+/// restart fallback) clears it. A metadata mtime proves only that
+/// metadata was written: a cage that ran for a month and rebooted five
+/// minutes ago would look ancient. So a cage with no recorded
+/// `stopped_at` is skipped — "I cannot prove it is old" must never
+/// mean "remove it", and a missing stop time must never stand in for
+/// one.
 ///
 /// The teardown itself is `destroy`'s, run with its narration
 /// suppressed, so a ten-cage prune
@@ -725,7 +775,7 @@ fn prune_candidates(ctx: &Ctx, older_than: Option<i64>) -> Vec<String> {
             continue;
         }
         if let Some(seconds) = older_than
-            && stopped_age_seconds(&ctx.paths, &name, &metadata).is_none_or(|age| age < seconds)
+            && stopped_age_seconds(&metadata).is_none_or(|age| age < seconds)
         {
             continue;
         }
@@ -734,54 +784,23 @@ fn prune_candidates(ctx: &Ctx, older_than: Option<i64>) -> Vec<String> {
     candidates
 }
 
-/// Seconds since the cage last stopped, or `None` when no trustworthy
-/// timestamp exists.
+/// Seconds since the cage last stopped, or `None` when it has no
+/// recorded stop time.
 ///
-/// `stopped_at` is what `run`/`cage stop` record. For a cage from an
-/// older release, `metadata.json`'s mtime is the fallback — a
-/// deployment metadata file, not the directory mtime that unrelated
-/// writes would move. A missing or unreadable file answers `None`, and
+/// Deliberately no `metadata.json` mtime fallback: the file's
+/// modification time is not the time the cage stopped, and treating it
+/// as one can remove a cage that restarted moments ago. A missing,
+/// empty or unparseable `stopped_at` answers `None`, and
 /// `--older-than` then skips the cage rather than guessing.
-fn stopped_age_seconds(paths: &Paths, name: &str, metadata: &Json) -> Option<i64> {
-    if let Some(stopped) = metadata
+fn stopped_age_seconds(metadata: &Json) -> Option<i64> {
+    let stopped = metadata
         .get("stopped_at")
         .and_then(Json::as_str)
         .filter(|value| !value.is_empty())
-        .and_then(DateTime::from_isoformat)
-    {
-        return DateTime::now_utc()
-            .seconds_since(&stopped.assume_utc())
-            .map(|seconds| seconds.max(0));
-    }
-    let modified = std::fs::metadata(paths.metadata_path(name))
-        .ok()?
-        .modified()
-        .ok()?;
-    modified
-        .elapsed()
-        .ok()
-        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
-}
-
-/// Record the moment a cage stopped, for `prune --older-than`.
-pub(crate) fn record_stopped_at(paths: &Paths, name: &str) {
-    let mut metadata = paths
-        .load_metadata(name)
-        .unwrap_or_else(|_| Json::Object(Vec::new()));
-    metadata.set("stopped_at", Json::string(DateTime::now_utc().isoformat()));
-    let _ = paths.save_metadata(name, &metadata);
-}
-
-/// Forget the stopped timestamp when a cage comes back up, so a later
-/// stop records a fresh one rather than inheriting the previous age.
-fn clear_stopped_at(paths: &Paths, name: &str) {
-    let Ok(mut metadata) = paths.load_metadata(name) else {
-        return;
-    };
-    if metadata.get("stopped_at").is_some() {
-        metadata.set("stopped_at", Json::Null);
-        let _ = paths.save_metadata(name, &metadata);
-    }
+        .and_then(DateTime::from_isoformat)?;
+    DateTime::now_utc()
+        .seconds_since(&stopped.assume_utc())
+        .map(|seconds| seconds.max(0))
 }
 
 /// `click.confirm` — `[y/N]`, default no, EOF is no.
@@ -948,6 +967,43 @@ mod tests {
             ["old-cage", "recent-cage"],
             "without --older-than both stopped interactive cages are candidates"
         );
+    }
+
+    /// A cage with no `stopped_at` is skipped by `--older-than` even
+    /// when its `metadata.json` mtime is ancient. The file's mtime is
+    /// not the time the cage stopped: a cage that ran for a month and
+    /// rebooted five minutes ago has old metadata and no stop recorded.
+    #[test]
+    fn older_than_skips_a_cage_with_no_recorded_stop_even_with_old_metadata() {
+        let dir = TestDir::new("prune-old-metadata-no-stop");
+        let paths = stage(dir.path(), "no-stop-cage", "interactive", "0.53.1", None);
+
+        // Make the metadata file look years old, which the former
+        // mtime fallback would have treated as a stop time.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(paths.metadata_path("no-stop-cage"))
+            .expect("metadata is writable");
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
+            ),
+        )
+        .expect("mtime is settable");
+
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.default_reply(Reply::success());
+        let ctx = ctx_under(dir.path(), fake);
+
+        assert!(
+            prune_candidates(&ctx, Some(3600)).is_empty(),
+            "a cage with no stopped_at was selected by --older-than"
+        );
+        // Without the age filter it is still an ordinary stopped
+        // interactive cage, so the absence of a stop time is not a
+        // permanent exemption.
+        assert_eq!(prune_candidates(&ctx, None), ["no-stop-cage"]);
     }
 
     /// `--dry-run` prints the candidate list and returns without

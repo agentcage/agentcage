@@ -181,7 +181,7 @@ agentcage doctor
 
 ### 2. Ephemeral Session (One-Command Run)
 
-Run an interactive coding agent in a temporary, sandboxed cage with your repository mounted. The cage is automatically torn down when the session exits:
+Run an interactive coding agent in a temporary, sandboxed cage with your repository mounted. When the session exits the cage is stopped and kept, with its data and named volumes, until you remove it with `agentcage cage destroy` or `agentcage cage prune`:
 
 ```bash
 # Run Claude Code in the current project directory (prompts for key securely)
@@ -226,13 +226,14 @@ agentcage provides top-level aliases for all common operations (`agentcage run`,
 ```text
 CAGE LIFECYCLE
   agentcage init [NAME] [--scaffold NAME]     Scaffold a new cage.yaml
-  agentcage run <scaffold> -s KEY [--project] Launch ephemeral agent session (auto-cleanup)
+  agentcage run <scaffold> -s KEY [--project] Launch agent session (stopped and kept; --rm to destroy)
   agentcage cage create -c cage.yaml          Build, install, and start persistent cage
   agentcage cage update NAME [--no-cache]     Rebuild images and restart cage
   agentcage start | stop | restart NAME       Control cage lifecycle (skips rebuild)
-  agentcage destroy NAME [-y] [--keep-secrets]Stop containers, remove quadlets and state
-  agentcage prune [-y]                        Remove exited interactive/ephemeral cages
-  agentcage verify NAME                       Run runtime health diagnostics
+  agentcage cage destroy NAME [-y] [--keep-secrets]
+                                             Stop containers, remove quadlets and state
+  agentcage cage prune [-y]                   Remove exited interactive/ephemeral cages
+  agentcage cage verify NAME                  Run runtime health diagnostics
 
 WORKLOAD INTERACTION
   agentcage exec NAME -- CMD                  Execute a command inside the cage container

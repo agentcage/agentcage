@@ -515,8 +515,9 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
 /// Both branches reuse the existing lifecycle teardown. The default
 /// (`--keep`, and what `run` has always done) stops the units and leaves
 /// the deployment, volumes, secrets and data directory in place. `--rm`
-/// calls `cage destroy`'s own `destroy_cage`, so there is exactly one
-/// implementation of what destroying a cage means.
+/// calls `cage destroy`'s own teardown, so there is exactly one
+/// implementation of what destroying a cage means, and uses its checked
+/// result so a partial teardown is not reported as success.
 ///
 /// The audit data directory is deliberately not deleted even by `--rm`:
 /// it holds the policy audit trail, capture log and grants overlay, and
@@ -531,17 +532,23 @@ fn finish_run(ctx: &Ctx, config: &Config, cage_name: &str, options: &Options) {
 
     if options.remove {
         let spinner = output::Spinner::start("Removing cage...");
-        let removed = crate::cli::cage::lifecycle::destroy_cage(ctx, cage_name, false, false);
+        let destroyed =
+            crate::cli::cage::lifecycle::destroy_cage_status(ctx, cage_name, false, false);
         drop(spinner);
-        if ctx.paths.deployment_exists(cage_name) {
+        // `complete`, not `deployment_exists`: `destroy_resources`
+        // failures are warnings inside the teardown, so the deployment
+        // directory can be gone while a network, volume or secret is
+        // still there. Reporting that as `Removed` would claim success
+        // for a partial teardown.
+        if !destroyed.complete || ctx.paths.deployment_exists(cage_name) {
             println!(
                 "  {}",
                 output::dim(&format!(
-                    "{cage_name} could not be fully destroyed; deployment state kept"
+                    "{cage_name} could not be fully destroyed; some resources may remain"
                 ))
             );
             print_run_kept(&ctx.paths, cage_name, RunKept::RemoveFailed);
-        } else if removed.is_empty() {
+        } else if destroyed.removed.is_empty() {
             println!("  {}", output::dim(&format!("{cage_name} removed")));
             print_run_kept(&ctx.paths, cage_name, RunKept::Removed);
         } else {
@@ -555,7 +562,7 @@ fn finish_run(ctx: &Ctx, config: &Config, cage_name: &str, options: &Options) {
         let _spinner = output::Spinner::start("Stopping cage...");
         ctx.backend_for(&config.isolation).stop(&config.name);
     }
-    crate::cli::cage::lifecycle::record_stopped_at(&ctx.paths, cage_name);
+    agentcage_cli::services::record_stopped_at(&ctx.paths, cage_name);
     println!("  {}", output::dim(&format!("{cage_name} stopped")));
     print_run_kept(&ctx.paths, cage_name, RunKept::Stopped);
 }
@@ -584,7 +591,7 @@ fn print_run_kept(paths: &agentcage_state::Paths, name: &str, state: RunKept) {
         }
         RunKept::Removed => println!("  cage: {name} (destroyed; audit data retained)"),
         RunKept::RemoveFailed => {
-            println!("  cage: {name} (destroy incomplete; deployment state retained)");
+            println!("  cage: {name} (destroy incomplete; some resources may remain)");
         }
     }
     println!("  data:{}", data.display());

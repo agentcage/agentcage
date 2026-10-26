@@ -14,6 +14,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 
 use agentcage_core::config::Config;
+use agentcage_core::har::datetime::DateTime;
+use agentcage_core::har::json::Json;
 use agentcage_core::quadlets::{Quadlets, cage_network_addrs};
 use agentcage_state::Paths;
 
@@ -585,7 +587,43 @@ pub fn build_and_deploy(
     paths.save_metadata(deploy_name, &metadata)?;
 
     backend.start(&config.name, quiet)?;
+    // A deploy starts the cage, so the timestamp `prune --older-than`
+    // measures must not survive from a previous stop. Only after a
+    // successful start: a failed one leaves the cage down, and its
+    // stop time is still the truth.
+    clear_stopped_at(paths, deploy_name);
     Ok(Deployed { units, octet })
+}
+
+/// Record the moment a cage stopped, for `prune --older-than`.
+///
+/// `stopped_at` is the only timestamp the age filter trusts: it is
+/// written when the cage actually stops. A metadata file's mtime proves
+/// only that metadata was written, which can be long after a reboot or
+/// long before a stop.
+pub fn record_stopped_at(paths: &Paths, name: &str) {
+    let mut metadata = paths
+        .load_metadata(name)
+        .unwrap_or_else(|_| Json::Object(Vec::new()));
+    metadata.set("stopped_at", Json::string(DateTime::now_utc().isoformat()));
+    let _ = paths.save_metadata(name, &metadata);
+}
+
+/// Forget the stopped timestamp when a cage comes back up, so a later
+/// stop records a fresh one rather than inheriting the previous age.
+///
+/// Every successful start path calls this: `run`, `cage start`,
+/// `cage restart`, `cage update`, `cage restore`, and the live-secret
+/// restart fallback. A start that fails must not call it — the cage is
+/// still down, and the old stop time is still accurate.
+pub fn clear_stopped_at(paths: &Paths, name: &str) {
+    let Ok(mut metadata) = paths.load_metadata(name) else {
+        return;
+    };
+    if metadata.get("stopped_at").is_some() {
+        metadata.set("stopped_at", Json::Null);
+        let _ = paths.save_metadata(name, &metadata);
+    }
 }
 
 /// `quadlets.collect_used_octets` — the third octets other cages hold.
@@ -797,20 +835,25 @@ const RESTART_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30)
 /// failed. 30 seconds matches the cage quadlet's `ExecStartPre` CA-cert
 /// poll plus a few seconds for podman to register the container.
 ///
-/// Returns silently either way: a cage still not active at the deadline
-/// may simply be slow, and `backend.restart` has already surfaced any
-/// failure of its own.
-pub fn restart_cage(backend: &AnyBackend<'_>, name: &str) {
+/// Returns whether the cage service was running when the wait ended. A
+/// cage still not active at the deadline may simply be slow, and
+/// `backend.restart` has already surfaced any failure of its own; the
+/// answer exists so callers can decide whether a stale `stopped_at` is
+/// still the truth. It must not be cleared for a restart that did not
+/// bring the cage up.
+#[must_use]
+pub fn restart_cage(backend: &AnyBackend<'_>, name: &str) -> bool {
     if let Err(error) = backend.restart(name) {
         eprintln!("warning: failed to restart {name}: {error}");
     }
     let deadline = std::time::Instant::now() + RESTART_DEADLINE;
     while std::time::Instant::now() < deadline {
         if backend.is_running(name, "cage") {
-            return;
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
+    false
 }
 
 /// A JSON number that is a plausible third octet.
