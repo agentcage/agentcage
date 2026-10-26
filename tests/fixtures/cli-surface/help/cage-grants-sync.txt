@@ -42,4 +42,6 @@ Usage: agentcage cage grants sync [OPTIONS]
   continuous watcher to run, so it needs no supervision unit.
 
 Options:
-  --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

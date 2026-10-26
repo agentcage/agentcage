@@ -19,4 +19,5 @@ Options:
   --json                          Output as JSON lines.
   --summary                       Show aggregated statistics.
   --no-color                      Disable colored output.
-  --help                          Show this message and exit.
+  --quiet                         Suppress progress output (spinners and banners).
+  -h, --help                      Show this message and exit.

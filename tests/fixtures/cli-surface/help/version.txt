@@ -1,0 +1,9 @@
+Usage: agentcage version [OPTIONS]
+
+  Show the version and exit.
+
+Options:
+  --json      Output as JSON.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
+  -h, --help  Show this message and exit.

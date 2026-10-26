@@ -490,13 +490,13 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
     }
 
     println!();
-    println!("  {}", output::dim(&project_dir));
-    println!(
+    output::echo(&format!("  {}", output::dim(&project_dir)));
+    output::echo(&format!(
         "  {} {} {}",
         output::dim("Ctrl+D to exit"),
         output::dim("\u{b7}"),
         output::dim(&format!("agentcage cage audit {cage_name}"))
-    );
+    ));
     println!();
     output::separator();
 

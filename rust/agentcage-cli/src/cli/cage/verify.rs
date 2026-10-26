@@ -37,8 +37,17 @@ impl Results {
         self.passed += 1;
     }
 
-    fn fail(&mut self, message: &str) {
+    /// A failure, with the one line that says what to do about it.
+    ///
+    /// `fix` is an exact command when the repair is the same on every
+    /// host (restart the cage, regenerate its units), and a docs link
+    /// when it is not (a rootless podman is the operator's setup, not
+    /// something a command can rewrite). `fix:` exists because a probe
+    /// that only says "NOT running" leaves the operator to work out
+    /// which of the eight lifecycle commands applies.
+    fn fail(&mut self, message: &str, fix: &str) {
         println!("  [FAIL] {message}");
+        println!("         {}", fix_line(fix));
         self.failed += 1;
     }
 
@@ -46,6 +55,14 @@ impl Results {
         println!("  [WARN] {message}");
         self.warned += 1;
     }
+}
+
+/// The remediation line under a `[FAIL]`.
+///
+/// Indented to the message column (`[FAIL] ` is seven characters, plus
+/// the two leading spaces), so the pair reads as one finding.
+fn fix_line(fix: &str) -> String {
+    format!("fix: {fix}")
 }
 
 /// The body.
@@ -77,7 +94,10 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         if running {
             results.pass(&format!("{name}-{service} is running"));
         } else {
-            results.fail(&format!("{name}-{service} is NOT running"));
+            results.fail(
+                &format!("{name}-{service} is NOT running"),
+                &format!("agentcage cage start {name}"),
+            );
         }
     }
 
@@ -118,7 +138,10 @@ fn verify_container(
     println!("-- CA Certificate --");
     match podman.container_exec(&cage, &argv(&["test", "-f", "/certs/agentcage-ca.pem"])) {
         Ok((0, _)) => results.pass("CA cert exists in shared volume"),
-        _ => results.fail("CA cert NOT found at /certs/agentcage-ca.pem"),
+        _ => results.fail(
+            "CA cert NOT found at /certs/agentcage-ca.pem",
+            &format!("agentcage cage update {name}"),
+        ),
     }
 
     println!();
@@ -142,7 +165,10 @@ fn verify_container(
         if env_names.iter().any(|name| name == variable) {
             results.pass(&format!("{variable} is set"));
         } else {
-            results.fail(&format!("{variable} is NOT set"));
+            results.fail(
+                &format!("{variable} is NOT set"),
+                &format!("agentcage cage update {name}"),
+            );
         }
     }
 
@@ -154,9 +180,10 @@ fn verify_container(
         Some(status) if status == "403" || status == "000" => results.pass(&format!(
             "Blocked domain (evil-exfil-server.io) is denied (HTTP {status})"
         )),
-        Some(status) => results.fail(&format!(
-            "Blocked domain returned HTTP {status} — egress filtering may be broken"
-        )),
+        Some(status) => results.fail(
+            &format!("Blocked domain returned HTTP {status} — egress filtering may be broken"),
+            &format!("agentcage cage audit {name} --decision blocked"),
+        ),
     }
 
     if config.container.nested_containers {
@@ -166,11 +193,17 @@ fn verify_container(
             Ok((0, output)) => {
                 results.pass(&format!("Inner podman available ({})", output.trim()));
             }
-            _ => results.fail("Inner podman is NOT available"),
+            _ => results.fail(
+                "Inner podman is NOT available",
+                &format!("agentcage cage restart {name}"),
+            ),
         }
         match podman.container_exec(&cage, &argv(&["docker", "--version"])) {
             Ok((0, _)) => results.pass("Docker shim available"),
-            _ => results.fail("Docker shim is NOT available"),
+            _ => results.fail(
+                "Docker shim is NOT available",
+                &format!("agentcage cage restart {name}"),
+            ),
         }
     }
 
@@ -189,7 +222,10 @@ fn verify_container(
     if rootless {
         results.pass("Podman is running rootless");
     } else {
-        results.fail("Podman is NOT rootless");
+        results.fail(
+            "Podman is NOT rootless",
+            "docs/how-to/troubleshooting.md#b-linux--podman-gotchas",
+        );
     }
 }
 
@@ -366,7 +402,10 @@ fn verify_apple_container(ctx: &Ctx, name: &str, results: &mut Results) {
     if exec(&["test", "-f", "/certs/agentcage-ca.pem"]).0 {
         results.pass("CA cert exists at /certs/agentcage-ca.pem");
     } else {
-        results.fail("CA cert NOT found at /certs/agentcage-ca.pem");
+        results.fail(
+            "CA cert NOT found at /certs/agentcage-ca.pem",
+            &format!("agentcage cage update {name}"),
+        );
     }
 
     println!();
@@ -375,10 +414,13 @@ fn verify_apple_container(ctx: &Ctx, name: &str, results: &mut Results) {
     if ok && resolv.contains("nameserver 127.0.0.1") {
         results.pass("/etc/resolv.conf points to local dnsmasq (127.0.0.1)");
     } else {
-        results.fail(&format!(
-            "/etc/resolv.conf does NOT route to local dnsmasq (got: {})",
-            single_quoted(&resolv)
-        ));
+        results.fail(
+            &format!(
+                "/etc/resolv.conf does NOT route to local dnsmasq (got: {})",
+                single_quoted(&resolv)
+            ),
+            &format!("agentcage cage update {name}"),
+        );
     }
 
     println!();
@@ -408,9 +450,10 @@ fn verify_apple_container(ctx: &Ctx, name: &str, results: &mut Results) {
         // dropped it, which is also a pass, just less informative.
         results.pass("Blocked domain (evil-exfil-server.io) is denied (HTTP 000)");
     } else {
-        results.fail(&format!(
-            "Blocked domain returned HTTP {status} — egress filtering may be broken"
-        ));
+        results.fail(
+            &format!("Blocked domain returned HTTP {status} — egress filtering may be broken"),
+            &format!("agentcage cage audit {name} --decision blocked"),
+        );
     }
 }
 
@@ -428,7 +471,10 @@ fn verify_vm(ctx: &Ctx, name: &str, results: &mut Results) {
     if instance.is_running().unwrap_or(false) {
         results.pass("Lima VM instance is running");
     } else {
-        results.fail("Lima VM instance is not running");
+        results.fail(
+            "Lima VM instance is not running",
+            &format!("agentcage cage start {name}"),
+        );
         return;
     }
 
@@ -447,11 +493,14 @@ fn verify_vm(ctx: &Ctx, name: &str, results: &mut Results) {
             Ok(out) if out.stdout_trimmed() == "active" => {
                 results.pass(&format!("{service} service is active"));
             }
-            Ok(out) => results.fail(&format!(
-                "{service} service is not active ({})",
-                out.stdout_trimmed()
-            )),
-            Err(error) => results.fail(&format!("Cannot check {service} service: {error}")),
+            Ok(out) => results.fail(
+                &format!("{service} service is not active ({})", out.stdout_trimmed()),
+                &format!("agentcage cage restart {name}"),
+            ),
+            Err(error) => results.fail(
+                &format!("Cannot check {service} service: {error}"),
+                "docs/how-to/troubleshooting.md#b-linux--podman-gotchas",
+            ),
         }
     }
 }
@@ -467,7 +516,7 @@ fn single_quoted(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Results, single_quoted, verify_apple_container, verify_vm};
+    use super::{Results, fix_line, single_quoted, verify_apple_container, verify_vm};
     use crate::cli::context::Ctx;
     use agentcage_exec::{FakeRunner, Reply};
     use agentcage_state::{Paths, TestDir};
@@ -652,5 +701,19 @@ mod tests {
         assert_eq!(single_quoted("nameserver 1.1.1.1"), "'nameserver 1.1.1.1'");
         assert_eq!(single_quoted("it's"), r"'it\'s'");
         assert_eq!(single_quoted(""), "''");
+    }
+
+    /// Every failure carries a remediation, and it is labelled `fix:` so
+    /// a reader (or a grep) can find it under the failure it belongs to.
+    #[test]
+    fn every_failure_names_its_fix() {
+        assert_eq!(
+            fix_line("agentcage cage start acme"),
+            "fix: agentcage cage start acme"
+        );
+        assert_eq!(
+            fix_line("docs/how-to/troubleshooting.md#b-linux--podman-gotchas"),
+            "fix: docs/how-to/troubleshooting.md#b-linux--podman-gotchas"
+        );
     }
 }

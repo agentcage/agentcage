@@ -10,9 +10,63 @@ The `agentcage` command-line interface manages sandboxes, secret storage, domain
 agentcage [OPTIONS] COMMAND [ARGS]...
 
 Options:
-  --version  Show the version and exit.
-  --help     Show this message and exit.
+  --version   Show the version and exit.
+  -h, --help  Show this message and exit.
+  --no-color  Disable colored output.
+  --quiet     Suppress progress output (spinners and banners).
 ```
+
+### Automation-friendly globals
+
+Both new global options are accepted before or after the subcommand
+(`agentcage --quiet cage create` and `agentcage cage create --quiet` are
+the same invocation).
+
+- **`-h, --help`** — `-h` is an alias for `--help`, everywhere. `--help`
+  remains the long form (the full command docstring); both spellings
+  print it.
+- **`--no-color`** — strip ANSI escapes from stdout and stderr even when
+  they are terminals. `NO_COLOR` (any value, including an empty one) is
+  honoured the same way. Without either, colour still follows the
+  per-stream terminal check, so existing behaviour is unchanged. The
+  per-command `cage audit --no-color` keeps working; it is now the same
+  global flag.
+- **`--quiet`** — silence progress output: the pre-deploy banner and the
+  braille spinner. A `CI` environment (any non-empty value) does the
+  same. `--quiet` never suppresses a command's own output, a table, a
+  warning or an error, and progress is never written when the stream is
+  not a terminal.
+
+### JSON output
+
+The read-only commands that do not depend on a cage's live backend write
+one JSON document to stdout with `--json`. The envelope is stable:
+
+```json
+{
+  "schema_version": 1,
+  "command": "domain list",
+  "ok": true,
+  "data": {},
+  "warnings": []
+}
+```
+
+The keys and their order are the contract. `command` is the canonical
+spelling (`domain list`, never `ls`), so either spelling of a command
+produces the same document. `schema_version` is bumped only for a
+breaking change to the envelope; new keys inside `data` are not a break.
+Secret *values* are never emitted — `secret list` carries names, types,
+`present` and the decoy placeholder label only. A failing command keeps
+its existing stderr message and non-zero exit code. `ok` is `false` only
+when a command still prints a document while reporting failure — today
+that is `secret list --json` when a declared secret is missing, which
+also exits 1; every other document has `ok: true`.
+
+See [`agentcage paths`](#agentcage-paths---json) and
+[`agentcage version`](#agentcage-version---json) for the
+backend-independent ones, and the `domain list` / `secret list` entries
+below.
 
 ### Top-Level Aliases
 For developer convenience, frequently used commands can be executed directly without the `cage` sub-group prefix:
@@ -53,7 +107,7 @@ agentcage init my-agent --scaffold claude-code
 ---
 
 ### `agentcage run SCAFFOLD [EXTRA_ARGS]...`
-Launches a sandboxed agent session. By default the cage is stopped when the session exits and its resources are kept; `--rm` destroys the cage afterwards.
+Launches an ephemeral, one-shot sandboxed agent session. When the session process exits, `run` stops the cage but does not remove it: the deployment directory, quadlets, named volumes, scoped secrets and audit data are kept, so `agentcage cage audit <name>` still works and `agentcage cage start <name>` resumes the same cage. Remove the cage with `agentcage cage destroy <name>`; it keeps the data directory (including audit logs) and named volumes and prints the `Kept:` path. `--rm` destroys the cage at session exit instead. Remove stopped interactive and ephemeral cages in bulk with `agentcage cage prune`:
 
 ```bash
 agentcage run claude-code -s ANTHROPIC_API_KEY
@@ -129,10 +183,16 @@ Lists all existing cages with status, isolation mode, backend, and scaffold meta
 agentcage list
 ```
 
+**Options**:
+- `--json`: Print the list as one JSON object instead of the table (see [JSON output](#json-output)). The envelope's `data.cages` holds one entry per cage: `name`, `lifecycle`, `isolation`, `scaffold`, `status` (the table's status text), `state` (`running` `stopped` `degraded` `exited` `legacy` `unknown`), `running`, `total` and `legacy`. An unreadable cage's config is a row with `state: "unknown"`, not an error.
+
 ---
 
 ### `agentcage cage status [NAME]`
 Displays system status: lists all cages when invoked without arguments; displays full status detail when invoked with `NAME` (mirrors `systemctl status`).
+
+**Options**:
+- `--json`: One JSON object. With `NAME` it is the `cage show` document; without one it is the `cage list` document.
 
 ---
 
@@ -142,6 +202,13 @@ Displays detailed configuration, network IP addresses, mounted volumes, active d
 ```bash
 agentcage show my-agent
 ```
+
+The report names, in order: the cage's name, isolation backend, lifecycle and scaffold; its image and (when it has one) staged Containerfile; its version and service status; the derived network subnet and the cage/egress static addresses; the data directory that outlives `cage destroy`; published ports; every mount with its flags — bind mounts as written, named volumes and tmpfs labelled; the domain mode with the *names* it allows or blocks, plus passthrough names; each expected secret's name and its **masked** placeholder (for example `agentcage:secret:API_KEY:****` — the decoy is named, the token is not printed); the traffic watcher's state and last scan when enabled; and how many of the most recent captured requests were blocked.
+
+Real secret values are never read or printed. Placeholders are decoys, but `show` masks their random suffix anyway so a screenshot cannot be mistaken for a leaked credential; `secret list` prints them in full when that is what you need.
+
+**Options**:
+- `--json`: The same report as one JSON object (see [JSON output](#json-output)). `data` holds `name`, `isolation`, `lifecycle`, `image`, `build`, `version`, `scaffold`, `status` (`state`, `text`, `running`, `total`), `network` (`subnet`, `cage`, `egress`, or `null` on apple-container, which has no `10.89.x` pool), `data_dir`, `ports`, `volumes`, `named_volumes` (`name`, `mount`), `tmpfs`, `domains` (`mode`, `count`, `names`), `passthrough`, `secrets` (`expected`, `present`, `missing`, and `entries` of `name`, `present`, masked `placeholder`), `watcher` (`enabled`, `state`, and `last_scan`/`last_scan_failed`/`findings_total` once it has scanned), and `recent_blocked` (`blocked`, `scanned`, or `null`). `status.state` uses the same vocabulary as `cage list --json` — `running`, `stopped`, `degraded`, `exited` — so a stopped interactive or ephemeral cage is `exited` in both; `status.text` is the line the human report prints (`stopped (0/2)`), which is unchanged. `recent_blocked` counts the last 500 capture entries, growing the read backwards past entries larger than 256 KiB, and `scanned` is the number of those entries that parsed — not the number of log lines.
 
 ---
 
@@ -154,7 +221,7 @@ Controls container execution without rebuilding images:
 ---
 
 ### `agentcage cage destroy NAME` (Aliases: `rm`, `delete`)
-Stops running containers, removes systemd quadlets, removes the deployment's state files, and purges scoped secrets:
+Stops running containers, removes systemd quadlets, removes the deployment's staged state files, and purges scoped secrets. The per-cage data directory (audit logs included) and the cage's named volumes are kept, and the `Kept:` block says so (see **Retention** below):
 
 ```bash
 agentcage rm my-agent -y
@@ -267,7 +334,14 @@ Lists all configured allowlisted, blocked, and passthrough domains:
 
 ```bash
 agentcage domain list my-agent
+agentcage domain ls my-agent --json
 ```
+
+**Options**:
+- `--json`: Emit the JSON envelope instead of the text list. `data` holds
+  `cage`, `mode` (`allowlist` or `blocklist`), `domains` (sorted, each
+  `{domain, passthrough?, expires_at?}`), `passthrough` (every
+  passthrough entry) and `passthrough_only` (entries in no other list).
 
 ---
 
@@ -311,7 +385,15 @@ Lists all secrets configured for a cage, indicating whether values are stored an
 
 ```bash
 agentcage secret list my-agent
+agentcage secret ls my-agent --json
 ```
+
+**Options**:
+- `--json`: Emit the JSON envelope. `data` holds `cage` and `secrets`, an
+  array of `{name, type, present, placeholder?}`. Values are never read or
+  emitted; `placeholder` is the decoy token the cage injects instead of the
+  secret. The exit code is unchanged: a declared-but-absent secret still
+  exits 1, with `present: false` in the document.
 
 ---
 
@@ -387,8 +469,68 @@ agentcage cage har my-agent --view inbound -o traffic.har
 
 ## 7. Diagnostics & Backup
 
+### `agentcage paths [--json]`
+Prints the directories this install resolves, for backup scripts, sandboxes and support bundles:
+
+```bash
+agentcage paths
+agentcage paths --json
+```
+
+The rows are `home`, `config` (`$XDG_CONFIG_HOME/agentcage`), `data`
+(`$XDG_DATA_HOME/agentcage`), `cache` (`<data>/assets`, the
+extracted build contexts, where `<data>` is the `data` row above),
+`runtime` (`$XDG_RUNTIME_DIR`), `apple-container`
+(`~/.config/agentcage/apple-container`), `quadlets`
+(`~/.config/containers/systemd`) and `user-units` (`~/.config/systemd/user`).
+JSON `data` uses the same names with `apple_container` and `user_units`
+as the machine keys. There is no separate XDG state root: per-cage state
+lives under `config` and `data`. Nothing is created.
+
+---
+
+### `agentcage version [--json]`
+Prints `agentcage, version <version>` (the same string as `agentcage --version`), or the JSON envelope with `data: {name, version}`:
+
+```bash
+agentcage version
+agentcage version --json
+```
+
+---
+
+### `agentcage completions <SHELL>` / `agentcage completions print --shell <SHELL>`
+Writes a completion script for `bash`, `zsh` or `fish` to stdout:
+
+```bash
+agentcage completions bash > ~/.local/share/bash-completion/completions/agentcage
+agentcage completions print --shell zsh
+```
+
+There is deliberately no `completions install`: installing would mean
+guessing which of `.bashrc`, `.bash_profile`, `.zshrc` or
+`~/.config/fish/config.fish` owns the user's shell, and agentcage does not
+write to dotfiles. Where the script lands, and whether it is `eval`ed or
+sourced, is the user's call.
+
+---
+
 ### `agentcage doctor`
 Runs comprehensive diagnostic checks on host dependencies, virtualization backends, rootless Podman, systemd lingering, and secret stores.
+
+The human report is unchanged: four sections, one marked line per check, an optional indented remediation hint, and a summary that counts errors and warnings. The exit status is `1` when any check errored and `0` otherwise, in both output modes.
+
+**Options**:
+- `--json`: Print the report as one JSON object instead of the text. It carries `schema_version: 1`, `command: "doctor"`, `ok` (true when the exit status is 0), `exit_code`, `summary` (`passed`, `warnings`, `errors`) and `checks`. Each check is flat, so a consumer does not have to walk sections: `section` (its heading), `id` (a stable key, see below), `name` (the message it prints, with the host's versions and wording), `level` (`pass`, `warn` or `error`) and `hint` (the remediation line, or `""`).
+
+  `id` is the key to match on: it is the same on every host and in every release, while `name` is the message and changes with versions (`Podman 6.1.4` on one host, `Podman not found` on another). The ids are `podman`, `podman-rootless`, `lima`, `apple-container`, `qemu`, `systemd-linger`, `cgroup-v2`, `disk-space`, `secret-backend`, `dns`, `subnet-conflicts`, and `port-<port>` for each probed port (`port-8080`, `port-3000`, `port-18789`). A check that does not run on a host is absent rather than reported as skipped: `podman-rootless`, `qemu`, `systemd-linger` and `cgroup-v2` do not run on macOS, and `apple-container` only runs there.
+
+---
+
+### `agentcage cage verify NAME`
+Probes a deployed cage's live health: its two services, the CA certificate in the shared volume, the proxy environment, egress filtering against a domain no cage allows, nested containers when enabled, and the podman/VM state behind them.
+
+Every check prints `[PASS]`, `[FAIL]` or `[WARN]`, and every `[FAIL]` is followed by a `fix:` line — an exact command when the repair is the same on every host (`agentcage cage start NAME`, `agentcage cage update NAME`, `agentcage cage restart NAME`), or a docs link when it is the operator's own setup (`docs/how-to/troubleshooting.md`).
 
 ---
 
@@ -407,6 +549,30 @@ Restores or clones a cage from a backup tarball:
 ```bash
 agentcage cage restore ./backup.tar.gz --name my-cloned-agent
 ```
+
+---
+
+## JSON output
+
+Read-only commands take `--json` and print one JSON object instead of their text. All of them use the same envelope, so a script can parse any of them the same way:
+
+```json
+{
+  "schema_version": 1,
+  "command": "cage show",
+  "ok": true,
+  "data": {},
+  "warnings": []
+}
+```
+
+- `schema_version` is `1` until a field changes meaning; a consumer should refuse a version it does not know.
+- `command` is the canonical command that produced the document (`cage show`, `cage list`).
+- `ok` is `true` on success. A refusal — a cage that does not exist, an unreadable config — still exits non-zero with the message on stderr and prints no document, the same as the text mode.
+- `data` is the command's payload; its fields are documented per command above.
+- `warnings` is a list of things the command could not read but did not fail on, such as a traffic watcher whose guest-side scan state could not be fetched or could not be parsed.
+
+`agentcage doctor --json` uses its own document rather than this envelope (its checks and summary counts are the payload); its `schema_version` is also `1`.
 
 ---
 

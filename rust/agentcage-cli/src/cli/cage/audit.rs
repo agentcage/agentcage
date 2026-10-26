@@ -11,6 +11,7 @@
 //! `audit.jsonl` does not exist host-side for a `container` or `vm`
 //! cage. Only apple-container has one.
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use agentcage_core::audit::{
@@ -46,7 +47,9 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     let as_json = matches.get_flag("as_json") || matches.get_flag("as_json_lines");
     let follow = matches.get_flag("follow");
     let summary = matches.get_flag("summary");
-    let no_color = matches.get_flag("no_color");
+    // The flag, or `NO_COLOR` read by the entry point -- the two ways a
+    // caller can say "no SGR escapes" to this port.
+    let no_color = matches.get_flag("no_color") || agentcage_cli::output::no_color();
     let since = matches.get_one::<String>("since").cloned();
 
     if !ctx.paths.deployment_exists(&name) {
@@ -118,9 +121,13 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         follow,
     );
     let command = to_command(&argv);
+    // The per-stream terminal check, on top of the two switches. A pipe
+    // strips the table's escapes even when neither `--no-color` nor
+    // `NO_COLOR` was given.
+    let color = !no_color && std::io::stdout().is_terminal();
 
     if follow {
-        return follow_stream(ctx, &command, &filter, as_json, no_color);
+        return follow_stream(ctx, &command, &filter, as_json, color);
     }
 
     let entries = read_entries(ctx, &command, &filter)?;
@@ -146,7 +153,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     } else {
         println!("{}", format_table_header());
         for (entry, _) in entries {
-            println!("{}", format_table_row(entry, !no_color));
+            println!("{}", format_table_row(entry, color));
         }
     }
     Ok(())
@@ -176,7 +183,7 @@ fn follow_stream(
     command: &Command,
     filter: &AuditFilter,
     as_json: bool,
-    no_color: bool,
+    color: bool,
 ) -> Result<(), ExitCode> {
     let mut stream = ctx.runner.stream(command).map_err(|error| {
         eprintln!("error: {error}");
@@ -195,7 +202,7 @@ fn follow_stream(
         if as_json {
             println!("{raw}");
         } else {
-            println!("{}", format_table_row(&entry, !no_color));
+            println!("{}", format_table_row(&entry, color));
         }
     }
     let _ = stream.terminate();

@@ -35,6 +35,12 @@ records the bytes, from the real Python, and the port is held to them.
 | `spinner.json` | `output.Spinner` — frames, pause/resume, the non-tty fallback |
 | `timings.json` | `_timing.print_summary`, the `AGENTCAGE_TIMING=1` echo, the JSONL record |
 
+The port's `Spinner::start` (as opposed to the recorded `Spinner::new`)
+is quieter than the recorded behaviour: it prints nothing at all when
+stderr is not a terminal or `--quiet`/`CI` asked for silence, because the
+static `…` line was noise in a script's log. The recorded non-tty case is
+still asserted against `new`, so the helper's bytes are pinned.
+
 ## Both colour modes, and why that is the whole colour rule
 
 Every `echo` case is recorded twice: once with `sys.stdout` / `sys.stderr`
@@ -50,6 +56,12 @@ colour decision:
   reads neither `NO_COLOR` nor `FORCE_COLOR` (click 8.4 does not either).
   `cage audit --no-color` is a per-command flag threaded into
   `audit.format_table_row`; it does not reach `output.py`.
+
+The Rust port keeps that default and adds one switch: `NO_COLOR` (any
+value) or the global `--no-color` makes `output::echo` strip even on a
+terminal. The fixtures still record the per-stream rule alone, because
+that is what the styling helpers return; the switch is a decision in the
+printer, asserted by `tests/binary.rs` over a pty.
 
 Two consequences the port has to keep:
 

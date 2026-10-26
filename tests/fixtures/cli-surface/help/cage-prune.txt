@@ -8,4 +8,6 @@ Options:
                        anything.
   --older-than TEXT    Only cages stopped more than this long ago (e.g. 30m,
                        1h, 2d).
-  --help               Show this message and exit.
+  --no-color           Disable colored output.
+  --quiet              Suppress progress output (spinners and banners).
+  -h, --help           Show this message and exit.
