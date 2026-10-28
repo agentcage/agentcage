@@ -17,7 +17,7 @@ agentcage run claude-code -s ANTHROPIC_API_KEY
 ```
 
 ### Authentication Options
-Claude Code supports two authentication paths:
+Claude Code supports three authentication paths. `agentcage run` needs one credential, not both.
 
 #### Option A: Direct API Key (Recommended)
 Pass `-s ANTHROPIC_API_KEY` when starting the session:
@@ -25,7 +25,15 @@ Pass `-s ANTHROPIC_API_KEY` when starting the session:
 agentcage run claude-code -s ANTHROPIC_API_KEY
 ```
 
-#### Option B: Web OAuth Login
+#### Option B: Subscription token
+Mint a long-lived token on the host and export it; `run` picks it up and stores it for the cage, which sees only a placeholder. (An exported `ANTHROPIC_API_KEY` is not picked up this way; pass it with `-s`.)
+```bash
+claude setup-token
+export CLAUDE_CODE_OAUTH_TOKEN=<token>
+agentcage run claude-code
+```
+
+#### Option C: Web OAuth Login
 If you authenticate via your Anthropic console web login:
 1. Create a persistent cage:
    ```bash
