@@ -130,7 +130,7 @@ agentcage run claude-code -s ANTHROPIC_API_KEY
 **Options**:
 - `--project PATH`: Directory to bind mount to `/workspace` (default: current directory).
 - `--name TEXT`: Custom cage name (default: auto-generated).
-- `-s, --set-secret TEXT`: Secret to set (`KEY=VALUE` or `KEY` to prompt securely). Repeatable. For a scaffold with [`auth:` alternatives](scaffolds.md#alternative-credentials-auth), one of them is enough, and an exported one is used when none is given: `CLAUDE_CODE_OAUTH_TOKEN=… agentcage run claude-code` needs no `ANTHROPIC_API_KEY`.
+- `-s, --set-secret TEXT`: Secret to set (`KEY=VALUE` or `KEY` to prompt securely). Repeatable. For a scaffold with [`auth:` alternatives](scaffolds.md#alternative-credentials-auth), one of them is enough (two is an error), and one the scaffold marks `from_env` is read from the environment when none is given: with `CLAUDE_CODE_OAUTH_TOKEN` exported, `agentcage run claude-code` needs no `ANTHROPIC_API_KEY`.
 - `--isolation [container|vm|apple-container]`: Override isolation backend.
 - `--as-root`: Run as root (UID 0) inside container instead of UID 1000 (debug only).
 - `--no-cache`: Force clean image rebuild, ignoring Podman layer caches.

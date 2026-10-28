@@ -30,7 +30,7 @@ agentcage run claude-code -s ANTHROPIC_API_KEY
 agentcage run claude-code --project ~/myrepo
 ```
 
-`agentcage run claude-code` needs one credential, not both: `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`. One given with `-s` wins; otherwise it uses the first one exported in your environment, API key first. The cage gets only the rule for that credential. A token taken from the environment is stored in the cage's secret store, as `-s` would store it, and the cage sees only its placeholder; `run` prints `Auth: CLAUDE_CODE_OAUTH_TOKEN (from the environment)` when it does this. If neither is available, `run` on the container backend stops before building and lists both options.
+`agentcage run claude-code` needs one credential, not both: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, and the cage gets only the rule for that one. A credential given with `-s` wins (passing both is an error). Otherwise an exported `CLAUDE_CODE_OAUTH_TOKEN` is used: `run` prints `Auth: CLAUDE_CODE_OAUTH_TOKEN (from the environment)` and stores it in the cage's secret store as `-s` would, so the cage sees only its placeholder. An exported `ANTHROPIC_API_KEY` is never read on its own; name it with `-s ANTHROPIC_API_KEY`. If neither is available, `run` on the container backend stops before building and lists both options.
 
 The cage is stopped, not removed, on exit: its deployment, volumes, scoped secrets and audit logs are kept. `agentcage cage destroy <name>` removes the deployment and scoped secrets but keeps the data directory (including audit logs) and named volumes; it prints the `Kept:` path. `agentcage cage prune` removes stopped interactive and ephemeral cages in bulk.
 

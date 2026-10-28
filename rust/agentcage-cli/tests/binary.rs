@@ -924,9 +924,9 @@ fn run_dry_run_has_no_side_effects() {
 
 /// #559: with only `CLAUDE_CODE_OAUTH_TOKEN` exported, `run claude-code`
 /// renders the OAuth rule alone and treats the token as provided — no
-/// `ANTHROPIC_API_KEY` is demanded, and the token is not printed. An empty
-/// `ANTHROPIC_API_KEY` stands in for an unset one, so a developer's own
-/// environment cannot change the answer.
+/// `ANTHROPIC_API_KEY` is demanded, and the token is not printed. Empty
+/// values stand in for unset ones, so a developer's own environment
+/// cannot change the answer.
 #[test]
 fn run_takes_the_claude_oauth_token_from_the_environment() {
     let dir = agentcage_state::TestDir::new("binary-run-oauth-env");
@@ -979,6 +979,41 @@ fn run_takes_the_claude_oauth_token_from_the_environment() {
         "{text}"
     );
     assert!(!text.contains("CLAUDE_CODE_OAUTH_TOKEN"), "{text}");
+
+    // An exported API key is not read on its own: claude-code marks only
+    // the token `from_env`, so the default rule is planned as missing.
+    let out = agentcage_sandboxed_env(
+        dir.path(),
+        &args,
+        &[
+            ("CLAUDE_CODE_OAUTH_TOKEN", ""),
+            ("ANTHROPIC_API_KEY", "sk-ant-api-binary-test"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("secrets: ANTHROPIC_API_KEY (not provided)"),
+        "{text}"
+    );
+    assert!(!text.contains("from the environment"), "{text}");
+    assert!(!text.contains("sk-ant-api-binary-test"), "{text}");
+
+    // Both alternatives with `-s` is a usage error, not a silent pick.
+    let mut both = args.to_vec();
+    both.extend([
+        "-s",
+        "ANTHROPIC_API_KEY=a",
+        "-s",
+        "CLAUDE_CODE_OAUTH_TOKEN=b",
+    ]);
+    let out = agentcage_sandboxed_env(dir.path(), &both, &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("pass only one of"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 /// Every command in the tree has a body.

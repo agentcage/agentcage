@@ -12,12 +12,18 @@ name_prefix: claude
 
 # Credentials that each authenticate Claude Code on their own, in
 # preference order. `agentcage run` needs one, not both: the one given
-# with `-s`, else the first one exported in the environment. The template
-# renders the secret_injection rule for that one only (`{{ auth }}`), so
-# Claude Code never sees a placeholder for a credential nobody supplied.
+# with `-s`, else an exported one marked `from_env`. The template renders
+# the secret_injection rule for that one only (`{{ auth }}`), so Claude
+# Code never sees a placeholder for a credential nobody supplied.
+#
+# Only the subscription token is read from the environment: exporting it
+# for agentcage is the documented path (`claude setup-token`), while an
+# ANTHROPIC_API_KEY in the shell is often there for other tools and must
+# be named with `-s` before agentcage stores it.
 auth:
-  - ANTHROPIC_API_KEY
-  - CLAUDE_CODE_OAUTH_TOKEN
+  - secret: CLAUDE_CODE_OAUTH_TOKEN
+    from_env: true
+  - secret: ANTHROPIC_API_KEY
 
 build:
   - image: "localhost/agentcage-scaffold-claude-code:latest"

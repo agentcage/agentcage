@@ -26,7 +26,7 @@ agentcage run claude-code -s ANTHROPIC_API_KEY
 ```
 
 #### Option B: Subscription token
-Mint a long-lived token on the host and export it; `run` picks it up and stores it for the cage, which sees only a placeholder:
+Mint a long-lived token on the host and export it; `run` picks it up and stores it for the cage, which sees only a placeholder. (An exported `ANTHROPIC_API_KEY` is not picked up this way; pass it with `-s`.)
 ```bash
 claude setup-token
 export CLAUDE_CODE_OAUTH_TOKEN=<token>

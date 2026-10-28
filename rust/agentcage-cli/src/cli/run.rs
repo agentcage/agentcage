@@ -59,11 +59,12 @@ Secrets: every secret a scaffold declares is required. `run` aborts
 before starting the cage if one is missing — supply it with `-s KEY`
 (prompts) / `-s KEY=VALUE`, or via a configured `source:`. A scaffold
 that lists alternative credentials under `auth:` needs only one of them:
-the one given with `-s`, else the first one exported in the environment
-(e.g. claude-code's CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`),
-which is stored like `-s` and never enters the cage. `--no-cache`/`--pull`
-force a clean rebuild (ignore the layer cache / re-pull the base image)
-across every isolation backend — container, vm, and apple-container alike.";
+the one given with `-s`, else one the scaffold allows from the
+environment (claude-code: an exported CLAUDE_CODE_OAUTH_TOKEN from
+`claude setup-token`), which is stored like `-s` and never enters the
+cage. `--no-cache`/`--pull` force a clean rebuild (ignore the layer cache
+/ re-pull the base image) across every isolation backend — container,
+vm, and apple-container alike.";
 
 /// Build the `run` command. Registered twice: as `cage run`, and hidden
 /// at the root.
@@ -306,13 +307,12 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
     // sees only the placeholder.
     let auth_choices = scaffolds.auth(&scaffold);
     let env = agentcage_cli::secrets::SystemEnv;
-    let auth = {
-        let being_set: Vec<&str> = options
-            .secrets
-            .iter()
-            .map(|spec| spec.split_once('=').map_or(spec.as_str(), |(key, _)| key))
-            .collect();
-        flow::select_auth(&auth_choices, &being_set, &env)
+    let auth = match flow::select_auth(&auth_choices, &options.secrets, &env) {
+        Ok(auth) => auth,
+        Err(message) => {
+            output::step_fail(&message);
+            return 2;
+        }
     };
     let with_env_auth;
     let options = match &auth {
@@ -381,11 +381,7 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
     // here, or must be launched from a persistent cage whose config the
     // operator can edit.
     let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-    let being_set: Vec<&str> = options
-        .secrets
-        .iter()
-        .map(|spec| spec.split_once('=').map_or(spec.as_str(), |(key, _)| key))
-        .collect();
+    let being_set = flow::secret_keys(&options.secrets);
     // Only the container backend keeps secrets on host podman; asking
     // it about a vm or apple-container cage reports every key missing
     // (see `cage update`).
@@ -739,11 +735,10 @@ fn plan_text(
     let _ = writeln!(out, "  allowlist: {}", domain_summary(config));
 
     let expected = agentcage_cli::services::expected_secrets(config);
-    let provided: std::collections::BTreeSet<&str> = options
-        .secrets
-        .iter()
-        .map(|spec| spec.split_once('=').map_or(spec.as_str(), |(key, _)| key))
-        .collect();
+    let provided: std::collections::BTreeSet<&str> =
+        agentcage_cli::run::secret_keys(&options.secrets)
+            .into_iter()
+            .collect();
     let secrets = if expected.is_empty() {
         "none".to_owned()
     } else {

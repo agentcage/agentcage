@@ -13,11 +13,12 @@ Usage: agentcage cage run [OPTIONS] SCAFFOLD [EXTRA_ARGS]...
   before starting the cage if one is missing — supply it with `-s KEY`
   (prompts) / `-s KEY=VALUE`, or via a configured `source:`. A scaffold
   that lists alternative credentials under `auth:` needs only one of them:
-  the one given with `-s`, else the first one exported in the environment
-  (e.g. claude-code's CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`),
-  which is stored like `-s` and never enters the cage. `--no-cache`/`--pull`
-  force a clean rebuild (ignore the layer cache / re-pull the base image)
-  across every isolation backend — container, vm, and apple-container alike.
+  the one given with `-s`, else one the scaffold allows from the
+  environment (claude-code: an exported CLAUDE_CODE_OAUTH_TOKEN from
+  `claude setup-token`), which is stored like `-s` and never enters the
+  cage. `--no-cache`/`--pull` force a clean rebuild (ignore the layer cache
+  / re-pull the base image) across every isolation backend — container,
+  vm, and apple-container alike.
 
 Options:
   --project PATH                  Project directory to mount (default: current

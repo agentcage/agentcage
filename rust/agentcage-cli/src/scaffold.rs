@@ -297,7 +297,7 @@ impl Scaffolds {
     /// The scaffold's `auth:` alternatives, in preference order; empty
     /// for a scaffold without them.
     #[must_use]
-    pub fn auth(&self, name: &str) -> Vec<String> {
+    pub fn auth(&self, name: &str) -> Vec<AuthAlternative> {
         self.meta(name).map(|meta| meta.auth).unwrap_or_default()
     }
 }
@@ -361,13 +361,26 @@ pub struct Meta {
     /// Secrets that each authenticate the agent on their own, in
     /// preference order. `agentcage run` needs one of them, not all, and
     /// renders the template with `{{ auth }}` set to the one it chose.
-    pub auth: Vec<String>,
+    pub auth: Vec<AuthAlternative>,
     /// Images to build before the cage is created.
     pub build: Vec<Build>,
     /// Files to drop on the host, if they are not there already.
     pub provision: Vec<Provision>,
     /// What to tell the operator after `init` wrote the config.
     pub next_steps: Vec<String>,
+}
+
+/// One entry of `auth:`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct AuthAlternative {
+    /// The secret's name, as `secret_injection[].env` spells it.
+    pub secret: String,
+    /// Whether `run` may take the value from the host environment when
+    /// `-s` does not supply it. Off unless the scaffold says so: reading a
+    /// host credential the operator did not name must be a deliberate,
+    /// documented choice, not a side effect of it being exported.
+    pub from_env: bool,
 }
 
 /// One entry of `build:`.
@@ -1323,13 +1336,22 @@ mod tests {
             .collect()
     }
 
-    /// claude-code lists both of its credentials as alternatives, API
-    /// key first (#559).
+    /// claude-code lists both of its credentials as alternatives, the
+    /// subscription token first and the only one read from the
+    /// environment (#559).
     #[test]
     fn claude_code_declares_its_auth_alternatives() {
+        let auth = builtin_only().auth("claude-code");
+        let declared: Vec<(&str, bool)> = auth
+            .iter()
+            .map(|alt| (alt.secret.as_str(), alt.from_env))
+            .collect();
         assert_eq!(
-            builtin_only().auth("claude-code"),
-            ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+            declared,
+            [
+                ("CLAUDE_CODE_OAUTH_TOKEN", true),
+                ("ANTHROPIC_API_KEY", false)
+            ]
         );
         assert!(builtin_only().auth("codex").is_empty());
     }
