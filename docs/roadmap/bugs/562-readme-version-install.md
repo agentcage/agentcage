@@ -3,11 +3,17 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#562](https://github.com/agentcage/agentcage/issues/562) |
-| **Status** | Confirmed |
+| **Status** | Fixed — closed by #583 |
 | **Priority** | P0 |
 | **Area** | Documentation / release |
 | **Affected** | v0.53.1 |
 | **Fix** | Documentation update and a release checklist |
+
+## Progress (2026-10-28)
+
+Closed by [#583](https://github.com/agentcage/agentcage/pull/583): pins and the
+installer description are corrected, and `cargo xtask check-docs` fails on a
+stale `--tag` or `AGENTCAGE_VERSION=` pin. No release checklist was added.
 
 ## Summary
 
@@ -56,11 +62,11 @@ path.
 
 ## Acceptance criteria
 
-- [ ] No live documentation pins a release older than the current `VERSION`.
-- [ ] The README and install guide describe the same installer behaviour as
+- [x] No live documentation pins a release older than the current `VERSION`.
+- [x] The README and install guide describe the same installer behaviour as
       `install.sh`.
 - [ ] The release checklist includes README/install-guide version updates.
-- [ ] A docs test checks the pinned tag against `VERSION`.
+- [x] A docs test checks the pinned tag against `VERSION`.
 
 ## Tests
 

@@ -3,11 +3,20 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#580](https://github.com/agentcage/agentcage/issues/580) |
-| **Status** | Proposed |
+| **Status** | Partly done — `check-docs` in #583 |
 | **Priority** | P0/P1 |
 | **Phase** | 0/4 |
 | **Depends on** | The phase-0 bug fixes |
 | **Related** | [#560](https://github.com/agentcage/agentcage/issues/560), [#561](https://github.com/agentcage/agentcage/issues/561), [#562](https://github.com/agentcage/agentcage/issues/562) |
+
+## Progress (2026-10-28)
+
+[#583](https://github.com/agentcage/agentcage/pull/583) added
+`cargo xtask check-docs`, run in CI. It checks release pins against `VERSION`,
+`-s`/`--service` values, and the installer description. It does not yet check
+documented commands or options in general, and it missed the #559 README claim.
+
+Still open: `agentcage selftest`, the release checklist.
 
 ## Problem
 
@@ -98,6 +107,7 @@ destructive payloads. A failing probe exits non-zero.
 ## Acceptance criteria
 
 - [ ] CI fails when a documented command/option or pinned version is wrong.
+      *Partly: pinned versions and service values only.*
 - [ ] The known drift items are fixed and covered.
 - [ ] `agentcage selftest` passes on a fresh supported host.
 - [ ] Deliberately breaking an egress rule makes the relevant probe fail.

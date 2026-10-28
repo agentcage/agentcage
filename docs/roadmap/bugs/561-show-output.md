@@ -3,11 +3,18 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#561](https://github.com/agentcage/agentcage/issues/561) |
-| **Status** | Confirmed |
+| **Status** | Fixed — closed by #586 |
 | **Priority** | P1 |
 | **Area** | CLI output / documentation |
 | **Affected** | v0.53.1 |
 | **Fix** | [#570](https://github.com/agentcage/agentcage/issues/570) or a docs correction; `--json` follows the [#569](https://github.com/agentcage/agentcage/issues/569) envelope |
+
+## Progress (2026-10-28)
+
+Closed by [#586](https://github.com/agentcage/agentcage/pull/586): `cage show`
+and `cage status NAME` print the documented fields, `--json` uses the shared
+read envelope, and placeholders are masked. No test was found that pins the
+documented field list against `docs/reference/cli.md`.
 
 ## Summary
 
@@ -69,12 +76,12 @@ config and deployment state.
 
 ## Acceptance criteria
 
-- [ ] `cage show` displays every field the reference promises, or the
+- [x] `cage show` displays every field the reference promises, or the
       reference no longer promises them.
-- [ ] `cage show --json` exposes the same fields with a stable schema, inside
+- [x] `cage show --json` exposes the same fields with a stable schema, inside
       the [#569](https://github.com/agentcage/agentcage/issues/569) envelope.
       The envelope is a prerequisite, not this issue’s design.
-- [ ] Secret values are never printed; only key names and masked placeholders.
+- [x] Secret values are never printed; only key names and masked placeholders.
 - [ ] A test pins the documented field list.
 
 ## Tests

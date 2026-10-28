@@ -1,11 +1,13 @@
 # agentcage Improvement Plan (2026–2027)
 
-> **Status:** Proposed. This is a discussion document, not a release schedule
-> or a guarantee. Each bug and feature suggestion has its own GitHub issue and
-> a page named after that issue, so it can be reviewed, prioritised and
-> implemented independently.
+> **Status:** Working plan, **not meant to be merged.** It lives on the
+> `docs/product-roadmap-draft` branch and its draft PR, where it can be
+> discussed and kept current without becoming part of the published docs.
+> It is not a release schedule or a guarantee. Each bug and feature has its
+> own GitHub issue, which is the tracker; the page named after that issue
+> holds the plan and is updated as work ships.
 
-**Last updated:** 2026-10-25
+**Last updated:** 2026-10-28
 **Applies to:** v0.54 through v1.0
 **Scope:** usability, workflow, diagnostics, integration and distribution.
 The egress and policy engine remains the centre of the product; this plan
@@ -27,10 +29,34 @@ does not propose relaxing it.
   integrations.
 - **P2** means “strategic depth”: platform, MCP/API, filesystem policy, team
   governance.
+- **Status** is ✅ done, 🟡 partly done or ⬜ open. A page that has shipped work
+  has a **Progress** section naming the PRs, and its acceptance criteria are
+  ticked where they are met.
 
 Issue numbers are stable. Open an issue first, then use its number as the page
 filename; do not renumber an entry after it has been linked from a PR or an
 issue.
+
+---
+
+## Progress (2026-10-28)
+
+Most of phase 0 shipped on 2026-10-26, after this plan was written, and is in
+the `[Unreleased]` section of the changelog (not yet in a release):
+
+| PR | What shipped | Items |
+| :--- | :--- | :--- |
+| [#583](https://github.com/agentcage/agentcage/pull/583) | Lifecycle, install and logging docs corrected; `cargo xtask check-docs` | #558, #560, #562, #563, #580 (part) |
+| [#584](https://github.com/agentcage/agentcage/pull/584) | `run --rm/--keep/--dry-run`, `Kept:` block, `prune --dry-run/--older-than` | #558, #564 (part) |
+| [#585](https://github.com/agentcage/agentcage/pull/585) | `-h`, `--no-color`, `--quiet`, `--json` read output, `paths`, `version` | #569 (part) |
+| [#586](https://github.com/agentcage/agentcage/pull/586) | `doctor --json`, enriched `cage show/status`, `verify` `fix:` lines | #561, #570 (part) |
+| [#556](https://github.com/agentcage/agentcage/pull/556) | `agentcage update` self-update | #578 (part) |
+
+**Phase 0 left to do:** the [#559](https://github.com/agentcage/agentcage/issues/559)
+docs correction (the claude-code scaffold README still promises OAuth
+autowiring); `--detach`/`attach`/`--resume` ([#564](https://github.com/agentcage/agentcage/issues/564));
+JSON for `verify` and documented schemas ([#569](https://github.com/agentcage/agentcage/issues/569));
+`doctor --fix` and the support bundle ([#570](https://github.com/agentcage/agentcage/issues/570)).
 
 ---
 
@@ -84,40 +110,40 @@ while preserving the security properties that make agentcage worth using.
 
 ## 2. Bugs
 
-| Issue | Priority | Area | Summary | Fix |
-| :--- | :--- | :--- | :--- | :--- |
-| [#558](https://github.com/agentcage/agentcage/issues/558) ([plan](bugs/558-run-lifecycle.md)) | P0 | Session lifecycle | `run` stops and keeps state while docs say it is removed or torn down. | [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) + docs fix |
-| [#559](https://github.com/agentcage/agentcage/issues/559) ([plan](bugs/559-auth-preflight.md)) | P0 | Auth / docs | The claude scaffold promises OAuth autowiring, but `run` still requires `ANTHROPIC_API_KEY`. | [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) + docs fix |
-| [#560](https://github.com/agentcage/agentcage/issues/560) ([plan](bugs/560-dns-log-service.md)) | P1 | Docs / CLI | Scaffold READMEs document `-s dns`, which the CLI rejects. | Replace with `-s egress`; docs test |
-| [#561](https://github.com/agentcage/agentcage/issues/561) ([plan](bugs/561-show-output.md)) | P1 | CLI / docs | `cage show` prints a summary while its reference promises addresses, volumes, rules and placeholders. | [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) or docs fix; `--json` uses the [#569](https://github.com/agentcage/agentcage/issues/569) ([plan](features/569-cli-automation.md)) envelope |
-| [#562](https://github.com/agentcage/agentcage/issues/562) ([plan](bugs/562-readme-version-install.md)) | P0 | Docs / release | README pins v0.50.0 and says the installer builds from source; current releases install a prebuilt binary. | Docs + release checklist |
-| [#563](https://github.com/agentcage/agentcage/issues/563) ([plan](bugs/563-grant-baseline-wording.md)) | P2 | Docs / agent brief | The cage `AGENTS.md` says a granted domain is promoted into the baseline; it is a runtime grant. | Wording fix |
+| Issue | Status | Priority | Area | Summary | Fix |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| [#558](https://github.com/agentcage/agentcage/issues/558) ([plan](bugs/558-run-lifecycle.md)) | ✅ | P0 | Session lifecycle | `run` stops and keeps state while docs say it is removed or torn down. | [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) + docs fix |
+| [#559](https://github.com/agentcage/agentcage/issues/559) ([plan](bugs/559-auth-preflight.md)) | ⬜ | P0 | Auth / docs | The claude scaffold promises OAuth autowiring, but `run` still requires `ANTHROPIC_API_KEY`. | [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) + docs fix |
+| [#560](https://github.com/agentcage/agentcage/issues/560) ([plan](bugs/560-dns-log-service.md)) | ✅ | P1 | Docs / CLI | Scaffold READMEs document `-s dns`, which the CLI rejects. | Replace with `-s egress`; docs test |
+| [#561](https://github.com/agentcage/agentcage/issues/561) ([plan](bugs/561-show-output.md)) | ✅ | P1 | CLI / docs | `cage show` prints a summary while its reference promises addresses, volumes, rules and placeholders. | [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) or docs fix; `--json` uses the [#569](https://github.com/agentcage/agentcage/issues/569) ([plan](features/569-cli-automation.md)) envelope |
+| [#562](https://github.com/agentcage/agentcage/issues/562) ([plan](bugs/562-readme-version-install.md)) | ✅ | P0 | Docs / release | README pins v0.50.0 and says the installer builds from source; current releases install a prebuilt binary. | Docs + release checklist |
+| [#563](https://github.com/agentcage/agentcage/issues/563) ([plan](bugs/563-grant-baseline-wording.md)) | ✅ | P2 | Docs / agent brief | The cage `AGENTS.md` says a granted domain is promoted into the baseline; it is a runtime grant. | Wording fix |
 
 ---
 
 ## 3. Features
 
-| Issue | Priority | Phase | Feature | Depends on |
-| :--- | :--- | :--- | :--- | :--- |
-| [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) | P0 | 0 | Honest, flexible `run` lifecycle: `--rm`, `--keep`, detach/attach, dry-run, prune filters | [#558](https://github.com/agentcage/agentcage/issues/558) |
-| [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) | P0 | 1 | Scaffold auth strategies and `agentcage auth` | [#564](https://github.com/agentcage/agentcage/issues/564) |
-| [#566](https://github.com/agentcage/agentcage/issues/566) ([plan](features/566-guided-setup.md)) | P0 | 1 | Guided first-run setup | [#565](https://github.com/agentcage/agentcage/issues/565) |
-| [#567](https://github.com/agentcage/agentcage/issues/567) ([plan](features/567-policy-presets-and-suggestions.md)) | P0 | 1 | Policy presets, domain suggestions, `domain test/explain` | [#566](https://github.com/agentcage/agentcage/issues/566) |
-| [#568](https://github.com/agentcage/agentcage/issues/568) ([plan](features/568-plan-lint-config.md)) | P1 | 1 | `plan`, `lint`, config schema, `extends`, devcontainer import | [#566](https://github.com/agentcage/agentcage/issues/566) |
-| [#569](https://github.com/agentcage/agentcage/issues/569) ([plan](features/569-cli-automation.md)) | P0 | 0 | CLI automation contract: `-h`, format, quiet, color, paths, completions | — |
-| [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) | P0 | 0 | Diagnostics, support bundle, actionable verify and enriched show/status | [#569](https://github.com/agentcage/agentcage/issues/569) |
-| [#571](https://github.com/agentcage/agentcage/issues/571) ([plan](features/571-git-workflow-and-reports.md)) | P1 | 2 | Git worktrees/clones, diff/apply/merge, session reports, `--yolo` mapping | [#564](https://github.com/agentcage/agentcage/issues/564) |
-| [#572](https://github.com/agentcage/agentcage/issues/572) ([plan](features/572-approvals-and-notifications.md)) | P1 | 3 | Human/hybrid decider, approval queue, notifications, 403 remediation | [#569](https://github.com/agentcage/agentcage/issues/569) |
-| [#573](https://github.com/agentcage/agentcage/issues/573) ([plan](features/573-observability.md)) | P1 | 3 | Live TUI, events, stats, optional OTel, retention, HTML reports | [#569](https://github.com/agentcage/agentcage/issues/569), [#564](https://github.com/agentcage/agentcage/issues/564) |
-| [#574](https://github.com/agentcage/agentcage/issues/574) ([plan](features/574-workspace-access.md)) | P1 | 4 | Dynamic ports, `cp`, `open`, SSH/editor access | [#564](https://github.com/agentcage/agentcage/issues/564), [#569](https://github.com/agentcage/agentcage/issues/569) |
-| [#575](https://github.com/agentcage/agentcage/issues/575) ([plan](features/575-mcp-gateway.md)) | P1 | 4 | MCP gateway and MCP server for cage control | Security spike |
-| [#576](https://github.com/agentcage/agentcage/issues/576) ([plan](features/576-api-sdk-ci.md)) | P2 | 5 | Local API, Python/TS SDK, GitHub Action | [#569](https://github.com/agentcage/agentcage/issues/569) |
-| [#577](https://github.com/agentcage/agentcage/issues/577) ([plan](features/577-filesystem-and-socket-policy.md)) | P2 | 5 | Filesystem/socket policy, credential transforms, format-preserving placeholders | Threat-model update |
-| [#578](https://github.com/agentcage/agentcage/issues/578) ([plan](features/578-packaging-and-platform.md)) | P1 | 0/5 | Self-update, Homebrew/AUR, notarization, WSL2, Nix/devcontainer | #413/#414 |
-| [#579](https://github.com/agentcage/agentcage/issues/579) ([plan](features/579-scaffold-registry-supply-chain.md)) | P2 | 5 | OCI scaffold registry, signatures, SBOMs, prebuilt images and caches | [#578](https://github.com/agentcage/agentcage/issues/578) |
-| [#580](https://github.com/agentcage/agentcage/issues/580) ([plan](features/580-docs-conformance-and-selftest.md)) | P0/P1 | 0/4 | Docs conformance and security self-test | Bugs fixed |
-| [#581](https://github.com/agentcage/agentcage/issues/581) ([plan](features/581-team-governance.md)) | P2 | 5 | Signed audit, SIEM export, signed policy bundles | [#576](https://github.com/agentcage/agentcage/issues/576) |
-| [#582](https://github.com/agentcage/agentcage/issues/582) ([plan](features/582-standalone-gateway-and-fleet.md)) | P2 | 5+ | Standalone egress gateway, remote host, fleet/warm pools | [#571](https://github.com/agentcage/agentcage/issues/571), [#576](https://github.com/agentcage/agentcage/issues/576) |
+| Issue | Status | Priority | Phase | Feature | Depends on |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) | 🟡 | P0 | 0 | Honest, flexible `run` lifecycle: `--rm`, `--keep`, detach/attach, dry-run, prune filters | [#558](https://github.com/agentcage/agentcage/issues/558) |
+| [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) | ⬜ | P0 | 1 | Scaffold auth strategies and `agentcage auth` | [#564](https://github.com/agentcage/agentcage/issues/564) |
+| [#566](https://github.com/agentcage/agentcage/issues/566) ([plan](features/566-guided-setup.md)) | ⬜ | P0 | 1 | Guided first-run setup | [#565](https://github.com/agentcage/agentcage/issues/565) |
+| [#567](https://github.com/agentcage/agentcage/issues/567) ([plan](features/567-policy-presets-and-suggestions.md)) | ⬜ | P0 | 1 | Policy presets, domain suggestions, `domain test/explain` | [#566](https://github.com/agentcage/agentcage/issues/566) |
+| [#568](https://github.com/agentcage/agentcage/issues/568) ([plan](features/568-plan-lint-config.md)) | ⬜ | P1 | 1 | `plan`, `lint`, config schema, `extends`, devcontainer import | [#566](https://github.com/agentcage/agentcage/issues/566) |
+| [#569](https://github.com/agentcage/agentcage/issues/569) ([plan](features/569-cli-automation.md)) | 🟡 | P0 | 0 | CLI automation contract: `-h`, format, quiet, color, paths, completions | — |
+| [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) | 🟡 | P0 | 0 | Diagnostics, support bundle, actionable verify and enriched show/status | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| [#571](https://github.com/agentcage/agentcage/issues/571) ([plan](features/571-git-workflow-and-reports.md)) | ⬜ | P1 | 2 | Git worktrees/clones, diff/apply/merge, session reports, `--yolo` mapping | [#564](https://github.com/agentcage/agentcage/issues/564) |
+| [#572](https://github.com/agentcage/agentcage/issues/572) ([plan](features/572-approvals-and-notifications.md)) | ⬜ | P1 | 3 | Human/hybrid decider, approval queue, notifications, 403 remediation | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| [#573](https://github.com/agentcage/agentcage/issues/573) ([plan](features/573-observability.md)) | ⬜ | P1 | 3 | Live TUI, events, stats, optional OTel, retention, HTML reports | [#569](https://github.com/agentcage/agentcage/issues/569), [#564](https://github.com/agentcage/agentcage/issues/564) |
+| [#574](https://github.com/agentcage/agentcage/issues/574) ([plan](features/574-workspace-access.md)) | ⬜ | P1 | 4 | Dynamic ports, `cp`, `open`, SSH/editor access | [#564](https://github.com/agentcage/agentcage/issues/564), [#569](https://github.com/agentcage/agentcage/issues/569) |
+| [#575](https://github.com/agentcage/agentcage/issues/575) ([plan](features/575-mcp-gateway.md)) | ⬜ | P1 | 4 | MCP gateway and MCP server for cage control | Security spike |
+| [#576](https://github.com/agentcage/agentcage/issues/576) ([plan](features/576-api-sdk-ci.md)) | ⬜ | P2 | 5 | Local API, Python/TS SDK, GitHub Action | [#569](https://github.com/agentcage/agentcage/issues/569) |
+| [#577](https://github.com/agentcage/agentcage/issues/577) ([plan](features/577-filesystem-and-socket-policy.md)) | ⬜ | P2 | 5 | Filesystem/socket policy, credential transforms, format-preserving placeholders | Threat-model update |
+| [#578](https://github.com/agentcage/agentcage/issues/578) ([plan](features/578-packaging-and-platform.md)) | 🟡 | P1 | 0/5 | Self-update, Homebrew/AUR, notarization, WSL2, Nix/devcontainer | #413/#414 |
+| [#579](https://github.com/agentcage/agentcage/issues/579) ([plan](features/579-scaffold-registry-supply-chain.md)) | ⬜ | P2 | 5 | OCI scaffold registry, signatures, SBOMs, prebuilt images and caches | [#578](https://github.com/agentcage/agentcage/issues/578) |
+| [#580](https://github.com/agentcage/agentcage/issues/580) ([plan](features/580-docs-conformance-and-selftest.md)) | 🟡 | P0/P1 | 0/4 | Docs conformance and security self-test | Bugs fixed |
+| [#581](https://github.com/agentcage/agentcage/issues/581) ([plan](features/581-team-governance.md)) | ⬜ | P2 | 5 | Signed audit, SIEM export, signed policy bundles | [#576](https://github.com/agentcage/agentcage/issues/576) |
+| [#582](https://github.com/agentcage/agentcage/issues/582) ([plan](features/582-standalone-gateway-and-fleet.md)) | ⬜ | P2 | 5+ | Standalone egress gateway, remote host, fleet/warm pools | [#571](https://github.com/agentcage/agentcage/issues/571), [#576](https://github.com/agentcage/agentcage/issues/576) |
 
 ---
 
@@ -128,7 +154,7 @@ parallel where dependencies allow. They are planning aids, not deadlines.
 
 | Phase | Target | Scope | Outcome |
 | :--- | :--- | :--- | :--- |
-| **0. Truth and quick wins** | v0.54 | #558, #560–#563, #564, #569, #570, #580 (docs) | `run` tells the truth; `-h`/JSON/quiet exist; docs no longer lie. |
+| **0. Truth and quick wins** 🟡 | v0.54 | #558, #560–#563, #564, #569, #570, #580 (docs) | `run` tells the truth; `-h`/JSON/quiet exist; docs no longer lie. Mostly shipped; see [Progress](#progress-2026-10-28). |
 | **1. First run** | v0.55 | #559, #565–#568 | A new user can install, authenticate and run without editing policy. |
 | **2. Daily driver** | v0.56 | #571 | Parallel agents are safe and reviewable. |
 | **3. Control and visibility** | v0.57 | #572, #573 | Operators can see and steer a running cage. |
@@ -209,7 +235,11 @@ A feature is not “done” because the code exists. It is done when:
   `--rm`; do not silently destroy volumes or secrets users may rely on. The
   documentation is corrected in the same release.
 - **Aliases.** Keep existing top-level aliases. Deprecate a command with a
-  warning for at least one minor release before removing it.
+  warning for at least one minor release before removing it. *Already broken
+  once:* [#556](https://github.com/agentcage/agentcage/pull/556) turned
+  `agentcage update NAME` (an alias for `cage update`) into an exit-2 error
+  with no warning release. Either record that as an accepted exception or add
+  a warning shim before v0.54 ships.
 - **Config.** New keys are optional and default to current behaviour. Warnings
   are added before errors. A config written by v0.53 must continue to load.
 - **State.** Existing deployments must survive an upgrade in place; run the
@@ -245,6 +275,18 @@ A feature is not “done” because the code exists. It is done when:
    evidence, proposal, acceptance criteria and tests.
 4. Link the issue from the page and add a row to the relevant table above.
 5. Do not renumber an entry after it has been linked.
+
+## 11. Updating an entry
+
+When a PR ships part of an item:
+
+1. Set the page's **Status** (`Partly done — #PR`, `Fixed — closed by #PR`).
+2. Add or update its **Progress** section: what shipped, what is still open,
+   and anything that shipped differently from the proposal.
+3. Tick the acceptance criteria that are met; add a one-line note under any
+   that are partly met or deliberately declined.
+4. Update the status column above and the [Progress](#progress-2026-10-28)
+   table.
 
 This plan is intentionally reviewable in slices. A feature page can be
 accepted while the implementation is still blocked on a decision, and a bug

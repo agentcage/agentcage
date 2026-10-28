@@ -3,11 +3,17 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#563](https://github.com/agentcage/agentcage/issues/563) |
-| **Status** | Confirmed |
+| **Status** | Fixed — closed by #583 |
 | **Priority** | P2 |
 | **Area** | Agent brief / policy documentation |
 | **Affected** | v0.53.1 |
 | **Fix** | Wording correction |
+
+## Progress (2026-10-28)
+
+Closed by [#583](https://github.com/agentcage/agentcage/pull/583): the cage
+`AGENTS.md` says a grant "appears under `granted`, not `baseline`" and points
+to the `agentcage` skill. No docs test searches for the old phrase.
 
 ## Summary
 
@@ -40,8 +46,8 @@ Add the same distinction to any scaffold copy of the brief.
 
 ## Acceptance criteria
 
-- [ ] No live agent brief says a runtime grant changes the baseline.
-- [ ] The brief links (or refers) to the Policy API reference for the
+- [x] No live agent brief says a runtime grant changes the baseline.
+- [x] The brief links (or refers) to the Policy API reference for the
       `baseline` / `granted` distinction.
 - [ ] A docs test searches for the incorrect phrase.
 

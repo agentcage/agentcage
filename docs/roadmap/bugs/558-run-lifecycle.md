@@ -3,11 +3,19 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#558](https://github.com/agentcage/agentcage/issues/558) |
-| **Status** | Confirmed |
+| **Status** | Fixed — closed by #583; behaviour in #584 |
 | **Priority** | P0 |
 | **Area** | Session lifecycle / documentation |
 | **Affected** | v0.53.1; behaviour predates the Rust port |
 | **Fix** | [#564](https://github.com/agentcage/agentcage/issues/564) plus a docs correction |
+
+## Progress (2026-10-28)
+
+Closed by [#583](https://github.com/agentcage/agentcage/pull/583) (docs) and
+[#584](https://github.com/agentcage/agentcage/pull/584) (`--rm`/`--keep` and
+the `Kept:` block). Two criteria are not met: `--rm` reuses `cage destroy`'s
+teardown, which deliberately keeps named volumes and the data directory, and
+no test ties the documented cleanup semantics to the code.
 
 ## Summary
 
@@ -70,15 +78,17 @@ continue to occupy a `10.89.x.0/24` slot until `prune` or `destroy` is run.
 
 ## Acceptance criteria
 
-- [ ] The default `run` exit message names the stopped cage, the data
+- [x] The default `run` exit message names the stopped cage, the data
       directory, the named volumes/secrets that were kept, and the exact
       removal command.
 - [ ] `run --rm` leaves no deployment, network, named volume or scoped secret.
-- [ ] Every documentation page that mentions `run` cleanup describes the same
+      *Not met by design: `--rm` keeps named volumes and the data directory, as `cage destroy` does.*
+- [x] Every documentation page that mentions `run` cleanup describes the same
       semantics.
-- [ ] `lifecycle: ephemeral` is either removed as a distinct promise or given
+- [x] `lifecycle: ephemeral` is either removed as a distinct promise or given
       the same explicit keep/remove semantics.
 - [ ] A test fails when the code and the docs disagree on this behaviour.
+      *Open: `check-docs` does not cover run cleanup.*
 
 ## Tests
 

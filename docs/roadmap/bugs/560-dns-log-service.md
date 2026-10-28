@@ -3,11 +3,17 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#560](https://github.com/agentcage/agentcage/issues/560) |
-| **Status** | Confirmed |
+| **Status** | Fixed — closed by #583 |
 | **Priority** | P1 |
 | **Area** | CLI documentation |
 | **Affected** | v0.53.1 |
 | **Fix** | Documentation fix plus a docs test |
+
+## Progress (2026-10-28)
+
+Closed by [#583](https://github.com/agentcage/agentcage/pull/583): the scaffold
+READMEs use `-s egress`, and `cargo xtask check-docs` rejects any `-s`/`--service`
+value the CLI does not accept, in prose as well as fenced commands.
 
 ## Summary
 
@@ -50,8 +56,8 @@ new user reads, and it sends them to a command that cannot work.
 
 ## Acceptance criteria
 
-- [ ] No live documentation names `-s dns` or a `dns` service.
-- [ ] The docs test fails if a new service value is documented without being
+- [x] No live documentation names `-s dns` or a `dns` service.
+- [x] The docs test fails if a new service value is documented without being
       added to the CLI.
 
 ## Tests

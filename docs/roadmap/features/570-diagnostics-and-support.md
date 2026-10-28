@@ -3,11 +3,22 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#570](https://github.com/agentcage/agentcage/issues/570) |
-| **Status** | Proposed |
+| **Status** | Partly done — #586 |
 | **Priority** | P0 |
 | **Phase** | 0 |
 | **Depends on** | [#569](https://github.com/agentcage/agentcage/issues/569) |
 | **Related** | [#561](https://github.com/agentcage/agentcage/issues/561) |
+
+## Progress (2026-10-28)
+
+Shipped in [#586](https://github.com/agentcage/agentcage/pull/586), with fixes
+in `fff9fa0`: `doctor --json` (schema v1, stable check ids), `fix:` lines under
+every `cage verify` failure, and the enriched `cage show`/`status` with
+`--json`.
+
+Still open: `doctor --verbose`, `doctor --fix`, `doctor --config`, the
+`support` bundle, JSON for `verify`, and the deployed egress version and update
+availability in `show`.
 
 ## Problem
 
@@ -72,12 +83,12 @@ watcher state, deployed egress version and update availability.
 
 ## Acceptance criteria
 
-- [ ] `doctor --json` is consumable by a script and matches the text checks.
+- [x] `doctor --json` is consumable by a script and matches the text checks.
 - [ ] `doctor --fix` is idempotent and reviews each action.
 - [ ] `support` contains no secret value, header credential or body by default.
-- [ ] Every `verify` failure has a remediation command or docs link.
-- [ ] `show --json` includes the documented fields (see [#561](https://github.com/agentcage/agentcage/issues/561)).
-- [ ] `show` never prints a real secret.
+- [x] Every `verify` failure has a remediation command or docs link.
+- [x] `show --json` includes the documented fields (see [#561](https://github.com/agentcage/agentcage/issues/561)).
+- [x] `show` never prints a real secret.
 
 ## Tests
 

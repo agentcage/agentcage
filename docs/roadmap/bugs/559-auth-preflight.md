@@ -3,11 +3,18 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#559](https://github.com/agentcage/agentcage/issues/559) |
-| **Status** | Confirmed |
+| **Status** | Confirmed — open |
 | **Priority** | P0 |
 | **Area** | Authentication / docs |
 | **Affected** | v0.53.1 |
 | **Fix** | [#565](https://github.com/agentcage/agentcage/issues/565) plus an immediate docs correction |
+
+## Progress (2026-10-28)
+
+Not started. The "immediate docs correction" has not landed either:
+`src/agentcage/scaffolds/claude-code/README.md` on master still says
+`CLAUDE_CODE_OAUTH_TOKEN` "is wired in automatically". This is the one phase-0
+bug left and should not wait for [#565](https://github.com/agentcage/agentcage/issues/565).
 
 ## Summary
 

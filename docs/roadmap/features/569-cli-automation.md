@@ -3,11 +3,27 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#569](https://github.com/agentcage/agentcage/issues/569) |
-| **Status** | Proposed |
+| **Status** | Partly done — #585, #586 |
 | **Priority** | P0 |
 | **Phase** | 0 |
 | **Depends on** | — |
 | **Related** | [#570](https://github.com/agentcage/agentcage/issues/570), [#561](https://github.com/agentcage/agentcage/issues/561) |
+
+## Progress (2026-10-28)
+
+Shipped in [#585](https://github.com/agentcage/agentcage/pull/585) and
+[#586](https://github.com/agentcage/agentcage/pull/586): `-h`, global
+`--no-color` (and `NO_COLOR`) and `--quiet`, no spinners or banners off a TTY
+or under `CI`, `agentcage paths` and `agentcage version`, and `--json` under one
+envelope on `cage list`, `cage show`, `cage status`, `doctor`, `domain list`,
+`secret list`, `paths` and `version`.
+
+Different from the proposal: `--json` was added instead of
+`--format table|json|yaml`, and `completions install` was declined on purpose
+(see `rust/agentcage-cli/src/cli/completions.rs`).
+
+Still open: JSON for `cage verify`, `cage stats` and `cage update --check`;
+documented schemas; a test that machine output never contains a secret value.
 
 ## Problem
 
@@ -83,12 +99,14 @@ Commands: `cage list`, `cage status`, `cage show`, `doctor`, `cage verify`,
 
 ## Acceptance criteria
 
-- [ ] `agentcage -h` works and prints the long help.
+- [x] `agentcage -h` works and prints the long help.
 - [ ] Every read command has `--format json` with a documented schema.
-- [ ] `--quiet` and `--no-color` work globally; `NO_COLOR` is honoured.
-- [ ] CI/non-TTY runs produce no spinner or banner.
-- [ ] `agentcage paths --format json` is usable by scripts.
+      *Partly: `--json` on most read commands; not `cage verify`, `cage stats` or `cage update --check`.*
+- [x] `--quiet` and `--no-color` work globally; `NO_COLOR` is honoured.
+- [x] CI/non-TTY runs produce no spinner or banner.
+- [x] `agentcage paths --format json` is usable by scripts.
 - [ ] `completions install` works for the three supported shells.
+      *Declined: there is no `install` subcommand by design.*
 - [ ] Machine output never contains a secret value.
 
 ## Tests

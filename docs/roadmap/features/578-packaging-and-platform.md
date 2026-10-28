@@ -3,11 +3,25 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#578](https://github.com/agentcage/agentcage/issues/578) |
-| **Status** | Proposed |
+| **Status** | Partly done — self-update in #556 |
 | **Priority** | P1 |
 | **Phase** | 0/5 (parallel) |
 | **Depends on** | #413, #414 |
 | **Related** | [#579](https://github.com/agentcage/agentcage/issues/579), [#580](https://github.com/agentcage/agentcage/issues/580) |
+
+## Progress (2026-10-28)
+
+Self-update shipped in [#556](https://github.com/agentcage/agentcage/pull/556),
+with fixes in `69ef8a7`: `agentcage update [VERSION]`, `--check`, sha256
+verification, a run-the-new-binary check, an atomic rename, refusal of
+Homebrew/system-package/cargo installs, and `cage update` hints for each cage.
+
+It did **not** follow "deprecate first, remove later": `agentcage update NAME`
+now exits 2 and prints `agentcage cage update NAME`, with no warning period.
+That conflicts with the alias rule in the [compatibility rules](../README.md#8-compatibility-rules).
+
+Still open: package managers, notarization, WSL2, release channels, and the
+warning when a cage's egress is older than the host.
 
 ## Problem
 

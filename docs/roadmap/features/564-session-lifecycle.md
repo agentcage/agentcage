@@ -3,11 +3,22 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#564](https://github.com/agentcage/agentcage/issues/564) |
-| **Status** | Proposed |
+| **Status** | Partly done — #584 |
 | **Priority** | P0 |
 | **Phase** | 0 |
 | **Depends on** | [#558](https://github.com/agentcage/agentcage/issues/558) |
 | **Related** | [#571](https://github.com/agentcage/agentcage/issues/571), [#573](https://github.com/agentcage/agentcage/issues/573) |
+
+## Progress (2026-10-28)
+
+Shipped in [#584](https://github.com/agentcage/agentcage/pull/584), with fixes
+in `63bab98`: `run --rm`, `run --keep`, `run --dry-run`, the `Kept:` block,
+`cage prune --dry-run` and `cage prune --older-than` (which trusts only a
+recorded `stopped_at`).
+
+Still open: `--detach`, `attach`, `--resume`, `--purge-data`, and the
+end-of-session report. `--rm` keeps named volumes (see
+[#558](https://github.com/agentcage/agentcage/issues/558)).
 
 ## Problem
 
@@ -78,16 +89,17 @@ $ agentcage cage prune --older-than 7d --dry-run
 
 ## Acceptance criteria
 
-- [ ] Default `run` prints exactly what was kept and the one-line removal
+- [x] Default `run` prints exactly what was kept and the one-line removal
       command.
 - [ ] `run --rm` removes deployment, scoped secrets and cage-owned volumes,
       and leaves the audit data directory unless `--purge-data` is passed.
-- [ ] `run --dry-run` writes nothing and performs no build/network pull.
+      *Partly: deployment and scoped secrets are removed; named volumes are kept and there is no `--purge-data`.*
+- [x] `run --dry-run` writes nothing and performs no build/network pull.
 - [ ] `--detach` returns a usable cage name; `attach` reconnects.
 - [ ] `run --resume` works on a stopped cage and preserves its audit history.
-- [ ] `prune --dry-run` lists exactly what would be removed; running/service
+- [x] `prune --dry-run` lists exactly what would be removed; running/service
       cages are never candidates.
-- [ ] The docs and scaffold READMEs match the implemented lifecycle.
+- [x] The docs and scaffold READMEs match the implemented lifecycle.
 
 ## Tests
 
