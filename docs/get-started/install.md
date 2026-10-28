@@ -46,7 +46,7 @@ less install.sh
 sh install.sh --help
 ```
 
-To pick a release, set `AGENTCAGE_VERSION=0.53.1` (the default is the latest release) or `AGENTCAGE_REF=master` (a branch, which is built from source).
+To pick a release, set `AGENTCAGE_VERSION=0.54.0` (the default is the latest release) or `AGENTCAGE_REF=master` (a branch, which is built from source).
 
 Ensure `~/.local/bin` is in your shell `$PATH`:
 
@@ -61,7 +61,7 @@ export PATH="$HOME/.local/bin:$PATH"
 With Rust 1.96+ already installed, build and install the CLI directly. It is not published to crates.io; `cargo` fetches it from the repository:
 
 ```bash
-cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.53.1 agentcage-cli
+cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.54.0 agentcage-cli
 ```
 
 `agentcage-cli` is the package name; the binary it installs is `agentcage`, into `~/.cargo/bin`. `--locked` builds against the committed `Cargo.lock`, the same dependency versions CI tested. Use `--branch master` instead of `--tag` to track unreleased changes.
