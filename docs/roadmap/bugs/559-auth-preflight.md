@@ -3,7 +3,7 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#559](https://github.com/agentcage/agentcage/issues/559) |
-| **Status** | Confirmed — open |
+| **Status** | Fixed — closed by #590 |
 | **Priority** | P0 |
 | **Area** | Authentication / docs |
 | **Affected** | v0.53.1 |
@@ -11,10 +11,20 @@
 
 ## Progress (2026-10-28)
 
-Not started. The "immediate docs correction" has not landed either:
-`src/agentcage/scaffolds/claude-code/README.md` on master still says
-`CLAUDE_CODE_OAUTH_TOKEN` "is wired in automatically". This is the one phase-0
-bug left and should not wait for [#565](https://github.com/agentcage/agentcage/issues/565).
+Closed by [#590](https://github.com/agentcage/agentcage/pull/590) (merged 2026-10-28). `scaffold.yaml` gains `auth:`, a
+list of `{secret, from_env}` alternatives; `run` needs one of them, takes the
+one given with `-s` (two is an error) or else an exported one marked
+`from_env`, and renders the template with `{{ auth }}` so only that rule
+exists. An environment value is stored as `-s KEY=VALUE` would be, so the cage
+sees only the placeholder. claude-code lists `CLAUDE_CODE_OAUTH_TOKEN`
+(`from_env`) then `ANTHROPIC_API_KEY`; an exported API key still needs `-s`.
+The scaffold README, `run --help` and the references now describe this.
+
+Not covered: an e2e run against podman with a real token (the tests stop at
+`run --dry-run`), and the missing-auth hint only appears on the container
+backend, the one with a secret pre-flight. The rest of
+[#565](https://github.com/agentcage/agentcage/issues/565) (`agentcage auth`,
+cage-owned login volumes) is still open.
 
 ## Summary
 
@@ -80,12 +90,14 @@ cage with a hand-edited OAuth rule.
 
 ## Acceptance criteria
 
-- [ ] `CLAUDE_CODE_OAUTH_TOKEN=... agentcage run claude-code` works without
+- [x] `CLAUDE_CODE_OAUTH_TOKEN=... agentcage run claude-code` works without
       `ANTHROPIC_API_KEY` and without the real token entering the cage.
-- [ ] `agentcage run claude-code -s ANTHROPIC_API_KEY` still works.
-- [ ] A missing-auth error lists the available strategies and exact commands.
-- [ ] The docs and help text no longer claim a preflight that does not exist.
+- [x] `agentcage run claude-code -s ANTHROPIC_API_KEY` still works.
+- [x] A missing-auth error lists the available strategies and exact commands.
+      *Container backend only; vm and apple-container have no secret pre-flight.*
+- [x] The docs and help text no longer claim a preflight that does not exist.
 - [ ] A test covers both auth paths and the missing-auth path.
+      *Partly: both auth paths are covered through `run --dry-run`; the missing-auth hint is unit-tested only.*
 
 ## Tests
 

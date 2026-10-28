@@ -3,11 +3,26 @@
 | | |
 | :--- | :--- |
 | **Issue** | [#565](https://github.com/agentcage/agentcage/issues/565) |
-| **Status** | Proposed |
+| **Status** | Partly done — #590 |
 | **Priority** | P0 |
 | **Phase** | 1 |
 | **Depends on** | [#564](https://github.com/agentcage/agentcage/issues/564) |
 | **Related** | [#559](https://github.com/agentcage/agentcage/issues/559) |
+
+
+## Progress (2026-10-28)
+
+[#590](https://github.com/agentcage/agentcage/pull/590) shipped a declarative slice of this, to fix
+[#559](https://github.com/agentcage/agentcage/issues/559): scaffold
+`auth:` alternatives (`secret` plus `from_env`, simpler than the
+`strategies:` shape proposed below), selection in `run` (`-s` first, then
+opted-in environment variables, two explicit alternatives is an error),
+rendering only the chosen rule through `{{ auth }}`, staging an environment
+value through the secret store, and a missing-auth hint naming every
+alternative. claude-code is migrated.
+
+Still open: `--auth <id>`, the `agentcage auth` commands (`list`, `check`,
+`import`, `use`), cage-owned login volumes, and the e2e auth matrix.
 
 ## Problem
 
@@ -95,11 +110,12 @@ directory. The volume is destroyed by `destroy`; `--rm` policy follows
 
 ## Acceptance criteria
 
-- [ ] `run claude-code` works with only `CLAUDE_CODE_OAUTH_TOKEN` set.
-- [ ] `run claude-code -s ANTHROPIC_API_KEY` still works.
+- [x] `run claude-code` works with only `CLAUDE_CODE_OAUTH_TOKEN` set.
+- [x] `run claude-code -s ANTHROPIC_API_KEY` still works.
 - [ ] `agentcage auth import` stores encrypted and never prints the value.
 - [ ] An in-cage login survives `cage update` when a cage-owned volume is used.
 - [ ] Missing-auth output lists every supported path with a copy-paste command.
+      *Partly: lists every `auth:` alternative on the container backend; no in-cage login path yet.*
 - [ ] The real token never appears in the cage env, audit, capture or JSON.
 
 ## Tests

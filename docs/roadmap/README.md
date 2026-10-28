@@ -51,10 +51,9 @@ the `[Unreleased]` section of the changelog (not yet in a release):
 | [#585](https://github.com/agentcage/agentcage/pull/585) | `-h`, `--no-color`, `--quiet`, `--json` read output, `paths`, `version` | #569 (part) |
 | [#586](https://github.com/agentcage/agentcage/pull/586) | `doctor --json`, enriched `cage show/status`, `verify` `fix:` lines | #561, #570 (part) |
 | [#556](https://github.com/agentcage/agentcage/pull/556) | `agentcage update` self-update | #578 (part) |
+| [#590](https://github.com/agentcage/agentcage/pull/590) | Scaffold `auth:` alternatives; `run claude-code` with only `CLAUDE_CODE_OAUTH_TOKEN` (merged 2026-10-28) | #559, #565 (part) |
 
-**Phase 0 left to do:** the [#559](https://github.com/agentcage/agentcage/issues/559)
-docs correction (the claude-code scaffold README still promises OAuth
-autowiring); `--detach`/`attach`/`--resume` ([#564](https://github.com/agentcage/agentcage/issues/564));
+**Phase 0 left to do:** `--detach`/`attach`/`--resume` ([#564](https://github.com/agentcage/agentcage/issues/564));
 JSON for `verify` and documented schemas ([#569](https://github.com/agentcage/agentcage/issues/569));
 `doctor --fix` and the support bundle ([#570](https://github.com/agentcage/agentcage/issues/570)).
 
@@ -113,7 +112,7 @@ while preserving the security properties that make agentcage worth using.
 | Issue | Status | Priority | Area | Summary | Fix |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | [#558](https://github.com/agentcage/agentcage/issues/558) ([plan](bugs/558-run-lifecycle.md)) | ✅ | P0 | Session lifecycle | `run` stops and keeps state while docs say it is removed or torn down. | [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) + docs fix |
-| [#559](https://github.com/agentcage/agentcage/issues/559) ([plan](bugs/559-auth-preflight.md)) | ⬜ | P0 | Auth / docs | The claude scaffold promises OAuth autowiring, but `run` still requires `ANTHROPIC_API_KEY`. | [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) + docs fix |
+| [#559](https://github.com/agentcage/agentcage/issues/559) ([plan](bugs/559-auth-preflight.md)) | ✅ | P0 | Auth / docs | The claude scaffold promises OAuth autowiring, but `run` still requires `ANTHROPIC_API_KEY`. | [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) + docs fix |
 | [#560](https://github.com/agentcage/agentcage/issues/560) ([plan](bugs/560-dns-log-service.md)) | ✅ | P1 | Docs / CLI | Scaffold READMEs document `-s dns`, which the CLI rejects. | Replace with `-s egress`; docs test |
 | [#561](https://github.com/agentcage/agentcage/issues/561) ([plan](bugs/561-show-output.md)) | ✅ | P1 | CLI / docs | `cage show` prints a summary while its reference promises addresses, volumes, rules and placeholders. | [#570](https://github.com/agentcage/agentcage/issues/570) ([plan](features/570-diagnostics-and-support.md)) or docs fix; `--json` uses the [#569](https://github.com/agentcage/agentcage/issues/569) ([plan](features/569-cli-automation.md)) envelope |
 | [#562](https://github.com/agentcage/agentcage/issues/562) ([plan](bugs/562-readme-version-install.md)) | ✅ | P0 | Docs / release | README pins v0.50.0 and says the installer builds from source; current releases install a prebuilt binary. | Docs + release checklist |
@@ -126,7 +125,7 @@ while preserving the security properties that make agentcage worth using.
 | Issue | Status | Priority | Phase | Feature | Depends on |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | [#564](https://github.com/agentcage/agentcage/issues/564) ([plan](features/564-session-lifecycle.md)) | 🟡 | P0 | 0 | Honest, flexible `run` lifecycle: `--rm`, `--keep`, detach/attach, dry-run, prune filters | [#558](https://github.com/agentcage/agentcage/issues/558) |
-| [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) | ⬜ | P0 | 1 | Scaffold auth strategies and `agentcage auth` | [#564](https://github.com/agentcage/agentcage/issues/564) |
+| [#565](https://github.com/agentcage/agentcage/issues/565) ([plan](features/565-auth-strategies.md)) | 🟡 | P0 | 1 | Scaffold auth strategies and `agentcage auth` | [#564](https://github.com/agentcage/agentcage/issues/564) |
 | [#566](https://github.com/agentcage/agentcage/issues/566) ([plan](features/566-guided-setup.md)) | ⬜ | P0 | 1 | Guided first-run setup | [#565](https://github.com/agentcage/agentcage/issues/565) |
 | [#567](https://github.com/agentcage/agentcage/issues/567) ([plan](features/567-policy-presets-and-suggestions.md)) | ⬜ | P0 | 1 | Policy presets, domain suggestions, `domain test/explain` | [#566](https://github.com/agentcage/agentcage/issues/566) |
 | [#568](https://github.com/agentcage/agentcage/issues/568) ([plan](features/568-plan-lint-config.md)) | ⬜ | P1 | 1 | `plan`, `lint`, config schema, `extends`, devcontainer import | [#566](https://github.com/agentcage/agentcage/issues/566) |
@@ -155,7 +154,7 @@ parallel where dependencies allow. They are planning aids, not deadlines.
 | Phase | Target | Scope | Outcome |
 | :--- | :--- | :--- | :--- |
 | **0. Truth and quick wins** 🟡 | v0.54 | #558, #560–#563, #564, #569, #570, #580 (docs) | `run` tells the truth; `-h`/JSON/quiet exist; docs no longer lie. Mostly shipped; see [Progress](#progress-2026-10-28). |
-| **1. First run** | v0.55 | #559, #565–#568 | A new user can install, authenticate and run without editing policy. |
+| **1. First run** | v0.55 | #559 ✅, #565 (part)–#568 | A new user can install, authenticate and run without editing policy. |
 | **2. Daily driver** | v0.56 | #571 | Parallel agents are safe and reviewable. |
 | **3. Control and visibility** | v0.57 | #572, #573 | Operators can see and steer a running cage. |
 | **4. Integration** | v0.58 | #574, #575, #580 (selftest) | agentcage fits the editor/CI loop. |
