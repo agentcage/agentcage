@@ -172,7 +172,7 @@ curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.
 Or, with Rust 1.96+ installed:
 
 ```bash
-cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.53.1 agentcage-cli
+cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.54.0 agentcage-cli
 ```
 
 The prebuilt release binary embeds the egress proxy that goes into each cage's egress image. A plain `cargo install` builds only the host, without that egress binary. See [the install guide](docs/get-started/install.md) for both.
