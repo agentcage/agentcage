@@ -430,6 +430,7 @@ pub fn render_request<'a>(
     name: &'a str,
     scaffold: &'a str,
     isolation: &'a str,
+    auth: Option<&'a str>,
 ) -> RenderRequest<'a> {
     RenderRequest {
         name,
@@ -437,7 +438,72 @@ pub fn render_request<'a>(
         isolation,
         scaffold: Some(scaffold),
         port: None,
+        auth,
     }
+}
+
+/// The `auth:` secret a `run` authenticates with.
+///
+/// `Debug` names the key and whether the value came from the
+/// environment, never the value itself.
+#[derive(Clone)]
+pub struct AuthChoice {
+    /// The secret's name, which the template renders the rule for.
+    pub key: String,
+    /// The value read from the host environment, when `-s` did not
+    /// supply the secret. `run` stages it as if it had been `-s KEY=VALUE`.
+    pub from_env: Option<String>,
+}
+
+impl std::fmt::Debug for AuthChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthChoice")
+            .field("key", &self.key)
+            .field("from_env", &self.from_env.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Pick one of a scaffold's `auth:` alternatives.
+///
+/// An alternative given with `-s` wins; otherwise the first one set (and
+/// non-empty) in the host environment, in the scaffold's order. `None`
+/// when the scaffold declares no alternatives or none is available, and
+/// the template then renders its default.
+#[must_use]
+pub fn select_auth(
+    choices: &[String],
+    being_set: &[&str],
+    env: &dyn crate::secrets::Environment,
+) -> Option<AuthChoice> {
+    if let Some(key) = choices.iter().find(|key| being_set.contains(&key.as_str())) {
+        return Some(AuthChoice {
+            key: key.clone(),
+            from_env: None,
+        });
+    }
+    choices.iter().find_map(|key| {
+        env.get(key)
+            .filter(|value| !value.is_empty())
+            .map(|value| AuthChoice {
+                key: key.clone(),
+                from_env: Some(value),
+            })
+    })
+}
+
+/// The line `run` adds to a missing-secrets error when the missing key
+/// is one of several `auth:` alternatives, so the operator knows any one
+/// will do. `None` when there is nothing to choose between.
+#[must_use]
+pub fn auth_hint(scaffold: &str, choices: &[String], missing: &[String]) -> Option<String> {
+    (choices.len() > 1 && missing.iter().any(|key| choices.contains(key))).then(|| {
+        format!(
+            "{scaffold} authenticates with any one of: {}. Pass one with -s KEY \
+             (prompts), or export it before running.",
+            choices.join(", ")
+        )
+    })
 }
 
 /// `--set-secret` specs, split into `(key, value)` with a prompt for a
@@ -522,9 +588,78 @@ pub fn discard_deployment(paths: &Paths, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ADJECTIVES, NOUNS, blocked_notice, ensure_volume_dirs, resolve_exec_cmd, vm_podman_prefix,
+        ADJECTIVES, NOUNS, auth_hint, blocked_notice, ensure_volume_dirs, resolve_exec_cmd,
+        select_auth, vm_podman_prefix,
     };
+    use crate::secrets::MapEnv;
     use agentcage_core::config::Config;
+
+    fn claude_auth() -> Vec<String> {
+        vec![
+            "ANTHROPIC_API_KEY".to_owned(),
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+        ]
+    }
+
+    /// #559: an OAuth token in the environment is enough on its own.
+    #[test]
+    fn select_auth_takes_an_alternative_from_the_environment() {
+        let env = MapEnv::new().with("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-test");
+        let choice = select_auth(&claude_auth(), &[], &env).expect("a choice");
+        assert_eq!(choice.key, "CLAUDE_CODE_OAUTH_TOKEN");
+        assert_eq!(choice.from_env.as_deref(), Some("sk-ant-oat-test"));
+        assert!(!format!("{choice:?}").contains("sk-ant-oat-test"));
+    }
+
+    /// `-s` beats the environment, even for a later alternative.
+    #[test]
+    fn select_auth_prefers_an_explicit_secret() {
+        let env = MapEnv::new().with("ANTHROPIC_API_KEY", "sk-env");
+        let choice =
+            select_auth(&claude_auth(), &["CLAUDE_CODE_OAUTH_TOKEN"], &env).expect("a choice");
+        assert_eq!(choice.key, "CLAUDE_CODE_OAUTH_TOKEN");
+        assert_eq!(choice.from_env, None);
+    }
+
+    /// Two in the environment: the scaffold's order decides.
+    #[test]
+    fn select_auth_follows_the_scaffold_order() {
+        let env = MapEnv::new()
+            .with("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+            .with("ANTHROPIC_API_KEY", "key");
+        let choice = select_auth(&claude_auth(), &[], &env).expect("a choice");
+        assert_eq!(choice.key, "ANTHROPIC_API_KEY");
+    }
+
+    /// A missing alternative names all of them; a missing ordinary
+    /// secret, or a scaffold with one credential, adds nothing.
+    #[test]
+    fn auth_hint_lists_the_alternatives() {
+        let hint = auth_hint(
+            "claude-code",
+            &claude_auth(),
+            &["ANTHROPIC_API_KEY".to_owned()],
+        )
+        .expect("a hint");
+        assert!(
+            hint.contains("any one of: ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN"),
+            "{hint}"
+        );
+        assert!(auth_hint("claude-code", &claude_auth(), &["GITHUB_TOKEN".to_owned()]).is_none());
+        let single = ["OPENAI_API_KEY".to_owned()];
+        assert!(auth_hint("codex", &single, &single).is_none());
+    }
+
+    /// Nothing available, an empty variable, or no `auth:` at all: no
+    /// choice, so the template renders its default.
+    #[test]
+    fn select_auth_without_a_candidate_is_none() {
+        assert!(select_auth(&claude_auth(), &[], &MapEnv::new()).is_none());
+        let empty = MapEnv::new().with("CLAUDE_CODE_OAUTH_TOKEN", "");
+        assert!(select_auth(&claude_auth(), &[], &empty).is_none());
+        let env = MapEnv::new().with("ANTHROPIC_API_KEY", "key");
+        assert!(select_auth(&[], &["ANTHROPIC_API_KEY"], &env).is_none());
+    }
 
     #[test]
     fn the_word_lists_are_unchanged() {

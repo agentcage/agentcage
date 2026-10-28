@@ -293,6 +293,13 @@ impl Scaffolds {
             .filter(|prefix| !prefix.is_empty())
             .unwrap_or_else(|| name.to_owned())
     }
+
+    /// The scaffold's `auth:` alternatives, in preference order; empty
+    /// for a scaffold without them.
+    #[must_use]
+    pub fn auth(&self, name: &str) -> Vec<String> {
+        self.meta(name).map(|meta| meta.auth).unwrap_or_default()
+    }
 }
 
 /// `init._USER_SCAFFOLDS_DIR`.
@@ -351,6 +358,10 @@ pub struct Meta {
     pub aliases: Vec<String>,
     /// Prefix for auto-generated cage names.
     pub name_prefix: Option<String>,
+    /// Secrets that each authenticate the agent on their own, in
+    /// preference order. `agentcage run` needs one of them, not all, and
+    /// renders the template with `{{ auth }}` set to the one it chose.
+    pub auth: Vec<String>,
     /// Images to build before the cage is created.
     pub build: Vec<Build>,
     /// Files to drop on the host, if they are not there already.
@@ -422,6 +433,10 @@ pub struct RenderRequest<'a> {
     pub scaffold: Option<&'a str>,
     /// `{{ port }}` — `None` renders as Jinja's `none`.
     pub port: Option<i64>,
+    /// `{{ auth }}` — the `auth:` secret `run` chose. `None` (every
+    /// other caller) renders as `none`, and a template treats that as
+    /// its default.
+    pub auth: Option<&'a str>,
 }
 
 /// `init.render_config`.
@@ -513,6 +528,7 @@ pub fn render_config_with(
             subnet: &addrs.subnet,
             ip_cage: &addrs.ip_cage,
             ip_egress: &addrs.ip_egress,
+            auth: request.auth,
         },
         generator,
     )
@@ -541,6 +557,7 @@ struct ScaffoldContext<'a> {
     subnet: &'a str,
     ip_cage: &'a str,
     ip_egress: &'a str,
+    auth: Option<&'a str>,
 }
 
 /// The one embedded template the blank starter path needs.
@@ -1129,6 +1146,7 @@ mod tests {
                     isolation: "container",
                     scaffold: Some(&name),
                     port: None,
+                    auth: None,
                 },
                 counting_placeholder(),
             )
@@ -1170,6 +1188,7 @@ mod tests {
                 isolation: "container",
                 scaffold: Some("openclaw"),
                 port: None,
+                auth: None,
             },
         )
         .expect("openclaw renders");
@@ -1184,6 +1203,7 @@ mod tests {
                 isolation: "container",
                 scaffold: Some("openclaw"),
                 port: Some(19999),
+                auth: None,
             },
         )
         .expect("openclaw renders");
@@ -1205,6 +1225,7 @@ mod tests {
                 isolation: "vm",
                 scaffold: Some("openclaw"),
                 port: None,
+                auth: None,
             },
         )
         .expect("openclaw renders");
@@ -1221,6 +1242,7 @@ mod tests {
                 isolation: "container",
                 scaffold: Some("openclaw"),
                 port: None,
+                auth: None,
             },
         )
         .expect("openclaw renders");
@@ -1242,6 +1264,7 @@ mod tests {
                     isolation: "container",
                     scaffold: Some("openclaw"),
                     port: None,
+                    auth: None,
                 },
             )
             .expect("renders")
@@ -1266,6 +1289,7 @@ mod tests {
                 isolation: "container",
                 scaffold: None,
                 port: None,
+                auth: None,
             },
         )
         .expect("starter renders");
@@ -1284,9 +1308,61 @@ mod tests {
                 isolation: "container",
                 scaffold: Some("nope"),
                 port: None,
+                auth: None,
             },
         )
         .expect_err("unknown scaffold");
         assert_eq!(error.to_string(), "scaffold 'nope' not found");
+    }
+
+    /// The `secret_injection` rules a rendered config turns on, i.e.
+    /// the uncommented `- env:` entries.
+    fn active_rules(text: &str) -> Vec<&str> {
+        text.lines()
+            .filter_map(|line| line.strip_prefix("  - env: "))
+            .collect()
+    }
+
+    /// claude-code lists both of its credentials as alternatives, API
+    /// key first (#559).
+    #[test]
+    fn claude_code_declares_its_auth_alternatives() {
+        assert_eq!(
+            builtin_only().auth("claude-code"),
+            ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+        );
+        assert!(builtin_only().auth("codex").is_empty());
+    }
+
+    /// With `auth` set to the OAuth token, only that rule is rendered, so
+    /// `run` does not also demand an API key (#559). Unset and set to the
+    /// API key, the API-key rule is the only one.
+    #[test]
+    fn claude_code_renders_only_the_chosen_auth_rule() {
+        let scaffolds = builtin_only();
+        let render = |auth| {
+            render_config(
+                &scaffolds,
+                &RenderRequest {
+                    name: "cc",
+                    image: "",
+                    isolation: "container",
+                    scaffold: Some("claude-code"),
+                    port: None,
+                    auth,
+                },
+            )
+            .expect("claude-code renders")
+        };
+        let oauth = render(Some("CLAUDE_CODE_OAUTH_TOKEN"));
+        assert_eq!(active_rules(&oauth), ["CLAUDE_CODE_OAUTH_TOKEN"], "{oauth}");
+        assert!(
+            oauth.contains("agentcage:secret:CLAUDE_CODE_OAUTH_TOKEN:"),
+            "{oauth}"
+        );
+        for auth in [None, Some("ANTHROPIC_API_KEY")] {
+            let text = render(auth);
+            assert_eq!(active_rules(&text), ["ANTHROPIC_API_KEY"], "{text}");
+        }
     }
 }

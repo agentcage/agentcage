@@ -57,13 +57,13 @@ Examples:
 
 Secrets: every secret a scaffold declares is required. `run` aborts
 before starting the cage if one is missing — supply it with `-s KEY`
-(prompts) / `-s KEY=VALUE`, or via a configured `source:`. There is no
-\"optional secret\": an agent that would otherwise authenticate without a
-key (e.g. claude-code's interactive OAuth `/login`) still needs one here,
-or must be run from a persistent cage built with `agentcage init` whose
-config you can edit. `--no-cache`/`--pull` force a clean rebuild (ignore
-the layer cache / re-pull the base image) across every isolation backend
-— container, vm, and apple-container alike.";
+(prompts) / `-s KEY=VALUE`, or via a configured `source:`. A scaffold
+that lists alternative credentials under `auth:` needs only one of them:
+the one given with `-s`, else the first one exported in the environment
+(e.g. claude-code's CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`),
+which is stored like `-s` and never enters the cage. `--no-cache`/`--pull`
+force a clean rebuild (ignore the layer cache / re-pull the base image)
+across every isolation backend — container, vm, and apple-container alike.";
 
 /// Build the `run` command. Registered twice: as `cage run`, and hidden
 /// at the root.
@@ -196,6 +196,7 @@ pub(crate) fn main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 /// meaningful combination of all of them — so the flat struct is the
 /// honest shape, and it is the one `cli.py`'s signature has.
 #[expect(clippy::struct_excessive_bools, reason = "five independent CLI flags")]
+#[derive(Clone)]
 struct Options {
     scaffold: String,
     project_dir: Option<String>,
@@ -298,9 +299,44 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
     // environment write Rust 2024 makes unsafe. See `hostenv::OVERLAY`.
     agentcage_cli::hostenv::publish_env("PROJECT_DIR", &project_dir);
 
+    // A scaffold's `auth:` alternatives each authenticate on their own,
+    // so the template renders the rule for one of them only (#559). One
+    // taken from the environment is staged as if it were `-s KEY=VALUE`,
+    // so it goes through the secret store on every backend and the cage
+    // sees only the placeholder.
+    let auth_choices = scaffolds.auth(&scaffold);
+    let env = agentcage_cli::secrets::SystemEnv;
+    let auth = {
+        let being_set: Vec<&str> = options
+            .secrets
+            .iter()
+            .map(|spec| spec.split_once('=').map_or(spec.as_str(), |(key, _)| key))
+            .collect();
+        flow::select_auth(&auth_choices, &being_set, &env)
+    };
+    let with_env_auth;
+    let options = match &auth {
+        Some(flow::AuthChoice {
+            key,
+            from_env: Some(value),
+        }) => {
+            output::info("Auth", &format!("{key} (from the environment)"));
+            let mut extended = options.clone();
+            extended.secrets.push(format!("{key}={value}"));
+            with_env_auth = extended;
+            &with_env_auth
+        }
+        _ => options,
+    };
+
     let text = match agentcage_cli::scaffold::render_config(
         &scaffolds,
-        &flow::render_request(&cage_name, &scaffold, &isolation),
+        &flow::render_request(
+            &cage_name,
+            &scaffold,
+            &isolation,
+            auth.as_ref().map(|choice| choice.key.as_str()),
+        ),
     ) {
         Ok(text) => text,
         Err(error) => {
@@ -345,7 +381,6 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
     // here, or must be launched from a persistent cage whose config the
     // operator can edit.
     let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-    let env = agentcage_cli::secrets::SystemEnv;
     let being_set: Vec<&str> = options
         .secrets
         .iter()
@@ -372,6 +407,9 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
                 acc
             });
             eprintln!("  agentcage run {scaffold}{flags}");
+            if let Some(hint) = flow::auth_hint(&scaffold, &auth_choices, &missing) {
+                eprintln!("{hint}");
+            }
             return 1;
         }
     }

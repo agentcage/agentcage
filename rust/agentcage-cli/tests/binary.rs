@@ -922,6 +922,65 @@ fn run_dry_run_has_no_side_effects() {
     assert!(!paths.cage_data_dir("binary-dry").exists());
 }
 
+/// #559: with only `CLAUDE_CODE_OAUTH_TOKEN` exported, `run claude-code`
+/// renders the OAuth rule alone and treats the token as provided — no
+/// `ANTHROPIC_API_KEY` is demanded, and the token is not printed. An empty
+/// `ANTHROPIC_API_KEY` stands in for an unset one, so a developer's own
+/// environment cannot change the answer.
+#[test]
+fn run_takes_the_claude_oauth_token_from_the_environment() {
+    let dir = agentcage_state::TestDir::new("binary-run-oauth-env");
+    let project = dir.join("project");
+    std::fs::create_dir_all(&project).expect("project dir");
+    let project_arg = project.display().to_string();
+    let args = [
+        "run",
+        "claude-code",
+        "--dry-run",
+        "--name",
+        "binary-oauth",
+        "--project",
+        &project_arg,
+        "--isolation",
+        "container",
+    ];
+    let out = agentcage_sandboxed_env(
+        dir.path(),
+        &args,
+        &[
+            ("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-binary-test"),
+            ("ANTHROPIC_API_KEY", ""),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("secrets: CLAUDE_CODE_OAUTH_TOKEN (provided)"),
+        "{text}"
+    );
+    assert!(!text.contains("ANTHROPIC_API_KEY"), "{text}");
+    assert!(
+        !format!("{text}{}", stderr(&out)).contains("sk-ant-oat-binary-test"),
+        "the token leaked"
+    );
+
+    // An explicit `-s` still wins over the environment.
+    let mut with_key = args.to_vec();
+    with_key.extend(["-s", "ANTHROPIC_API_KEY=sk-test"]);
+    let out = agentcage_sandboxed_env(
+        dir.path(),
+        &with_key,
+        &[("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-binary-test")],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("secrets: ANTHROPIC_API_KEY (provided)"),
+        "{text}"
+    );
+    assert!(!text.contains("CLAUDE_CODE_OAUTH_TOKEN"), "{text}");
+}
+
 /// Every command in the tree has a body.
 ///
 /// Two tests used to live here: one asserting an unported command

@@ -169,6 +169,9 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             isolation: &isolation,
             scaffold: scaffold.map(String::as_str),
             port,
+            // `init` writes a config the operator edits, so it keeps the
+            // template's default credential and its commented alternatives.
+            auth: None,
         },
     )
     .map_err(|error| {

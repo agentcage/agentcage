@@ -110,6 +110,17 @@ container:
 # real outbound content from ever colliding with one.
 # Create each secret:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
 secret_injection:
+{% if auth == "CLAUDE_CODE_OAUTH_TOKEN" %}
+  # Subscription auth: `agentcage run` found CLAUDE_CODE_OAUTH_TOKEN (minted
+  # on the host with `claude setup-token`) and stored it for this cage.
+  # Claude Code sends the placeholder as a bearer token; the proxy swaps in
+  # the real value en route to anthropic.com.
+  - env: CLAUDE_CODE_OAUTH_TOKEN
+    placeholder: "{{ placeholder('CLAUDE_CODE_OAUTH_TOKEN') }}"
+    inject_to:
+      - anthropic.com
+
+{% else %}
   - env: ANTHROPIC_API_KEY
     placeholder: "{{ placeholder('ANTHROPIC_API_KEY') }}"
     inject_to:
@@ -127,6 +138,7 @@ secret_injection:
   #  inject_to:
   #    - anthropic.com
 
+{% endif %}
   # Uncomment for GitHub push via HTTPS:
   #- env: GITHUB_TOKEN
   #  placeholder: "{{ placeholder('GITHUB_TOKEN') }}"

@@ -56,6 +56,18 @@ domains:
     - registry.npmjs.org
 ```
 
+#### Alternative credentials (`auth:`)
+
+An agent that can authenticate in more than one way lists the alternatives under `auth:`, in preference order:
+
+```yaml
+auth:
+  - ANTHROPIC_API_KEY
+  - CLAUDE_CODE_OAUTH_TOKEN
+```
+
+`agentcage run` then needs only one of them: the one given with `-s`, else the first one exported (and non-empty) in the host environment. It renders `cage.yaml.j2` with `{{ auth }}` set to that name, so the template can emit the `secret_injection` rule for it alone, and it stores a value taken from the environment exactly as `-s KEY=VALUE` would. When none is available, `{{ auth }}` is `none`, the template renders its default, and the missing-secret error lists every alternative. `agentcage init` always renders the default. The built-in `claude-code` scaffold is the example.
+
 ### 2. `Containerfile` (Build Definition)
 Specifies the workload container build layers:
 
