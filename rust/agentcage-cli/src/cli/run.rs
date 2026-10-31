@@ -1222,7 +1222,16 @@ mod tests {
     /// called directly. `claude-code` is one of the scaffolds whose
     /// Containerfile `COPY`s both canonical assets. The build itself is
     /// stubbed to fail — the assertion is on what preceded it.
+    ///
+    /// Ignored on macOS, which has no host podman build to observe: that
+    /// build is the container backend's, and a Mac cage is never
+    /// `container` (`validate` refuses it). apple-container and vm build
+    /// through their own backends instead.
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "container isolation is not available on macOS"
+    )]
     fn an_ephemeral_run_stages_its_build_context_and_canonical_assets() {
         let dir = TestDir::new("run-call-site");
         let paths = Paths::under(dir.path());

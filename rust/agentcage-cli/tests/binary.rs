@@ -1501,6 +1501,26 @@ fn assert_diff_matches_written(stdout: &str, written: &str) {
     assert!(in_diff, "no diff was printed:\n{stdout}");
 }
 
+/// An `isolation:` this host accepts, for the `cage edit` documents that
+/// name one.
+///
+/// What those tests assert, the bytes saved and the diff printed for
+/// them, is the same on every host, but the edited document is validated
+/// against the host running the binary: `validate` refuses `container`
+/// on macOS and `apple-container` anywhere but Apple silicon. The binary
+/// answers both from its build target, and so does this. Linux keeps the
+/// `container` these tests have always used. An Apple silicon Mac takes
+/// apple-container rather than vm because the unit refresh a placeholder
+/// fill triggers is a no-op there, where on vm it asks `limactl`; an
+/// Intel Mac accepts only vm.
+const EDITABLE_ISOLATION: &str = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    "apple-container"
+} else if cfg!(target_os = "macos") {
+    "vm"
+} else {
+    "container"
+};
+
 /// The regression from #523: a one-value edit used to re-render the whole
 /// document through the YAML emitter, so every comment, quoted scalar and
 /// flow-style list in the operator's `cage.yaml` was replaced by the
@@ -1515,10 +1535,11 @@ fn cage_edit_keeps_the_operators_comments_and_formatting() {
     let home = dir.path();
     let paths = agentcage_state::Paths::under(home);
     let name = "demo";
-    let original = r#"# Cage for the demo agent -- keep this comment.
+    let original = format!(
+        r#"# Cage for the demo agent -- keep this comment.
 name: demo
 
-isolation: container
+isolation: {EDITABLE_ISOLATION}
 
 container:
   image: "alpine"  # pinned on purpose
@@ -1526,8 +1547,9 @@ container:
   volumes:
     # Mount the project directory.
     - "~/project:/workspace:rw"
-"#;
-    stage_cage_with_config(home, name, original);
+"#
+    );
+    stage_cage_with_config(home, name, &original);
 
     let editor = home.join("change-image.sh");
     std::fs::write(
@@ -1591,10 +1613,11 @@ fn cage_edit_saves_the_rendered_document_when_it_fills_a_placeholder() {
     let home = dir.path();
     let paths = agentcage_state::Paths::under(home);
     let name = "fill";
-    let original = r#"# A comment the fill cannot keep.
+    let original = format!(
+        r#"# A comment the fill cannot keep.
 name: fill
 
-isolation: container
+isolation: {EDITABLE_ISOLATION}
 
 container:
   image: "alpine"
@@ -1608,8 +1631,9 @@ secret_injection:
   - env: DEMO_KEY
     inject_to:
       - example.com
-"#;
-    stage_cage_with_config(home, name, original);
+"#
+    );
+    stage_cage_with_config(home, name, &original);
 
     let editor = home.join("change-image.sh");
     std::fs::write(
