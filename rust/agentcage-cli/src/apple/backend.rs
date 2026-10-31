@@ -9,7 +9,9 @@
 //!    cleartext — the egress has it in memory by then;
 //! 4. read the egress sibling's address;
 //! 5. run `<name>` with `AGENTCAGE_EGRESS_IP` so `cage-init.sh` can
-//!    point its default route at the sibling.
+//!    point its default route at the sibling;
+//! 6. wait until it has, so nothing the caller runs next races
+//!    `cage-init.sh` (see [`AppleBackend::wait_cage_routed`](crate::apple::backend::AppleBackend::wait_cage_routed)).
 //!
 //! Step 3 before step 4 is not an ordering convenience: the address is
 //! populated asynchronously and can still be absent *after* the marker
@@ -62,6 +64,16 @@ const READY_POLL: Duration = Duration::from_millis(100);
 const IP_TIMEOUT: Duration = Duration::from_secs(10);
 /// See [`IP_TIMEOUT`].
 const IP_POLL: Duration = Duration::from_millis(200);
+
+/// How long to wait for `cage-init.sh` to route the cage through its
+/// egress sibling, and how often to look.
+///
+/// Longer than [`READY_TIMEOUT`]: before it sets the route, cage-init's
+/// stage A alone allows thirty pings of up to a second each, half a
+/// second apart.
+const ROUTE_TIMEOUT: Duration = Duration::from_secs(60);
+/// See [`ROUTE_TIMEOUT`].
+const ROUTE_POLL: Duration = Duration::from_millis(250);
 
 /// The process environment, for [`crate::secrets::SecretHost`].
 ///
@@ -816,6 +828,11 @@ impl AppleBackend<'_> {
             )));
         }
 
+        // 6. `container run` returns while cage-init is still working
+        // through its stages; the cage is not started until its traffic
+        // goes through the egress.
+        self.wait_cage_routed(name, &egress_ip)?;
+
         // The launchd job, if the cage opted into autostart. Read from
         // the metadata so the choice survives a reload.
         if meta.truthy("autostart") {
@@ -884,6 +901,58 @@ impl AppleBackend<'_> {
             "egress sibling '{egress}' did not signal ready within {}s; see \
              `container logs {egress}` for the supervisor's last step",
             READY_TIMEOUT.as_secs()
+        )))
+    }
+
+    /// Block until the cage's default route points at its egress
+    /// sibling, or the cage exits, or the deadline.
+    ///
+    /// `container run -d` returns as soon as the microVM is up, while
+    /// `cage-init.sh` is still waiting for the egress (stage A) and
+    /// starting its DNS (stage A'); only stage B points the default
+    /// route at the egress. Returning earlier let the first thing an
+    /// operator or a setup script ran in the cage race cage-init. Under
+    /// a cage-init without stage 0 that traffic left through the vmnet
+    /// host gateway, past the egress, and the tail of those connections
+    /// then drew ICMP redirects that kept the destination off the egress
+    /// for five minutes; under a current one it fails with "Network is
+    /// unreachable" instead. Polling the route itself, rather than a
+    /// marker only a current cage-init would write, also covers a
+    /// wrapper image built by an earlier release.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Failed`] when the cage exits first or the
+    /// deadline passes, naming `container logs` in both cases.
+    pub fn wait_cage_routed(&self, name: &str, egress_ip: &str) -> Result<(), BackendError> {
+        let cli = self.cli();
+        let deadline = Instant::now() + ROUTE_TIMEOUT;
+        while Instant::now() < deadline {
+            let routed = cli
+                .run(
+                    ["exec", name, "ip", "-4", "route", "show", "default"],
+                    false,
+                )
+                .is_ok_and(|output| routes_via(&output.stdout, egress_ip));
+            if routed {
+                return Ok(());
+            }
+            let data = cli.inspect(name).ok().flatten();
+            let state = container_state(data.as_ref());
+            if data.is_some() && state.as_deref().is_some_and(|state| state != "running") {
+                return Err(BackendError::Failed(format!(
+                    "cage '{name}' exited before routing its traffic through \
+                     the egress (state={state:?}); see `container logs {name}` \
+                     for cage-init's last stage",
+                    state = state.unwrap_or_default()
+                )));
+            }
+            std::thread::sleep(ROUTE_POLL);
+        }
+        Err(BackendError::Failed(format!(
+            "cage '{name}' did not route its traffic through the egress within \
+             {}s; see `container logs {name}` for cage-init's last stage",
+            ROUTE_TIMEOUT.as_secs()
         )))
     }
 
@@ -1041,6 +1110,18 @@ fn set_mode(path: &Path, mode: u32) {
 /// `secrets_dir.is_dir() and any(secrets_dir.iterdir())`.
 fn has_entries(path: &Path) -> bool {
     std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
+}
+
+/// Whether `ip -4 route show default` printed a default route via
+/// `gateway`: `default via <gateway> dev eth0`, compared word by word so
+/// that `192.168.66.1` does not match `192.168.66.10`.
+fn routes_via(stdout: &[u8], gateway: &str) -> bool {
+    String::from_utf8_lossy(stdout).lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next() == Some("default")
+            && words.next() == Some("via")
+            && words.next() == Some(gateway)
+    })
 }
 
 /// The exit status of a `container` call that was not `check`ed.
@@ -2242,5 +2323,98 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    const ROUTE_PROBE: &[&str] = &[
+        "/usr/bin/container",
+        "exec",
+        "demo",
+        "ip",
+        "-4",
+        "route",
+        "show",
+        "default",
+    ];
+    const INSPECT_CAGE: &[&str] = &["/usr/bin/container", "inspect", "demo"];
+
+    /// Only a default route via the egress sibling counts, and a gateway
+    /// that merely shares its prefix does not: `.1` is the vmnet host
+    /// gateway the cage boots with, `.10` the egress.
+    #[test]
+    fn only_a_default_route_via_the_egress_counts() {
+        let egress = "192.168.66.10";
+        assert!(super::routes_via(
+            b"default via 192.168.66.10 dev eth0 \n",
+            egress
+        ));
+        assert!(!super::routes_via(
+            b"default via 192.168.66.1 dev eth0 \n",
+            egress
+        ));
+        assert!(!super::routes_via(
+            b"default via 192.168.66.10 dev eth0 \n",
+            "192.168.66.1"
+        ));
+        assert!(!super::routes_via(b"", egress), "stage 0 removed it");
+    }
+
+    /// `start` returns only once cage-init has routed the cage through
+    /// the egress. It keeps looking through the boot-time route via the
+    /// host gateway (all a cage-init without stage 0 has until stage B)
+    /// and through no default route at all (stage 0 until stage B).
+    #[test]
+    fn start_waits_until_the_cage_routes_through_the_egress() {
+        let dir = TestDir::new("apple-wait-routed");
+        let paths = Paths::under(dir.path());
+        let runner = FakeRunner::new();
+        runner.assume_installed();
+        runner.on(
+            INSPECT_CAGE.iter().copied(),
+            agentcage_exec::Reply::ok(r#"{"status":{"state":"running"}}"#),
+        );
+        runner.push_all([
+            agentcage_exec::Reply::ok("default via 192.168.66.1 dev eth0 \n"),
+            agentcage_exec::Reply::ok(""),
+            agentcage_exec::Reply::ok("default via 192.168.66.10 dev eth0 \n"),
+        ]);
+        let backend = AppleBackend::new(&paths, &runner, "0.0.0");
+
+        backend
+            .wait_cage_routed("demo", "192.168.66.10")
+            .expect("the cage is routed through the egress");
+
+        runner.assert_argv(&[
+            ROUTE_PROBE,
+            INSPECT_CAGE,
+            ROUTE_PROBE,
+            INSPECT_CAGE,
+            ROUTE_PROBE,
+        ]);
+        runner.assert_drained();
+    }
+
+    /// A cage-init that dies before stage B (stage A giving up on the
+    /// egress, say) fails the start and names the logs, rather than
+    /// reporting a started cage that is already gone.
+    #[test]
+    fn a_cage_that_exits_before_routing_fails_the_start() {
+        let dir = TestDir::new("apple-wait-routed-exited");
+        let paths = Paths::under(dir.path());
+        let runner = FakeRunner::new();
+        runner.assume_installed();
+        runner.on(
+            INSPECT_CAGE.iter().copied(),
+            agentcage_exec::Reply::ok(r#"{"status":{"state":"stopped"}}"#),
+        );
+        runner.push(agentcage_exec::Reply::ok(""));
+        let backend = AppleBackend::new(&paths, &runner, "0.0.0");
+
+        let error = backend
+            .wait_cage_routed("demo", "192.168.66.10")
+            .expect_err("the cage exited");
+
+        let message = error.to_string();
+        assert!(message.contains("container logs demo"), "{message}");
+        runner.assert_argv(&[ROUTE_PROBE, INSPECT_CAGE]);
     }
 }

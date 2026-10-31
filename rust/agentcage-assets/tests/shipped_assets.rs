@@ -444,7 +444,7 @@ fn cage_init_boot_sequence() {
     assert!(text.contains(r#"export USER="${CAGE_USER}""#));
     assert!(text.contains(r#"export LOGNAME="${CAGE_USER}""#));
     assert!(text.contains("CAGE_HOME=$(getent passwd 1000 | cut -d: -f6)"));
-    // Stage B': no TCP or UDP to the macOS host gateway, and only acdns
+    // Stage 0': no TCP or UDP to the macOS host gateway, and only acdns
     // may emit UDP :53 (otherwise the in-cage dnsmasq scoping is
     // decorative).
     assert!(text.contains("_apple_host_gw="));
@@ -470,6 +470,128 @@ fn cage_init_boot_sequence() {
     assert!(text.contains("--except-interface=eth0"));
     assert!(text.contains("--user=acdns"));
     assert!(text.contains("nameserver 127.0.0.1"));
+}
+
+/// The cage is closed before cage-init waits for anything. apple-container
+/// boots it with a default route via the vmnet host gateway, which NATs to
+/// the internet; until stage B replaced it, after stage A's wait for the
+/// egress, whatever ran in the cage left through the gateway, past the
+/// egress. So stage 0 removes that route and drops ICMP redirects, and the
+/// OUTPUT lockdown (no TCP/UDP to the gateway, UDP :53 only from acdns)
+/// comes with it, all before stage A — the gateway is on-link, so removing
+/// the route alone would not keep the gap away from it.
+#[test]
+fn cage_init_fails_closed_before_waiting_for_the_egress() {
+    let text = cage_init();
+    let stage_a = index_of(&text, r#"log "stage A: waiting for egress sibling"#);
+    for line in [
+        "ip -4 route del default",
+        "iptables -A INPUT -p icmp --icmp-type redirect -j DROP",
+        "ip6tables -A INPUT -p ipv6-icmp --icmpv6-type redirect -j DROP",
+        r#"iptables -A OUTPUT -d "${_apple_host_gw}" -p tcp -j DROP"#,
+        r#"iptables -A OUTPUT -d "${_apple_host_gw}" -p udp -j DROP"#,
+        "iptables -A OUTPUT -p udp --dport 53 -m owner ! --uid-owner 201 -j DROP",
+    ] {
+        assert!(
+            index_of(&text, line) < stage_a,
+            "{line:?} must precede stage A"
+        );
+    }
+    assert!(
+        index_of(&text, "ip route replace default via") > stage_a,
+        "stage B still points the route at the egress, after stage A"
+    );
+}
+
+/// Stage 0 as a standalone script, with `ip` stubbed by a shell function
+/// that reports `routes` boot-time default routes and removes one per
+/// `ip -4 route del default` unless `stuck`. Returns the exit code and
+/// the commands the stubs saw, or `None` when `sh` is unavailable.
+fn run_stage_zero(name: &str, routes: u32, stuck: bool) -> Option<(i32, String)> {
+    if Command::new("sh").arg("-c").arg(":").output().is_err() {
+        eprintln!("skipping: sh is not available");
+        return None;
+    }
+    let text = cage_init();
+    let start = index_of(&text, "#-- Stage 0. Fail closed");
+    let end = index_from(&text, "#-- Stage 0'.", start);
+    let dir = scratch(name);
+    let state = dir.join("routes");
+    let log = dir.join("calls.log");
+    fs::write(&state, routes.to_string()).expect("state");
+    let stubs = r#"set -eu
+log() { printf '%s\n' "$*" >&2; }
+die() { log "FATAL: $1"; exit "${2:-99}"; }
+ip() {
+  printf 'ip %s\n' "$*" >> 'LOG'
+  n=$(cat 'STATE')
+  if [ "$*" = "-4 route show default" ]; then
+    if [ "$n" -gt 0 ]; then printf 'default via 192.168.66.1 dev eth0\n'; fi
+  elif [ "$*" = "-4 route del default" ] && [ STUCK = 0 ]; then
+    printf '%s\n' "$((n - 1))" > 'STATE'
+  fi
+}
+iptables() { printf 'iptables %s\n' "$*" >> 'LOG'; }
+ip6tables() { printf 'ip6tables %s\n' "$*" >> 'LOG'; }
+"#
+    .replace("LOG", &log.display().to_string())
+    .replace("STATE", &state.display().to_string())
+    .replace("STUCK", if stuck { "1" } else { "0" });
+    let script = dir.join("stage0.sh");
+    fs::write(&script, format!("{stubs}{}", &text[start..end])).expect("script");
+    let out = Command::new("sh").arg(&script).output().expect("sh runs");
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    let _ = fs::remove_dir_all(&dir);
+    Some((out.status.code().unwrap_or(-1), calls))
+}
+
+/// Every boot-time default route goes, and the redirect drops install.
+#[test]
+fn cage_init_stage_zero_removes_every_default_route() {
+    let Some((code, calls)) = run_stage_zero("stage0-removes", 2, false) else {
+        return;
+    };
+    assert_eq!(code, 0, "{calls}");
+    assert_eq!(
+        calls.matches("ip -4 route del default").count(),
+        2,
+        "{calls}"
+    );
+    assert!(
+        calls.contains("iptables -A INPUT -p icmp --icmp-type redirect -j DROP"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("ip6tables -A INPUT -p ipv6-icmp --icmpv6-type redirect -j DROP"),
+        "{calls}"
+    );
+}
+
+/// A route that will not go stops the cage instead of starting it open.
+#[test]
+fn cage_init_stage_zero_dies_when_the_route_stays() {
+    let Some((code, calls)) = run_stage_zero("stage0-stuck", 1, true) else {
+        return;
+    };
+    assert_eq!(code, 2, "{calls}");
+}
+
+/// The egress never sends an ICMP redirect: on apple-container one would
+/// tell the cage to reach a destination through the vmnet host gateway
+/// instead of the egress (see the rule's comment). Installed with the rest
+/// of step A, before the ready marker the backend waits for.
+#[test]
+fn supervisor_never_sends_icmp_redirects() {
+    let text = supervisor();
+    let rule = index_of(
+        &text,
+        "iptables -A OUTPUT -p icmp --icmp-type redirect -j DROP",
+    );
+    // The command, not the header comment that quotes it.
+    assert!(
+        rule < index_of(&text, "\ntouch /var/log/agentcage/ready\n"),
+        "the redirect drop must be in place before the egress reports ready"
+    );
 }
 
 /// The cage-init half of single-file `np` routing: the file is copied to
