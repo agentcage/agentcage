@@ -271,8 +271,8 @@ install_podman() {
 
 AGENTCAGE_REPO="${AGENTCAGE_REPO:-agentcage/agentcage}"
 
-# The workspace floor, from `rust-version` in the root Cargo.toml (wasmtime 49).
-RUST_MIN_MINOR=96
+# The workspace floor, from `rust-version` in the root Cargo.toml.
+RUST_MIN_MINOR=99
 
 # The git ref to build: $AGENTCAGE_REF (a branch), $AGENTCAGE_VERSION (a
 # release tag), or the latest release.

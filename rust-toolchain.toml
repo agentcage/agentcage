@@ -3,8 +3,9 @@
 # `channel = "stable"` rather than a number: pinning an exact release
 # would mean a bot PR every six weeks plus a toolchain download for
 # every contributor whose rustup already has stable. The floor is
-# `rust-version = "1.96"` in the root Cargo.toml, forced by wasmtime 49;
-# `cargo` enforces it, and CI and contributors track stable above it.
+# `rust-version = "1.99"` in the root Cargo.toml, the latest stable when
+# it was last raised; `cargo` enforces it, and CI and contributors track
+# stable above it.
 #
 # What this file *does* buy is the components: CI and a contributor's
 # machine both get clippy and rustfmt without a separate install step,

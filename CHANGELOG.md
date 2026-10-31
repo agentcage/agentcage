@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **wasmtime 49.0.5 for custom inspectors** ([RUSTSEC-2026-0422](https://rustsec.org/advisories/RUSTSEC-2026-0422), [RUSTSEC-2026-0423](https://rustsec.org/advisories/RUSTSEC-2026-0423), [RUSTSEC-2026-0424](https://rustsec.org/advisories/RUSTSEC-2026-0424)). The egress runs custom inspectors on wasmtime, and 49.0.4 had three advisories against it; 49.0.5 fixes them. Rebuild cages with `agentcage cage update <name>` to get the new egress.
 
+### Changed
+
+- **Building from source needs Rust 1.99** (was 1.96), the current stable release. `install.sh --build` stops and asks for `rustup update stable` when it finds an older toolchain.
+
 ## [0.54.0] - 2026-10-28
 
 ### Added
