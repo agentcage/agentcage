@@ -636,7 +636,18 @@ mod tests {
     /// update is a no-op. A create that gathered the inputs even
     /// slightly differently would write a file that never matches and
     /// pass a mere existence check.
+    ///
+    /// Ignored on macOS, where `cage create` cannot take this path. The
+    /// stubs and the update side are the container backend's, and a Mac
+    /// cage is never `container`: `validate` refuses it, and the default
+    /// isolation is apple-container or vm. Both answers come from the
+    /// real host, which `cage create` asks directly, not through the
+    /// runner this test fakes.
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "container isolation is not available on macOS"
+    )]
     fn create_records_the_fingerprint_the_first_update_compares_against() {
         let dir = TestDir::new("create-fingerprint");
         let fake = FakeRunner::new();
