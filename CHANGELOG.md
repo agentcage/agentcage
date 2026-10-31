@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **apple-container: a cage could reach the internet past its egress right after it started, and then for five minutes per destination.** The cage microVM boots with a default route via the vmnet host gateway, which NATs to the internet. `cage-init.sh` only pointed it at the egress (stage B) after waiting for the egress and starting its DNS, but `cage start` had already returned and `cage exec` already worked, so whatever ran in that gap left through the gateway with no allowlist, secret injection or audit. The tail of those connections then reached the egress with no NAT state; the egress routed it back out of the interface it came in on and sent the cage an ICMP redirect naming the gateway, which the cage honoured for five minutes, so new connections to that host kept bypassing the egress. It showed as an API call that worked right after `cage start` and an identical one seconds later that failed with `401`: the injected credential's placeholder had reached the API unreplaced. Now `cage-init.sh` removes the boot-time default route and drops ICMP redirects before anything else (stage 0) and installs its OUTPUT lockdown there too (stage 0', formerly B'), the egress never sends a redirect, and `cage start` returns only once the cage's default route points at its egress. Run `agentcage cage update <name>` to rebuild existing cages with the new `cage-init.sh` and egress.
+
+- **wasmtime 49.0.5 for custom inspectors** ([RUSTSEC-2026-0422](https://rustsec.org/advisories/RUSTSEC-2026-0422), [RUSTSEC-2026-0423](https://rustsec.org/advisories/RUSTSEC-2026-0423), [RUSTSEC-2026-0424](https://rustsec.org/advisories/RUSTSEC-2026-0424)). The egress runs custom inspectors on wasmtime, and 49.0.4 had three advisories against it; 49.0.5 fixes them. Rebuild cages with `agentcage cage update <name>` to get the new egress.
+
+### Changed
+
+- **Building from source needs Rust 1.99** (was 1.96), the current stable release. `install.sh --build` stops and asks for `rustup update stable` when it finds an older toolchain.
+
 ## [0.54.0] - 2026-10-28
 
 ### Added

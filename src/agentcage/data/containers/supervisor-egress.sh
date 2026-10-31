@@ -327,6 +327,22 @@ for port in $ALLOW_UDP_PORTS; do
     || die "iptables FORWARD allow udp accept failed (port $port)" 15
 done
 
+# Never send ICMP redirects. On apple-container the cage, this egress and
+# the upstream gateway share one vmnet subnet, so a cage packet the
+# PREROUTING REDIRECT does not claim (one conntrack calls INVALID, e.g.
+# the RST or FIN of a connection the cage opened before its route
+# pointed here) is routed straight back out of the interface it came in
+# on. The kernel then sends the cage a redirect naming the gateway as
+# the better first hop — before FORWARD drops the packet itself — and
+# the cage honours it for five minutes per destination: its traffic to
+# that host left through the gateway, past this proxy, its allowlist,
+# secret injection and audit. /proc/sys is read-only there, so
+# send_redirects cannot be switched off; dropping the redirect on its
+# way out does the same. Harmless on podman, where the cage's network is
+# internal and this egress never forwards back out the same interface.
+iptables -A OUTPUT -p icmp --icmp-type redirect -j DROP \
+  || die "iptables OUTPUT icmp redirect drop failed" 17
+
 # NOTE on lateral-traversal residual:
 #
 # The egress is on two networks — the per-cage ``{name}-net`` (cage-

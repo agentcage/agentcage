@@ -169,7 +169,7 @@ pass `--build`:
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh -s -- --build
 ```
 
-Or, with Rust 1.96+ installed:
+Or, with Rust 1.99+ installed:
 
 ```bash
 cargo install --locked --git https://github.com/agentcage/agentcage --tag v0.54.0 agentcage-cli

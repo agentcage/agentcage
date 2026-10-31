@@ -69,6 +69,8 @@ On Linux and inside the Lima VM, agentcage creates a Podman bridge network with 
 ### B. Gateway routing
 The workload's default gateway is the egress container. The workload has no `CAP_NET_ADMIN` or `CAP_NET_RAW`, so it cannot change its routes.
 
+On `apple-container` the cage microVM boots on a vmnet subnet whose host gateway NATs to the internet, with its default route pointing there. `cage-init.sh` removes that route and drops ICMP redirects before anything else, so nothing leaves the cage until it has pointed the default route at the egress, and `cage start` returns only after it has.
+
 ### C. Default-deny packet filtering
 The supervisor installs the egress's netfilter rules before anything else starts:
 - **Default policy**: `iptables -P FORWARD DROP` and `ip6tables -P FORWARD DROP`.
@@ -79,6 +81,7 @@ The supervisor installs the egress's netfilter rules before anything else starts
   ```
 - **Passthrough ports** (`ports.tcp.passthrough`) and `ports.udp.allow` are forwarded at layer 3 and never reach the proxy.
 - **ICMP** echo-request is dropped unless `ports.icmp.allow: true`.
+- **ICMP redirects** are never sent (`iptables -A OUTPUT -p icmp --icmp-type redirect -j DROP`). On `apple-container` the cage shares a subnet with the host gateway, and a redirect would tell it to reach a destination through the gateway instead of the egress.
 
 On the container and vm backends the cage also gets `HTTP_PROXY`/`HTTPS_PROXY` pointing at the forward proxy (`http://<egress-ip>:8080`), so most clients send `CONNECT` there instead of relying on the redirect. Both paths go through the same pipeline.
 

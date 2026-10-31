@@ -53,8 +53,9 @@ exclude = ["rust/agentcage-egress/fuzz"]
 [workspace.package]
 version = "0.54.0"
 edition = "2024"
-# The floor is wasmtime 49, a dependency of agentcage-egress, which needs 1.96.
-rust-version = "1.96"
+# The floor is the latest stable release when it was last raised. Nothing
+# below it builds the workspace; wasmtime 49 (agentcage-egress) alone needs 1.96.
+rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/agentcage/agentcage"
 authors = ["Luca Martinetti"]
