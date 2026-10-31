@@ -19,14 +19,14 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentcage-assets"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "agentcage-core"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "agentcage-assets",
  "indexmap",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "agentcage-egress"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "agentcage-core",
  "aho-corasick",
